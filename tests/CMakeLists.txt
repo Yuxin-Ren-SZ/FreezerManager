@@ -1,0 +1,6 @@
+add_subdirectory(unit)
+add_subdirectory(property)
+add_subdirectory(integration)
+add_subdirectory(fuzz)
+add_subdirectory(e2e)
+add_subdirectory(backend_conformance)
