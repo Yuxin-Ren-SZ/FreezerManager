@@ -6,6 +6,45 @@ single developer or agent in a few hours to a few days. Cross-module
 dependencies are called out explicitly under **⚠ Watch** so that earlier
 tasks are not "finished" in a way that boxes in later ones.
 
+## Handoff note — 2026-05-07, C3 backend conformance test suite
+
+Implemented the Section C3 backend conformance harness in
+`tests/backend_conformance/` with a test-only in-memory backend driver.
+
+Delivered:
+
+- `freezermanager_backend_conformance_tests` GoogleTest executable.
+- Test-only `ConformanceSample` entity and `EntityTraits` specialization to
+  exercise the storage API before production Section D entities exist.
+- In-memory `IStorageBackend`, transaction, and repository implementation used
+  only by the conformance suite.
+- Conformance coverage for CRUD, query DSL filtering/sorting/pagination,
+  soft-delete visibility, portable errors, serializable conflicts, concurrent
+  box-position uniqueness, audit atomicity, and migration up/down hooks.
+- Stress mode for the placement invariant via `FMGR_STORAGE_STRESS=1`.
+
+Verification completed locally:
+
+- `cmake --build --preset dev`
+- `ctest --preset dev` — 25/25 tests passed.
+- `FMGR_STORAGE_STRESS=1 ctest --preset dev -R BackendConformance` — 10/10
+  conformance tests passed.
+- `clang-format --dry-run --Werror tests/backend_conformance/storage_backend_conformance_test.cpp`
+- `clang-tidy -p out/build/dev tests/backend_conformance/storage_backend_conformance_test.cpp`
+- `tools/check-spdx-headers.sh`
+- `git diff --check`
+
+Handoff notes:
+
+- The suite is backend-neutral and contains no SQL or dialect-specific setup.
+- C3 is complete as the reusable conformance harness; entity-by-entity
+  expansion should happen during D1-D8 as real production entities land.
+- Future SQLite/Postgres backends should plug into this suite through a
+  backend-specific conformance driver, then pass it before backend work is
+  considered complete.
+- The next implementation slice should start at C4: SQLite reference backend,
+  unless project hygiene tasks such as B5.5/B7/B8 are prioritized first.
+
 ## Handoff note — 2026-05-07, C2 storage abstraction interface
 
 Implemented the Section C2 storage abstraction slice in `src/storage/` with
@@ -294,19 +333,19 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     JSONB GIN indexes, LISTEN/NOTIFY) behind a `Capabilities` flag without
     leaking dialect into callers. Do not put SQL strings in this header.
 
-- [ ] **C3. Backend conformance test suite** (`tests/backend_conformance/`).
+- [x] **C3. Backend conformance test suite** (`tests/backend_conformance/`).
   Parameterized GoogleTest fixtures runnable against any backend impl.
   Adding a new backend = passing this suite.
-  - [ ] **C3.1.** CRUD on every entity (insert, find, update, soft-delete).
-  - [ ] **C3.2.** Transaction isolation: serializability tests with two
+  - [x] **C3.1.** CRUD on every entity (insert, find, update, soft-delete).
+  - [x] **C3.2.** Transaction isolation: serializability tests with two
         concurrent transactions on overlapping rows.
-  - [ ] **C3.3.** Box-position uniqueness invariant under concurrent
+  - [x] **C3.3.** Box-position uniqueness invariant under concurrent
         placement (50 threads × 1000 placements; zero double-bookings).
-  - [ ] **C3.4.** Soft-delete visibility: tombstoned rows excluded from
+  - [x] **C3.4.** Soft-delete visibility: tombstoned rows excluded from
         default queries but findable via `include_tombstoned()`.
-  - [ ] **C3.5.** Audit hook: every mutating call appends to `audit_event`
+  - [x] **C3.5.** Audit hook: every mutating call appends to `audit_event`
         within the same transaction; commit fails if audit append fails.
-  - [ ] **C3.6.** Migration: forward-migrate, then downgrade, then
+  - [x] **C3.6.** Migration: forward-migrate, then downgrade, then
         forward-migrate again, against representative seed data.
   - **⚠ Watch:** these tests will be re-run by every storage backend
     contributor in the future. Fixtures must NOT bake in dialect-specific
