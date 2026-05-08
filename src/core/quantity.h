@@ -21,7 +21,7 @@ namespace fmgr::core {
     case VolumeUnit::Milliliter:
       return "mL";
     case VolumeUnit::Microliter:
-      return "uL";
+      return "µL";
     }
     throw std::invalid_argument("unknown volume unit");
   }
@@ -30,7 +30,7 @@ namespace fmgr::core {
     if (text == "mL") {
       return VolumeUnit::Milliliter;
     }
-    if (text == "uL") {
+    if (text == "µL") {
       return VolumeUnit::Microliter;
     }
     throw std::invalid_argument("unknown volume unit");
@@ -60,13 +60,13 @@ namespace fmgr::core {
   public:
     constexpr Volume() = default;
 
-    [[nodiscard]] static constexpr Volume from_microunits(std::int64_t value_microunits,
+    [[nodiscard]] static constexpr Volume from_raw(std::int64_t raw_value,
                                                           VolumeUnit unit) {
-      return {value_microunits, unit};
+      return {raw_value, unit};
     }
 
-    [[nodiscard]] constexpr std::int64_t value_microunits() const {
-      return value_microunits_;
+    [[nodiscard]] constexpr std::int64_t raw_value() const {
+      return raw_value_;
     }
     [[nodiscard]] constexpr VolumeUnit unit() const {
       return unit_;
@@ -76,17 +76,17 @@ namespace fmgr::core {
 
     [[nodiscard]] friend Volume operator+(const Volume& left, const Volume& right) {
       assert_same_unit(left, right);
-      return {left.value_microunits_ + right.value_microunits_, left.unit_};
+      return {left.raw_value_ + right.raw_value_, left.unit_};
     }
 
     [[nodiscard]] friend Volume operator-(const Volume& left, const Volume& right) {
       assert_same_unit(left, right);
-      return {left.value_microunits_ - right.value_microunits_, left.unit_};
+      return {left.raw_value_ - right.raw_value_, left.unit_};
     }
 
     [[nodiscard]] friend bool operator<(const Volume& left, const Volume& right) {
       assert_same_unit(left, right);
-      return left.value_microunits_ < right.value_microunits_;
+      return left.raw_value_ < right.raw_value_;
     }
 
     [[nodiscard]] friend bool operator>(const Volume& left, const Volume& right) {
@@ -100,8 +100,8 @@ namespace fmgr::core {
     }
 
   private:
-    constexpr Volume(std::int64_t value_microunits, VolumeUnit unit)
-        : value_microunits_(value_microunits), unit_(unit) {}
+    constexpr Volume(std::int64_t raw_value, VolumeUnit unit)
+        : raw_value_(raw_value), unit_(unit) {}
 
     static void assert_same_unit(const Volume& left, const Volume& right) {
       if (left.unit_ != right.unit_) {
@@ -109,7 +109,7 @@ namespace fmgr::core {
       }
     }
 
-    std::int64_t value_microunits_{0};
+    std::int64_t raw_value_{0};
     VolumeUnit unit_{VolumeUnit::Milliliter};
   };
 
@@ -117,13 +117,13 @@ namespace fmgr::core {
   public:
     constexpr Mass() = default;
 
-    [[nodiscard]] static constexpr Mass from_microunits(std::int64_t value_microunits,
+    [[nodiscard]] static constexpr Mass from_raw(std::int64_t raw_value,
                                                         MassUnit unit) {
-      return {value_microunits, unit};
+      return {raw_value, unit};
     }
 
-    [[nodiscard]] constexpr std::int64_t value_microunits() const {
-      return value_microunits_;
+    [[nodiscard]] constexpr std::int64_t raw_value() const {
+      return raw_value_;
     }
     [[nodiscard]] constexpr MassUnit unit() const {
       return unit_;
@@ -133,17 +133,17 @@ namespace fmgr::core {
 
     [[nodiscard]] friend Mass operator+(const Mass& left, const Mass& right) {
       assert_same_unit(left, right);
-      return {left.value_microunits_ + right.value_microunits_, left.unit_};
+      return {left.raw_value_ + right.raw_value_, left.unit_};
     }
 
     [[nodiscard]] friend Mass operator-(const Mass& left, const Mass& right) {
       assert_same_unit(left, right);
-      return {left.value_microunits_ - right.value_microunits_, left.unit_};
+      return {left.raw_value_ - right.raw_value_, left.unit_};
     }
 
     [[nodiscard]] friend bool operator<(const Mass& left, const Mass& right) {
       assert_same_unit(left, right);
-      return left.value_microunits_ < right.value_microunits_;
+      return left.raw_value_ < right.raw_value_;
     }
 
     [[nodiscard]] friend bool operator>(const Mass& left, const Mass& right) {
@@ -157,8 +157,8 @@ namespace fmgr::core {
     }
 
   private:
-    constexpr Mass(std::int64_t value_microunits, MassUnit unit)
-        : value_microunits_(value_microunits), unit_(unit) {}
+    constexpr Mass(std::int64_t raw_value, MassUnit unit)
+        : raw_value_(raw_value), unit_(unit) {}
 
     static void assert_same_unit(const Mass& left, const Mass& right) {
       if (left.unit_ != right.unit_) {
@@ -166,31 +166,31 @@ namespace fmgr::core {
       }
     }
 
-    std::int64_t value_microunits_{0};
+    std::int64_t raw_value_{0};
     MassUnit unit_{MassUnit::Milligram};
   };
 
   inline void to_json(nlohmann::json& json, const Volume& volume) {
     json = nlohmann::json{
-        {"value_microunits", volume.value_microunits()},
+        {"value", volume.raw_value()},
         {"unit", std::string(to_string(volume.unit()))},
     };
   }
 
   inline void from_json(const nlohmann::json& json, Volume& volume) {
-    volume = Volume::from_microunits(json.at("value_microunits").get<std::int64_t>(),
+    volume = Volume::from_raw(json.at("value").get<std::int64_t>(),
                                      parse_volume_unit(json.at("unit").get<std::string>()));
   }
 
   inline void to_json(nlohmann::json& json, const Mass& mass) {
     json = nlohmann::json{
-        {"value_microunits", mass.value_microunits()},
+        {"value", mass.raw_value()},
         {"unit", std::string(to_string(mass.unit()))},
     };
   }
 
   inline void from_json(const nlohmann::json& json, Mass& mass) {
-    mass = Mass::from_microunits(json.at("value_microunits").get<std::int64_t>(),
+    mass = Mass::from_raw(json.at("value").get<std::int64_t>(),
                                  parse_mass_unit(json.at("unit").get<std::string>()));
   }
 

@@ -223,6 +223,10 @@ namespace fmgr::storage {
       return query;
     }
 
+    // Storage-layer escape hatch for deterministic test fixtures and admin
+    // tooling. RPC handlers MUST use cursor-based pagination per TODO F8 —
+    // OFFSET scans degrade badly on large tables and are unstable under
+    // concurrent inserts/deletes.
     [[nodiscard]] Query offset(std::size_t count) const {
       Query query = *this;
       query.offset_count_ = count;

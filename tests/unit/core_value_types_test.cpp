@@ -47,36 +47,36 @@ namespace fmgr::core {
     }
 
     TEST(CoreQuantity, VolumeSupportsSameUnitArithmeticAndRejectsMixedUnits) {
-      const auto left = Volume::from_microunits(1'500'000, VolumeUnit::Milliliter);
-      const auto right = Volume::from_microunits(250'000, VolumeUnit::Milliliter);
-      const auto microliters = Volume::from_microunits(250'000, VolumeUnit::Microliter);
+      const auto left = Volume::from_raw(1'500'000, VolumeUnit::Milliliter);
+      const auto right = Volume::from_raw(250'000, VolumeUnit::Milliliter);
+      const auto microliters = Volume::from_raw(250'000, VolumeUnit::Microliter);
 
-      EXPECT_EQ((left + right).value_microunits(), 1'750'000);
-      EXPECT_EQ((left - right).value_microunits(), 1'250'000);
+      EXPECT_EQ((left + right).raw_value(), 1'750'000);
+      EXPECT_EQ((left - right).raw_value(), 1'250'000);
       EXPECT_GT(left, right);
       EXPECT_THROW((void)(left + microliters), std::invalid_argument);
       EXPECT_THROW((void)(left < microliters), std::invalid_argument);
     }
 
     TEST(CoreQuantity, MassSupportsSameUnitArithmeticAndRejectsMixedUnits) {
-      const auto left = Mass::from_microunits(2'000'000, MassUnit::Gram);
-      const auto right = Mass::from_microunits(500'000, MassUnit::Gram);
-      const auto milligrams = Mass::from_microunits(500'000, MassUnit::Milligram);
+      const auto left = Mass::from_raw(2'000'000, MassUnit::Gram);
+      const auto right = Mass::from_raw(500'000, MassUnit::Gram);
+      const auto milligrams = Mass::from_raw(500'000, MassUnit::Milligram);
 
-      EXPECT_EQ((left + right).value_microunits(), 2'500'000);
+      EXPECT_EQ((left + right).raw_value(), 2'500'000);
       EXPECT_GT(left, right);
       EXPECT_THROW((void)(left + milligrams), std::invalid_argument);
     }
 
     TEST(CoreQuantity, QuantityJsonRoundTrips) {
-      const auto volume = Volume::from_microunits(42, VolumeUnit::Microliter);
+      const auto volume = Volume::from_raw(42, VolumeUnit::Microliter);
       const nlohmann::json volume_json = volume;
 
-      EXPECT_EQ(volume_json.at("value_microunits").get<std::int64_t>(), 42);
-      EXPECT_EQ(volume_json.at("unit").get<std::string>(), "uL");
+      EXPECT_EQ(volume_json.at("value").get<std::int64_t>(), 42);
+      EXPECT_EQ(volume_json.at("unit").get<std::string>(), "µL");
       EXPECT_EQ(volume_json.get<Volume>(), volume);
 
-      const auto mass = Mass::from_microunits(99, MassUnit::Milligram);
+      const auto mass = Mass::from_raw(99, MassUnit::Milligram);
       const nlohmann::json mass_json = mass;
 
       EXPECT_EQ(mass_json.at("unit").get<std::string>(), "mg");
