@@ -8,5 +8,14 @@ target_link_libraries(
     GTest::gtest_main
 )
 
+add_executable(freezermanager_storage_unit_tests storage_interface_test.cpp)
+target_link_libraries(
+  freezermanager_storage_unit_tests
+  PRIVATE
+    FreezerManager::storage
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
+gtest_discover_tests(freezermanager_storage_unit_tests)
