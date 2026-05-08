@@ -132,13 +132,13 @@ The workflow file at `.github/workflows/cla.yml` is committed but inert
 until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 "Verify" below) → 4.
 
-- [x] **A.0.1. Create the `cla-signatures` branch.**
+- [ ] **A.0.1. Create the `cla-signatures` branch.**
   Open https://github.com/Yuxin-Ren-SZ/FreezerManager/branches → **New
   branch** → name `cla-signatures`, source `main` → Create. The Action
   will populate `signatures/v1/cla.json` on this branch on the first
   signed PR.
 
-- [x] **A.0.2. Create a fine-grained Personal Access Token.**
+- [ ] **A.0.2. Create a fine-grained Personal Access Token.**
   Open https://github.com/settings/personal-access-tokens/new
   - Token name: `FreezerManager CLA bot`
   - Expiration: 1 year (set a calendar reminder; see rotation task below)
@@ -147,13 +147,13 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     - **Contents**, **Pull requests**, **Issues**, **Commit statuses**
   - Generate. Copy the `github_pat_…` token immediately (shown once).
 
-- [x] **A.0.3. Add the PAT as a repo secret.**
+- [ ] **A.0.3. Add the PAT as a repo secret.**
   Open https://github.com/Yuxin-Ren-SZ/FreezerManager/settings/secrets/actions/new
   - Name: `PERSONAL_ACCESS_TOKEN` (exact spelling — referenced from
     `.github/workflows/cla.yml`)
   - Secret: paste the token from A.0.2 → Add secret.
 
-- [x] **A.0.4. Make `CLA Assistant` a required status check on `main`.**
+- [ ] **A.0.4. Make `CLA Assistant` a required status check on `main`.**
   Must be done *after* the workflow has run at least once (otherwise the
   check name doesn't appear in the dropdown). Once the test PR from the
   Verify task below has triggered the workflow:
@@ -164,7 +164,7 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 
 ### A.1 — Verification & maintenance
 
-- [x] **Verify CLA Assistant Lite end-to-end** (deferred — requires a second
+- [ ] **Verify CLA Assistant Lite end-to-end** (deferred — requires a second
       GitHub account or a friend's account).
   Steps once a second account is available:
   1. From the second account, fork `Yuxin-Ren-SZ/FreezerManager` and open a
@@ -183,9 +183,9 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
      the check is green.
   Workflow file: `.github/workflows/cla.yml`.
 
-- [x] **Rotate the `PERSONAL_ACCESS_TOKEN` secret** before expiration
+- [ ] **Rotate the `PERSONAL_ACCESS_TOKEN` secret** before expiration
       (calendar reminder ~11 months after creation of A.0.2).
-- [x] **Update `CLA.md` "How to sign" section** to describe the bot-comment
+- [ ] **Update `CLA.md` "How to sign" section** to describe the bot-comment
       flow as the primary signing method (keep `Signed-off-by` note as a
       secondary record-keeping convention), once the Action is verified
       working.
@@ -222,7 +222,7 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
   - [x] **B5.4.** GitHub Actions workflow `.github/workflows/build.yml`:
         matrix over `{gcc-13, clang-17}` × `{Debug, Release}` × `{asan,
         ubsan, tsan, none}` for at least one combination. Caches Conan.
-  - [x] **B5.5.** Coverage workflow using `gcovr` or `llvm-cov`; comment
+  - [ ] **B5.5.** Coverage workflow using `gcovr` or `llvm-cov`; comment
         coverage delta on PRs. **⚠ Watch:** keep coverage gating advisory
         until the codebase has real surface area; do not block PRs on
         coverage in M0–M1.
@@ -247,6 +247,17 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     backend_conformance/     # parameterized over backends
   ```
   Add empty `CMakeLists.txt` per directory; create `proto/.gitkeep`, etc.
+
+- [ ] **B7. SBOM generation in CI.** Emit a CycloneDX (or SPDX) SBOM for
+      every tagged release and attach it to the GitHub release artifacts.
+      Run advisory scanning of the SBOM against the OSV database in CI.
+  - **⚠ Watch:** the SBOM must list both Conan-resolved dependencies and
+    any vendored sources (e.g. submodules, copy-pasted headers).
+
+- [ ] **B8. Dependency vulnerability scanning.** Add Dependabot or
+      Renovate config under `.github/`. Advisory in M0–M2; from M3
+      onwards block PR merges on `high` or `critical` advisories.
+      Document the triage process in `SECURITY.md`.
 
 ---
 
@@ -283,57 +294,57 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     JSONB GIN indexes, LISTEN/NOTIFY) behind a `Capabilities` flag without
     leaking dialect into callers. Do not put SQL strings in this header.
 
-- [x] **C3. Backend conformance test suite** (`tests/backend_conformance/`).
+- [ ] **C3. Backend conformance test suite** (`tests/backend_conformance/`).
   Parameterized GoogleTest fixtures runnable against any backend impl.
   Adding a new backend = passing this suite.
-  - [x] **C3.1.** CRUD on every entity (insert, find, update, soft-delete).
-  - [x] **C3.2.** Transaction isolation: serializability tests with two
+  - [ ] **C3.1.** CRUD on every entity (insert, find, update, soft-delete).
+  - [ ] **C3.2.** Transaction isolation: serializability tests with two
         concurrent transactions on overlapping rows.
-  - [x] **C3.3.** Box-position uniqueness invariant under concurrent
+  - [ ] **C3.3.** Box-position uniqueness invariant under concurrent
         placement (50 threads × 1000 placements; zero double-bookings).
-  - [x] **C3.4.** Soft-delete visibility: tombstoned rows excluded from
+  - [ ] **C3.4.** Soft-delete visibility: tombstoned rows excluded from
         default queries but findable via `include_tombstoned()`.
-  - [x] **C3.5.** Audit hook: every mutating call appends to `audit_event`
+  - [ ] **C3.5.** Audit hook: every mutating call appends to `audit_event`
         within the same transaction; commit fails if audit append fails.
-  - [x] **C3.6.** Migration: forward-migrate, then downgrade, then
+  - [ ] **C3.6.** Migration: forward-migrate, then downgrade, then
         forward-migrate again, against representative seed data.
   - **⚠ Watch:** these tests will be re-run by every storage backend
     contributor in the future. Fixtures must NOT bake in dialect-specific
     setup beyond what `IStorageBackend::migrate_to_latest()` performs.
 
-- [x] **C4. SQLite reference backend** (`src/storage/sqlite/`).
-  - [x] **C4.1.** `SqliteBackend` implementing `IStorageBackend`. Use
+- [ ] **C4. SQLite reference backend** (`src/storage/sqlite/`).
+  - [ ] **C4.1.** `SqliteBackend` implementing `IStorageBackend`. Use
         SQLite ≥ 3.45 with WAL mode, foreign keys ON, busy-timeout 5 s,
         json1 extension required.
-  - [x] **C4.2.** Schema migrations under `src/storage/sqlite/migrations/`,
+  - [ ] **C4.2.** Schema migrations under `src/storage/sqlite/migrations/`,
         named `0001_init.sql`, `0002_*.sql`. Migrations are atomic and
         recorded in `schema_migrations` table.
-  - [x] **C4.3.** Generated columns + indexes on JSON paths declared
+  - [ ] **C4.3.** Generated columns + indexes on JSON paths declared
         `indexed: true` in `CustomFieldDefinition`. Re-generate when a
         definition changes.
-  - [x] **C4.4.** Pass full conformance suite from C3.
+  - [ ] **C4.4.** Pass full conformance suite from C3.
   - **⚠ Watch:** SQLite is single-writer. Document this as a hard
     deployment limit. Do NOT silently serialize app-level writers around
     a mutex — let the backend return `Unavailable` on contention so callers
     can retry with backoff.
 
-- [x] **C5. PostgreSQL reference backend** (`src/storage/postgres/`).
-  - [x] **C5.1.** `PostgresBackend` using libpqxx; connection pool sized by
+- [ ] **C5. PostgreSQL reference backend** (`src/storage/postgres/`).
+  - [ ] **C5.1.** `PostgresBackend` using libpqxx; connection pool sized by
         config. Use Postgres ≥ 16.
-  - [x] **C5.2.** Migrations under `src/storage/postgres/migrations/` with
+  - [ ] **C5.2.** Migrations under `src/storage/postgres/migrations/` with
         the same numbering scheme as SQLite. Migration runner refuses to
         proceed if SQLite and Postgres migration counts diverge.
-  - [x] **C5.3.** Row-Level Security policies on every domain table keyed
+  - [ ] **C5.3.** Row-Level Security policies on every domain table keyed
         on `app.current_user_id` and `app.current_lab_ids` settings set
         per-connection by the auth layer (see D3).
-  - [x] **C5.4.** JSONB columns for `custom_fields_json`; GIN indexes on
+  - [ ] **C5.4.** JSONB columns for `custom_fields_json`; GIN indexes on
         fields marked indexable.
-  - [x] **C5.5.** Pass full conformance suite from C3.
+  - [ ] **C5.5.** Pass full conformance suite from C3.
   - **⚠ Watch:** RLS policies must `FORCE` and apply to table owners too,
     or app-account-by-default will bypass them. Add a test that flips the
     session vars to a non-member's lab and asserts queries return zero rows.
 
-- [x] **C6. Migration test harness** (`tests/migrations/`). For each
+- [ ] **C6. Migration test harness** (`tests/migrations/`). For each
       migration: load representative pre-migration seed data, run up,
       assert post-state, run down, assert pre-state restored. PR
       cannot merge if a new migration is missing this test.
@@ -346,17 +357,17 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 > repository methods on the backend, conformance-suite coverage, validation
 > rules, and CLI commands in `freezerctl` for create/list/inspect.
 
-- [x] **D1. `Lab` & `User` & `LabMembership`.** First entities; everything
+- [ ] **D1. `Lab` & `User` & `LabMembership`.** First entities; everything
       else is scoped by `lab_id`.
-  - [x] **D1.1.** Schema + types + repos.
-  - [x] **D1.2.** Email-uniqueness enforced at DB level.
-  - [x] **D1.3.** First-run wizard creates the initial `SystemAdmin` user
+  - [ ] **D1.1.** Schema + types + repos.
+  - [ ] **D1.2.** Email-uniqueness enforced at DB level.
+  - [ ] **D1.3.** First-run wizard creates the initial `SystemAdmin` user
         and the first `Lab`.
   - **⚠ Watch:** every later entity will carry `lab_id`; do NOT skip it on
     "lab-agnostic" tables (sessions, audit) — those still log `lab_id` for
     forensic queries.
 
-- [x] **D2. `Role`, `Permission`, `RolePermission`, `LabMembership.role_id`.**
+- [ ] **D2. `Role`, `Permission`, `RolePermission`, `LabMembership.role_id`.**
       Seed the five built-in roles. Permission table is a static catalog
       seeded from `src/core/permissions.h` (single source of truth).
   - **⚠ Watch:** `LabMembership.scope_filters_json` is enforced *additively*
@@ -364,60 +375,60 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     write to F1 or F2. Decisions on scope syntax will affect E1 (RBAC
     middleware), so finalize the JSON schema here.
 
-- [x] **D3. `Freezer` and `StorageContainer`** (recursive). Adjacency-list
+- [ ] **D3. `Freezer` and `StorageContainer`** (recursive). Adjacency-list
       with ordered children. Capacity hints are advisory only.
 
-- [x] **D4. `ContainerType` and `BoxType` + `Position`.** A `BoxType`
+- [ ] **D4. `ContainerType` and `BoxType` + `Position`.** A `BoxType`
       carries a list of positions; each position has `(label, row, col,
       optional z, accepts: list<size_class>)`.
-  - [x] **D4.1.** Validation: position labels unique within a BoxType;
+  - [ ] **D4.1.** Validation: position labels unique within a BoxType;
         `accepts` is non-empty; size_class tokens must reference an
         existing `ContainerType.size_class` in the same lab.
-  - [x] **D4.2.** Standard library of BoxType templates (9×9 cryobox,
+  - [ ] **D4.2.** Standard library of BoxType templates (9×9 cryobox,
         10×10 cryobox, 96-well rack, the Eppendorf 3×3+2×2 mixed box) as
         seed JSON files importable by lab admins.
 
-- [x] **D5. `Box`** (an instance of a `BoxType` placed in a
+- [ ] **D5. `Box`** (an instance of a `BoxType` placed in a
       `StorageContainer`).
   - **⚠ Watch:** `Box.parent_storage_container_id` cascades on delete only
     via tombstone propagation. **Never hard-cascade physical containers —
     you'd lose audit history of where samples used to live.**
 
-- [x] **D6. `ItemType` (hierarchical) + `CustomFieldDefinition`.**
-  - [x] **D6.1.** `ItemType` adjacency-list; cycle prevention enforced at
+- [ ] **D6. `ItemType` (hierarchical) + `CustomFieldDefinition`.**
+  - [ ] **D6.1.** `ItemType` adjacency-list; cycle prevention enforced at
         write time AND by a DB-level trigger (Postgres) / app guard (SQLite).
-  - [x] **D6.2.** `CustomFieldDefinition.scope = (lab_id, scope_kind,
+  - [ ] **D6.2.** `CustomFieldDefinition.scope = (lab_id, scope_kind,
         item_type_id_nullable)`. Inherited from ancestors; a descendant may
         narrow validation but not remove a required ancestor field.
-  - [x] **D6.3.** Validator engine (`src/core/custom_field_validator.h`)
+  - [ ] **D6.3.** Validator engine (`src/core/custom_field_validator.h`)
         that turns a definition into a per-write check. Supported types:
         `string`, `int`, `float`, `bool`, `date`, `datetime`, `enum`,
         `reference` (FK to another sample by ID).
-  - [x] **D6.4.** **`is_phi: true`** flag routes the field through the
+  - [ ] **D6.4.** **`is_phi: true`** flag routes the field through the
         encryption layer (Section H) and the redaction layer (Section L).
   - **⚠ Watch:** field key uniqueness is enforced per `(lab_id, scope_kind,
     item_type_id, key)`, NOT globally. Two labs may have a `patient_id`
     field with different validation rules.
 
-- [x] **D7. `Sample` + `Project` + `SampleProject` + `CheckoutEvent`.**
-  - [x] **D7.1.** Schema with constraints:
+- [ ] **D7. `Sample` + `Project` + `SampleProject` + `CheckoutEvent`.**
+  - [ ] **D7.1.** Schema with constraints:
     - `unique (box_id, position_label) WHERE status IN ('active',
       'checked_out')` — partial unique index, the core no-double-booking
       invariant.
     - `ContainerType.size_class ∈ Position.accepts` enforced in the
       placement RPC and in a DB trigger (Postgres) / app guard (SQLite).
-  - [x] **D7.2.** Lifecycle state machine: `active → checked_out → active`,
+  - [ ] **D7.2.** Lifecycle state machine: `active → checked_out → active`,
         `active → depleted`, `* → tombstoned` (soft-delete), `tombstoned →
         hard-deleted` only by `SystemAdmin` with `sample.delete_hard`.
-  - [x] **D7.3.** Volume/mass tracking optional per item type. Each
+  - [ ] **D7.3.** Volume/mass tracking optional per item type. Each
         `CheckoutEvent` may carry a `volume_delta`; reaching zero
         auto-marks `depleted`.
-  - [x] **D7.4.** Parent–child lineage:
+  - [ ] **D7.4.** Parent–child lineage:
     - Child is independent — depleting parent does NOT deplete children;
       depleting child does NOT affect parent.
     - Lineage is preserved across soft-delete; UI shows the "parent: X
       (depleted)" hint.
-  - [x] **D7.5.** Move atomicity: `move(sample_id, dst_box, dst_pos)` is
+  - [ ] **D7.5.** Move atomicity: `move(sample_id, dst_box, dst_pos)` is
         ONE transaction. Property-test: 50 threads moving the same
         sample concurrently — exactly one succeeds.
   - **⚠ Watch:** PHI-tagged custom fields go in `phi_fields_enc_json`,
@@ -425,7 +436,7 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     table. The split exists so an unauthorized read still returns the
     non-PHI fields.
 
-- [x] **D8. `ShareRequest`** (cross-lab sharing).
+- [ ] **D8. `ShareRequest`** (cross-lab sharing).
   - State machine: `pending → approved | rejected | revoked`. Approval
     requires three signatures (source lab admin + target lab admin +
     system admin). All transitions audited.
@@ -434,23 +445,52 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     must compute "visible labs" as `{home_lab} ∪ {labs sharing TO me}`
     and apply this both in the app guard AND in the Postgres RLS policy.
 
+- [ ] **D9. `Session` entity & device tracking.** PRD §7.1 requires
+      server-side opaque sessions but no schema task currently exists.
+  - [ ] **D9.1.** Schema: `(id, user_id, token_hash, created_at,
+        last_seen_at, ip_inet, user_agent, revoked_at)`. Token stored
+        as Argon2id hash; only the prefix is plaintext for lookup.
+  - [ ] **D9.2.** RPCs: `list_my_sessions`, `revoke_session(id)`,
+        `revoke_all_sessions` ("log me out everywhere"). All audited.
+  - [ ] **D9.3.** Auto-expire idle sessions (configurable; default 12 h
+        idle / 7 d absolute). Last-seen update is rate-limited to once
+        per minute to avoid write amplification.
+  - **⚠ Watch:** revoking a session must take effect within one
+    request — caches keyed on session id must consult the revocation
+    flag, not just TTL.
+
+- [ ] **D10. `Lab.is_phi_enabled` toggle workflow.** PRD §4.1 names
+      the field but no task covers **enabling PHI mode on a lab that
+      already has samples**.
+  - [ ] **D10.1.** RPC `lab.enable_phi`: validate that no PHI-tagged
+        custom-field column already contains data (legacy plaintext);
+        if it does, refuse with a structured migration plan.
+  - [ ] **D10.2.** On enable, flip the flag, start enforcing PHI
+        redaction in logs, and lazily provision per-record DEKs on
+        first PHI write. Disabling PHI is **not supported** without a
+        SystemAdmin escape hatch (audit-loud).
+  - [ ] **D10.3.** Double audit row: one `lab.config_changed`, one
+        `phi.mode_enabled` with the SystemAdmin actor.
+  - **⚠ Watch:** SystemAdmin-only RPC. Document in the operator
+    handbook that disabling PHI is destructive to compliance posture.
+
 ---
 
 ## Section E — AuthN / AuthZ / Audit (M2)
 
-- [x] **E1. `IAuthProvider` interface** (`src/auth/IAuthProvider.h`) and
+- [ ] **E1. `IAuthProvider` interface** (`src/auth/IAuthProvider.h`) and
       session model. Sessions are server-side, opaque token in an
       `HttpOnly; Secure; SameSite=Strict` cookie for browser clients;
       Bearer for API clients.
 
-- [x] **E2. `LocalAuthProvider`.** Argon2id (params: 64 MiB, 3 iterations,
+- [ ] **E2. `LocalAuthProvider`.** Argon2id (params: 64 MiB, 3 iterations,
       4 parallelism — review against current OWASP guidance before 1.0).
       Mandatory TOTP for `LabAdmin` and `SystemAdmin`.
-  - [x] **E2.1.** Password reset flow with single-use, 30-min, hashed tokens.
-  - [x] **E2.2.** Account lockout: exponential backoff after 5 failures,
+  - [ ] **E2.1.** Password reset flow with single-use, 30-min, hashed tokens.
+  - [ ] **E2.2.** Account lockout: exponential backoff after 5 failures,
         capped at 1 hour. Logged to audit.
 
-- [x] **E3. RBAC middleware** (`src/rpc/auth_middleware.cc`).
+- [ ] **E3. RBAC middleware** (`src/rpc/auth_middleware.cc`).
   Every RPC declares its required permission via a static annotation.
   Middleware:
   1. Validates session/token.
@@ -463,49 +503,59 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     `(rpc, required_perm)` pairs. CI test asserts no RPC reaches the
     handler without going through the middleware.
 
-- [x] **E4. API tokens.** Per-user, per-scope, expiring (default 30 d).
+- [ ] **E4. API tokens.** Per-user, per-scope, expiring (default 30 d).
       Stored as Argon2id hashes; plaintext shown once at creation. Token
       prefix is plaintext for identification (`fmgr_pat_<uuid>_<secret>`).
       Per-token rate limit configurable per role.
 
-- [x] **E5. Audit log** (`src/audit/`).
-  - [x] **E5.1.** `audit_event` schema with `prev_hash`, `this_hash`.
+- [ ] **E5. Audit log** (`src/audit/`).
+  - [ ] **E5.1.** `audit_event` schema with `prev_hash`, `this_hash`.
         Insert is the only allowed write; no UPDATE, no DELETE, enforced
         with a DB trigger.
-  - [x] **E5.2.** Canonical-JSON serializer (RFC 8785 / JCS) for
+  - [ ] **E5.2.** Canonical-JSON serializer (RFC 8785 / JCS) for
         `before_json`/`after_json` so hashes are reproducible.
-  - [x] **E5.3.** Hash-chain verifier CLI: `freezerctl audit verify`
+  - [ ] **E5.3.** Hash-chain verifier CLI: `freezerctl audit verify`
         walks the chain and reports the first divergence.
-  - [x] **E5.4.** Nightly checkpoint job: HMAC-SHA-256 the latest hash
+  - [ ] **E5.4.** Nightly checkpoint job: HMAC-SHA-256 the latest hash
         with a key sourced from `IKmsProvider` (Section H), persist the
         checkpoint to a separate `audit_checkpoint` table.
-  - [x] **E5.5.** PHI-read audit kind: a distinct event when a user reads
+  - [ ] **E5.5.** PHI-read audit kind: a distinct event when a user reads
         a PHI-tagged field; includes the field key but NOT the value.
   - **⚠ Watch:** audit append happens in the same transaction as the
     mutating write. Conformance test C3.5 must pass for every backend.
 
-- [x] **E6. OIDC, LDAP, mTLS providers** (M7 polish, but interface in M2):
+- [ ] **E6. OIDC, LDAP, mTLS providers** (M7 polish, but interface in M2):
       stub implementations that throw `NotImplemented` so production
       compiles; real impls land in M7. Document config schema now so
       ops docs aren't churned later.
+
+- [ ] **E7. Audit browse / query RPC + UI.** Paginated query by
+      `(actor_user_id, entity_kind, entity_id, time_range, action,
+      lab_id)`. Read access requires `audit.read`; CSV export requires
+      `audit.export` and emits a chain-of-custody-grade signed file
+      (PRD §13). Streaming live audit feed for admins (per F7).
+  - **⚠ Watch:** each audit-browse query is itself audited (meta-audit)
+    so retroactive forensics is possible. Avoid logging the *value* of
+    PHI-read audit rows in the browse response unless the caller also
+    holds `phi.read`.
 
 ---
 
 ## Section F — RPC layer & client transports (M3)
 
-- [x] **F1. `.proto` definitions** under `proto/`. One file per service
+- [ ] **F1. `.proto` definitions** under `proto/`. One file per service
       (`auth.proto`, `lab.proto`, `freezer.proto`, `sample.proto`,
       `audit.proto`, etc.). Versioned `package fmgr.v1;`. **Source of
       truth — never edit generated code.**
 
-- [x] **F2. gRPC server** in `src/rpc/`. Each RPC handler:
+- [ ] **F2. gRPC server** in `src/rpc/`. Each RPC handler:
   1. Goes through E3 middleware.
   2. Opens a transaction via `IStorageBackend`.
   3. Performs work via the typed repos.
   4. Writes audit row in the same transaction.
   5. Commits.
 
-- [x] **F3. REST/JSON gateway**. For each gRPC method, expose
+- [ ] **F3. REST/JSON gateway**. For each gRPC method, expose
       `/api/v1/<resource>/<verb>` with documented JSON shape. Streaming
       RPCs are bridged to Server-Sent Events (or WebSocket for
       bidirectional like bulk-import progress).
@@ -513,48 +563,64 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     client speak. Any breaking change to a `.proto` must increment the
     `v1` package label.
 
-- [x] **F4. TLS configuration**. TLS 1.3 only; HSTS; modern ciphers.
+- [ ] **F4. TLS configuration**. TLS 1.3 only; HSTS; modern ciphers.
       Self-signed cert for dev, documented refusal-to-start without a
       cert in production mode (`FMGR_ENV=production`).
 
-- [x] **F5. Health/metrics endpoints**. `/health` (liveness + readiness),
+- [ ] **F5. Health/metrics endpoints**. `/health` (liveness + readiness),
       `/metrics` (Prometheus). Both unauthenticated; `/metrics` SHOULD
       be bound to localhost or behind reverse-proxy ACL by default.
 
-- [x] **F6. Qt 6 desktop client** (`src/qt/`). gRPC client.
-  - [x] **F6.1.** Login screen + TOTP prompt + session keychain storage.
-  - [x] **F6.2.** Sample browser (full-text + structured + custom-field
+- [ ] **F6. Qt 6 desktop client** (`src/qt/`). gRPC client.
+  - [ ] **F6.1.** Login screen + TOTP prompt + session keychain storage.
+  - [ ] **F6.2.** Sample browser (full-text + structured + custom-field
         filter), virtualized table for 100k+ rows.
-  - [x] **F6.3.** Box view: drag-and-drop placement; rejection from
+  - [ ] **F6.3.** Box view: drag-and-drop placement; rejection from
         server surfaces as a clear "size mismatch" toast.
-  - [x] **F6.4.** Bulk check-in/check-out with barcode-scanner focus
+  - [ ] **F6.4.** Bulk check-in/check-out with barcode-scanner focus
         mode (the focused field accepts HID keyboard input and
         auto-submits on Enter or after a configurable inactivity gap).
-  - [x] **F6.5.** CSV import wizard (dry-run first; show validation
+  - [ ] **F6.5.** CSV import wizard (dry-run first; show validation
         report; confirm; import).
-  - [x] **F6.6.** CSV export from any list view.
+  - [ ] **F6.6.** CSV export from any list view.
 
-- [x] **F7. Live updates over streaming RPCs.** Push sample-list deltas
+- [ ] **F7. Live updates over streaming RPCs.** Push sample-list deltas
       within an open freezer view; push admin audit feed in real time;
       push bulk-import progress.
+
+- [ ] **F8. Cursor-based pagination spec.** Every list RPC uses opaque
+      cursors, never `offset`. Document the semantic guarantee
+      ("stable in face of new inserts; consistent with the snapshot
+      timestamp encoded in the cursor"). Cursors are signed so callers
+      cannot forge them. Default page size 50; max 500.
+  - **⚠ Watch:** custom-field sort orders complicate cursors —
+    the cursor must encode `(sort_key_value, primary_key)` to stay
+    deterministic across ties.
+
+- [ ] **F9. Bulk-operation RPCs.** `bulk_move`, `bulk_check_out`,
+      `bulk_check_in`, `bulk_tombstone`. Streaming progress: per-row
+      result so UIs can render partial-success reports. Default mode
+      is "best-effort per row" (each row in its own transaction);
+      caller may opt into "all-or-nothing" (single transaction, max
+      1000 rows, hard 30 s timeout). Idempotency-key required.
 
 ---
 
 ## Section G — Web UI (M4)
 
-- [x] **G1. SPA scaffold** in `src/web/` with Vite + React + TypeScript.
+- [ ] **G1. SPA scaffold** in `src/web/` with Vite + React + TypeScript.
       Component lib: TanStack Table for grids; defer styling library
       decision until G2 reveals real needs.
 
-- [x] **G2. Auth flows**: login, OIDC redirect, TOTP, password reset,
+- [ ] **G2. Auth flows**: login, OIDC redirect, TOTP, password reset,
       session expiry handling. Tokens never stored in `localStorage`;
       use `HttpOnly` cookie set by the REST gateway.
 
-- [x] **G3. Feature parity with Qt** for the core flows in F6, except
+- [ ] **G3. Feature parity with Qt** for the core flows in F6, except
       USB scanner (browser limitation; fall back to manual paste with
       a focused input).
 
-- [x] **G4. Dashboards**: freezer fill heatmap, sample-age histogram,
+- [ ] **G4. Dashboards**: freezer fill heatmap, sample-age histogram,
       check-out activity. Server returns aggregated data via dedicated
       RPCs — **do NOT** ship raw row dumps to the client for aggregation.
 
@@ -562,18 +628,18 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 
 ## Section H — Cryptography, PHI mode, KMS, Backups (M5)
 
-- [x] **H1. `IKmsProvider` interface** (`src/kms/IKmsProvider.h`):
+- [ ] **H1. `IKmsProvider` interface** (`src/kms/IKmsProvider.h`):
       `wrap_dek(dek) → wrapped`, `unwrap_dek(wrapped) → dek`.
 
-- [x] **H2. KMS implementations**:
-  - [x] **H2.1.** `EnvVarKms` — for tests/dev only. Refuses to load
+- [ ] **H2. KMS implementations**:
+  - [ ] **H2.1.** `EnvVarKms` — for tests/dev only. Refuses to load
         if `FMGR_ENV=production`.
-  - [x] **H2.2.** `OsKeyringKms` — systemd-creds backed; default for
+  - [ ] **H2.2.** `OsKeyringKms` — systemd-creds backed; default for
         production single-server deployments.
-  - [x] **H2.3.** `VaultKms` — HashiCorp Vault transit engine;
+  - [ ] **H2.3.** `VaultKms` — HashiCorp Vault transit engine;
         configurable mount path and key name.
 
-- [x] **H3. Field-level PHI encryption.** Per-record DEK, generated at
+- [ ] **H3. Field-level PHI encryption.** Per-record DEK, generated at
       first-write, stored wrapped in the row. AEAD: libsodium
       `crypto_secretbox` (XChaCha20-Poly1305). Associated data binds
       ciphertext to `(lab_id, sample_id, field_key)` so cut-and-paste
@@ -582,42 +648,65 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     decryption; do not decrypt and then check perm — this leaks the
     plaintext into the process memory.
 
-- [x] **H4. PHI redaction in logs** (`src/core/redact.h`). Type-level:
+- [ ] **H4. PHI redaction in logs** (`src/core/redact.h`). Type-level:
       a `PhiString` newtype that won't compile into `spdlog` formatters
       without an explicit `redacted()` call. Every PHI field flows
       through `PhiString`. CI lint forbids `fmt::format` of `PhiString`.
 
-- [x] **H5. Backup runner.**
-  - [x] **H5.1.** Postgres path: `pg_basebackup` baseline + WAL
+- [ ] **H5. Backup runner.**
+  - [ ] **H5.1.** Postgres path: `pg_basebackup` baseline + WAL
         archiving for PITR. Encrypt with backup key (separate from
         master key) using libsodium streaming API.
-  - [x] **H5.2.** SQLite path: `sqlite3_backup` hot copy + nightly
+  - [ ] **H5.2.** SQLite path: `sqlite3_backup` hot copy + nightly
         rotation. Same encryption.
-  - [x] **H5.3.** `freezerctl backup run | list | restore` CLI.
-  - [x] **H5.4.** Weekly restore-drill job: pick a random recent
+  - [ ] **H5.3.** `freezerctl backup run | list | restore` CLI.
+  - [ ] **H5.4.** Weekly restore-drill job: pick a random recent
         backup, restore into a temp DB, run integrity checks, audit
         the result. Failures page (or email) the system admin.
   - **⚠ Watch:** backup key MUST live separately from the master KEK.
     Document this in the operator runbook and assert it at server
     startup if both are configured to the same source.
 
+- [ ] **H6. Key rotation procedures.** Three keys rotate independently:
+      master KEK, backup key, audit-checkpoint HMAC key.
+  - [ ] **H6.1.** Rotate master KEK: re-wrap every existing
+        per-record DEK with the new KEK; old wrapped DEKs remain
+        decryptable for a configurable grace window (default 30 d) so
+        a botched rotation can be reverted. Emit a distinct
+        `kms.master_rotated` audit event.
+  - [ ] **H6.2.** Rotate backup key: future backups encrypt under the
+        new key; restore tooling still accepts old keys for the
+        retention window. Document operator-side coordination.
+  - [ ] **H6.3.** Rotate audit-checkpoint HMAC key: persist all keys
+        ever used (`audit_checkpoint_key_history`) so verifier can
+        check old checkpoints; emit `audit.checkpoint_key_rotated`.
+  - [ ] **H6.4.** `freezerctl key rotate {master|backup|checkpoint}`
+        CLI; runs as a single auditable operation with a confirmation
+        prompt that quotes the operator's name and the key name.
+
+- [ ] **H7. Master-key vs backup-key sameness check.** Refuse to
+      start if `IKmsProvider` resolves both keys to the same KMS
+      path / env var / Vault key. PRD §8 + §14 require strict
+      separation. Test: configure the same key for both and assert
+      the server exits with a non-zero code and a clear message.
+
 ---
 
 ## Section I — Public API & external client (M6)
 
-- [x] **I1. `freezerctl-py`** (`src/py/`): thin Python wrapper over the
+- [ ] **I1. `freezerctl-py`** (`src/py/`): thin Python wrapper over the
       REST gateway; bundles a Jupyter quick-start notebook with example
       plots (fill histogram, sample-age distribution, check-out volume).
       Auth via API token from environment variable.
 
-- [x] **I2. Token-management UI** (Qt + Web): create / list / revoke
+- [ ] **I2. Token-management UI** (Qt + Web): create / list / revoke
       tokens; show plaintext exactly once at creation.
 
-- [x] **I3. Cross-lab share workflow UI**. Lab admin creates a share
+- [ ] **I3. Cross-lab share workflow UI**. Lab admin creates a share
       request → target lab admin reviews and approves/rejects → system
       admin co-signs → samples become read-visible to target lab.
 
-- [x] **I4. API rate limiting**. Configurable per role (default
+- [ ] **I4. API rate limiting**. Configurable per role (default
       `Member` 60 req/min, `LabAdmin` 300 req/min, `ApiClient`
       inherits from owning user). `429 Too Many Requests` with
       `Retry-After` header.
@@ -626,11 +715,11 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 
 ## Section J — Hardware abstraction (low priority, anytime ≥ M3)
 
-- [x] **J1. Interfaces in `src/hw/`**: `IBarcodeScanner`,
+- [ ] **J1. Interfaces in `src/hw/`**: `IBarcodeScanner`,
       `ILabelPrinter`, `IRfidReader`, `ITemperatureSensor`. Reference
       impl: `HidKeyboardScanner` only.
 
-- [x] **J2. Plugin loader**: at server start, dlopen any `.so` files in
+- [ ] **J2. Plugin loader**: at server start, dlopen any `.so` files in
       `/etc/freezerd/plugins/` and register hardware adapters they
       expose. Document an example skeleton in `doc/plugins.md`.
 
@@ -638,65 +727,215 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 
 ## Section K — Packaging & release (M7)
 
-- [x] **K1. Debian/Ubuntu `.deb` package** with systemd unit
+- [ ] **K1. Debian/Ubuntu `.deb` package** with systemd unit
       (`freezerd.service`), default config in `/etc/freezerd/`,
       logrotate config, dedicated `freezerd` user.
-- [x] **K2. RPM package** (Fedora/RHEL/Rocky).
-- [x] **K3. Official Docker image** (Debian-slim base, multi-stage,
+- [ ] **K2. RPM package** (Fedora/RHEL/Rocky).
+- [ ] **K3. Official Docker image** (Debian-slim base, multi-stage,
       runs as non-root). Publish to GHCR.
-- [x] **K4. Reproducible-build verification** in CI: build twice, diff
+- [ ] **K4. Reproducible-build verification** in CI: build twice, diff
       the binary, fail on differences.
-- [x] **K5. First-run wizard** (CLI + web): interactively create system
+- [ ] **K5. First-run wizard** (CLI + web): interactively create system
       admin, first lab, master key (or wire to KMS), TLS cert.
-- [x] **K6. Operator handbook** (`doc/operations.md`): install, upgrade,
+- [ ] **K6. Operator handbook** (`doc/operations.md`): install, upgrade,
       backup/restore drill, key rotation, incident response.
-- [x] **K7. External security review** before tagging 1.0. Scope: auth,
+- [ ] **K7. External security review** before tagging 1.0. Scope: auth,
       RBAC, crypto, audit chain, RLS bypass attempts.
 
 ---
 
 ## Section L — Cross-cutting infrastructure (M0 + ongoing)
 
-- [x] **L1. Structured logging** (spdlog → JSON sink to stdout).
+- [ ] **L1. Structured logging** (spdlog → JSON sink to stdout).
       Required fields on every record: `ts`, `level`, `request_id`,
       `actor_user_id` (nullable), `lab_id` (nullable), `event`. PHI
       goes through `redact()` (H4).
 
-- [x] **L2. Request-id propagation**. Generate at the RPC entry; carry
+- [ ] **L2. Request-id propagation**. Generate at the RPC entry; carry
       through to the audit row and every log line.
 
-- [x] **L3. OpenTelemetry tracing** behind an env-var flag
+- [ ] **L3. OpenTelemetry tracing** behind an env-var flag
       (`FMGR_OTLP_ENDPOINT`). Disabled by default.
 
-- [x] **L4. Configuration loader**. TOML at `/etc/freezerd/freezerd.toml`,
+- [ ] **L4. Configuration loader**. TOML at `/etc/freezerd/freezerd.toml`,
       env-var overrides, `--config` CLI flag. Validate at startup; fail
       fast with clear errors.
 
-- [x] **L5. Fuzz harnesses** (libFuzzer). Targets: RPC parsers
+- [ ] **L5. Fuzz harnesses** (libFuzzer). Targets: RPC parsers
       (per-message), custom-field validator, CSV importer, audit
       canonical-JSON serializer. Run nightly in CI for ≥ 30 min each.
 
-- [x] **L6. Test coverage gates** (advisory M0–M2; required ≥ 80 % from M3).
+- [ ] **L6. Test coverage gates** (advisory M0–M2; required ≥ 80 % from M3).
 
-- [x] **L7. End-to-end smoke test** (`tests/e2e/`): start server in a
+- [ ] **L7. End-to-end smoke test** (`tests/e2e/`): start server in a
       container, run a Python script via `freezerctl-py` that creates a
       lab, freezer, box, samples, performs check-out, exports CSV,
       verifies audit chain, takes a backup, wipes the DB, restores, and
       confirms identical state. Required green before any release tag.
 
+- [ ] **L8. Performance benchmark suite** (`tests/benchmark/`). Google
+      Benchmark targets for hot paths: sample placement, list-with-filter,
+      audit append, canonical-JSON serializer, custom-field validator.
+      Track p50/p95/p99 in CI; alert on >20% regression vs. the prior
+      release tag. **Distinct from concurrency stress (M-section)** —
+      benchmarks measure per-op cost, not invariant safety.
+
+- [ ] **L9. `freezerctl` CLI conventions** (`doc/cli.md`). Spec:
+      command tree (`freezerctl <noun> <verb>` — e.g. `sample list`,
+      `audit verify`, `key rotate`); `--json` machine-readable output
+      mode; exit-code policy (`0` ok, `1` user error, `2` system
+      error, `3` auth, `4` conflict); `--quiet`/`--verbose`; bash +
+      zsh completion scripts. CI lint rejects new commands without
+      a help string and an exit-code declaration.
+
+- [ ] **L10. Full-text search backend.**
+  - [ ] **L10.1.** Postgres impl: `tsvector` columns + GIN indexes on
+        sample name, label, and indexable text custom-fields.
+  - [ ] **L10.2.** SQLite impl: FTS5 virtual table mirroring the same
+        surface; rebuilt on relevant inserts via triggers.
+  - [ ] **L10.3.** Query DSL: add `.match("query")` predicate behind a
+        `Capabilities.full_text_search` flag; backends without FTS
+        return `UnsupportedOperation`.
+  - **⚠ Watch:** PHI-tagged custom-fields must NEVER be indexed — the
+        FTS index becomes a plaintext leak vector. Validator must
+        reject `is_phi=true AND indexed=true`.
+
+---
+
+## Section N — Documentation completeness (M0 + ongoing)
+
+> The PRD repeatedly says things are "documented separately" or "in
+> deployment docs" without naming a task to write them. This section
+> closes that gap.
+
+- [ ] **N1. Lab-member onboarding guide** (`doc/users/quickstart.md`):
+      log in, find a sample, check it out, scan a barcode, run and
+      save a search, export CSV. Screenshots from the Qt and Web
+      clients side-by-side.
+
+- [ ] **N2. Auto-generated REST API reference.** Generate from
+      `.proto` (F1) + REST gateway (F3) annotations into `doc/api/`.
+      Published with every release tag. CI fails if `.proto` files
+      change without regenerating the doc.
+
+- [ ] **N3. Schema reference doc** (`doc/schema/`). Auto-generated
+      from migration SQL into a per-table reference, including a
+      Mermaid ER diagram refreshed on each migration. Re-run as a
+      pre-commit hook for migration authors.
+
+- [ ] **N4. Architecture Decision Records (ADRs)** at `doc/adr/` with
+      a numbered template. **Mandatory ADR** for any new pluggable
+      interface (`IStorageBackend`, `IAuthProvider`, `IKmsProvider`,
+      `IEmailSender`, `I*Hardware`) or any cross-module protocol
+      change. Code review checklist references the ADR list.
+
+- [ ] **N5. Custom-field guide for lab admins**
+      (`doc/users/custom-fields.md`): how inheritance through `ItemType`
+      works, how to mark a field PHI, how to add validation, what
+      happens when a constraint is tightened on existing data.
+
+- [ ] **N6. Trademark & branding policy** (`TRADEMARK.md`). PRD §18
+      reserves the project name and logo. Document the policy:
+      reuse for forks discouraged, "powered by FreezerManager"
+      attribution allowed, logo SVG license terms.
+
+---
+
+## Section O — Notifications & Email (M2 → M5)
+
+> Password reset (E2.1), share approvals (D8/I3), account lockout
+> (E2.2), backup failure (H5.4), and restore-drill failure (K6) all
+> need email but no transport abstraction is defined. This section
+> adds it.
+
+- [ ] **O1. `IEmailSender` interface** (`src/notify/IEmailSender.h`):
+      `send(EmailMessage)` returning a delivery handle. Implementations:
+  - [ ] **O1.1.** `SmtpSender` — production; STARTTLS or implicit TLS;
+        retries with exponential backoff; bounce handling deferred.
+  - [ ] **O1.2.** `LogSender` — dev only; writes the rendered email
+        to `/tmp/fmgr-mail/` and stdout. Refuses to load if
+        `FMGR_ENV=production`.
+  - [ ] **O1.3.** `MockSender` — tests; captures sent messages in an
+        in-memory list for assertions.
+
+- [ ] **O2. Email template engine** (`templates/email/`). Mustache or
+      fmt-based. Templates: `password_reset`, `share_request`,
+      `share_approved`, `share_rejected`, `account_locked`,
+      `backup_failed`, `restore_drill_failed`, `phi_mode_enabled`.
+  - **⚠ Watch:** PHI must NEVER appear in template variables. Use
+    `redact()` at the binding site; lint rule rejects passing a
+    `PhiString` (H4) to the template renderer.
+
+- [ ] **O3. In-app notification entity.** Schema:
+      `(id, lab_id, recipient_user_id, kind, payload_json,
+      created_at, read_at)`. Server-streamed RPC for real-time
+      delivery to Qt + Web. Generated alongside the email send so the
+      user sees the alert even with broken SMTP.
+
+- [ ] **O4. Optional webhook delivery** (`IWebhookSender`). Lab
+      admins configure HTTPS endpoints to receive `share_approved`,
+      `audit_digest`, or `backup_status` events. Each delivery
+      signed `HMAC-SHA-256(per_webhook_secret, body)` in an
+      `X-Fmgr-Signature` header. Retry with backoff; dead-letter
+      after 24 h.
+
+- [ ] **O5. Email transport configuration.** TOML section under
+      `[notify.email]`; SMTP credentials sourced via
+      `IKmsProvider` (never plaintext in config). Refuse to start
+      if `FMGR_ENV=production` and the configured sender is
+      `LogSender` or has no credentials.
+
+---
+
+## Section P — Internationalization & Accessibility (M3 → M7)
+
+> PRD §1.2 commits to "UTF-8 everywhere; tr()/i18n() wrapped strings;
+> English-only at v1." Without a scaffolding task, v1 will ship
+> un-i18n-ready and retrofitting is expensive.
+
+- [ ] **P1. UTF-8 audit at the data layer.** Migration runners assert
+      SQLite `PRAGMA encoding='UTF-8'` and Postgres `LC_COLLATE` /
+      `LC_CTYPE` are UTF-8 locales. Refuse to migrate against a
+      non-UTF-8 DB with a clear error. Test: run against a
+      `LATIN1`-encoded Postgres and assert refusal.
+
+- [ ] **P2. Qt i18n scaffolding.** Every user-facing string wrapped
+      in `tr()`. Integrate `lupdate` / `lrelease` into CMake; commit
+      `src/qt/locales/en_US.ts`. CI lint (custom clang-tidy or
+      regex check) forbids non-tr()-wrapped string literals in
+      widget constructors and `setText()` calls.
+
+- [ ] **P3. Web i18n scaffolding.** `react-i18next` integrated;
+      `src/web/locales/en.json` committed; ESLint rule
+      `i18next/no-literal-string` enabled. Translation keys follow
+      `feature.context.string-id` convention.
+
+- [ ] **P4. WCAG 2.1 AA targeting for Web UI.** Run `axe-core` as a
+      CI check on the SPA; require Lighthouse a11y score ≥ 90 on the
+      core flows (login, sample browser, box view, check-out).
+      Advisory until G3 lands; blocking after.
+
 ---
 
 ## Section M — 1.0 release gates (do not tag 1.0 until all green)
 
-- [x] All abstract backend tests pass on SQLite and Postgres.
-- [x] ASan + UBSan + TSan builds green.
-- [x] Concurrency stress: 50 simulated members, 10k placements, zero
+- [ ] All abstract backend tests pass on SQLite and Postgres.
+- [ ] ASan + UBSan + TSan builds green.
+- [ ] Concurrency stress: 50 simulated members, 10k placements, zero
       invariant violations.
-- [x] 24-hour audit-chain fuzz with random RPC interleavings + process
+- [ ] 24-hour audit-chain fuzz with random RPC interleavings + process
       restarts; verifier remains green.
-- [x] PHI-mode E2E test: encrypted PHI never appears in plaintext in
+- [ ] PHI-mode E2E test: encrypted PHI never appears in plaintext in
       logs, in backups (without backup key), or to users without
       `phi.read`.
-- [x] Backup → wipe → restore → all data + audit chain intact.
-- [x] External security reviewer sign-off (K7).
-- [x] Operator handbook (K6) published.
+- [ ] Backup → wipe → restore → all data + audit chain intact.
+- [ ] External security reviewer sign-off (K7).
+- [ ] Operator handbook (K6) published.
+- [ ] Email delivery: production SMTP path tested end-to-end with a
+      real third-party mailbox; bounces and TLS failures handled
+      without dropping critical security alerts.
+- [ ] Key rotation drill: rotate master KEK, decrypt a PHI sample
+      written before rotation; rotate backup key, restore from a
+      backup written before rotation.
+- [ ] i18n: every UI string extractable to a `.ts` / locale JSON
+      file; CI gate confirms no hardcoded English in UI source.
