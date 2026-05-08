@@ -1,6 +1,13 @@
 out/
 build/
+CMakeFiles/
+CMakeCache.txt
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
 CMakeUserPresets.json
 compile_commands.json
+.clangd/
 .cache/
 .conan/

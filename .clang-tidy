@@ -5,9 +5,11 @@ Checks: >
   modernize-*,
   performance-*,
   portability-*,
-  readability-*
+  readability-*,
+  -modernize-use-trailing-return-type,
+  -readability-magic-numbers
 WarningsAsErrors: '*'
-HeaderFilterRegex: '^(src|tests)/'
+HeaderFilterRegex: '(^|.*/)(src|tests)/'
 FormatStyle: file
 CheckOptions:
   - key: readability-identifier-naming.NamespaceCase

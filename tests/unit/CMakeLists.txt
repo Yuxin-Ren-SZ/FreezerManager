@@ -1,1 +1,12 @@
-# Unit tests.
+find_package(GTest CONFIG REQUIRED)
+
+add_executable(freezermanager_core_unit_tests core_value_types_test.cpp)
+target_link_libraries(
+  freezermanager_core_unit_tests
+  PRIVATE
+    FreezerManager::core
+    GTest::gtest_main
+)
+
+include(GoogleTest)
+gtest_discover_tests(freezermanager_core_unit_tests)
