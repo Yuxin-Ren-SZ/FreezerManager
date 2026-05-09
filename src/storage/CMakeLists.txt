@@ -20,6 +20,7 @@ target_link_libraries(
 add_library(
   freezermanager_storage_sqlite
   sqlite/IdentityRepositories.cc
+  sqlite/LayoutRepositories.cc
   sqlite/RoleRepositories.cc
   sqlite/SqliteBackend.cc
 )
