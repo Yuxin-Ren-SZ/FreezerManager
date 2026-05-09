@@ -2,6 +2,7 @@ find_package(GTest CONFIG REQUIRED)
 
 add_executable(
   freezermanager_core_unit_tests
+  box_types_test.cpp
   core_value_types_test.cpp
   freezer_types_test.cpp
   identity_types_test.cpp
@@ -26,6 +27,7 @@ target_link_libraries(
 add_executable(
   freezermanager_sqlite_storage_unit_tests
   sqlite_backend_test.cpp
+  sqlite_box_geometry_repository_test.cpp
   sqlite_identity_repository_test.cpp
   sqlite_layout_repository_test.cpp
   sqlite_role_repository_test.cpp

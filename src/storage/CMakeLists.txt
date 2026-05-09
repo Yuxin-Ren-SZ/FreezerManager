@@ -19,6 +19,7 @@ target_link_libraries(
 
 add_library(
   freezermanager_storage_sqlite
+  sqlite/BoxGeometryRepositories.cc
   sqlite/IdentityRepositories.cc
   sqlite/LayoutRepositories.cc
   sqlite/RoleRepositories.cc
