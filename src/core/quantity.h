@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Integer-based physical quantity types for volume and mass.
+// `raw_value_` stores the quantity in the declared unit with no implicit conversion,
+// avoiding floating-point precision loss in cumulative operations on small volumes
+// (e.g. repeated subtraction of 0.5 µL). Arithmetic across different units is
+// currently rejected at runtime; unit conversion will canonicalize both operands
+// once the full unit set is defined (see TODOs below).
 #ifndef FMGR_CORE_QUANTITY_H
 #define FMGR_CORE_QUANTITY_H
 
@@ -13,8 +19,10 @@
 
 namespace fmgr::core {
 
-  enum class VolumeUnit : std::uint8_t { Milliliter, Microliter };
-  enum class MassUnit : std::uint8_t { Milligram, Gram };
+  enum class VolumeUnit : std::uint8_t { Milliliter, Microliter }; // TODO Add more volume units
+  enum class MassUnit : std::uint8_t { Milligram, Gram };          // TODO Add more mass units
+
+  // TODO Add conversion between different units, e.g. 1 mL = 1000 µL, 1 g = 1000 mg
 
   [[nodiscard]] inline std::string_view to_string(VolumeUnit unit) {
     switch (unit) {
@@ -60,8 +68,9 @@ namespace fmgr::core {
   public:
     constexpr Volume() = default;
 
-    [[nodiscard]] static constexpr Volume from_raw(std::int64_t raw_value,
-                                                          VolumeUnit unit) {
+    // Sole construction path. Forces callers to be explicit about the unit so
+    // that quantities are never created with an ambiguous default unit.
+    [[nodiscard]] static constexpr Volume from_raw(std::int64_t raw_value, VolumeUnit unit) {
       return {raw_value, unit};
     }
 
@@ -103,6 +112,8 @@ namespace fmgr::core {
     constexpr Volume(std::int64_t raw_value, VolumeUnit unit)
         : raw_value_(raw_value), unit_(unit) {}
 
+    // Throws until cross-unit arithmetic is implemented. At that point this
+    // helper will canonicalize both operands to a common unit before returning.
     static void assert_same_unit(const Volume& left, const Volume& right) {
       if (left.unit_ != right.unit_) {
         throw std::invalid_argument("volume unit mismatch");
@@ -117,8 +128,8 @@ namespace fmgr::core {
   public:
     constexpr Mass() = default;
 
-    [[nodiscard]] static constexpr Mass from_raw(std::int64_t raw_value,
-                                                        MassUnit unit) {
+    // Sole construction path. See `Volume::from_raw` for rationale.
+    [[nodiscard]] static constexpr Mass from_raw(std::int64_t raw_value, MassUnit unit) {
       return {raw_value, unit};
     }
 
@@ -157,9 +168,9 @@ namespace fmgr::core {
     }
 
   private:
-    constexpr Mass(std::int64_t raw_value, MassUnit unit)
-        : raw_value_(raw_value), unit_(unit) {}
+    constexpr Mass(std::int64_t raw_value, MassUnit unit) : raw_value_(raw_value), unit_(unit) {}
 
+    // See `Volume::assert_same_unit` for rationale.
     static void assert_same_unit(const Mass& left, const Mass& right) {
       if (left.unit_ != right.unit_) {
         throw std::invalid_argument("mass unit mismatch");
@@ -179,7 +190,7 @@ namespace fmgr::core {
 
   inline void from_json(const nlohmann::json& json, Volume& volume) {
     volume = Volume::from_raw(json.at("value").get<std::int64_t>(),
-                                     parse_volume_unit(json.at("unit").get<std::string>()));
+                              parse_volume_unit(json.at("unit").get<std::string>()));
   }
 
   inline void to_json(nlohmann::json& json, const Mass& mass) {
@@ -191,7 +202,7 @@ namespace fmgr::core {
 
   inline void from_json(const nlohmann::json& json, Mass& mass) {
     mass = Mass::from_raw(json.at("value").get<std::int64_t>(),
-                                 parse_mass_unit(json.at("unit").get<std::string>()));
+                          parse_mass_unit(json.at("unit").get<std::string>()));
   }
 
 } // namespace fmgr::core

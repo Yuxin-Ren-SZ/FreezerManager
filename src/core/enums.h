@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Domain enumerations shared across the core model.
+// All five enums serialize as snake_case strings (not integers) so audit log
+// entries remain human-readable and migrations can add values without renumbering.
 #ifndef FMGR_CORE_ENUMS_H
 #define FMGR_CORE_ENUMS_H
 
@@ -12,10 +15,38 @@
 
 namespace fmgr::core {
 
-  enum class SampleStatus : std::uint8_t { Active, CheckedOut, Depleted, Destroyed, Tombstoned };
-  enum class CheckoutAction : std::uint8_t { CheckedOut, CheckedIn, Destroyed };
+  enum class SampleStatus : std::uint8_t {
+    Active,
+    CheckedOut,
+    Depleted,
+    Destroyed,
+    // Soft-delete sentinel. The DB row is retained for audit continuity but
+    // hidden from all non-admin queries. Distinct from `Destroyed` (physically
+    // consumed or discarded from the freezer).
+    Tombstoned,
+  };
+
+  enum class CheckoutAction : std::uint8_t {
+    CheckedOut,
+    CheckedIn,
+    // Terminates the sample lifecycle: transitions status to `Destroyed` and
+    // consumes any remaining quantity. Irreversible.
+    Destroyed,
+  };
+
   enum class RoleKind : std::uint8_t { SystemAdmin, LabAdmin, Member, ReadOnly, ApiClient };
-  enum class ContainerKind : std::uint8_t { Compartment, Shelf, Rack, Drawer, Custom };
+
+  enum class ContainerKind : std::uint8_t {
+    Compartment,
+    Shelf,
+    Rack,
+    Drawer,
+    // Lab-defined shape with no structural constraints from the backend. Used
+    // for containers that do not map to a standard form factor (e.g. custom
+    // foam inserts, dewer drawers). This is the default for new containers.
+    Custom,
+  };
+
   enum class UserStatus : std::uint8_t { Active, Disabled };
 
   [[nodiscard]] inline std::string_view to_string(SampleStatus status) {

@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Core identity model: Lab (tenant), User (global identity), LabMembership (scoped grant).
+// A `User` exists once globally and may belong to many `Lab`s simultaneously; each
+// membership carries its own role and optional scope restrictions.
+// All three entities use soft-delete (`archived_at` / `revoked_at`) so that audit
+// history is never orphaned by a hard DELETE.
 #ifndef FMGR_CORE_IDENTITY_H
 #define FMGR_CORE_IDENTITY_H
 
@@ -18,6 +23,8 @@
 namespace fmgr::core {
   namespace detail {
 
+    // Serialize `std::nullopt` as JSON `null` rather than omitting the key entirely,
+    // so downstream consumers can rely on every documented key being present in the object.
     template <typename Value>
     [[nodiscard]] nlohmann::json optional_to_json(const std::optional<Value>& value) {
       if (!value.has_value()) {
@@ -36,6 +43,9 @@ namespace fmgr::core {
 
   } // namespace detail
 
+  // Composite primary key encoded as `"{user_uuid}:{lab_uuid}"` for use in
+  // audit log foreign-key columns and cross-entity references that need a
+  // single stable string identifier.
   struct LabMembershipId {
     UserId user_id;
     LabId lab_id;
@@ -101,7 +111,10 @@ namespace fmgr::core {
     std::string display_name;
     UserStatus status{UserStatus::Active};
     Timestamp created_at;
+    // JSON array of SSO/OAuth provider bindings, e.g. `[{"provider":"oidc","sub":"..."}]`.
+    // Empty array means password-only authentication.
     nlohmann::json auth_bindings = nlohmann::json::array();
+    // TOTP secret encrypted with the deployment KMS key. Never stored in plaintext.
     std::optional<std::string> totp_secret_enc;
     std::optional<LabId> default_lab_id;
 
@@ -123,10 +136,15 @@ namespace fmgr::core {
 
     UserId user_id;
     LabId lab_id;
+    // Null during the invite-pending phase before the user accepts and a role is assigned.
     std::optional<RoleId> role_id;
+    // Restricts the membership's effective permissions to a subset of resources.
+    // Schema is validated by `validate_scope_filter()` in role.h.
     nlohmann::json scope_filters_json = nlohmann::json::object();
     std::optional<UserId> invited_by;
     Timestamp joined_at;
+    // Soft-delete timestamp. Non-null = inactive membership. Rows are never
+    // hard-deleted so that the audit log retains a complete access history.
     std::optional<Timestamp> revoked_at;
 
     [[nodiscard]] LabMembershipId id() const {

@@ -1,5 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// RFC 4122 UUID value type — parse and format only, no generation.
+// Callers obtain UUID strings from the OS (e.g. libuuid, /proc/sys/kernel/random/uuid)
+// or from the database DEFAULT and pass them here as strings.
+// `to_string()` always emits lowercase hex; `parse()` accepts both cases.
+// Stored internally as 16 raw bytes to avoid repeated string allocation at rest.
 #ifndef FMGR_CORE_UUID_H
 #define FMGR_CORE_UUID_H
 

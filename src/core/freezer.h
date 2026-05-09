@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Physical appliance model and recursive interior layout.
+// `Freezer` represents the physical unit (location, temperature target). Its interior
+// is modeled as a tree of `StorageContainer` nodes rooted at `layout_root_id`; the
+// root node is created atomically with the `Freezer` row and archived with it.
+// This two-layer design keeps the appliance record stable while allowing arbitrary
+// interior reorganization without touching the `Freezer` row itself.
 #ifndef FMGR_CORE_FREEZER_H
 #define FMGR_CORE_FREEZER_H
 
@@ -16,6 +22,8 @@
 namespace fmgr::core {
   namespace detail {
 
+    // Duplicates `detail::optional_*` from identity.h to avoid pulling the entire
+    // identity header into compilation units that only need the freezer layout types.
     template <typename Value>
     [[nodiscard]] inline nlohmann::json
     freezer_optional_to_json(const std::optional<Value>& value) {
@@ -36,6 +44,9 @@ namespace fmgr::core {
 
   } // namespace detail
 
+  // Advisory grid dimensions shown in the UI. Not an enforced constraint —
+  // actual capacity is determined by the box types placed inside the container.
+  // All three fields are optional; absent means unknown or not applicable.
   struct CapacityHint {
     std::optional<int> rows;
     std::optional<int> cols;
@@ -81,6 +92,8 @@ namespace fmgr::core {
     std::string location;
     std::string model;
     std::optional<double> temp_target_c;
+    // References the root `StorageContainer` (`parent_id = null`) for this appliance.
+    // Created in the same transaction as the `Freezer` row; archived together.
     StorageContainerId layout_root_id;
     Timestamp created_at;
     std::optional<Timestamp> archived_at;
@@ -106,10 +119,14 @@ namespace fmgr::core {
 
     StorageContainerId id;
     LabId lab_id;
+    // Null only on the root node (the one referenced by `Freezer.layout_root_id`).
+    // All other nodes reference their direct parent within the same lab.
     std::optional<StorageContainerId> parent_id;
     ContainerKind kind{ContainerKind::Custom};
     std::string name;
     std::string label;
+    // Sibling position within a parent; lower index renders first in the UI.
+    // Gaps are valid — indices need not be contiguous after reordering operations.
     std::int32_t ordering_index{0};
     std::optional<core::CapacityHint> capacity_hint;
     Timestamp created_at;

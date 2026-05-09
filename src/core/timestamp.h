@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// UTC microsecond-precision timestamp. `int64_t` covers dates through year 2262,
+// which exceeds any plausible biospecimen retention requirement.
+// JSON serialization is a bare integer (not ISO-8601) to eliminate timezone
+// ambiguity and parsing overhead; callers convert to display strings at the API layer.
+// `from_unix_micros` is the sole construction path so default-initialized timestamps
+// are always the Unix epoch (0), never an indeterminate value.
 #ifndef FMGR_CORE_TIMESTAMP_H
 #define FMGR_CORE_TIMESTAMP_H
 

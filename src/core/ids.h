@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+// Strongly-typed UUID wrappers that prevent ID substitution bugs at compile time.
+// Passing a `LabId` where a `UserId` is expected is a compile error, not a runtime
+// data corruption. Each `*IdTag` is an empty struct used only as a phantom type
+// parameter — it is never instantiated.
+// All IDs are UUIDs rather than sequential integers: sequential IDs are enumerable,
+// leak record counts to unauthenticated callers, and cannot be merged across deployments.
 #ifndef FMGR_CORE_IDS_H
 #define FMGR_CORE_IDS_H
 
