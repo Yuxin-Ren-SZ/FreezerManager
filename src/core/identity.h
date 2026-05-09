@@ -114,6 +114,7 @@ namespace fmgr::core {
     enum class Field : std::uint8_t {
       UserId,
       LabId,
+      RoleId,
       ScopeFiltersJson,
       InvitedBy,
       JoinedAt,
@@ -122,6 +123,7 @@ namespace fmgr::core {
 
     UserId user_id;
     LabId lab_id;
+    std::optional<RoleId> role_id;
     nlohmann::json scope_filters_json = nlohmann::json::object();
     std::optional<UserId> invited_by;
     Timestamp joined_at;
@@ -196,6 +198,7 @@ namespace fmgr::core {
     json = nlohmann::json{
         {"user_id", membership.user_id},
         {"lab_id", membership.lab_id},
+        {"role_id", detail::optional_to_json(membership.role_id)},
         {"scope_filters_json", membership.scope_filters_json},
         {"invited_by", detail::optional_to_json(membership.invited_by)},
         {"joined_at", membership.joined_at},
@@ -207,6 +210,7 @@ namespace fmgr::core {
     membership = LabMembership{
         .user_id = json.at("user_id").get<UserId>(),
         .lab_id = json.at("lab_id").get<LabId>(),
+        .role_id = detail::optional_from_json<RoleId>(json.at("role_id")),
         .scope_filters_json = json.at("scope_filters_json"),
         .invited_by = detail::optional_from_json<UserId>(json.at("invited_by")),
         .joined_at = json.at("joined_at").get<Timestamp>(),

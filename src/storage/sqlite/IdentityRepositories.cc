@@ -334,6 +334,8 @@ namespace fmgr::storage {
         return "user_id";
       case core::LabMembership::Field::LabId:
         return "lab_id";
+      case core::LabMembership::Field::RoleId:
+        return "role_id";
       case core::LabMembership::Field::ScopeFiltersJson:
         return "scope_filters_json";
       case core::LabMembership::Field::InvitedBy:
@@ -496,10 +498,11 @@ namespace fmgr::storage {
       return core::LabMembership{
           .user_id = core::UserId::parse(column_text(statement, 0)),
           .lab_id = core::LabId::parse(column_text(statement, 1)),
-          .scope_filters_json = nlohmann::json::parse(column_text(statement, 2)),
-          .invited_by = column_optional_id<core::UserId>(statement, 3),
-          .joined_at = core::Timestamp::from_unix_micros(sqlite3_column_int64(statement, 4)),
-          .revoked_at = column_optional_timestamp(statement, 5),
+          .role_id = column_optional_id<core::RoleId>(statement, 2),
+          .scope_filters_json = nlohmann::json::parse(column_text(statement, 3)),
+          .invited_by = column_optional_id<core::UserId>(statement, 4),
+          .joined_at = core::Timestamp::from_unix_micros(sqlite3_column_int64(statement, 5)),
+          .revoked_at = column_optional_timestamp(statement, 6),
       };
     }
 
@@ -738,7 +741,7 @@ namespace fmgr::storage {
 
       [[nodiscard]] std::vector<core::LabMembership>
       query(const Query<core::LabMembership>& query_spec) override {
-        std::string sql = "SELECT user_id, lab_id, scope_filters_json, invited_by, "
+        std::string sql = "SELECT user_id, lab_id, role_id, scope_filters_json, invited_by, "
                           "joined_at_micros, revoked_at_micros FROM lab_memberships";
         std::vector<nlohmann::json> parameters;
         const auto defaults = query_spec.includes_tombstoned()
@@ -791,7 +794,7 @@ namespace fmgr::storage {
       [[nodiscard]] std::optional<core::LabMembership>
       load(const core::LabMembershipId& entity_id) const override {
         Statement statement(transaction().handle(),
-                            "SELECT user_id, lab_id, scope_filters_json, invited_by, "
+                            "SELECT user_id, lab_id, role_id, scope_filters_json, invited_by, "
                             "joined_at_micros, revoked_at_micros FROM lab_memberships "
                             "WHERE user_id = ? AND lab_id = ?");
         bind_text(statement.get(), 1, entity_id.user_id.to_string());
@@ -813,29 +816,30 @@ namespace fmgr::storage {
       static void bind_entity(sqlite3_stmt* statement, const core::LabMembership& entity) {
         bind_text(statement, 1, entity.user_id.to_string());
         bind_text(statement, 2, entity.lab_id.to_string());
-        bind_text(statement, 3, entity.scope_filters_json.dump());
-        bind_optional_id(statement, 4, entity.invited_by);
-        bind_int64(statement, 5, entity.joined_at.unix_micros());
-        bind_optional_timestamp(statement, 6, entity.revoked_at);
+        bind_optional_id(statement, 3, entity.role_id);
+        bind_text(statement, 4, entity.scope_filters_json.dump());
+        bind_optional_id(statement, 5, entity.invited_by);
+        bind_int64(statement, 6, entity.joined_at.unix_micros());
+        bind_optional_timestamp(statement, 7, entity.revoked_at);
       }
 
       static void insert_pending(sqlite3* handle, const core::LabMembership& entity) {
         Statement statement(handle, "INSERT INTO lab_memberships "
-                                    "(user_id, lab_id, scope_filters_json, invited_by, "
+                                    "(user_id, lab_id, role_id, scope_filters_json, invited_by, "
                                     "joined_at_micros, revoked_at_micros) "
-                                    "VALUES (?, ?, ?, ?, ?, ?)");
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?)");
         bind_entity(statement.get(), entity);
         statement.step_done();
       }
 
       static void update_pending(sqlite3* handle, const core::LabMembership& entity) {
         Statement statement(handle, "UPDATE lab_memberships SET user_id = ?, lab_id = ?, "
-                                    "scope_filters_json = ?, invited_by = ?, "
+                                    "role_id = ?, scope_filters_json = ?, invited_by = ?, "
                                     "joined_at_micros = ?, revoked_at_micros = ? "
                                     "WHERE user_id = ? AND lab_id = ?");
         bind_entity(statement.get(), entity);
-        bind_text(statement.get(), 7, entity.user_id.to_string());
-        bind_text(statement.get(), 8, entity.lab_id.to_string());
+        bind_text(statement.get(), 8, entity.user_id.to_string());
+        bind_text(statement.get(), 9, entity.lab_id.to_string());
         statement.step_done();
       }
     };
