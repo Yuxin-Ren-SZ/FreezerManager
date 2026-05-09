@@ -16,6 +16,7 @@ namespace fmgr::core {
   enum class CheckoutAction : std::uint8_t { CheckedOut, CheckedIn, Destroyed };
   enum class RoleKind : std::uint8_t { SystemAdmin, LabAdmin, Member, ReadOnly, ApiClient };
   enum class ContainerKind : std::uint8_t { Compartment, Shelf, Rack, Drawer, Custom };
+  enum class UserStatus : std::uint8_t { Active, Disabled };
 
   [[nodiscard]] inline std::string_view to_string(SampleStatus status) {
     switch (status) {
@@ -128,6 +129,26 @@ namespace fmgr::core {
     throw std::invalid_argument("unknown container kind");
   }
 
+  [[nodiscard]] inline std::string_view to_string(UserStatus status) {
+    switch (status) {
+    case UserStatus::Active:
+      return "active";
+    case UserStatus::Disabled:
+      return "disabled";
+    }
+    throw std::invalid_argument("unknown user status");
+  }
+
+  [[nodiscard]] inline UserStatus parse_user_status(std::string_view text) {
+    if (text == "active") {
+      return UserStatus::Active;
+    }
+    if (text == "disabled") {
+      return UserStatus::Disabled;
+    }
+    throw std::invalid_argument("unknown user status");
+  }
+
   [[nodiscard]] inline ContainerKind parse_container_kind(std::string_view text) {
     if (text == "compartment") {
       return ContainerKind::Compartment;
@@ -173,6 +194,13 @@ namespace fmgr::core {
   }
   inline void from_json(const nlohmann::json& json, ContainerKind& kind) {
     kind = parse_container_kind(json.get<std::string>());
+  }
+
+  inline void to_json(nlohmann::json& json, UserStatus status) {
+    json = std::string(to_string(status));
+  }
+  inline void from_json(const nlohmann::json& json, UserStatus& status) {
+    status = parse_user_status(json.get<std::string>());
   }
 
 } // namespace fmgr::core

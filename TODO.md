@@ -197,6 +197,19 @@ building feature code:
 - Add the SPDX header
   `// SPDX-License-Identifier: AGPL-3.0-or-later` to every new source file.
 
+## Handoff note — D1 identity domain persistence
+
+Implemented D1.1 and D1.2 for `Lab`, `User`, and `LabMembership`:
+core identity types, storage traits, SQLite `0002_identity` migration,
+production SQLite repositories, case-insensitive user email uniqueness,
+foreign-key-backed memberships, soft-delete visibility, and focused unit
+coverage. `Lab` soft-delete uses `archived_at_micros`; `User` soft-delete
+sets `disabled`; `LabMembership` soft-delete sets `revoked_at_micros`.
+
+D1.3 remains deferred: the initial `SystemAdmin` first-run wizard should land
+after D2 provides role/permission tables, or with K5 once CLI bootstrap,
+auth, KMS, and TLS setup exist.
+
 ---
 
 ## Section A — Licensing & contributor flow
@@ -434,8 +447,8 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 
 - [ ] **D1. `Lab` & `User` & `LabMembership`.** First entities; everything
       else is scoped by `lab_id`.
-  - [ ] **D1.1.** Schema + types + repos.
-  - [ ] **D1.2.** Email-uniqueness enforced at DB level.
+  - [x] **D1.1.** Schema + types + repos.
+  - [x] **D1.2.** Email-uniqueness enforced at DB level.
   - [ ] **D1.3.** First-run wizard creates the initial `SystemAdmin` user
         and the first `Lab`.
   - **⚠ Watch:** every later entity will carry `lab_id`; do NOT skip it on
