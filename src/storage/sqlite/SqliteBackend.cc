@@ -1,0 +1,528 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+#include "storage/sqlite/SqliteBackend.h"
+
+#include <sqlite3.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <ctime>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace fmgr::storage {
+  namespace {
+
+    constexpr std::string_view k_in_memory_path = ":memory:";
+
+    [[nodiscard]] std::string sqlite_message(sqlite3* handle) {
+      if (handle == nullptr) {
+        return "sqlite handle is null";
+      }
+      return sqlite3_errmsg(handle);
+    }
+
+    [[noreturn]] void throw_sqlite_error(int code, sqlite3* handle, std::string_view action) {
+      const auto extended_code = sqlite3_extended_errcode(handle);
+      const auto effective_code = extended_code == SQLITE_OK ? code : extended_code;
+      const std::string message = std::string(action) + ": " + sqlite_message(handle);
+      switch (effective_code) {
+      case SQLITE_CONSTRAINT_UNIQUE:
+      case SQLITE_CONSTRAINT_PRIMARYKEY:
+        throw UniqueViolation(message);
+      case SQLITE_CONSTRAINT_FOREIGNKEY:
+        throw ForeignKeyViolation(message);
+      case SQLITE_BUSY:
+      case SQLITE_LOCKED:
+        throw Unavailable(message);
+      case SQLITE_CONSTRAINT:
+      case SQLITE_CONSTRAINT_CHECK:
+      case SQLITE_CONSTRAINT_NOTNULL:
+        throw ConstraintViolation(message);
+      default:
+        throw BackendError(BackendErrorCode::ConstraintViolation, message);
+      }
+    }
+
+    class SqliteConnection {
+    public:
+      SqliteConnection(const std::string& database_path, std::chrono::milliseconds busy_timeout) {
+        constexpr int flags =
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_URI | SQLITE_OPEN_NOMUTEX;
+        sqlite3* raw_handle = nullptr;
+        const auto open_result =
+            sqlite3_open_v2(database_path.c_str(), &raw_handle, flags, nullptr);
+        handle_.reset(raw_handle);
+        if (open_result != SQLITE_OK) {
+          throw_sqlite_error(open_result, handle_.get(), "open sqlite database");
+        }
+        sqlite3_extended_result_codes(handle_.get(), 1);
+
+        exec("PRAGMA foreign_keys = ON");
+        exec("PRAGMA busy_timeout = " + std::to_string(busy_timeout.count()));
+        if (database_path != k_in_memory_path && !database_path.starts_with("file:fmgr-memory-")) {
+          exec("PRAGMA journal_mode = WAL");
+        }
+        require_json1();
+      }
+
+      [[nodiscard]] sqlite3* get() const {
+        return handle_.get();
+      }
+
+      void exec(const std::string& sql) const {
+        char* error_message = nullptr;
+        const auto result =
+            sqlite3_exec(handle_.get(), sql.c_str(), nullptr, nullptr, &error_message);
+        if (result != SQLITE_OK) {
+          std::string message;
+          if (error_message != nullptr) {
+            message = error_message;
+            sqlite3_free(error_message);
+          } else {
+            message = sqlite_message(handle_.get());
+          }
+          throw_sqlite_error(result, handle_.get(), message);
+        }
+      }
+
+    private:
+      struct Deleter {
+        void operator()(sqlite3* handle) const {
+          if (handle != nullptr) {
+            sqlite3_close(handle);
+          }
+        }
+      };
+
+      void require_json1() const {
+        sqlite3_stmt* raw_statement = nullptr;
+        const auto* const sql = "SELECT json_extract('{\"a\":1}', '$.a')";
+        const auto prepare_result =
+            sqlite3_prepare_v2(handle_.get(), sql, -1, &raw_statement, nullptr);
+        std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw_statement,
+                                                                             sqlite3_finalize);
+        if (prepare_result != SQLITE_OK) {
+          throw UnsupportedOperation("sqlite JSON1 extension is required");
+        }
+        const auto step_result = sqlite3_step(statement.get());
+        if (step_result != SQLITE_ROW || sqlite3_column_int64(statement.get(), 0) != 1) {
+          throw UnsupportedOperation("sqlite JSON1 extension is required");
+        }
+      }
+
+      std::unique_ptr<sqlite3, Deleter> handle_;
+    };
+
+    [[nodiscard]] std::string default_memory_uri() {
+      static std::mutex mutex;
+      static std::uint64_t counter = 0;
+      std::scoped_lock lock(mutex);
+      ++counter;
+      return "file:fmgr-memory-" + std::to_string(counter) + "?mode=memory&cache=shared";
+    }
+
+    [[nodiscard]] std::vector<SqliteMigration> default_migrations() {
+      return {
+          SqliteMigration{
+              .version = 1,
+              .name = "0001_init",
+              .up_sql = R"sql(
+CREATE TABLE IF NOT EXISTS audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_name TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  actor_user_id TEXT NOT NULL,
+  actor_session_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  reason TEXT NOT NULL
+);
+)sql",
+          },
+      };
+    }
+
+    void bind_text(sqlite3_stmt* statement, int index, const std::string& value) {
+      const auto result = sqlite3_bind_text(statement, index, value.c_str(),
+                                            static_cast<int>(value.size()), SQLITE_TRANSIENT);
+      if (result != SQLITE_OK) {
+        throw ConstraintViolation("failed to bind sqlite text parameter");
+      }
+    }
+
+    void bind_int64(sqlite3_stmt* statement, int index, std::int64_t value) {
+      const auto result = sqlite3_bind_int64(statement, index, value);
+      if (result != SQLITE_OK) {
+        throw ConstraintViolation("failed to bind sqlite integer parameter");
+      }
+    }
+
+    class PreparedStatement {
+    public:
+      PreparedStatement(sqlite3* handle, const std::string& sql) : handle_(handle) {
+        const auto result = sqlite3_prepare_v2(handle_, sql.c_str(), -1, &statement_, nullptr);
+        if (result != SQLITE_OK) {
+          throw_sqlite_error(result, handle_, "prepare sqlite statement");
+        }
+      }
+
+      ~PreparedStatement() {
+        sqlite3_finalize(statement_);
+      }
+
+      PreparedStatement(const PreparedStatement&) = delete;
+      PreparedStatement& operator=(const PreparedStatement&) = delete;
+
+      [[nodiscard]] sqlite3_stmt* get() const {
+        return statement_;
+      }
+
+      [[nodiscard]] bool step_row() const {
+        const auto result = sqlite3_step(statement_);
+        if (result == SQLITE_ROW) {
+          return true;
+        }
+        if (result == SQLITE_DONE) {
+          return false;
+        }
+        throw_sqlite_error(result, handle_, "step sqlite statement");
+      }
+
+      void step_done() const {
+        const auto result = sqlite3_step(statement_);
+        if (result != SQLITE_DONE) {
+          throw_sqlite_error(result, handle_, "execute sqlite statement");
+        }
+      }
+
+    private:
+      sqlite3* handle_;
+      sqlite3_stmt* statement_{nullptr};
+    };
+
+    [[nodiscard]] std::string checksum(const SqliteMigration& migration) {
+      std::hash<std::string> hasher;
+      return std::to_string(hasher(std::to_string(migration.version) + ":" + migration.name + ":" +
+                                   migration.up_sql));
+    }
+
+    [[nodiscard]] std::int64_t now_unix_seconds() {
+      return static_cast<std::int64_t>(std::time(nullptr));
+    }
+
+  } // namespace
+
+  struct SqliteBackendState {
+    explicit SqliteBackendState(SqliteBackendOptions input_options)
+        : options(std::move(input_options)) {
+      if (options.database_path.empty()) {
+        options.database_path = k_in_memory_path;
+      }
+      if (options.database_path == k_in_memory_path) {
+        options.database_path = default_memory_uri();
+      }
+      if (options.migrations.empty()) {
+        options.migrations = default_migrations();
+      }
+      anchor = std::make_unique<SqliteConnection>(options.database_path, options.busy_timeout);
+    }
+
+    [[nodiscard]] std::unique_ptr<SqliteConnection> open_connection() const {
+      return std::make_unique<SqliteConnection>(options.database_path, options.busy_timeout);
+    }
+
+    SqliteBackendOptions options;
+    std::unique_ptr<SqliteConnection> anchor;
+    mutable std::mutex mutex;
+    bool fail_next_audit_append{false};
+  };
+
+  namespace {
+
+    void exec(sqlite3* handle, const std::string& sql) {
+      char* error_message = nullptr;
+      const auto result = sqlite3_exec(handle, sql.c_str(), nullptr, nullptr, &error_message);
+      if (result != SQLITE_OK) {
+        std::string message;
+        if (error_message != nullptr) {
+          message = error_message;
+          sqlite3_free(error_message);
+        } else {
+          message = sqlite_message(handle);
+        }
+        throw_sqlite_error(result, handle, message);
+      }
+    }
+
+    void rollback_no_throw(sqlite3* handle) noexcept {
+      sqlite3_exec(handle, "ROLLBACK", nullptr, nullptr, nullptr);
+    }
+
+    void ensure_metadata_tables(sqlite3* handle) {
+      exec(handle, R"sql(
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  applied_at_unix_seconds INTEGER NOT NULL
+);
+)sql");
+      exec(handle, R"sql(
+CREATE TABLE IF NOT EXISTS audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_name TEXT NOT NULL,
+  entity_id TEXT NOT NULL,
+  actor_user_id TEXT NOT NULL,
+  actor_session_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  reason TEXT NOT NULL
+);
+)sql");
+    }
+
+    [[nodiscard]] std::optional<std::string> applied_checksum(sqlite3* handle, int version) {
+      PreparedStatement statement(handle,
+                                  "SELECT checksum FROM schema_migrations WHERE version = ?");
+      bind_int64(statement.get(), 1, version);
+      if (!statement.step_row()) {
+        return std::nullopt;
+      }
+      const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(statement.get(), 0));
+      return std::string(text == nullptr ? "" : text);
+    }
+
+    [[nodiscard]] SchemaVersion current_schema_version(sqlite3* handle) {
+      ensure_metadata_tables(handle);
+      PreparedStatement statement(handle,
+                                  "SELECT COALESCE(MAX(version), 0) FROM schema_migrations");
+      if (!statement.step_row()) {
+        return SchemaVersion{0};
+      }
+      return SchemaVersion{sqlite3_column_int(statement.get(), 0)};
+    }
+
+  } // namespace
+
+  class SqliteTransaction::Impl {
+  public:
+    Impl(std::shared_ptr<SqliteBackendState> input_state, IsolationLevel input_isolation_level)
+        : state(std::move(input_state)), isolation_level(input_isolation_level),
+          connection(state->open_connection()) {}
+
+    std::shared_ptr<SqliteBackendState> state;
+    IsolationLevel isolation_level;
+    std::unique_ptr<SqliteConnection> connection;
+    std::vector<std::function<void(sqlite3*)>> commit_hooks;
+
+    struct AuditMutation {
+      std::string entity_name;
+      std::string entity_id;
+      MutationContext context;
+    };
+    std::vector<AuditMutation> audit_mutations;
+    bool completed{false};
+  };
+
+  SqliteTransaction::SqliteTransaction(std::shared_ptr<SqliteBackendState> state,
+                                       IsolationLevel isolation_level)
+      : impl_(std::make_unique<Impl>(std::move(state), isolation_level)) {}
+
+  SqliteTransaction::~SqliteTransaction() = default;
+
+  sqlite3* SqliteTransaction::handle() const {
+    return impl_->connection->get();
+  }
+
+  IsolationLevel SqliteTransaction::isolation_level() const {
+    return impl_->isolation_level;
+  }
+
+  void SqliteTransaction::add_commit_hook(std::function<void(sqlite3*)> hook) {
+    impl_->commit_hooks.push_back(std::move(hook));
+  }
+
+  void SqliteTransaction::note_mutation(std::string entity_name, std::string entity_id,
+                                        const MutationContext& context) {
+    impl_->audit_mutations.push_back(SqliteTransaction::Impl::AuditMutation{
+        .entity_name = std::move(entity_name),
+        .entity_id = std::move(entity_id),
+        .context = context,
+    });
+  }
+
+  void SqliteTransaction::commit() {
+    if (impl_->completed) {
+      throw ConstraintViolation("sqlite transaction already completed");
+    }
+
+    sqlite3* database = handle();
+    bool began = false;
+    try {
+      exec(database, "BEGIN IMMEDIATE");
+      began = true;
+      for (const auto& hook : impl_->commit_hooks) {
+        hook(database);
+      }
+
+      {
+        std::scoped_lock lock(impl_->state->mutex);
+        if (impl_->state->fail_next_audit_append && !impl_->audit_mutations.empty()) {
+          impl_->state->fail_next_audit_append = false;
+          throw ConstraintViolation("audit append failed");
+        }
+      }
+
+      PreparedStatement audit_statement(
+          database, "INSERT INTO audit_events "
+                    "(entity_name, entity_id, actor_user_id, actor_session_id, request_id, reason) "
+                    "VALUES (?, ?, ?, ?, ?, ?)");
+      for (const auto& mutation : impl_->audit_mutations) {
+        sqlite3_reset(audit_statement.get());
+        sqlite3_clear_bindings(audit_statement.get());
+        bind_text(audit_statement.get(), 1, mutation.entity_name);
+        bind_text(audit_statement.get(), 2, mutation.entity_id);
+        bind_text(audit_statement.get(), 3, mutation.context.actor_user_id.to_string());
+        bind_text(audit_statement.get(), 4, mutation.context.actor_session_id);
+        bind_text(audit_statement.get(), 5, mutation.context.request_id);
+        bind_text(audit_statement.get(), 6, mutation.context.reason);
+        audit_statement.step_done();
+      }
+
+      exec(database, "COMMIT");
+      impl_->completed = true;
+    } catch (...) {
+      if (began) {
+        rollback_no_throw(database);
+      }
+      impl_->completed = true;
+      throw;
+    }
+  }
+
+  void SqliteTransaction::rollback() {
+    impl_->completed = true;
+  }
+
+  SqliteBackend::SqliteBackend(SqliteBackendOptions options)
+      : state_(std::make_shared<SqliteBackendState>(std::move(options))) {}
+
+  SqliteBackend::~SqliteBackend() = default;
+  SqliteBackend::SqliteBackend(SqliteBackend&&) noexcept = default;
+  SqliteBackend& SqliteBackend::operator=(SqliteBackend&&) noexcept = default;
+
+  void SqliteBackend::migrate_to_latest() {
+    auto connection = state_->open_connection();
+    sqlite3* database = connection->get();
+    bool began = false;
+    try {
+      exec(database, "BEGIN IMMEDIATE");
+      began = true;
+      ensure_metadata_tables(database);
+
+      auto migrations = state_->options.migrations;
+      std::ranges::sort(migrations, {}, &SqliteMigration::version);
+      int previous_version = 0;
+      for (const auto& migration : migrations) {
+        if (migration.version <= previous_version) {
+          throw MigrationFailure("sqlite migration versions must be strictly increasing");
+        }
+        previous_version = migration.version;
+
+        const auto expected_checksum = checksum(migration);
+        const auto existing_checksum = applied_checksum(database, migration.version);
+        if (existing_checksum.has_value()) {
+          if (existing_checksum.value() != expected_checksum) {
+            throw MigrationFailure("sqlite migration checksum changed after application");
+          }
+          continue;
+        }
+
+        exec(database, migration.up_sql);
+        PreparedStatement insert_migration(
+            database, "INSERT INTO schema_migrations "
+                      "(version, name, checksum, applied_at_unix_seconds) VALUES (?, ?, ?, ?)");
+        bind_int64(insert_migration.get(), 1, migration.version);
+        bind_text(insert_migration.get(), 2, migration.name);
+        bind_text(insert_migration.get(), 3, expected_checksum);
+        bind_int64(insert_migration.get(), 4, now_unix_seconds());
+        insert_migration.step_done();
+      }
+
+      exec(database, "COMMIT");
+    } catch (const BackendError&) {
+      if (began) {
+        rollback_no_throw(database);
+      }
+      throw;
+    } catch (const std::exception& error) {
+      if (began) {
+        rollback_no_throw(database);
+      }
+      throw MigrationFailure(error.what());
+    }
+  }
+
+  SchemaVersion SqliteBackend::current_version() const {
+    auto connection = state_->open_connection();
+    return current_schema_version(connection->get());
+  }
+
+  std::unique_ptr<ITransaction> SqliteBackend::begin(IsolationLevel isolation_level) {
+    auto transaction =
+        std::unique_ptr<SqliteTransaction>(new SqliteTransaction(state_, isolation_level));
+    for (const auto& [unused_type, factory] : repository_factories_) {
+      (void)unused_type;
+      factory(*transaction);
+    }
+    return transaction;
+  }
+
+  Capabilities SqliteBackend::caps() const {
+    Capabilities capabilities;
+    capabilities.json_path_equality = true;
+    capabilities.json_path_indexes = false;
+    capabilities.native_uuid = false;
+    return capabilities;
+  }
+
+  void SqliteBackend::fail_next_audit_append_for_tests() {
+    std::scoped_lock lock(state_->mutex);
+    state_->fail_next_audit_append = true;
+  }
+
+  std::size_t SqliteBackend::audit_event_count_for_tests() const {
+    auto connection = state_->open_connection();
+    ensure_metadata_tables(connection->get());
+    PreparedStatement statement(connection->get(), "SELECT COUNT(*) FROM audit_events");
+    if (!statement.step_row()) {
+      return 0;
+    }
+    return static_cast<std::size_t>(sqlite3_column_int64(statement.get(), 0));
+  }
+
+  void SqliteBackend::downgrade_to_zero_for_tests() {
+    auto connection = state_->open_connection();
+    sqlite3* database = connection->get();
+    bool began = false;
+    try {
+      exec(database, "BEGIN IMMEDIATE");
+      began = true;
+      ensure_metadata_tables(database);
+      exec(database, "DELETE FROM schema_migrations");
+      exec(database, "COMMIT");
+    } catch (...) {
+      if (began) {
+        rollback_no_throw(database);
+      }
+      throw;
+    }
+  }
+
+} // namespace fmgr::storage
