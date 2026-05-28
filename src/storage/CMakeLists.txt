@@ -21,6 +21,7 @@ add_library(
   freezermanager_storage_sqlite
   sqlite/BoxGeometryRepositories.cc
   sqlite/IdentityRepositories.cc
+  sqlite/ItemTypeRepositories.cc
   sqlite/LayoutRepositories.cc
   sqlite/RoleRepositories.cc
   sqlite/SqliteBackend.cc

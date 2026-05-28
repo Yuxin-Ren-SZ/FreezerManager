@@ -4,8 +4,10 @@ add_executable(
   freezermanager_core_unit_tests
   box_types_test.cpp
   core_value_types_test.cpp
+  custom_field_validator_test.cpp
   freezer_types_test.cpp
   identity_types_test.cpp
+  item_types_test.cpp
   permission_catalog_test.cpp
   role_types_test.cpp
   seed_templates_test.cpp
@@ -36,6 +38,7 @@ add_executable(
   sqlite_box_geometry_repository_test.cpp
   sqlite_box_repository_test.cpp
   sqlite_identity_repository_test.cpp
+  sqlite_item_type_repository_test.cpp
   sqlite_layout_repository_test.cpp
   sqlite_role_repository_test.cpp
 )

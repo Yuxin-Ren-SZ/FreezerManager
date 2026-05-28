@@ -50,6 +50,7 @@ namespace fmgr::core {
   struct StorageContainerIdTag {};
   struct FreezerIdTag {};
   struct ItemTypeIdTag {};
+  struct CustomFieldDefinitionIdTag {};
   struct ProjectIdTag {};
   struct CheckoutEventIdTag {};
   struct ShareRequestIdTag {};
@@ -67,6 +68,7 @@ namespace fmgr::core {
   using StorageContainerId = StrongId<StorageContainerIdTag>;
   using FreezerId = StrongId<FreezerIdTag>;
   using ItemTypeId = StrongId<ItemTypeIdTag>;
+  using CustomFieldDefinitionId = StrongId<CustomFieldDefinitionIdTag>;
   using ProjectId = StrongId<ProjectIdTag>;
   using CheckoutEventId = StrongId<CheckoutEventIdTag>;
   using ShareRequestId = StrongId<ShareRequestIdTag>;
