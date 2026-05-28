@@ -205,7 +205,7 @@ namespace fmgr::storage {
           txn->commit();
         }
 
-        return SeedResult{lab.id, box_type.id, storage_container.id};
+        return SeedResult{.lab_id = lab.id, .box_type_id = box_type.id, .storage_container_id = storage_container.id};
       }
 
     private:
@@ -232,7 +232,8 @@ namespace fmgr::storage {
       const auto found = txn->repo<core::Box>().find_by_id(box.id);
       txn->commit();
       ASSERT_TRUE(found.has_value());
-      EXPECT_EQ(*found, box);
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      EXPECT_EQ(found.value(), box);
     }
 
     // Update label
@@ -248,7 +249,8 @@ namespace fmgr::storage {
       const auto found = txn->repo<core::Box>().find_by_id(box.id);
       txn->commit();
       ASSERT_TRUE(found.has_value());
-      EXPECT_EQ(found->label, "Renamed Box");
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      EXPECT_EQ(found.value().label, "Renamed Box");
     }
 
     // Query returns the box
