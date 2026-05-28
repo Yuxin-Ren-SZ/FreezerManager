@@ -183,6 +183,36 @@ namespace fmgr::core {
     };
   }
 
+  struct Box {
+    using Id = BoxId;
+
+    enum class Field : std::uint8_t {
+      Id,
+      LabId,
+      BoxTypeId,
+      StorageContainerId,
+      Label,
+      Serial,
+      Barcode,
+      CreatedAt,
+      ArchivedAt,
+    };
+
+    BoxId id;
+    LabId lab_id;
+    BoxTypeId box_type_id;
+    // Required: application-level tombstone propagation (not ON DELETE CASCADE)
+    // preserves audit history of where samples lived when the container is archived.
+    StorageContainerId storage_container_id;
+    std::string label;
+    std::optional<std::string> serial;
+    std::optional<std::string> barcode;
+    Timestamp created_at;
+    std::optional<Timestamp> archived_at;
+
+    friend bool operator==(const Box&, const Box&) = default;
+  };
+
   inline void to_json(nlohmann::json& json, const BoxType& box_type) {
     json = nlohmann::json{
         {"id", box_type.id},
@@ -204,6 +234,34 @@ namespace fmgr::core {
         .manufacturer = json.at("manufacturer").get<std::string>(),
         .sku = json.at("sku").get<std::string>(),
         .positions = json.at("positions").get<std::vector<Position>>(),
+        .created_at = json.at("created_at").get<Timestamp>(),
+        .archived_at = detail::box_optional_from_json<Timestamp>(json.at("archived_at")),
+    };
+  }
+
+  inline void to_json(nlohmann::json& json, const Box& box) {
+    json = nlohmann::json{
+        {"id", box.id},
+        {"lab_id", box.lab_id},
+        {"box_type_id", box.box_type_id},
+        {"storage_container_id", box.storage_container_id},
+        {"label", box.label},
+        {"serial", detail::box_optional_to_json(box.serial)},
+        {"barcode", detail::box_optional_to_json(box.barcode)},
+        {"created_at", box.created_at},
+        {"archived_at", detail::box_optional_to_json(box.archived_at)},
+    };
+  }
+
+  inline void from_json(const nlohmann::json& json, Box& box) {
+    box = Box{
+        .id = json.at("id").get<BoxId>(),
+        .lab_id = json.at("lab_id").get<LabId>(),
+        .box_type_id = json.at("box_type_id").get<BoxTypeId>(),
+        .storage_container_id = json.at("storage_container_id").get<StorageContainerId>(),
+        .label = json.at("label").get<std::string>(),
+        .serial = detail::box_optional_from_json<std::string>(json.at("serial")),
+        .barcode = detail::box_optional_from_json<std::string>(json.at("barcode")),
         .created_at = json.at("created_at").get<Timestamp>(),
         .archived_at = detail::box_optional_from_json<Timestamp>(json.at("archived_at")),
     };

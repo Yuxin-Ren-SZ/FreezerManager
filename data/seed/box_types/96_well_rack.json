@@ -1,0 +1,871 @@
+{
+  "name": "96-Well Rack",
+  "manufacturer": "",
+  "sku": "",
+  "positions": [
+    {
+      "label": "A1",
+      "row": 0,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A2",
+      "row": 0,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A3",
+      "row": 0,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A4",
+      "row": 0,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A5",
+      "row": 0,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A6",
+      "row": 0,
+      "col": 5,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A7",
+      "row": 0,
+      "col": 6,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A8",
+      "row": 0,
+      "col": 7,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A9",
+      "row": 0,
+      "col": 8,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A10",
+      "row": 0,
+      "col": 9,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A11",
+      "row": 0,
+      "col": 10,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "A12",
+      "row": 0,
+      "col": 11,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B1",
+      "row": 1,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B2",
+      "row": 1,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B3",
+      "row": 1,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B4",
+      "row": 1,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B5",
+      "row": 1,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B6",
+      "row": 1,
+      "col": 5,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B7",
+      "row": 1,
+      "col": 6,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B8",
+      "row": 1,
+      "col": 7,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B9",
+      "row": 1,
+      "col": 8,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B10",
+      "row": 1,
+      "col": 9,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B11",
+      "row": 1,
+      "col": 10,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "B12",
+      "row": 1,
+      "col": 11,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C1",
+      "row": 2,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C2",
+      "row": 2,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C3",
+      "row": 2,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C4",
+      "row": 2,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C5",
+      "row": 2,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C6",
+      "row": 2,
+      "col": 5,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C7",
+      "row": 2,
+      "col": 6,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C8",
+      "row": 2,
+      "col": 7,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C9",
+      "row": 2,
+      "col": 8,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C10",
+      "row": 2,
+      "col": 9,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C11",
+      "row": 2,
+      "col": 10,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "C12",
+      "row": 2,
+      "col": 11,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D1",
+      "row": 3,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D2",
+      "row": 3,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D3",
+      "row": 3,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D4",
+      "row": 3,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D5",
+      "row": 3,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D6",
+      "row": 3,
+      "col": 5,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D7",
+      "row": 3,
+      "col": 6,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D8",
+      "row": 3,
+      "col": 7,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D9",
+      "row": 3,
+      "col": 8,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D10",
+      "row": 3,
+      "col": 9,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D11",
+      "row": 3,
+      "col": 10,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "D12",
+      "row": 3,
+      "col": 11,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E1",
+      "row": 4,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E2",
+      "row": 4,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E3",
+      "row": 4,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E4",
+      "row": 4,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E5",
+      "row": 4,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E6",
+      "row": 4,
+      "col": 5,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E7",
+      "row": 4,
+      "col": 6,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E8",
+      "row": 4,
+      "col": 7,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E9",
+      "row": 4,
+      "col": 8,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E10",
+      "row": 4,
+      "col": 9,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E11",
+      "row": 4,
+      "col": 10,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "E12",
+      "row": 4,
+      "col": 11,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F1",
+      "row": 5,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F2",
+      "row": 5,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F3",
+      "row": 5,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F4",
+      "row": 5,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F5",
+      "row": 5,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F6",
+      "row": 5,
+      "col": 5,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F7",
+      "row": 5,
+      "col": 6,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F8",
+      "row": 5,
+      "col": 7,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F9",
+      "row": 5,
+      "col": 8,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F10",
+      "row": 5,
+      "col": 9,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F11",
+      "row": 5,
+      "col": 10,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "F12",
+      "row": 5,
+      "col": 11,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G1",
+      "row": 6,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G2",
+      "row": 6,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G3",
+      "row": 6,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G4",
+      "row": 6,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G5",
+      "row": 6,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G6",
+      "row": 6,
+      "col": 5,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G7",
+      "row": 6,
+      "col": 6,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G8",
+      "row": 6,
+      "col": 7,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G9",
+      "row": 6,
+      "col": 8,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G10",
+      "row": 6,
+      "col": 9,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G11",
+      "row": 6,
+      "col": 10,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "G12",
+      "row": 6,
+      "col": 11,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H1",
+      "row": 7,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H2",
+      "row": 7,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H3",
+      "row": 7,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H4",
+      "row": 7,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H5",
+      "row": 7,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H6",
+      "row": 7,
+      "col": 5,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H7",
+      "row": 7,
+      "col": 6,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H8",
+      "row": 7,
+      "col": 7,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H9",
+      "row": 7,
+      "col": 8,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H10",
+      "row": 7,
+      "col": 9,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H11",
+      "row": 7,
+      "col": 10,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    },
+    {
+      "label": "H12",
+      "row": 7,
+      "col": 11,
+      "z": null,
+      "accepts": [
+        "microplate_well"
+      ]
+    }
+  ]
+}

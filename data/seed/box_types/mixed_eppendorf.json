@@ -1,0 +1,124 @@
+{
+  "name": "Eppendorf Mixed Tube Rack",
+  "manufacturer": "",
+  "sku": "",
+  "positions": [
+    {
+      "label": "A1",
+      "row": 0,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "tube_50ml"
+      ]
+    },
+    {
+      "label": "A2",
+      "row": 0,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "tube_50ml"
+      ]
+    },
+    {
+      "label": "A3",
+      "row": 0,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "tube_50ml"
+      ]
+    },
+    {
+      "label": "B1",
+      "row": 1,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "tube_50ml"
+      ]
+    },
+    {
+      "label": "B2",
+      "row": 1,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "tube_50ml"
+      ]
+    },
+    {
+      "label": "B3",
+      "row": 1,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "tube_50ml"
+      ]
+    },
+    {
+      "label": "C1",
+      "row": 2,
+      "col": 0,
+      "z": null,
+      "accepts": [
+        "tube_50ml"
+      ]
+    },
+    {
+      "label": "C2",
+      "row": 2,
+      "col": 1,
+      "z": null,
+      "accepts": [
+        "tube_50ml"
+      ]
+    },
+    {
+      "label": "C3",
+      "row": 2,
+      "col": 2,
+      "z": null,
+      "accepts": [
+        "tube_50ml"
+      ]
+    },
+    {
+      "label": "A4",
+      "row": 0,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "tube_15ml"
+      ]
+    },
+    {
+      "label": "A5",
+      "row": 0,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "tube_15ml"
+      ]
+    },
+    {
+      "label": "B4",
+      "row": 1,
+      "col": 3,
+      "z": null,
+      "accepts": [
+        "tube_15ml"
+      ]
+    },
+    {
+      "label": "B5",
+      "row": 1,
+      "col": 4,
+      "z": null,
+      "accepts": [
+        "tube_15ml"
+      ]
+    }
+  ]
+}

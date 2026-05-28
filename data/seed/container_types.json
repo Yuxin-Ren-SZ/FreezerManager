@@ -1,0 +1,26 @@
+[
+  {
+    "name": "2 mL Cryovial",
+    "size_class": "cryovial_2ml",
+    "material": "polypropylene",
+    "supplier_sku": ""
+  },
+  {
+    "name": "50 mL Falcon Tube",
+    "size_class": "tube_50ml",
+    "material": "polypropylene",
+    "supplier_sku": ""
+  },
+  {
+    "name": "15 mL Falcon Tube",
+    "size_class": "tube_15ml",
+    "material": "polypropylene",
+    "supplier_sku": ""
+  },
+  {
+    "name": "96-Well Microplate",
+    "size_class": "microplate_well",
+    "material": "polystyrene",
+    "supplier_sku": ""
+  }
+]

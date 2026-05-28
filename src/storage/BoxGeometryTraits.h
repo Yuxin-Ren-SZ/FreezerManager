@@ -36,6 +36,19 @@ namespace fmgr::storage {
     }
   };
 
+  template <> struct EntityTraits<core::Box> {
+    using Id = core::Box::Id;
+    using Field = core::Box::Field;
+
+    [[nodiscard]] static constexpr std::string_view entity_name() {
+      return "box";
+    }
+
+    [[nodiscard]] static constexpr Field tombstone_field() {
+      return Field::ArchivedAt;
+    }
+  };
+
 } // namespace fmgr::storage
 
 #endif // FMGR_STORAGE_BOXGEOMETRYTRAITS_H

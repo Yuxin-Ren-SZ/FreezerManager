@@ -93,5 +93,40 @@ namespace fmgr::core {
       EXPECT_EQ(restored, box_type);
     }
 
+    TEST(BoxTypesTest, BoxJsonRoundTrip) {
+      const Box box{
+          .id = id_from_low<BoxId>(10),
+          .lab_id = id_from_low<LabId>(11),
+          .box_type_id = id_from_low<BoxTypeId>(12),
+          .storage_container_id = id_from_low<StorageContainerId>(13),
+          .label = "Shelf-2 Box-1",
+          .serial = "SN-ABCDE",
+          .barcode = "BC-12345",
+          .created_at = Timestamp::from_unix_micros(400),
+      };
+
+      nlohmann::json json = box;
+      const auto restored = json.get<Box>();
+      EXPECT_EQ(restored, box);
+      EXPECT_FALSE(restored.archived_at.has_value());
+    }
+
+    TEST(BoxTypesTest, BoxJsonRoundTripWithNullOptionals) {
+      const Box box{
+          .id = id_from_low<BoxId>(14),
+          .lab_id = id_from_low<LabId>(15),
+          .box_type_id = id_from_low<BoxTypeId>(16),
+          .storage_container_id = id_from_low<StorageContainerId>(17),
+          .label = "No Serial Box",
+          .created_at = Timestamp::from_unix_micros(500),
+      };
+
+      nlohmann::json json = box;
+      EXPECT_TRUE(json.at("serial").is_null());
+      EXPECT_TRUE(json.at("barcode").is_null());
+      const auto restored = json.get<Box>();
+      EXPECT_EQ(restored, box);
+    }
+
   } // namespace
 } // namespace fmgr::core

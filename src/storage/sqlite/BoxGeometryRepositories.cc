@@ -822,6 +822,207 @@ namespace fmgr::storage {
       }
     };
 
+    void bind_optional_string(sqlite3_stmt* statement, int index,
+                              const std::optional<std::string>& value) {
+      if (value.has_value()) {
+        bind_text(statement, index, value.value());
+      } else {
+        bind_null(statement, index);
+      }
+    }
+
+    [[nodiscard]] std::optional<std::string> column_optional_string(sqlite3_stmt* statement,
+                                                                    int column) {
+      if (sqlite3_column_type(statement, column) == SQLITE_NULL) {
+        return std::nullopt;
+      }
+      return column_text(statement, column);
+    }
+
+    [[nodiscard]] std::string box_column_name(core::Box::Field field) {
+      switch (field) {
+      case core::Box::Field::Id:
+        return "id";
+      case core::Box::Field::LabId:
+        return "lab_id";
+      case core::Box::Field::BoxTypeId:
+        return "box_type_id";
+      case core::Box::Field::StorageContainerId:
+        return "storage_container_id";
+      case core::Box::Field::Label:
+        return "label";
+      case core::Box::Field::Serial:
+        return "serial";
+      case core::Box::Field::Barcode:
+        return "barcode";
+      case core::Box::Field::CreatedAt:
+        return "created_at_micros";
+      case core::Box::Field::ArchivedAt:
+        return "archived_at_micros";
+      }
+      throw ConstraintViolation("unknown box field");
+    }
+
+    constexpr std::string_view k_box_columns =
+        "id, lab_id, box_type_id, storage_container_id, label, serial, barcode, "
+        "created_at_micros, archived_at_micros";
+
+    [[nodiscard]] core::Box read_box(sqlite3_stmt* statement) {
+      return core::Box{
+          .id = core::BoxId::parse(column_text(statement, 0)),
+          .lab_id = core::LabId::parse(column_text(statement, 1)),
+          .box_type_id = core::BoxTypeId::parse(column_text(statement, 2)),
+          .storage_container_id = core::StorageContainerId::parse(column_text(statement, 3)),
+          .label = column_text(statement, 4),
+          .serial = column_optional_string(statement, 5),
+          .barcode = column_optional_string(statement, 6),
+          .created_at = core::Timestamp::from_unix_micros(sqlite3_column_int64(statement, 7)),
+          .archived_at = column_optional_timestamp(statement, 8),
+      };
+    }
+
+    void validate_box(const core::Box& box, const SqliteTransaction& transaction) {
+      if (box.label.empty()) {
+        throw ConstraintViolation("box label is required");
+      }
+      // box_type_id must reference a live BoxType in the same lab
+      {
+        Statement statement(transaction.handle(),
+                            "SELECT 1 FROM box_types "
+                            "WHERE id = ? AND lab_id = ? AND archived_at_micros IS NULL LIMIT 1");
+        bind_text(statement.get(), 1, box.box_type_id.to_string());
+        bind_text(statement.get(), 2, box.lab_id.to_string());
+        if (!statement.step_row()) {
+          throw ConstraintViolation("box_type_id does not reference a live BoxType in this lab");
+        }
+      }
+      // storage_container_id must reference a live StorageContainer in the same lab
+      {
+        Statement statement(transaction.handle(),
+                            "SELECT 1 FROM storage_containers "
+                            "WHERE id = ? AND lab_id = ? AND archived_at_micros IS NULL LIMIT 1");
+        bind_text(statement.get(), 1, box.storage_container_id.to_string());
+        bind_text(statement.get(), 2, box.lab_id.to_string());
+        if (!statement.step_row()) {
+          throw ConstraintViolation(
+              "storage_container_id does not reference a live StorageContainer in this lab");
+        }
+      }
+    }
+
+    class BoxRepository final : public SqliteBoxGeometryRepositoryBase<core::Box> {
+    public:
+      using SqliteBoxGeometryRepositoryBase::SqliteBoxGeometryRepositoryBase;
+
+      [[nodiscard]] std::optional<core::Box> find_by_id(const core::BoxId& entity_id) override {
+        if (auto staged = find_staged(entity_id); staged.has_value()) {
+          return staged;
+        }
+        return load(entity_id);
+      }
+
+      [[nodiscard]] std::vector<core::Box> query(const Query<core::Box>& query_spec) override {
+        std::string sql = "SELECT ";
+        sql += k_box_columns;
+        sql += " FROM boxes";
+        std::vector<nlohmann::json> parameters;
+        const auto defaults = query_spec.includes_tombstoned()
+                                  ? std::vector<std::string>{}
+                                  : std::vector<std::string>{"archived_at_micros IS NULL"};
+        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
+                                  box_column_name);
+        append_query_tail(sql, parameters, query_spec, box_column_name);
+
+        Statement statement(transaction().handle(), sql);
+        bind_parameters(statement.get(), parameters);
+
+        std::vector<core::Box> results;
+        while (statement.step_row()) {
+          results.push_back(read_box(statement.get()));
+        }
+        return results;
+      }
+
+      void insert(const core::Box& entity, const MutationContext& context) override {
+        stage_insert(entity, context);
+      }
+
+      void update(const core::Box& entity, const MutationContext& context) override {
+        stage_update(entity, context);
+      }
+
+      void soft_delete(const core::BoxId& entity_id, const MutationContext& context) override {
+        auto entity = find_by_id(entity_id);
+        if (!entity.has_value()) {
+          throw NotFound("box not found");
+        }
+        entity->archived_at = now_timestamp();
+        update(entity.value(), context);
+      }
+
+    private:
+      void flush(sqlite3* handle) override {
+        for (const auto& [unused_id, pending_entity] : pending()) {
+          (void)unused_id;
+          if (pending_entity.is_insert) {
+            insert_pending(handle, pending_entity.entity);
+          } else {
+            update_pending(handle, pending_entity.entity);
+          }
+        }
+      }
+
+      [[nodiscard]] std::optional<core::Box> load(const core::BoxId& entity_id) const override {
+        std::string sql = "SELECT ";
+        sql += k_box_columns;
+        sql += " FROM boxes WHERE id = ?";
+        Statement statement(transaction().handle(), sql);
+        bind_text(statement.get(), 1, entity_id.to_string());
+        if (!statement.step_row()) {
+          return std::nullopt;
+        }
+        return read_box(statement.get());
+      }
+
+      void validate(const core::Box& entity) const override {
+        validate_box(entity, transaction());
+      }
+
+      [[nodiscard]] core::BoxId id_of(const core::Box& entity) const override {
+        return entity.id;
+      }
+
+      static void bind_entity(sqlite3_stmt* statement, const core::Box& entity) {
+        bind_text(statement, 1, entity.id.to_string());
+        bind_text(statement, 2, entity.lab_id.to_string());
+        bind_text(statement, 3, entity.box_type_id.to_string());
+        bind_text(statement, 4, entity.storage_container_id.to_string());
+        bind_text(statement, 5, entity.label);
+        bind_optional_string(statement, 6, entity.serial);
+        bind_optional_string(statement, 7, entity.barcode);
+        bind_int64(statement, 8, entity.created_at.unix_micros());
+        bind_optional_timestamp(statement, 9, entity.archived_at);
+      }
+
+      static void insert_pending(sqlite3* handle, const core::Box& entity) {
+        Statement statement(handle, "INSERT INTO boxes "
+                                    "(id, lab_id, box_type_id, storage_container_id, label, "
+                                    "serial, barcode, created_at_micros, archived_at_micros) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        bind_entity(statement.get(), entity);
+        statement.step_done();
+      }
+
+      static void update_pending(sqlite3* handle, const core::Box& entity) {
+        Statement statement(handle, "UPDATE boxes SET id = ?, lab_id = ?, box_type_id = ?, "
+                                    "storage_container_id = ?, label = ?, serial = ?, barcode = ?, "
+                                    "created_at_micros = ?, archived_at_micros = ? WHERE id = ?");
+        bind_entity(statement.get(), entity);
+        bind_text(statement.get(), 10, entity.id.to_string());
+        statement.step_done();
+      }
+    };
+
   } // namespace
 
   void register_box_geometry_repositories(SqliteBackend& backend) {
@@ -830,6 +1031,12 @@ namespace fmgr::storage {
     });
     backend.register_repository_factory<core::BoxType>([](SqliteTransaction& transaction) {
       return std::make_unique<BoxTypeRepository>(transaction);
+    });
+  }
+
+  void register_box_repositories(SqliteBackend& backend) {
+    backend.register_repository_factory<core::Box>([](SqliteTransaction& transaction) {
+      return std::make_unique<BoxRepository>(transaction);
     });
   }
 

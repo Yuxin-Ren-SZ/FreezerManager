@@ -8,6 +8,7 @@
 namespace fmgr::storage {
 
   void register_box_geometry_repositories(SqliteBackend& backend);
+  void register_box_repositories(SqliteBackend& backend);
 
 } // namespace fmgr::storage
 
