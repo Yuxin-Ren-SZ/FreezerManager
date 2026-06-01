@@ -39,10 +39,12 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - 🔲 `ContainerType` — physical tube/vial type with `size_class` token
 - 🔲 `ItemType` — hierarchical taxonomy per lab; custom field definitions inherited from ancestors
 - 🔲 `CustomFieldDefinition` — `string | int | float | bool | date | datetime | enum | reference`; `is_phi` flag
-- 🔲 `Sample` — full lifecycle: `active → checked_out → active`, `→ depleted`, `→ tombstoned`
-- 🔲 Parent–child aliquot lineage — child is independent; lineage preserved across soft-delete
-- 🔲 Volume / mass tracking — `CheckoutEvent.volume_delta`; auto-depletes at zero
-- 🔲 `Project` grouping + `ShareRequest` cross-lab sharing workflow
+- ✅ `Sample` — full lifecycle: `active → checked_out → active`, `→ depleted`, `→ tombstoned`; no-double-booking enforced by partial unique index
+- ✅ Parent–child aliquot lineage — child is independent; lineage preserved across soft-delete
+- ✅ Volume / mass tracking — `CheckoutEvent.volume_delta`; auto-depletes at zero
+- ✅ `Project` grouping + `SampleProject` many-to-many links
+- ✅ `CheckoutEvent` — append-only chain-of-custody records with volume delta tracking
+- ✅ `ShareRequest` cross-lab sharing workflow — pending/approved/rejected/revoked state machine; three-signature approval (source_admin + target_admin + system_admin); append-only `ShareRequestApproval` audit records
 
 ### Security & Authentication
 

@@ -128,5 +128,22 @@ namespace fmgr::core {
       EXPECT_EQ(restored, box);
     }
 
+    TEST(BoxTypesTest, BoxTypeJsonRoundTripWithEmptyPositions) {
+      const BoxType box_type{
+          .id = id_from_low<BoxTypeId>(7),
+          .lab_id = id_from_low<LabId>(8),
+          .name = "Empty rack",
+          .manufacturer = "Generic",
+          .sku = "EMPTY",
+          .positions = {},
+          .created_at = Timestamp::from_unix_micros(400),
+      };
+
+      nlohmann::json json = box_type;
+      const auto restored = json.get<BoxType>();
+      EXPECT_EQ(restored, box_type);
+      EXPECT_TRUE(restored.positions.empty());
+    }
+
   } // namespace
 } // namespace fmgr::core

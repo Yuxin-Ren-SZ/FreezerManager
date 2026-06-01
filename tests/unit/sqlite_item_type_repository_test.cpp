@@ -443,4 +443,38 @@ namespace fmgr::storage {
     }
   }
 
+  TEST_F(SqliteItemTypeRepositoryTest, CustomFieldDefinitionQueryIncludeTombstoned) {
+    const auto lab_id = seed_lab(16);
+    const auto cfd = make_cfd(160, lab_id, std::nullopt, "test_field");
+
+    {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      txn->repo<core::CustomFieldDefinition>().insert(cfd, mutation_context());
+      txn->commit();
+    }
+
+    {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      txn->repo<core::CustomFieldDefinition>().soft_delete(cfd.id, mutation_context());
+      txn->commit();
+    }
+
+    {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      const auto results = txn->repo<core::CustomFieldDefinition>().query(
+          Query<core::CustomFieldDefinition>::all());
+      txn->commit();
+      EXPECT_TRUE(results.empty());
+    }
+
+    {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      const auto results = txn->repo<core::CustomFieldDefinition>().query(
+          Query<core::CustomFieldDefinition>::all().include_tombstoned());
+      txn->commit();
+      ASSERT_EQ(results.size(), 1U);
+      EXPECT_TRUE(results.front().archived_at.has_value());
+    }
+  }
+
 } // namespace fmgr::storage

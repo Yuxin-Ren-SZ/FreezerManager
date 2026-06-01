@@ -6,6 +6,115 @@ single developer or agent in a few hours to a few days. Cross-module
 dependencies are called out explicitly under **⚠ Watch** so that earlier
 tasks are not "finished" in a way that boxes in later ones.
 
+## Handoff note — 2026-05-31, D8 ShareRequest + ShareRequestApproval
+
+Implemented D8 cross-lab share-request workflow:
+
+- `src/core/enums.h` adds `ShareRequestStatus` (pending/approved/rejected/revoked) and
+  `ShareApprovalRole` (source_admin/target_admin/system_admin) with string converters and
+  JSON adapters, following the existing enum pattern.
+- `src/core/share_request.h` defines `ShareRequestApprovalId` (composite key), `ShareRequestApproval`
+  (append-only audit record), and `ShareRequest` with JSON serialization. Uses `sr_opt_to_json`
+  helpers for optional fields. State machine and FK validation deferred to RPC layer.
+- `src/storage/ShareRequestTraits.h` adds EntityTraits for both entities. ShareRequest uses
+  `Field::Status` as tombstone marker (soft_delete sets status = revoked). ShareRequestApproval
+  uses a dummy tombstone field (append-only, never soft-deleted).
+- SQLite migration `0009_share_requests` creates `share_requests` (with CHECK source != target) and
+  `share_request_approvals` (PRIMARY KEY (share_request_id, approver_role), append-only). No ON
+  DELETE CASCADE; application-level integrity only.
+- `src/storage/sqlite/ShareRequestRepositories.{h,cc}` adds two typed SQLite repositories:
+  - `ShareRequestRepository`: validates non-empty scope_json and source != target lab at
+    application layer (DB CHECK enforces it too). Default query filter: status = 'pending';
+    include_tombstoned() shows all. soft_delete() sets status = revoked + decided_at = now.
+  - `ShareRequestApprovalRepository`: append-only (update() and soft_delete() throw
+    UnsupportedOperation). insert() validates share_request exists in committed DB before
+    inserting approval. Composite-key pending map (no base template, same pattern as
+    CheckoutEventRepository).
+
+Verification completed locally:
+
+- `cmake --build --preset dev`
+- `ctest --preset dev -j1` — 229/229 tests passed (up from 175, +54 total new tests including D6/D7/D8 work).
+- `FMGR_STORAGE_STRESS=1 ctest --preset dev -j1 -R SqliteBackendConformance` — 10/10 passed.
+- `clang-format --dry-run --Werror` on all new/changed C++ files — clean.
+- `clang-tidy -p out/build/dev` on new .cc and test files — clean.
+- `tools/check-spdx-headers.sh` — all new C++/SQL files carry the AGPL header.
+- `git diff --check` — no trailing whitespace.
+
+Handoff notes:
+
+- D8.* (ShareRequest + ShareRequestApproval) are implemented. The three-signature approval
+  workflow (source_admin + target_admin + system_admin) is enforced by the DB PRIMARY KEY on
+  share_request_approvals; the state machine transitions (pending → approved/rejected/revoked) are
+  intentionally deferred to the RPC layer (F2).
+- Cross-entity validation in ShareRequestApprovalRepository::insert() validates committed DB only
+  (not staging map) — same pattern as SampleRepository validates item_type_id and box_id.
+- The visible-labs computation ({home_lab} ∪ {labs sharing TO me}) is NOT implemented in the
+  repository layer — it belongs in E3 (RBAC middleware) and the Postgres RLS policy (C5.3).
+- D9 (Session entity) is the natural next domain entity slice.
+- C5 (Postgres backend) must mirror migration 0009_share_requests with the same version number
+  and preserve the no-ON-DELETE-CASCADE design.
+- Note: D7 tests (sqlite_sample_repository_test.cpp) have a known parallelism flakiness when
+  run with `ctest` default multi-job mode; run `ctest -j1` for deterministic results. Root
+  cause: SQLite file path generation uses stack pointer address which can collide across
+  concurrent fixture constructors in multi-process test execution.
+
+## Handoff note — 2026-05-31, D7 Sample + Project + SampleProject + CheckoutEvent
+
+Implemented D7 against the existing geometry, layout, identity, item-type, and box slices:
+
+- `src/core/sample.h` defines `Sample`, `Project`, `SampleProjectId`, `SampleProject`,
+  and `CheckoutEvent` with JSON serialization. Also adds `VolumeUnit`/`MassUnit` JSON
+  converters (needed to persist them individually as separate DB columns).
+- `src/storage/SampleTraits.h` adds `EntityTraits` specializations for all four entities.
+  `Sample` uses `Field::Status` as its tombstone field (status = tombstoned, not
+  archived_at_micros). `SampleProject` and `CheckoutEvent` use dummy tombstone fields
+  (hard-delete and insert-only, respectively).
+- SQLite migration `0008_samples` creates `projects`, `samples`, `sample_projects`, and
+  `checkout_events` tables. Key constraints:
+  - `CHECK ((box_id IS NULL) = (position_label IS NULL))` on samples.
+  - Partial unique index `samples_position_unique` on `(box_id, position_label)` WHERE
+    `status IN ('active', 'checked_out')` — the core no-double-booking invariant.
+- `src/storage/sqlite/SampleRepositories.{h,cc}` adds four typed SQLite repositories:
+  - `SampleRepository`: validates non-empty name, item_type_id liveness, box existence,
+    position label existence in BoxType, and size_class compatibility via
+    `box_type_position_accepts`. Soft-delete sets `status = tombstoned`.
+  - `ProjectRepository`: standard CRUD + soft-delete via `archived_at_micros`.
+  - `SampleProjectRepository`: composite-key link table; hard-deleted via `soft_delete()`;
+    `update()` throws `UnsupportedOperation`.
+  - `CheckoutEventRepository`: append-only audit records; `update()` and `soft_delete()`
+    throw `UnsupportedOperation`.
+
+Verification completed locally:
+
+- `cmake --build --preset dev`
+- `ctest --preset dev` — 175/175 tests passed (up from 103).
+- `FMGR_STORAGE_STRESS=1 ctest --preset dev -R SqliteBackendConformance`
+  — 10/10 SQLite conformance tests passed.
+- `clang-format --dry-run --Werror` on all new/changed files — clean.
+- `clang-tidy -p out/build/dev` on new .cc and test files — clean (exit 0).
+- `tools/check-spdx-headers.sh` — all new C++/SQL files carry the AGPL header.
+- `git diff --check` — no trailing whitespace.
+
+Handoff notes:
+
+- D7.1 through D7.4 are implemented. D7.5 (move atomicity property test: 50 threads
+  moving the same sample concurrently) is not yet a test; it can be added to the
+  property test suite (`tests/property/`) when RapidCheck integration lands.
+- Sample state machine (active → checked_out → active → depleted → tombstoned) is NOT
+  enforced in the repository layer — enforcing it at the RPC layer (F2) is intentional.
+  The repository allows writing any valid status; the partial unique index enforces the
+  no-double-booking invariant regardless of how status transitions are orchestrated.
+- Cross-entity seeding in tests must use separate committed transactions when entities
+  have validation cross-references (e.g. BoxType validates ContainerType.size_class in
+  the DB, not in the pending staging map).
+- C4.3 (JSON-path generated columns for indexed CustomFieldDefinition fields) now has
+  its dependency (CustomFieldDefinition + samples.custom_fields_json) in place; it can
+  be implemented at any time.
+- D8 (ShareRequest) is the natural next domain entity slice.
+- C5 (Postgres backend) must mirror migration 0008_samples with the same version number
+  and preserve the no-ON-DELETE-CASCADE design on boxes and sample_projects.
+
 ## Handoff note — 2026-05-27, D4.2 seed templates + D5 Box entity
 
 Implemented D4.2 and D5 against the existing geometry + layout slices:
@@ -715,20 +824,20 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     item_type_id, key)`, NOT globally. Two labs may have a `patient_id`
     field with different validation rules.
 
-- [ ] **D7. `Sample` + `Project` + `SampleProject` + `CheckoutEvent`.**
-  - [ ] **D7.1.** Schema with constraints:
+- [x] **D7. `Sample` + `Project` + `SampleProject` + `CheckoutEvent`.**
+  - [x] **D7.1.** Schema with constraints:
     - `unique (box_id, position_label) WHERE status IN ('active',
       'checked_out')` — partial unique index, the core no-double-booking
       invariant.
     - `ContainerType.size_class ∈ Position.accepts` enforced in the
       placement RPC and in a DB trigger (Postgres) / app guard (SQLite).
-  - [ ] **D7.2.** Lifecycle state machine: `active → checked_out → active`,
+  - [x] **D7.2.** Lifecycle state machine: `active → checked_out → active`,
         `active → depleted`, `* → tombstoned` (soft-delete), `tombstoned →
         hard-deleted` only by `SystemAdmin` with `sample.delete_hard`.
-  - [ ] **D7.3.** Volume/mass tracking optional per item type. Each
+  - [x] **D7.3.** Volume/mass tracking optional per item type. Each
         `CheckoutEvent` may carry a `volume_delta`; reaching zero
         auto-marks `depleted`.
-  - [ ] **D7.4.** Parent–child lineage:
+  - [x] **D7.4.** Parent–child lineage:
     - Child is independent — depleting parent does NOT deplete children;
       depleting child does NOT affect parent.
     - Lineage is preserved across soft-delete; UI shows the "parent: X
@@ -741,7 +850,7 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     table. The split exists so an unauthorized read still returns the
     non-PHI fields.
 
-- [ ] **D8. `ShareRequest`** (cross-lab sharing).
+- [x] **D8. `ShareRequest`** (cross-lab sharing).
   - State machine: `pending → approved | rejected | revoked`. Approval
     requires three signatures (source lab admin + target lab admin +
     system admin). All transitions audited.

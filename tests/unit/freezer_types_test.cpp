@@ -87,5 +87,14 @@ namespace fmgr::core {
       }
     }
 
+    TEST(FreezerTypesTest, ContainerKindRejectsEmptyString) {
+      EXPECT_FALSE(to_string(core::ContainerKind::Compartment).empty());
+      EXPECT_THROW(parse_container_kind(""), std::invalid_argument);
+    }
+
+    TEST(FreezerTypesTest, ContainerKindRejectsUnknownString) {
+      EXPECT_THROW(parse_container_kind("not_a_valid_kind"), std::invalid_argument);
+    }
+
   } // namespace
 } // namespace fmgr::core

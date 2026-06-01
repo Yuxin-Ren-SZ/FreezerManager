@@ -310,5 +310,43 @@ namespace fmgr::storage {
       EXPECT_EQ(backend().audit_event_count_for_tests(), baseline_count + 1U);
     }
 
+    TEST_F(SqliteLayoutRepositoryTest, StorageContainerChildrenStillVisibleAfterParentSoftDelete) {
+      const auto lab_entity = make_lab(8, "Lab H");
+      seed_lab(lab_entity);
+
+      const auto parent = make_container(90, lab_entity.id, std::nullopt);
+      const auto child = make_container(91, lab_entity.id, parent.id);
+
+      {
+        auto transaction = backend().begin(IsolationLevel::Serializable);
+        transaction->repo<core::StorageContainer>().insert(parent, mutation_context());
+        transaction->repo<core::StorageContainer>().insert(child, mutation_context());
+        transaction->commit();
+      }
+
+      {
+        auto transaction = backend().begin(IsolationLevel::Serializable);
+        transaction->repo<core::StorageContainer>().soft_delete(parent.id, mutation_context());
+        transaction->commit();
+      }
+
+      {
+        auto transaction = backend().begin(IsolationLevel::Serializable);
+        const auto children = transaction->repo<core::StorageContainer>().query(
+            Query<core::StorageContainer>::where(
+                field<core::StorageContainer, core::StorageContainerId>(
+                    core::StorageContainer::Field::ParentId) == parent.id));
+        ASSERT_EQ(children.size(), 1U);
+        EXPECT_EQ(children.front().id, child.id);
+      }
+
+      {
+        auto transaction = backend().begin(IsolationLevel::Serializable);
+        const auto found = transaction->repo<core::StorageContainer>().find_by_id(child.id);
+        ASSERT_TRUE(found.has_value());
+        EXPECT_EQ(found->id, child.id);
+      }
+    }
+
   } // namespace
 } // namespace fmgr::storage

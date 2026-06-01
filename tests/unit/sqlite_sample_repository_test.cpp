@@ -1,0 +1,1324 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+#include "core/box.h"
+#include "core/freezer.h"
+#include "core/identity.h"
+#include "core/item_type.h"
+#include "core/sample.h"
+#include "storage/BoxGeometryTraits.h"
+#include "storage/FreezerTraits.h"
+#include "storage/IdentityTraits.h"
+#include "storage/ItemTypeTraits.h"
+#include "storage/SampleTraits.h"
+#include "storage/sqlite/BoxGeometryRepositories.h"
+#include "storage/sqlite/IdentityRepositories.h"
+#include "storage/sqlite/ItemTypeRepositories.h"
+#include "storage/sqlite/LayoutRepositories.h"
+#include "storage/sqlite/SampleRepositories.h"
+#include "storage/sqlite/SqliteBackend.h"
+
+#include <gtest/gtest.h>
+
+#include <array>
+#include <cstdint>
+#include <filesystem>
+#include <optional>
+#include <string>
+#include <string_view>
+
+namespace fmgr::storage {
+  namespace {
+
+    [[nodiscard]] core::Uuid uuid_from_low(std::uint64_t low_bits) {
+      std::array<std::uint8_t, 16> bytes{};
+      for (std::size_t index = 0; index < 8; ++index) {
+        bytes.at(15 - index) = static_cast<std::uint8_t>((low_bits >> (index * 8U)) & 0xffU);
+      }
+      return core::Uuid(bytes);
+    }
+
+    template <typename StrongId> [[nodiscard]] StrongId id_from_low(std::uint64_t low_bits) {
+      return StrongId(uuid_from_low(low_bits));
+    }
+
+    [[nodiscard]] core::Timestamp ts(std::int64_t micros) {
+      return core::Timestamp::from_unix_micros(micros);
+    }
+
+    [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
+      const auto unique = std::to_string(static_cast<unsigned long long>(
+                              ::testing::UnitTest::GetInstance()->random_seed())) +
+                          "-" + std::to_string(reinterpret_cast<std::uintptr_t>(&suffix));
+      return std::filesystem::temp_directory_path() /
+             (std::string("freezermanager-sqlite-sample-") + unique + "-" + std::string(suffix) +
+              ".db");
+    }
+
+    void remove_sqlite_files(const std::filesystem::path& path) {
+      std::filesystem::remove(path);
+      std::filesystem::remove(path.string() + "-wal");
+      std::filesystem::remove(path.string() + "-shm");
+    }
+
+    [[nodiscard]] MutationContext mutation_context() {
+      return MutationContext{
+          .actor_user_id = id_from_low<core::UserId>(999),
+          .actor_session_id = "sample-test-session",
+          .request_id = "sample-test-request",
+          .reason = "sample repository test",
+      };
+    }
+
+    [[nodiscard]] core::Lab make_lab(std::uint64_t low_bits) {
+      return core::Lab{
+          .id = id_from_low<core::LabId>(low_bits),
+          .name = "Lab " + std::to_string(low_bits),
+          .contact = "lab@example.org",
+          .created_at = ts(100 + static_cast<std::int64_t>(low_bits)),
+          .settings_json = nlohmann::json::object(),
+      };
+    }
+
+    [[nodiscard]] core::User make_user(std::uint64_t low_bits, core::LabId lab_id) {
+      return core::User{
+          .id = id_from_low<core::UserId>(low_bits),
+          .primary_email = "user" + std::to_string(low_bits) + "@example.org",
+          .display_name = "Test User",
+          .status = core::UserStatus::Active,
+          .created_at = ts(200 + static_cast<std::int64_t>(low_bits)),
+          .auth_bindings = nlohmann::json::array({{{"provider", "local"}}}),
+          .default_lab_id = lab_id,
+      };
+    }
+
+    [[nodiscard]] core::ItemType make_item_type(std::uint64_t low_bits, core::LabId lab_id,
+                                                std::string name = "liquid") {
+      return core::ItemType{
+          .id = id_from_low<core::ItemTypeId>(low_bits),
+          .lab_id = lab_id,
+          .parent_id = std::nullopt,
+          .name = std::move(name),
+          .created_at = ts(300 + static_cast<std::int64_t>(low_bits)),
+      };
+    }
+
+    [[nodiscard]] core::ContainerType
+    make_container_type(std::uint64_t low_bits, core::LabId lab_id, std::string size_class) {
+      return core::ContainerType{
+          .id = id_from_low<core::ContainerTypeId>(low_bits),
+          .lab_id = lab_id,
+          .name = "Container " + std::to_string(low_bits),
+          .size_class = std::move(size_class),
+          .material = "polypropylene",
+          .supplier_sku = "SKU-" + std::to_string(low_bits),
+          .created_at = ts(400 + static_cast<std::int64_t>(low_bits)),
+      };
+    }
+
+    [[nodiscard]] core::BoxType make_box_type(std::uint64_t low_bits, core::LabId lab_id,
+                                              const std::string& size_class) {
+      return core::BoxType{
+          .id = id_from_low<core::BoxTypeId>(low_bits),
+          .lab_id = lab_id,
+          .name = "BoxType " + std::to_string(low_bits),
+          .manufacturer = "Generic",
+          .sku = "BT-" + std::to_string(low_bits),
+          .positions = {core::Position{.label = "A1", .row = 0, .col = 0, .accepts = {size_class}},
+                        core::Position{.label = "A2", .row = 0, .col = 1, .accepts = {size_class}}},
+          .created_at = ts(500 + static_cast<std::int64_t>(low_bits)),
+      };
+    }
+
+    [[nodiscard]] core::StorageContainer make_storage_container(std::uint64_t low_bits,
+                                                                core::LabId lab_id) {
+      return core::StorageContainer{
+          .id = id_from_low<core::StorageContainerId>(low_bits),
+          .lab_id = lab_id,
+          .parent_id = std::nullopt,
+          .kind = core::ContainerKind::Shelf,
+          .name = "Shelf " + std::to_string(low_bits),
+          .ordering_index = static_cast<int>(low_bits),
+          .created_at = ts(600 + static_cast<std::int64_t>(low_bits)),
+      };
+    }
+
+    [[nodiscard]] core::Box make_box(std::uint64_t low_bits, core::LabId lab_id,
+                                     core::BoxTypeId box_type_id,
+                                     core::StorageContainerId storage_container_id) {
+      return core::Box{
+          .id = id_from_low<core::BoxId>(low_bits),
+          .lab_id = lab_id,
+          .box_type_id = box_type_id,
+          .storage_container_id = storage_container_id,
+          .label = "Box " + std::to_string(low_bits),
+          .created_at = ts(700 + static_cast<std::int64_t>(low_bits)),
+      };
+    }
+
+    [[nodiscard]] core::Sample make_sample(std::uint64_t low_bits, core::LabId lab_id,
+                                           core::ItemTypeId item_type_id, core::UserId user_id) {
+      return core::Sample{
+          .id = id_from_low<core::SampleId>(low_bits),
+          .lab_id = lab_id,
+          .item_type_id = item_type_id,
+          .name = "Sample " + std::to_string(low_bits),
+          .barcode = std::nullopt,
+          .container_type_id = std::nullopt,
+          .box_id = std::nullopt,
+          .position_label = std::nullopt,
+          .volume_value = std::nullopt,
+          .volume_unit = std::nullopt,
+          .mass_value = std::nullopt,
+          .mass_unit = std::nullopt,
+          .status = core::SampleStatus::Active,
+          .parent_sample_id = std::nullopt,
+          .created_by = user_id,
+          .created_at = ts(800 + static_cast<std::int64_t>(low_bits)),
+          .last_modified_by = user_id,
+          .last_modified_at = ts(800 + static_cast<std::int64_t>(low_bits)),
+          .custom_fields_json = "{}",
+          .phi_fields_enc_json = "{}",
+      };
+    }
+
+    [[nodiscard]] core::Project make_project(std::uint64_t low_bits, core::LabId lab_id,
+                                             core::UserId owner_user_id) {
+      return core::Project{
+          .id = id_from_low<core::ProjectId>(low_bits),
+          .lab_id = lab_id,
+          .name = "Project " + std::to_string(low_bits),
+          .owner_user_id = owner_user_id,
+          .created_at = ts(900 + static_cast<std::int64_t>(low_bits)),
+      };
+    }
+
+    [[nodiscard]] core::CheckoutEvent make_event(std::uint64_t low_bits, core::SampleId sample_id,
+                                                 core::LabId lab_id, core::UserId user_id,
+                                                 core::CheckoutAction action) {
+      return core::CheckoutEvent{
+          .id = id_from_low<core::CheckoutEventId>(low_bits),
+          .sample_id = sample_id,
+          .lab_id = lab_id,
+          .user_id = user_id,
+          .action = action,
+          .reason = "test event",
+          .at = ts(1000 + static_cast<std::int64_t>(low_bits)),
+          .volume_delta = std::nullopt,
+          .volume_unit = std::nullopt,
+          .location_after = std::nullopt,
+      };
+    }
+
+    // Full seed result used by tests that need box geometry.
+    struct BoxSeedResult {
+      core::LabId lab_id;
+      core::UserId user_id;
+      core::ItemTypeId item_type_id;
+      core::ContainerTypeId container_type_id;
+      std::string size_class;
+      core::BoxTypeId box_type_id;
+      core::StorageContainerId storage_container_id;
+      core::BoxId box_id;
+    };
+
+    class SqliteSampleRepositoryTest : public ::testing::Test {
+    protected:
+      SqliteSampleRepositoryTest()
+          : db_path_(sqlite_test_path("sample-repo")),
+            backend_(SqliteBackendOptions{.database_path = db_path_.string()}) {
+        register_identity_repositories(backend_);
+        register_layout_repositories(backend_);
+        register_box_geometry_repositories(backend_);
+        register_box_repositories(backend_);
+        register_item_type_repositories(backend_);
+        register_sample_repositories(backend_);
+      }
+
+      void SetUp() override {
+        remove_sqlite_files(db_path_);
+        backend_.migrate_to_latest();
+      }
+
+      void TearDown() override {
+        remove_sqlite_files(db_path_);
+      }
+
+      [[nodiscard]] SqliteBackend& backend() {
+        return backend_;
+      }
+
+      [[nodiscard]] core::LabId seed_lab(std::uint64_t low_bits) {
+        const auto lab = make_lab(low_bits);
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Lab>().insert(lab, mutation_context());
+        txn->commit();
+        return lab.id;
+      }
+
+      [[nodiscard]] core::UserId seed_user(std::uint64_t low_bits, core::LabId lab_id) {
+        const auto user = make_user(low_bits, lab_id);
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::User>().insert(user, mutation_context());
+        txn->commit();
+        return user.id;
+      }
+
+      [[nodiscard]] core::ItemTypeId seed_item_type(std::uint64_t low_bits, core::LabId lab_id,
+                                                    std::string name = "liquid") {
+        const auto item_type = make_item_type(low_bits, lab_id, std::move(name));
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::ItemType>().insert(item_type, mutation_context());
+        txn->commit();
+        return item_type.id;
+      }
+
+      [[nodiscard]] BoxSeedResult seed_box_prereqs(std::uint64_t base_low) {
+        // Each cross-referencing entity is in its own committed transaction because
+        // validation queries committed rows (e.g. BoxType checks ContainerType.size_class).
+        const auto lab = make_lab(base_low);
+        const auto user = make_user(base_low + 1, lab.id);
+        const auto item_type = make_item_type(base_low + 2, lab.id);
+        const std::string size_class = "cryovial_2ml";
+        const auto container_type = make_container_type(base_low + 3, lab.id, size_class);
+        const auto box_type = make_box_type(base_low + 4, lab.id, size_class);
+        const auto storage_container = make_storage_container(base_low + 5, lab.id);
+        const auto box = make_box(base_low + 6, lab.id, box_type.id, storage_container.id);
+        {
+          auto txn = backend().begin(IsolationLevel::Serializable);
+          txn->repo<core::Lab>().insert(lab, mutation_context());
+          txn->repo<core::User>().insert(user, mutation_context());
+          txn->repo<core::ItemType>().insert(item_type, mutation_context());
+          txn->commit();
+        }
+        {
+          auto txn = backend().begin(IsolationLevel::Serializable);
+          txn->repo<core::ContainerType>().insert(container_type, mutation_context());
+          txn->commit();
+        }
+        {
+          auto txn = backend().begin(IsolationLevel::Serializable);
+          txn->repo<core::BoxType>().insert(box_type, mutation_context());
+          txn->commit();
+        }
+        {
+          auto txn = backend().begin(IsolationLevel::Serializable);
+          txn->repo<core::StorageContainer>().insert(storage_container, mutation_context());
+          txn->commit();
+        }
+        {
+          auto txn = backend().begin(IsolationLevel::Serializable);
+          txn->repo<core::Box>().insert(box, mutation_context());
+          txn->commit();
+        }
+        return BoxSeedResult{
+            .lab_id = lab.id,
+            .user_id = user.id,
+            .item_type_id = item_type.id,
+            .container_type_id = container_type.id,
+            .size_class = size_class,
+            .box_type_id = box_type.id,
+            .storage_container_id = storage_container.id,
+            .box_id = box.id,
+        };
+      }
+
+    private:
+      std::filesystem::path db_path_;
+      SqliteBackend backend_;
+    };
+
+    // ---- Sample CRUD ----
+
+    TEST_F(SqliteSampleRepositoryTest, SampleInsertAndFindById) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::Sample>().find_by_id(sample.id);
+        txn->commit();
+        ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found.value(), sample);
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleDuplicateIdThrowsUniqueViolation) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      txn->repo<core::Sample>().insert(sample, mutation_context());
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()), UniqueViolation);
+      txn->rollback();
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleUpdateChangesFields) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      auto updated = sample;
+      updated.name = "Updated Name";
+      updated.volume_value = 100;
+      updated.volume_unit = core::VolumeUnit::Microliter;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().update(updated, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::Sample>().find_by_id(sample.id);
+        txn->commit();
+        ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found.value().name, "Updated Name");
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found.value().volume_value, 100);
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleSoftDeleteSetsTombstoneAndExcludesFromQuery) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().soft_delete(sample.id, mutation_context());
+        txn->commit();
+      }
+
+      // Default query excludes tombstoned.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>{});
+        txn->commit();
+        EXPECT_TRUE(results.empty());
+      }
+      // include_tombstoned() finds the row.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::Sample>().query(Query<core::Sample>{}.include_tombstoned());
+        txn->commit();
+        ASSERT_EQ(results.size(), 1U);
+        EXPECT_EQ(results.front().status, core::SampleStatus::Tombstoned);
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, TombstonedSampleVacatesPosition) {
+      // After soft-delete, the position slot is free for another sample.
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.box_id = box_id;
+      s1.position_label = "A1";
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->commit();
+      }
+      // Soft-delete frees the position.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().soft_delete(s1.id, mutation_context());
+        txn->commit();
+      }
+      // A second sample can now occupy A1.
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.box_id = box_id;
+      s2.position_label = "A1";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::Sample>().find_by_id(s2.id);
+        txn->commit();
+        ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found.value().position_label, "A1");
+      }
+    }
+
+    // ---- Sample validation ----
+
+    TEST_F(SqliteSampleRepositoryTest, SampleEmptyNameThrows) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.name = "";
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ConstraintViolation);
+      txn->rollback();
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleBadItemTypeIdThrows) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      // item_type_id references a non-existent ItemType.
+      auto sample = make_sample(10, lab_id, id_from_low<core::ItemTypeId>(9999), user_id);
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ConstraintViolation);
+      txn->rollback();
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleBadBoxIdThrows) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      // box_id references a non-existent Box.
+      sample.box_id = id_from_low<core::BoxId>(9999);
+      sample.position_label = "A1";
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ConstraintViolation);
+      txn->rollback();
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleBadPositionLabelThrows) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.box_id = box_id;
+      sample.position_label = "Z99"; // does not exist in BoxType
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ConstraintViolation);
+      txn->rollback();
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleWrongSizeClassThrows) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)size_class;
+      (void)bt_id;
+
+      // Create a second ContainerType with a different size_class.
+      const auto wrong_ct = make_container_type(200, lab_id, "tube_50ml");
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::ContainerType>().insert(wrong_ct, mutation_context());
+        txn->commit();
+      }
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.box_id = box_id;
+      sample.position_label = "A1";
+      sample.container_type_id = wrong_ct.id; // size_class "tube_50ml" not accepted at A1
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ConstraintViolation);
+      txn->rollback();
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleCorrectSizeClassSucceeds) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)bt_id;
+      (void)size_class;
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.box_id = box_id;
+      sample.position_label = "A1";
+      sample.container_type_id = ct_id; // size_class matches A1 accepts list
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::Sample>().find_by_id(sample.id);
+        txn->commit();
+        ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found.value().container_type_id, ct_id);
+      }
+    }
+
+    // ---- No-double-booking invariant ----
+
+    TEST_F(SqliteSampleRepositoryTest, NoDoubleBooking) {
+      // Two active samples cannot occupy the same box + position.
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.box_id = box_id;
+      s1.position_label = "A1";
+
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.box_id = box_id;
+      s2.position_label = "A1";
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        EXPECT_THROW(txn->commit(), UniqueViolation);
+        txn->rollback();
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, DifferentPositionsSameBoxAllowed) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.box_id = box_id;
+      s1.position_label = "A1";
+
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.box_id = box_id;
+      s2.position_label = "A2";
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_TRUE(txn->repo<core::Sample>().find_by_id(s1.id).has_value());
+        EXPECT_TRUE(txn->repo<core::Sample>().find_by_id(s2.id).has_value());
+        txn->commit();
+      }
+    }
+
+    // ---- Parent-child lineage ----
+
+    TEST_F(SqliteSampleRepositoryTest, ParentChildLineagePreservedAfterParentTombstone) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      const auto parent = make_sample(10, lab_id, it_id, user_id);
+
+      auto child = make_sample(11, lab_id, it_id, user_id);
+      child.parent_sample_id = parent.id;
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(parent, mutation_context());
+        txn->repo<core::Sample>().insert(child, mutation_context());
+        txn->commit();
+      }
+      // Soft-delete parent.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().soft_delete(parent.id, mutation_context());
+        txn->commit();
+      }
+      // Child still references the parent via parent_sample_id.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found_child = txn->repo<core::Sample>().find_by_id(child.id);
+        txn->commit();
+        ASSERT_TRUE(found_child.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found_child.value().parent_sample_id, parent.id);
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found_child.value().status, core::SampleStatus::Active);
+      }
+    }
+
+    // ---- Project CRUD ----
+
+    TEST_F(SqliteSampleRepositoryTest, ProjectInsertFindUpdateSoftDelete) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto project = make_project(10, lab_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Project>().insert(project, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::Project>().find_by_id(project.id);
+        txn->commit();
+        ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found.value(), project);
+      }
+
+      // Soft-delete hides from default query.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Project>().soft_delete(project.id, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results = txn->repo<core::Project>().query(Query<core::Project>{});
+        txn->commit();
+        EXPECT_TRUE(results.empty());
+      }
+      // include_tombstoned finds it.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::Project>().query(Query<core::Project>{}.include_tombstoned());
+        txn->commit();
+        ASSERT_EQ(results.size(), 1U);
+        EXPECT_TRUE(results.front().archived_at.has_value());
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, ProjectDuplicateNameInSameLabThrows) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto p1 = make_project(10, lab_id, user_id);
+      auto p2 = make_project(11, lab_id, user_id);
+      p2.name = p1.name; // same name, same lab
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Project>().insert(p1, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Project>().insert(p2, mutation_context());
+        EXPECT_THROW(txn->commit(), UniqueViolation);
+        txn->rollback();
+      }
+    }
+
+    // ---- SampleProject ----
+
+    TEST_F(SqliteSampleRepositoryTest, SampleProjectInsertFindQueryAndHardDelete) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+      const auto project = make_project(20, lab_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->repo<core::Project>().insert(project, mutation_context());
+        txn->commit();
+      }
+
+      const core::SampleProject sp{.sample_id = sample.id, .project_id = project.id};
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::SampleProject>().insert(sp, mutation_context());
+        txn->commit();
+      }
+
+      // find_by_id
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::SampleProject>().find_by_id(sp.id());
+        txn->commit();
+        ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found.value(), sp);
+      }
+
+      // query by sample_id
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::SampleProject>().query(Query<core::SampleProject>::where(
+                field<core::SampleProject, std::string>(core::SampleProject::Field::SampleId) ==
+                sample.id.to_string()));
+        txn->commit();
+        ASSERT_EQ(results.size(), 1U);
+        EXPECT_EQ(results.front().project_id, project.id);
+      }
+
+      // soft_delete (hard-deletes the link)
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::SampleProject>().soft_delete(sp.id(), mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::SampleProject>().find_by_id(sp.id());
+        txn->commit();
+        EXPECT_FALSE(found.has_value());
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleProjectDuplicateLinkThrows) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+      const auto project = make_project(20, lab_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->repo<core::Project>().insert(project, mutation_context());
+        txn->commit();
+      }
+
+      const core::SampleProject sp{.sample_id = sample.id, .project_id = project.id};
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::SampleProject>().insert(sp, mutation_context());
+        txn->commit();
+      }
+      // Second insert of same link throws UniqueViolation.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_THROW(txn->repo<core::SampleProject>().insert(sp, mutation_context()),
+                     UniqueViolation);
+        txn->rollback();
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleProjectUpdateThrowsUnsupportedOperation) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+      const auto project = make_project(20, lab_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->repo<core::Project>().insert(project, mutation_context());
+        txn->commit();
+      }
+
+      const core::SampleProject sp{.sample_id = sample.id, .project_id = project.id};
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::SampleProject>().update(sp, mutation_context()),
+                   UnsupportedOperation);
+      txn->rollback();
+    }
+
+    // ---- CheckoutEvent ----
+
+    TEST_F(SqliteSampleRepositoryTest, CheckoutEventInsertAndFindById) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      const auto event =
+          make_event(50, sample.id, lab_id, user_id, core::CheckoutAction::CheckedOut);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CheckoutEvent>().insert(event, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::CheckoutEvent>().find_by_id(event.id);
+        txn->commit();
+        ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found.value(), event);
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, CheckoutEventQueryBySampleId) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto s1 = make_sample(10, lab_id, it_id, user_id);
+      const auto s2 = make_sample(11, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->commit();
+      }
+
+      const auto e1 = make_event(50, s1.id, lab_id, user_id, core::CheckoutAction::CheckedOut);
+      const auto e2 = make_event(51, s1.id, lab_id, user_id, core::CheckoutAction::CheckedIn);
+      const auto e3 = make_event(52, s2.id, lab_id, user_id, core::CheckoutAction::CheckedOut);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CheckoutEvent>().insert(e1, mutation_context());
+        txn->repo<core::CheckoutEvent>().insert(e2, mutation_context());
+        txn->repo<core::CheckoutEvent>().insert(e3, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::CheckoutEvent>().query(Query<core::CheckoutEvent>::where(
+                field<core::CheckoutEvent, std::string>(core::CheckoutEvent::Field::SampleId) ==
+                s1.id.to_string()));
+        txn->commit();
+        EXPECT_EQ(results.size(), 2U);
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, CheckoutEventUpdateThrowsUnsupportedOperation) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      const auto event =
+          make_event(50, sample.id, lab_id, user_id, core::CheckoutAction::CheckedOut);
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::CheckoutEvent>().update(event, mutation_context()),
+                   UnsupportedOperation);
+      txn->rollback();
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, CheckoutEventSoftDeleteThrowsUnsupportedOperation) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      const auto event_id = id_from_low<core::CheckoutEventId>(50);
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::CheckoutEvent>().soft_delete(event_id, mutation_context()),
+                   UnsupportedOperation);
+      txn->rollback();
+    }
+
+    // ---- Phase 2: Query predicates ----
+
+    TEST_F(SqliteSampleRepositoryTest, SampleQuerySortByCreatedAt) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.created_at = ts(100);
+      s1.last_modified_at = ts(100);
+
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.created_at = ts(200);
+      s2.last_modified_at = ts(200);
+
+      auto s3 = make_sample(12, lab_id, it_id, user_id);
+      s3.created_at = ts(300);
+      s3.last_modified_at = ts(300);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->repo<core::Sample>().insert(s3, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::Sample>().query(Query<core::Sample>::all().order_by(
+                field<core::Sample, std::int64_t>(core::Sample::Field::CreatedAt)));
+        txn->commit();
+        ASSERT_EQ(results.size(), 3U);
+        EXPECT_EQ(results[0].created_at, ts(100));
+        EXPECT_EQ(results[1].created_at, ts(200));
+        EXPECT_EQ(results[2].created_at, ts(300));
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleQueryLimitAndOffset) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.name = "S1";
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.name = "S2";
+      auto s3 = make_sample(12, lab_id, it_id, user_id);
+      s3.name = "S3";
+      auto s4 = make_sample(13, lab_id, it_id, user_id);
+      s4.name = "S4";
+      auto s5 = make_sample(14, lab_id, it_id, user_id);
+      s5.name = "S5";
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->repo<core::Sample>().insert(s3, mutation_context());
+        txn->repo<core::Sample>().insert(s4, mutation_context());
+        txn->repo<core::Sample>().insert(s5, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results = txn->repo<core::Sample>().query(
+            Query<core::Sample>::all().limit(2).offset(1));
+        txn->commit();
+        EXPECT_EQ(results.size(), 2U);
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleQueryAndWhereMultiplePredicates) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.status = core::SampleStatus::Active;
+
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.status = core::SampleStatus::Tombstoned;
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->commit();
+      }
+      const std::string active_str("active");
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::Sample>().query(Query<core::Sample>::where(
+                field<core::Sample, std::string>(core::Sample::Field::LabId) ==
+                lab_id.to_string())
+                                              .and_where(field<core::Sample, std::string>(
+                                                             core::Sample::Field::Status) ==
+                                                         active_str));
+        txn->commit();
+        ASSERT_EQ(results.size(), 1U);
+        EXPECT_EQ(results.front().status, core::SampleStatus::Active);
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::Sample>().query(Query<core::Sample>::where(
+                field<core::Sample, std::string>(core::Sample::Field::LabId) ==
+                lab_id.to_string())
+                                              .include_tombstoned());
+        txn->commit();
+        EXPECT_EQ(results.size(), 2U);
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleFindByNonexistentIdReturnsEmpty) {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      const auto found =
+          txn->repo<core::Sample>().find_by_id(id_from_low<core::SampleId>(99999));
+      txn->commit();
+      EXPECT_FALSE(found.has_value());
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, CheckoutEventQuerySortByAtDescending) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      auto e1 = make_event(50, sample.id, lab_id, user_id, core::CheckoutAction::CheckedOut);
+      e1.at = ts(100);
+      auto e2 = make_event(51, sample.id, lab_id, user_id, core::CheckoutAction::CheckedIn);
+      e2.at = ts(200);
+      auto e3 = make_event(52, sample.id, lab_id, user_id, core::CheckoutAction::CheckedOut);
+      e3.at = ts(300);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CheckoutEvent>().insert(e1, mutation_context());
+        txn->repo<core::CheckoutEvent>().insert(e2, mutation_context());
+        txn->repo<core::CheckoutEvent>().insert(e3, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::CheckoutEvent>().query(Query<core::CheckoutEvent>::all().order_by(
+                field<core::CheckoutEvent, std::int64_t>(core::CheckoutEvent::Field::At),
+                SortDirection::Descending));
+        txn->commit();
+        ASSERT_FALSE(results.empty());
+        EXPECT_EQ(results.front().at, ts(300));
+      }
+    }
+
+    // ---- Phase 4: Audit ----
+
+    TEST_F(SqliteSampleRepositoryTest, SampleUpdateAppendsAuditEvent) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      const auto baseline = backend().audit_event_count_for_tests();
+
+      auto updated = sample;
+      updated.name = "Updated Name";
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().update(updated, mutation_context());
+        txn->commit();
+      }
+
+      EXPECT_EQ(backend().audit_event_count_for_tests(), baseline + 1U);
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleSoftDeleteAppendsAuditEvent) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      const auto baseline = backend().audit_event_count_for_tests();
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().soft_delete(sample.id, mutation_context());
+        txn->commit();
+      }
+
+      EXPECT_EQ(backend().audit_event_count_for_tests(), baseline + 1U);
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, MultipleMutationsInOneTransactionAppendMultipleAuditEvents) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      const auto baseline = backend().audit_event_count_for_tests();
+
+      const auto s1 = make_sample(10, lab_id, it_id, user_id);
+      const auto s2 = make_sample(11, lab_id, it_id, user_id);
+      const auto s3 = make_sample(12, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->repo<core::Sample>().insert(s3, mutation_context());
+        txn->commit();
+      }
+
+      EXPECT_EQ(backend().audit_event_count_for_tests(), baseline + 3U);
+    }
+
+    // ---- Phase 5: Concurrency ----
+
+    TEST_F(SqliteSampleRepositoryTest, ConcurrentSampleUpdateSerializesConflicts) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.name = "original";
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      auto updated_a = sample;
+      updated_a.name = "alice";
+
+      auto updated_b = sample;
+      updated_b.name = "bob";
+
+      auto txn_a = backend().begin(IsolationLevel::Serializable);
+      const auto read_a = txn_a->repo<core::Sample>().find_by_id(sample.id);
+      ASSERT_TRUE(read_a.has_value());
+      txn_a->repo<core::Sample>().update(updated_a, mutation_context());
+      // Do NOT commit txn_a yet.
+
+      {
+        auto txn_b = backend().begin(IsolationLevel::Serializable);
+        const auto read_b = txn_b->repo<core::Sample>().find_by_id(sample.id);
+        ASSERT_TRUE(read_b.has_value());
+        txn_b->repo<core::Sample>().update(updated_b, mutation_context());
+        txn_b->commit();
+      }
+
+      // Last writer wins: txn_a commits after txn_b.
+      EXPECT_NO_THROW(txn_a->commit());
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto final_result = txn->repo<core::Sample>().find_by_id(sample.id);
+        txn->commit();
+        ASSERT_TRUE(final_result.has_value());
+        EXPECT_EQ(final_result->name, "alice");
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, ConcurrentSoftDeleteAndReadShowsSnapshotIsolation) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto s1 = make_sample(10, lab_id, it_id, user_id);
+
+      // Txn A: insert s1 and commit.
+      {
+        auto txn_a = backend().begin(IsolationLevel::Serializable);
+        txn_a->repo<core::Sample>().insert(s1, mutation_context());
+        txn_a->commit();
+      }
+
+      // Verify s1 is visible in a new transaction.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>::all());
+        txn->commit();
+        ASSERT_EQ(results.size(), 1U);
+      }
+
+      // Txn A: soft_delete s1 and commit.
+      {
+        auto txn_a = backend().begin(IsolationLevel::Serializable);
+        const auto read_a = txn_a->repo<core::Sample>().find_by_id(s1.id);
+        ASSERT_TRUE(read_a.has_value());
+        txn_a->repo<core::Sample>().soft_delete(s1.id, mutation_context());
+        txn_a->commit();
+      }
+
+      // After soft-delete commits, default query returns empty.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>::all());
+        txn->commit();
+        EXPECT_TRUE(results.empty());
+      }
+
+      // include_tombstoned finds the soft-deleted sample.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::Sample>().query(Query<core::Sample>::all().include_tombstoned());
+        txn->commit();
+        ASSERT_EQ(results.size(), 1U);
+        EXPECT_EQ(results.front().status, core::SampleStatus::Tombstoned);
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, ConcurrentCheckoutEventInsertsBothSucceed) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      const auto e1 =
+          make_event(50, sample.id, lab_id, user_id, core::CheckoutAction::CheckedOut);
+      const auto e2 =
+          make_event(51, sample.id, lab_id, user_id, core::CheckoutAction::CheckedIn);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CheckoutEvent>().insert(e1, mutation_context());
+        txn->repo<core::CheckoutEvent>().insert(e2, mutation_context());
+        txn->commit();
+      }
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::CheckoutEvent>().query(Query<core::CheckoutEvent>::where(
+                field<core::CheckoutEvent, std::string>(
+                    core::CheckoutEvent::Field::SampleId) ==
+                sample.id.to_string()));
+        txn->commit();
+        EXPECT_EQ(results.size(), 2U);
+      }
+    }
+
+  } // namespace
+} // namespace fmgr::storage

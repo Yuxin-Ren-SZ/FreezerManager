@@ -102,5 +102,53 @@ namespace fmgr::storage {
       EXPECT_THROW(backend.migrate_to_latest(), MigrationFailure);
     }
 
+    TEST(SqliteBackend, MigrationOrderingEnforced) {
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = ":memory:",
+          .migrations =
+              {
+                  SqliteMigration{
+                      .version = 1,
+                      .name = "v1",
+                      .up_sql = "CREATE TABLE v1 (id INTEGER PRIMARY KEY);",
+                  },
+                  SqliteMigration{
+                      .version = 2,
+                      .name = "v2",
+                      .up_sql = "CREATE TABLE v2 (id INTEGER PRIMARY KEY);",
+                  },
+                  SqliteMigration{
+                      .version = 2,
+                      .name = "v2_duplicate",
+                      .up_sql = "CREATE TABLE v2_dup (id INTEGER PRIMARY KEY);",
+                  },
+              },
+      });
+      EXPECT_THROW(backend.migrate_to_latest(), MigrationFailure);
+    }
+
+    TEST(SqliteBackend, DowngradePastZeroRejected) {
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = ":memory:",
+          .migrations =
+              {
+                  SqliteMigration{
+                      .version = 1,
+                      .name = "test_schema",
+                      .up_sql = "CREATE TABLE test_schema (id INTEGER PRIMARY KEY);",
+                  },
+              },
+      });
+      backend.migrate_to_latest();
+      EXPECT_EQ(backend.current_version(), SchemaVersion{1});
+
+      backend.downgrade_to_zero_for_tests();
+      EXPECT_EQ(backend.current_version(), SchemaVersion{0});
+
+      // Calling downgrade_to_zero_for_tests again is a no-op; version stays at zero.
+      backend.downgrade_to_zero_for_tests();
+      EXPECT_EQ(backend.current_version(), SchemaVersion{0});
+    }
+
   } // namespace
 } // namespace fmgr::storage

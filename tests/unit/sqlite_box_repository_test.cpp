@@ -382,4 +382,42 @@ namespace fmgr::storage {
     EXPECT_EQ(results.size(), 2U);
   }
 
+  TEST_F(SqliteBoxRepositoryTest, BoxDuplicateLabelInSameLabThrows) {
+    const auto [lab_id, box_type_id, sc_id] = seed_lab_with_prereqs(9);
+    auto b1 = make_box(10, lab_id, box_type_id, sc_id);
+    b1.label = "dup";
+    auto b2 = make_box(11, lab_id, box_type_id, sc_id);
+    b2.label = "dup";
+
+    auto txn = backend().begin(IsolationLevel::Serializable);
+    txn->repo<core::Box>().insert(b1, mutation_context());
+    txn->repo<core::Box>().insert(b2, mutation_context());
+    EXPECT_THROW(txn->commit(), UniqueViolation);
+  }
+
+  TEST_F(SqliteBoxRepositoryTest, BoxQuerySortAndLimit) {
+    const auto [lab_id, box_type_id, sc_id] = seed_lab_with_prereqs(10);
+    auto box_b = make_box(12, lab_id, box_type_id, sc_id);
+    box_b.label = "Box B";
+    auto box_a = make_box(13, lab_id, box_type_id, sc_id);
+    box_a.label = "Box A";
+
+    {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      txn->repo<core::Box>().insert(box_b, mutation_context());
+      txn->repo<core::Box>().insert(box_a, mutation_context());
+      txn->commit();
+    }
+
+    auto txn = backend().begin(IsolationLevel::Serializable);
+    const auto results = txn->repo<core::Box>().query(
+        Query<core::Box>::where(
+            field<core::Box, core::LabId>(core::Box::Field::LabId) == lab_id)
+            .order_by(field<core::Box, std::string>(core::Box::Field::Label))
+            .limit(1));
+    txn->commit();
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_EQ(results.front().label, "Box A");
+  }
+
 } // namespace fmgr::storage

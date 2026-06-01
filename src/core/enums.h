@@ -49,6 +49,10 @@ namespace fmgr::core {
 
   enum class UserStatus : std::uint8_t { Active, Disabled };
 
+  enum class ShareRequestStatus : std::uint8_t { Pending, Approved, Rejected, Revoked };
+
+  enum class ShareApprovalRole : std::uint8_t { SourceAdmin, TargetAdmin, SystemAdmin };
+
   [[nodiscard]] inline std::string_view to_string(SampleStatus status) {
     switch (status) {
     case SampleStatus::Active:
@@ -232,6 +236,75 @@ namespace fmgr::core {
   }
   inline void from_json(const nlohmann::json& json, UserStatus& status) {
     status = parse_user_status(json.get<std::string>());
+  }
+
+  [[nodiscard]] inline std::string_view to_string(ShareRequestStatus status) {
+    switch (status) {
+    case ShareRequestStatus::Pending:
+      return "pending";
+    case ShareRequestStatus::Approved:
+      return "approved";
+    case ShareRequestStatus::Rejected:
+      return "rejected";
+    case ShareRequestStatus::Revoked:
+      return "revoked";
+    }
+    throw std::invalid_argument("unknown share request status");
+  }
+
+  [[nodiscard]] inline ShareRequestStatus parse_share_request_status(std::string_view text) {
+    if (text == "pending") {
+      return ShareRequestStatus::Pending;
+    }
+    if (text == "approved") {
+      return ShareRequestStatus::Approved;
+    }
+    if (text == "rejected") {
+      return ShareRequestStatus::Rejected;
+    }
+    if (text == "revoked") {
+      return ShareRequestStatus::Revoked;
+    }
+    throw std::invalid_argument("unknown share request status");
+  }
+
+  inline void to_json(nlohmann::json& json, ShareRequestStatus status) {
+    json = std::string(to_string(status));
+  }
+  inline void from_json(const nlohmann::json& json, ShareRequestStatus& status) {
+    status = parse_share_request_status(json.get<std::string>());
+  }
+
+  [[nodiscard]] inline std::string_view to_string(ShareApprovalRole role) {
+    switch (role) {
+    case ShareApprovalRole::SourceAdmin:
+      return "source_admin";
+    case ShareApprovalRole::TargetAdmin:
+      return "target_admin";
+    case ShareApprovalRole::SystemAdmin:
+      return "system_admin";
+    }
+    throw std::invalid_argument("unknown share approval role");
+  }
+
+  [[nodiscard]] inline ShareApprovalRole parse_share_approval_role(std::string_view text) {
+    if (text == "source_admin") {
+      return ShareApprovalRole::SourceAdmin;
+    }
+    if (text == "target_admin") {
+      return ShareApprovalRole::TargetAdmin;
+    }
+    if (text == "system_admin") {
+      return ShareApprovalRole::SystemAdmin;
+    }
+    throw std::invalid_argument("unknown share approval role");
+  }
+
+  inline void to_json(nlohmann::json& json, ShareApprovalRole role) {
+    json = std::string(to_string(role));
+  }
+  inline void from_json(const nlohmann::json& json, ShareApprovalRole& role) {
+    role = parse_share_approval_role(json.get<std::string>());
   }
 
 } // namespace fmgr::core

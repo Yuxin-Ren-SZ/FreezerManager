@@ -166,5 +166,49 @@ namespace fmgr::core {
       EXPECT_EQ(errors.size(), 2U);
     }
 
+    TEST(CustomFieldValidatorTest, DateFieldAcceptsIso8601String) {
+      const auto def = make_def("dob", FieldDataType::Date);
+      const auto fields = nlohmann::json{{"dob", "2024-01-15"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, DateFieldRejectsNonString) {
+      const auto def = make_def("dob", FieldDataType::Date);
+      const auto fields = nlohmann::json{{"dob", 2024}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "dob");
+    }
+
+    TEST(CustomFieldValidatorTest, DatetimeFieldAcceptsIso8601String) {
+      const auto def = make_def("updated_at", FieldDataType::Datetime);
+      const auto fields = nlohmann::json{{"updated_at", "2024-01-15T10:30:00Z"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, DatetimeFieldRejectsNonString) {
+      const auto def = make_def("updated_at", FieldDataType::Datetime);
+      const auto fields = nlohmann::json{{"updated_at", 123456}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+    }
+
+    TEST(CustomFieldValidatorTest, FloatFieldExceedsMaxProducesError) {
+      const auto def = make_def("score", FieldDataType::Float, false, R"({"max":100.0})");
+      const auto fields = nlohmann::json{{"score", 150.0}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "score");
+    }
+
+    TEST(CustomFieldValidatorTest, BoolFieldGivenNullPassesSilently) {
+      const auto def = make_def("active", FieldDataType::Bool);
+      const auto fields = nlohmann::json{{"active", nullptr}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
   } // namespace
 } // namespace fmgr::core

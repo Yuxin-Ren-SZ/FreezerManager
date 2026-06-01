@@ -24,6 +24,8 @@ add_library(
   sqlite/ItemTypeRepositories.cc
   sqlite/LayoutRepositories.cc
   sqlite/RoleRepositories.cc
+  sqlite/SampleRepositories.cc
+  sqlite/ShareRequestRepositories.cc
   sqlite/SqliteBackend.cc
 )
 add_library(FreezerManager::storage_sqlite ALIAS freezermanager_storage_sqlite)

@@ -10,7 +10,9 @@ add_executable(
   item_types_test.cpp
   permission_catalog_test.cpp
   role_types_test.cpp
+  sample_types_test.cpp
   seed_templates_test.cpp
+  share_request_types_test.cpp
 )
 target_link_libraries(
   freezermanager_core_unit_tests
@@ -41,6 +43,8 @@ add_executable(
   sqlite_item_type_repository_test.cpp
   sqlite_layout_repository_test.cpp
   sqlite_role_repository_test.cpp
+  sqlite_sample_repository_test.cpp
+  sqlite_share_request_repository_test.cpp
 )
 target_link_libraries(
   freezermanager_sqlite_storage_unit_tests
