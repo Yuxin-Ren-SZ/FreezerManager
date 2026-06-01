@@ -25,6 +25,7 @@ add_library(
   sqlite/LayoutRepositories.cc
   sqlite/RoleRepositories.cc
   sqlite/SampleRepositories.cc
+  sqlite/SessionRepositories.cc
   sqlite/ShareRequestRepositories.cc
   sqlite/SqliteBackend.cc
 )

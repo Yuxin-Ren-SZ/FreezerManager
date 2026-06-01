@@ -6,6 +6,65 @@ single developer or agent in a few hours to a few days. Cross-module
 dependencies are called out explicitly under **⚠ Watch** so that earlier
 tasks are not "finished" in a way that boxes in later ones.
 
+## Handoff note — 2026-05-31, D9 Session entity + ApiToken
+
+Implemented D9 server-side session and API-token domain slice:
+
+- `src/core/ids.h` adds `ApiTokenIdTag` and `ApiTokenId` (SessionId was already present).
+- `src/core/session.h` defines `Session` (id, user_id, token_hash, token_prefix,
+  created_at, last_seen_at, ip, user_agent, revoked_at) and `ApiToken` (id, user_id,
+  lab_id, name, scope_json, token_hash, token_prefix, created_at, expires_at, revoked_at)
+  with JSON serialization. Both use a token_hash/token_prefix scheme: the auth layer
+  Argon2id-hashes the full random token and stores only the hash; the prefix is plaintext
+  for O(log n) lookup. Rate-limiting last_seen_at updates is the auth layer's responsibility;
+  the repository stores whatever it is given.
+- `src/storage/SessionTraits.h` adds `EntityTraits<Session>` and `EntityTraits<ApiToken>`,
+  both using `Field::RevokedAt` as the tombstone field.
+- SQLite migration `0010_sessions` creates `sessions` and `api_tokens` tables.
+  Key constraint: partial unique index `ON sessions(token_prefix) WHERE revoked_at_micros IS NULL`
+  (enforced at commit/flush time, not at stage_insert time). No ON DELETE CASCADE;
+  tombstone propagation is application-level.
+- `src/storage/sqlite/SessionRepositories.{h,cc}` adds `SessionRepository` and
+  `ApiTokenRepository`. Default query filter: `WHERE revoked_at_micros IS NULL`. soft_delete()
+  sets `revoked_at_micros = now()`. ApiTokenRepository additionally accepts optional lab_id (null
+  = system-level token).
+- `src/storage/CMakeLists.txt` adds `SessionRepositories.cc` to the sqlite library target.
+
+Verification completed locally:
+
+- `cmake --build --preset dev`
+- `ctest --preset dev -j1` — 259/259 tests passed (up from 229, +30 new session/API-token tests).
+- `clang-format --dry-run --Werror` on all new/changed C++ files — clean.
+- `clang-tidy -p out/build/dev src/storage/sqlite/SessionRepositories.cc` — exit 0, no errors.
+- `tools/check-spdx-headers.sh` — all new C++/SQL files carry the AGPL header.
+- `git diff --check` — no trailing whitespace.
+
+Handoff notes:
+
+- D9.1 (schema/types/repos) is complete. D9.2 (RPCs: list_my_sessions, revoke_session,
+  revoke_all_sessions) is deferred to F2 (gRPC layer). D9.3 (auto-expire idle sessions)
+  should be enforced in the auth middleware (E3), not in the repository.
+- The token_prefix partial unique index fires at commit time, not at stage_insert. Tests that
+  verify prefix collision are structured to EXPECT_THROW(txn->commit(), UniqueViolation) rather
+  than wrapping insert().
+- E1 (IAuthProvider interface) is the natural next slice — it can now reference Session and
+  ApiToken as concrete types. E2 (LocalAuthProvider) follows.
+- C5 (Postgres backend) must mirror migration 0010_sessions with the same version number
+  and preserve the no-ON-DELETE-CASCADE design.
+
+## Handoff note — 2026-05-31, D4/D6 checkbox cleanup
+
+Ticked D4 outer checkbox (D4.1 and D4.2 were both complete but outer was left
+open) and all D6.* checkboxes (ItemType, CustomFieldDefinition, validator engine,
+and is_phi flag all implemented in the D6 commit). D6.4 note: the schema column
+and type flag are in place; enforcement (routing phi fields through the encryption
+layer) is deferred to H3 (PHI/KMS section). No code changes — bookkeeping only.
+
+D9 (Session entity) is the next domain slice. It is a blocker for E1 (IAuthProvider
+interface) because the auth layer needs to store and validate opaque server-side
+sessions and API tokens. Recommended implementation order: D9 → E5.1 (audit
+schema) → E1 → E2 (LocalAuthProvider) → E3 (RBAC middleware).
+
 ## Handoff note — 2026-05-31, D8 ShareRequest + ShareRequestApproval
 
 Implemented D8 cross-lab share-request workflow:
@@ -792,7 +851,7 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 - [x] **D3. `Freezer` and `StorageContainer`** (recursive). Adjacency-list
       with ordered children. Capacity hints are advisory only.
 
-- [ ] **D4. `ContainerType` and `BoxType` + `Position`.** A `BoxType`
+- [x] **D4. `ContainerType` and `BoxType` + `Position`.** A `BoxType`
       carries a list of positions; each position has `(label, row, col,
       optional z, accepts: list<size_class>)`.
   - [x] **D4.1.** Validation: position labels unique within a BoxType;
@@ -808,18 +867,19 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     via tombstone propagation. **Never hard-cascade physical containers —
     you'd lose audit history of where samples used to live.**
 
-- [ ] **D6. `ItemType` (hierarchical) + `CustomFieldDefinition`.**
-  - [ ] **D6.1.** `ItemType` adjacency-list; cycle prevention enforced at
+- [x] **D6. `ItemType` (hierarchical) + `CustomFieldDefinition`.**
+  - [x] **D6.1.** `ItemType` adjacency-list; cycle prevention enforced at
         write time AND by a DB-level trigger (Postgres) / app guard (SQLite).
-  - [ ] **D6.2.** `CustomFieldDefinition.scope = (lab_id, scope_kind,
+  - [x] **D6.2.** `CustomFieldDefinition.scope = (lab_id, scope_kind,
         item_type_id_nullable)`. Inherited from ancestors; a descendant may
         narrow validation but not remove a required ancestor field.
-  - [ ] **D6.3.** Validator engine (`src/core/custom_field_validator.h`)
+  - [x] **D6.3.** Validator engine (`src/core/custom_field_validator.h`)
         that turns a definition into a per-write check. Supported types:
         `string`, `int`, `float`, `bool`, `date`, `datetime`, `enum`,
         `reference` (FK to another sample by ID).
-  - [ ] **D6.4.** **`is_phi: true`** flag routes the field through the
+  - [x] **D6.4.** **`is_phi: true`** flag routes the field through the
         encryption layer (Section H) and the redaction layer (Section L).
+        (Schema and type support implemented; enforcement deferred to H3.)
   - **⚠ Watch:** field key uniqueness is enforced per `(lab_id, scope_kind,
     item_type_id, key)`, NOT globally. Two labs may have a `patient_id`
     field with different validation rules.
@@ -861,14 +921,17 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 
 - [ ] **D9. `Session` entity & device tracking.** PRD §7.1 requires
       server-side opaque sessions but no schema task currently exists.
-  - [ ] **D9.1.** Schema: `(id, user_id, token_hash, created_at,
+  - [x] **D9.1.** Schema: `(id, user_id, token_hash, created_at,
         last_seen_at, ip_inet, user_agent, revoked_at)`. Token stored
         as Argon2id hash; only the prefix is plaintext for lookup.
+        Also includes `ApiToken` (id, user_id, lab_id, name, scope_json,
+        token_hash, token_prefix, expires_at, revoked_at).
   - [ ] **D9.2.** RPCs: `list_my_sessions`, `revoke_session(id)`,
         `revoke_all_sessions` ("log me out everywhere"). All audited.
+        Deferred to F2 (gRPC layer).
   - [ ] **D9.3.** Auto-expire idle sessions (configurable; default 12 h
-        idle / 7 d absolute). Last-seen update is rate-limited to once
-        per minute to avoid write amplification.
+        idle / 7 d absolute). Last-seen update rate-limited in auth
+        middleware (E3); repository stores whatever it is given.
   - **⚠ Watch:** revoking a session must take effect within one
     request — caches keyed on session id must consult the revocation
     flag, not just TTL.

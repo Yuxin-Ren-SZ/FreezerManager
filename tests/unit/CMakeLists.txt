@@ -12,6 +12,7 @@ add_executable(
   role_types_test.cpp
   sample_types_test.cpp
   seed_templates_test.cpp
+  session_types_test.cpp
   share_request_types_test.cpp
 )
 target_link_libraries(
@@ -44,6 +45,7 @@ add_executable(
   sqlite_layout_repository_test.cpp
   sqlite_role_repository_test.cpp
   sqlite_sample_repository_test.cpp
+  sqlite_session_repository_test.cpp
   sqlite_share_request_repository_test.cpp
 )
 target_link_libraries(

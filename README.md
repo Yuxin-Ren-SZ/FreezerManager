@@ -45,6 +45,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ `Project` grouping + `SampleProject` many-to-many links
 - ✅ `CheckoutEvent` — append-only chain-of-custody records with volume delta tracking
 - ✅ `ShareRequest` cross-lab sharing workflow — pending/approved/rejected/revoked state machine; three-signature approval (source_admin + target_admin + system_admin); append-only `ShareRequestApproval` audit records
+- ✅ `Session` + `ApiToken` — server-side opaque sessions and scoped API tokens; Argon2id hash + plaintext prefix lookup scheme; soft-delete by `revoked_at`; partial unique index prevents prefix collisions among active tokens
 
 ### Security & Authentication
 
