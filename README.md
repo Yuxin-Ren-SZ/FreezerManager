@@ -49,8 +49,10 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 
 ### Security & Authentication
 
-- 🔲 `IAuthProvider` interface — swap providers without touching higher-level code
-- 🔲 `LocalAuthProvider` — Argon2id (64 MiB / 3 iter / 4 parallelism), TOTP mandatory for admins
+- ✅ `IAuthProvider` interface — `authenticate`, `validate_token`, `verify_totp`, `revoke_session`, `revoke_all_sessions`; 5 pure-virtual methods; mock compiles
+- ✅ `LocalAuthProvider` — Argon2id (64 MiB / 3 iter / 4 parallelism); BLAKE2b-256 session-token hashing; TOTP (RFC 6238 + RFC 4226 HMAC-SHA1 via OpenSSL EVP_MAC); in-memory account lockout (configurable threshold + duration); API-token validation path
+- ✅ TOTP helper (`Totp.h`) — `base32_decode`, `totp_generate`, `totp_verify`; ±1-step window; RFC 6238 known-answer test vectors
+- ✅ `Session.mfa_complete` — false until `verify_totp()` succeeds; propagated through `SessionContext`
 - 🔲 `OidcAuthProvider` — OIDC discovery + PKCE; per-lab issuer config
 - 🔲 `LdapAuthProvider` — bind + search; configurable group → role mapping
 - 🔲 `MtlsAuthProvider` — client certs for machine/instrument clients
@@ -61,7 +63,8 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 
 ### Audit
 
-- 🔲 Append-only `audit_event` table — `prev_hash` + `this_hash = SHA-256(prev ‖ canonical_row)`
+- ✅ Append-only `audit_event` table — `prev_hash` + `this_hash = SHA-256(prev ‖ canonical_row)`; INSERT-only DB trigger; hash-chain verifier in `CanonicalJson.h`
+- ✅ Canonical-JSON serializer (RFC 8785 / JCS) — deterministic compact form for reproducible hashes
 - 🔲 PHI-read audit kind — distinct event logged on each PHI field access (key only, never value)
 - 🔲 Signed nightly checkpoints — HMAC-SHA-256 with KMS key; stored in `audit_checkpoint` table
 - 🔲 Hash-chain verifier — `freezerctl audit verify` walks the chain and reports first divergence
@@ -107,8 +110,10 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 |---|---|---|
 | **M0 — Foundation** | Repo skeleton, CI/CD, CMake + Conan, clang-format/tidy, SPDX enforcement, CLA bot | ✅ Complete |
 | **C1/C2 — Core types & storage interface** | Domain value types, `IStorageBackend` + typed query DSL, 15 unit tests | ✅ Complete |
-| **M1 — Domain entities** | Lab / User / Sample / Box / … entities, SQLite + PostgreSQL backends, CSV export, `freezerctl` CLI | 🔲 Next |
-| **M2 — Auth & Audit** | Local auth + TOTP, RBAC middleware, audit hash chain, PostgreSQL RLS | 🔲 Planned |
+| **D1–D9 — Domain entities** | Lab / User / Role / Freezer / Box / Sample / ShareRequest / Session entities, SQLite backend, 259 tests | ✅ Complete |
+| **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
+| **M1 — Full domain + CSV + CLI** | PostgreSQL backend, CSV export, `freezerctl` CLI | 🔲 Next |
+| **M2 — Auth & Audit** | RBAC middleware (E3), OIDC/LDAP, audit export, PostgreSQL RLS | 🔲 Planned |
 | **M3 — gRPC + Qt client** | Proto definitions, gRPC server, REST gateway, Qt 6 desktop client — first end-to-end usable build | 🔲 Planned |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
 | **M5 — PHI + KMS + Backups** | Field-level encryption, KMS adapters, backup/restore, weekly restore-drill | 🔲 Planned |

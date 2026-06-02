@@ -374,13 +374,15 @@ namespace fmgr::storage {
         return "user_agent";
       case core::Session::Field::RevokedAt:
         return "revoked_at_micros";
+      case core::Session::Field::MfaComplete:
+        return "mfa_complete";
       }
       throw ConstraintViolation("unknown session field");
     }
 
     constexpr std::string_view k_session_columns =
         "id, user_id, token_hash, token_prefix, "
-        "created_at_micros, last_seen_at_micros, ip, user_agent, revoked_at_micros";
+        "created_at_micros, last_seen_at_micros, ip, user_agent, revoked_at_micros, mfa_complete";
 
     [[nodiscard]] core::Session read_session(sqlite3_stmt* statement) {
       return core::Session{
@@ -393,6 +395,7 @@ namespace fmgr::storage {
           .ip = column_optional_text(statement, 6),
           .user_agent = column_optional_text(statement, 7),
           .revoked_at = column_optional_timestamp(statement, 8),
+          .mfa_complete = sqlite3_column_int(statement, 9) != 0,
       };
     }
 
@@ -519,14 +522,15 @@ namespace fmgr::storage {
         bind_optional_text(statement, 7, entity.ip);
         bind_optional_text(statement, 8, entity.user_agent);
         bind_optional_timestamp(statement, 9, entity.revoked_at);
+        bind_int64(statement, 10, entity.mfa_complete ? 1 : 0);
       }
 
       static void insert_pending(sqlite3* handle, const core::Session& entity) {
         Statement statement(handle, "INSERT INTO sessions "
                                     "(id, user_id, token_hash, token_prefix, "
                                     "created_at_micros, last_seen_at_micros, "
-                                    "ip, user_agent, revoked_at_micros) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                                    "ip, user_agent, revoked_at_micros, mfa_complete) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         bind_entity(statement.get(), entity);
         statement.step_done();
       }
@@ -535,9 +539,10 @@ namespace fmgr::storage {
         Statement statement(handle, "UPDATE sessions SET "
                                     "id = ?, user_id = ?, token_hash = ?, token_prefix = ?, "
                                     "created_at_micros = ?, last_seen_at_micros = ?, "
-                                    "ip = ?, user_agent = ?, revoked_at_micros = ? WHERE id = ?");
+                                    "ip = ?, user_agent = ?, revoked_at_micros = ?, "
+                                    "mfa_complete = ? WHERE id = ?");
         bind_entity(statement.get(), entity);
-        bind_text(statement.get(), 10, entity.id.to_string());
+        bind_text(statement.get(), 11, entity.id.to_string());
         statement.step_done();
       }
     };

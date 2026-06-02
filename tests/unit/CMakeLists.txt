@@ -56,7 +56,22 @@ target_link_libraries(
     GTest::gtest_main
 )
 
+add_executable(
+  freezermanager_auth_unit_tests
+  auth_types_test.cpp
+  totp_test.cpp
+  local_auth_provider_test.cpp
+)
+target_link_libraries(
+  freezermanager_auth_unit_tests
+  PRIVATE
+    FreezerManager::auth
+    FreezerManager::storage_sqlite
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
 gtest_discover_tests(freezermanager_storage_unit_tests)
 gtest_discover_tests(freezermanager_sqlite_storage_unit_tests)
+gtest_discover_tests(freezermanager_auth_unit_tests)

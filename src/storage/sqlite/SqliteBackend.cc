@@ -684,6 +684,16 @@ CREATE INDEX IF NOT EXISTS api_tokens_user_id_idx ON api_tokens(user_id);
 CREATE INDEX IF NOT EXISTS api_tokens_lab_id_idx  ON api_tokens(lab_id);
 )sql",
           },
+          {
+              .version = 12,
+              .name = "0012_sessions_mfa",
+              .up_sql = R"sql(
+-- E2: Add MFA completion tracking to sessions.
+-- Existing rows default to 1 (mfa_complete = true) so that previously
+-- created sessions remain valid after the migration.
+ALTER TABLE sessions ADD COLUMN mfa_complete INTEGER NOT NULL DEFAULT 1;
+)sql",
+          },
       };
     }
 

@@ -356,5 +356,43 @@ namespace fmgr {
       EXPECT_EQ(found->entity_kind, "lab");
     }
 
+    TEST(SqliteAuditEvent, AuditEventQuerySortByAt) {
+      auto backend = make_audit_backend();
+
+      {
+        auto txn = backend.begin(storage::IsolationLevel::Serializable);
+        dynamic_cast<storage::SqliteTransaction&>(*txn).note_mutation("lab", "l-a", test_ctx());
+        txn->commit();
+      }
+      {
+        auto txn = backend.begin(storage::IsolationLevel::Serializable);
+        dynamic_cast<storage::SqliteTransaction&>(*txn).note_mutation("user", "u-b", test_ctx());
+        txn->commit();
+      }
+      {
+        auto txn = backend.begin(storage::IsolationLevel::Serializable);
+        dynamic_cast<storage::SqliteTransaction&>(*txn).note_mutation("sample", "s-c", test_ctx());
+        txn->commit();
+      }
+
+      auto read_txn = backend.begin(storage::IsolationLevel::ReadCommitted);
+
+      const auto desc_query = storage::Query<core::AuditEvent>::all().order_by(
+          storage::field<core::AuditEvent, std::int64_t>(core::AuditEvent::Field::At),
+          storage::SortDirection::Descending);
+      const auto desc_results = read_txn->repo<core::AuditEvent>().query(desc_query);
+      ASSERT_EQ(desc_results.size(), 3u);
+      EXPECT_GE(desc_results[0].at.unix_micros(), desc_results[1].at.unix_micros());
+      EXPECT_GE(desc_results[1].at.unix_micros(), desc_results[2].at.unix_micros());
+
+      const auto asc_query = storage::Query<core::AuditEvent>::all().order_by(
+          storage::field<core::AuditEvent, std::int64_t>(core::AuditEvent::Field::At),
+          storage::SortDirection::Ascending);
+      const auto asc_results = read_txn->repo<core::AuditEvent>().query(asc_query);
+      ASSERT_EQ(asc_results.size(), 3u);
+      EXPECT_LE(asc_results[0].at.unix_micros(), asc_results[1].at.unix_micros());
+      EXPECT_LE(asc_results[1].at.unix_micros(), asc_results[2].at.unix_micros());
+    }
+
   } // namespace
 } // namespace fmgr

@@ -48,17 +48,21 @@ namespace fmgr::core {
       Ip,
       UserAgent,
       RevokedAt,
+      MfaComplete,
     };
 
     SessionId id;
     UserId user_id;
-    std::string token_hash;   // Argon2id hash; never contains plaintext
+    std::string token_hash;   // BLAKE2b hash; never contains plaintext
     std::string token_prefix; // first N chars of plaintext token; indexed for lookup
     Timestamp created_at;
     Timestamp last_seen_at;
     std::optional<std::string> ip;
     std::optional<std::string> user_agent;
     std::optional<Timestamp> revoked_at; // tombstone — set by soft_delete()
+    // false until verify_totp() succeeds for sessions that require MFA.
+    // Middleware must reject sensitive RPCs when this flag is false.
+    bool mfa_complete{true};
 
     friend bool operator==(const Session&, const Session&) = default;
   };
@@ -128,6 +132,7 @@ namespace fmgr::core {
         {"ip", detail::sess_opt_to_json(session.ip)},
         {"user_agent", detail::sess_opt_to_json(session.user_agent)},
         {"revoked_at", detail::sess_opt_to_json(session.revoked_at)},
+        {"mfa_complete", session.mfa_complete},
     };
   }
 
@@ -142,6 +147,7 @@ namespace fmgr::core {
         .ip = detail::sess_opt_from_json<std::string>(json.at("ip")),
         .user_agent = detail::sess_opt_from_json<std::string>(json.at("user_agent")),
         .revoked_at = detail::sess_opt_from_json<Timestamp>(json.at("revoked_at")),
+        .mfa_complete = json.at("mfa_complete").get<bool>(),
     };
   }
 

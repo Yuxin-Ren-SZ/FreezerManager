@@ -488,5 +488,17 @@ namespace fmgr::storage {
       EXPECT_GE(backend().audit_event_count_for_tests(), 1u);
     }
 
+    TEST_F(SqliteSessionRepositoryTest, SessionUpdateNonExistentThrows) {
+      const auto session = make_session(99999, user1_);
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Session>().update(session, mutation_context()), NotFound);
+    }
+
+    TEST_F(SqliteSessionRepositoryTest, ApiTokenUpdateNonExistentThrows) {
+      const auto token = make_api_token(99999, user1_, lab1_);
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::ApiToken>().update(token, mutation_context()), NotFound);
+    }
+
   } // namespace
 } // namespace fmgr::storage
