@@ -37,6 +37,7 @@ target_link_libraries(
 
 add_executable(
   freezermanager_sqlite_storage_unit_tests
+  audit_event_test.cpp
   sqlite_backend_test.cpp
   sqlite_box_geometry_repository_test.cpp
   sqlite_box_repository_test.cpp

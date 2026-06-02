@@ -62,6 +62,12 @@ namespace fmgr::core {
       EXPECT_EQ(json.get<ShareRequestStatus>(), status);
     }
 
+    TEST(ShareRequestStatusTest, RejectsInvalidString) {
+      using namespace fmgr::core;
+      EXPECT_THROW((void)parse_share_request_status("invalid"), std::invalid_argument);
+      EXPECT_THROW((void)parse_share_request_status(""), std::invalid_argument);
+    }
+
     // ---- ShareApprovalRole tests ----
 
     TEST(ShareApprovalRoleTest, AllValuesRoundTripThroughString) {
@@ -84,6 +90,12 @@ namespace fmgr::core {
       nlohmann::json json = role;
       EXPECT_EQ(json.get<std::string>(), "target_admin");
       EXPECT_EQ(json.get<ShareApprovalRole>(), role);
+    }
+
+    TEST(ShareApprovalRoleTest, RejectsInvalidString) {
+      using namespace fmgr::core;
+      EXPECT_THROW((void)parse_share_approval_role("invalid"), std::invalid_argument);
+      EXPECT_THROW((void)parse_share_approval_role(""), std::invalid_argument);
     }
 
     // ---- ShareRequestApprovalId tests ----

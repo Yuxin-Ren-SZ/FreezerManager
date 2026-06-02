@@ -269,6 +269,44 @@ namespace fmgr::storage {
       EXPECT_EQ(results.front().id, sr2.id);
     }
 
+    TEST_F(SqliteShareRequestRepositoryTest, ShareRequestUpdatePersistsChanges) {
+      const auto sr = make_share_request(1, lab1_, lab2_, user1_);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::ShareRequest>().insert(sr, mutation_context());
+        txn->commit();
+      }
+      auto updated = sr;
+      updated.scope_json = R"({"project_ids":["abc","def"]})";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::ShareRequest>().update(updated, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::ShareRequest>().find_by_id(sr.id);
+        txn->commit();
+        ASSERT_TRUE(found.has_value());
+        EXPECT_EQ(found->scope_json, R"({"project_ids":["abc","def"]})");
+      }
+    }
+
+    TEST_F(SqliteShareRequestRepositoryTest, ShareRequestRejectsEmptyScopeJson) {
+      auto sr = make_share_request(1, lab1_, lab2_, user1_);
+      sr.scope_json = "";
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::ShareRequest>().insert(sr, mutation_context()),
+                   ConstraintViolation);
+    }
+
+    TEST_F(SqliteShareRequestRepositoryTest, ShareRequestFindByNonexistentIdReturnsEmpty) {
+      const auto fake_id = id_from_low<core::ShareRequestId>(99999);
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      const auto found = txn->repo<core::ShareRequest>().find_by_id(fake_id);
+      EXPECT_FALSE(found.has_value());
+    }
+
     // ---- ShareRequestApproval tests ----
 
     TEST_F(SqliteShareRequestRepositoryTest, ApprovalInsertAndFindByCompositeKey) {

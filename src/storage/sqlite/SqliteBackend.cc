@@ -2,11 +2,17 @@
 
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "audit/CanonicalJson.h"
+#include "core/timestamp.h"
+
+#include <sodium.h>
 #include <sqlite3.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <memory>
 #include <mutex>
@@ -404,8 +410,8 @@ CREATE TABLE IF NOT EXISTS box_type_position_accepts (
           },
           SqliteMigration{
               .version = 6,
-              .name    = "0006_boxes",
-              .up_sql  = R"sql(
+              .name = "0006_boxes",
+              .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS boxes (
   id                   TEXT    PRIMARY KEY,
   lab_id               TEXT    NOT NULL REFERENCES labs(id)
@@ -433,8 +439,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_lab_label_unique
           },
           SqliteMigration{
               .version = 7,
-              .name    = "0007_item_types",
-              .up_sql  = R"sql(
+              .name = "0007_item_types",
+              .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS item_types (
   id                 TEXT    PRIMARY KEY,
   lab_id             TEXT    NOT NULL REFERENCES labs(id)       DEFERRABLE INITIALLY DEFERRED,
@@ -477,8 +483,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS cfd_lab_scope_type_key_unique
           },
           SqliteMigration{
               .version = 8,
-              .name    = "0008_samples",
-              .up_sql  = R"sql(
+              .name = "0008_samples",
+              .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS projects (
   id                 TEXT    PRIMARY KEY,
   lab_id             TEXT    NOT NULL REFERENCES labs(id)  DEFERRABLE INITIALLY DEFERRED,
@@ -552,8 +558,8 @@ CREATE INDEX IF NOT EXISTS checkout_events_user_idx   ON checkout_events(user_id
           },
           {
               .version = 9,
-              .name    = "0009_share_requests",
-              .up_sql  = R"sql(
+              .name = "0009_share_requests",
+              .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS share_requests (
   id                TEXT    PRIMARY KEY,
   source_lab_id     TEXT    NOT NULL REFERENCES labs(id)  DEFERRABLE INITIALLY DEFERRED,
@@ -586,9 +592,56 @@ CREATE INDEX IF NOT EXISTS share_request_approvals_request_idx
 )sql",
           },
           {
+              .version = 11,
+              .name = "0011_audit_events",
+              .up_sql = R"sql(
+-- Replace the simple audit_events table introduced in 0001_init with the
+-- full hash-chained schema required by PRD §7.3.
+-- DROP is safe here because the 0001 table was a temporary bootstrap placeholder
+-- with no production data.
+DROP TABLE IF EXISTS audit_events;
+
+CREATE TABLE audit_events (
+  id               TEXT    PRIMARY KEY,
+  at_micros        INTEGER NOT NULL,
+  actor_user_id    TEXT    NOT NULL,
+  actor_session_id TEXT    NOT NULL,
+  lab_id           TEXT,
+  action           TEXT    NOT NULL,
+  entity_kind      TEXT    NOT NULL,
+  entity_id        TEXT,
+  before_json      TEXT    NOT NULL DEFAULT '{}',
+  after_json       TEXT    NOT NULL DEFAULT '{}',
+  request_id       TEXT    NOT NULL,
+  prev_hash        TEXT    NOT NULL,
+  this_hash        TEXT    NOT NULL UNIQUE
+);
+
+CREATE INDEX IF NOT EXISTS audit_events_at_idx          ON audit_events(at_micros);
+CREATE INDEX IF NOT EXISTS audit_events_actor_idx       ON audit_events(actor_user_id);
+CREATE INDEX IF NOT EXISTS audit_events_entity_kind_idx ON audit_events(entity_kind);
+CREATE INDEX IF NOT EXISTS audit_events_lab_idx         ON audit_events(lab_id);
+
+-- Immutability triggers: the hash chain must never be altered.
+CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+  BEFORE UPDATE ON audit_events
+  FOR EACH ROW
+  BEGIN
+    SELECT RAISE(ABORT, 'audit_events is append-only: updates are not permitted');
+  END;
+
+CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+  BEFORE DELETE ON audit_events
+  FOR EACH ROW
+  BEGIN
+    SELECT RAISE(ABORT, 'audit_events is append-only: deletes are not permitted');
+  END;
+)sql",
+          },
+          {
               .version = 10,
-              .name    = "0010_sessions",
-              .up_sql  = R"sql(
+              .name = "0010_sessions",
+              .up_sql = R"sql(
 -- Server-side sessions and API tokens (D9).
 -- token_prefix is the plaintext lookup key; token_hash is the Argon2id digest.
 -- The auth layer generates the full random token, hashes it, and stores only
@@ -692,6 +745,43 @@ CREATE INDEX IF NOT EXISTS api_tokens_lab_id_idx  ON api_tokens(lab_id);
       sqlite3_stmt* statement_{nullptr};
     };
 
+    // ---- Audit chain helpers ----
+
+    [[nodiscard]] std::string generate_random_uuid() {
+      if (sodium_init() < 0) {
+        throw std::runtime_error("libsodium initialisation failed");
+      }
+      std::array<unsigned char, 16> bytes{};
+      randombytes_buf(bytes.data(), bytes.size());
+      bytes[6] = static_cast<unsigned char>((bytes[6] & 0x0fU) | 0x40U); // version 4
+      bytes[8] = static_cast<unsigned char>((bytes[8] & 0x3fU) | 0x80U); // variant
+      // UUID text: 32 hex chars + 4 hyphens + NUL = 37 bytes.
+      std::array<char, 37> buf{};
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
+      std::snprintf(buf.data(), buf.size(),
+                    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
+                    bytes[15]);
+      return {buf.data()};
+    }
+
+    [[nodiscard]] std::string fetch_last_audit_hash(sqlite3* handle) {
+      sqlite3_stmt* raw_stmt = nullptr;
+      const auto prepare_result = sqlite3_prepare_v2(
+          handle, "SELECT this_hash FROM audit_events ORDER BY rowid DESC LIMIT 1", -1, &raw_stmt,
+          nullptr);
+      if (prepare_result != SQLITE_OK) {
+        return std::string(audit::zero_hash());
+      }
+      std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> stmt(raw_stmt, sqlite3_finalize);
+      if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+        return std::string(audit::zero_hash());
+      }
+      const auto* text = reinterpret_cast<const char*>(sqlite3_column_text(stmt.get(), 0));
+      return (text == nullptr) ? std::string(audit::zero_hash()) : std::string(text);
+    }
+
     [[nodiscard]] std::string checksum(const SqliteMigration& migration) {
       std::hash<std::string> hasher;
       return std::to_string(hasher(std::to_string(migration.version) + ":" + migration.name + ":" +
@@ -759,16 +849,42 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   applied_at_unix_seconds INTEGER NOT NULL
 );
 )sql");
+      // Hash-chained, append-only audit log (PRD §7.3).
+      // Migration 0001 contained a simple placeholder; 0011 promotes to this schema.
+      // ensure_metadata_tables() creates it here so backends using custom migrations
+      // (e.g. conformance tests) also get the correct schema.
       exec(handle, R"sql(
 CREATE TABLE IF NOT EXISTS audit_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  entity_name TEXT NOT NULL,
-  entity_id TEXT NOT NULL,
-  actor_user_id TEXT NOT NULL,
-  actor_session_id TEXT NOT NULL,
-  request_id TEXT NOT NULL,
-  reason TEXT NOT NULL
+  id               TEXT    PRIMARY KEY,
+  at_micros        INTEGER NOT NULL,
+  actor_user_id    TEXT    NOT NULL,
+  actor_session_id TEXT    NOT NULL,
+  lab_id           TEXT,
+  action           TEXT    NOT NULL,
+  entity_kind      TEXT    NOT NULL,
+  entity_id        TEXT,
+  before_json      TEXT    NOT NULL DEFAULT '{}',
+  after_json       TEXT    NOT NULL DEFAULT '{}',
+  request_id       TEXT    NOT NULL,
+  prev_hash        TEXT    NOT NULL,
+  this_hash        TEXT    NOT NULL UNIQUE
 );
+)sql");
+      exec(handle, R"sql(
+CREATE TRIGGER IF NOT EXISTS audit_events_no_update
+  BEFORE UPDATE ON audit_events
+  FOR EACH ROW
+  BEGIN
+    SELECT RAISE(ABORT, 'audit_events is append-only: updates are not permitted');
+  END;
+)sql");
+      exec(handle, R"sql(
+CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
+  BEFORE DELETE ON audit_events
+  FOR EACH ROW
+  BEGIN
+    SELECT RAISE(ABORT, 'audit_events is append-only: deletes are not permitted');
+  END;
 )sql");
     }
 
@@ -807,8 +923,9 @@ CREATE TABLE IF NOT EXISTS audit_events (
     std::vector<std::function<void(sqlite3*)>> commit_hooks;
 
     struct AuditMutation {
-      std::string entity_name;
+      std::string entity_kind; // was entity_name; maps to entity_kind column
       std::string entity_id;
+      std::string action; // e.g. "mutation", "insert", "update", "soft_delete"
       MutationContext context;
     };
     std::vector<AuditMutation> audit_mutations;
@@ -833,11 +950,12 @@ CREATE TABLE IF NOT EXISTS audit_events (
     impl_->commit_hooks.push_back(std::move(hook));
   }
 
-  void SqliteTransaction::note_mutation(std::string entity_name, std::string entity_id,
-                                        const MutationContext& context) {
+  void SqliteTransaction::note_mutation(std::string entity_kind, std::string entity_id,
+                                        const MutationContext& context, std::string action) {
     impl_->audit_mutations.push_back(SqliteTransaction::Impl::AuditMutation{
-        .entity_name = std::move(entity_name),
+        .entity_kind = std::move(entity_kind),
         .entity_id = std::move(entity_id),
+        .action = std::move(action),
         .context = context,
     });
   }
@@ -864,20 +982,66 @@ CREATE TABLE IF NOT EXISTS audit_events (
         }
       }
 
-      PreparedStatement audit_statement(
-          database, "INSERT INTO audit_events "
-                    "(entity_name, entity_id, actor_user_id, actor_session_id, request_id, reason) "
-                    "VALUES (?, ?, ?, ?, ?, ?)");
-      for (const auto& mutation : impl_->audit_mutations) {
-        sqlite3_reset(audit_statement.get());
-        sqlite3_clear_bindings(audit_statement.get());
-        bind_text(audit_statement.get(), 1, mutation.entity_name);
-        bind_text(audit_statement.get(), 2, mutation.entity_id);
-        bind_text(audit_statement.get(), 3, mutation.context.actor_user_id.to_string());
-        bind_text(audit_statement.get(), 4, mutation.context.actor_session_id);
-        bind_text(audit_statement.get(), 5, mutation.context.request_id);
-        bind_text(audit_statement.get(), 6, mutation.context.reason);
-        audit_statement.step_done();
+      if (!impl_->audit_mutations.empty()) {
+        // Initialise libsodium (idempotent).
+        if (sodium_init() < 0) {
+          throw ConstraintViolation("libsodium initialisation failed");
+        }
+
+        // Chain starts from the last committed audit row (or zero-hash).
+        std::string prev_hash = fetch_last_audit_hash(database);
+
+        const auto now_micros =
+            static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                          std::chrono::system_clock::now().time_since_epoch())
+                                          .count());
+
+        PreparedStatement audit_stmt(database,
+                                     "INSERT INTO audit_events "
+                                     "(id, at_micros, actor_user_id, actor_session_id, lab_id, "
+                                     "action, entity_kind, entity_id, before_json, after_json, "
+                                     "request_id, prev_hash, this_hash) "
+                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
+        for (const auto& mutation : impl_->audit_mutations) {
+          const auto event_id = generate_random_uuid();
+
+          // Build the content JSON (alphabetically sorted; nlohmann uses std::map).
+          const nlohmann::json content = {
+              {"action", mutation.action},
+              {"actor_session_id", mutation.context.actor_session_id},
+              {"actor_user_id", mutation.context.actor_user_id.to_string()},
+              {"after_json", "{}"},
+              {"at", now_micros},
+              {"before_json", "{}"},
+              {"entity_id", mutation.entity_id},
+              {"entity_kind", mutation.entity_kind},
+              {"id", event_id},
+              {"lab_id", nullptr},
+              {"request_id", mutation.context.request_id},
+          };
+          const auto content_json = audit::canonical_json(content);
+          const auto this_hash = audit::compute_audit_hash(prev_hash, content_json);
+
+          sqlite3_reset(audit_stmt.get());
+          sqlite3_clear_bindings(audit_stmt.get());
+          bind_text(audit_stmt.get(), 1, event_id);
+          bind_int64(audit_stmt.get(), 2, now_micros);
+          bind_text(audit_stmt.get(), 3, mutation.context.actor_user_id.to_string());
+          bind_text(audit_stmt.get(), 4, mutation.context.actor_session_id);
+          sqlite3_bind_null(audit_stmt.get(), 5); // lab_id (set by auth middleware later)
+          bind_text(audit_stmt.get(), 6, mutation.action);
+          bind_text(audit_stmt.get(), 7, mutation.entity_kind);
+          bind_text(audit_stmt.get(), 8, mutation.entity_id);
+          bind_text(audit_stmt.get(), 9, "{}");  // before_json
+          bind_text(audit_stmt.get(), 10, "{}"); // after_json
+          bind_text(audit_stmt.get(), 11, mutation.context.request_id);
+          bind_text(audit_stmt.get(), 12, prev_hash);
+          bind_text(audit_stmt.get(), 13, this_hash);
+          audit_stmt.step_done();
+
+          prev_hash = this_hash;
+        }
       }
 
       exec(database, "COMMIT");

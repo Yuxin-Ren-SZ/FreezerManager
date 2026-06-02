@@ -19,6 +19,7 @@ target_link_libraries(
 
 add_library(
   freezermanager_storage_sqlite
+  sqlite/AuditRepositories.cc
   sqlite/BoxGeometryRepositories.cc
   sqlite/IdentityRepositories.cc
   sqlite/ItemTypeRepositories.cc
@@ -40,6 +41,7 @@ target_include_directories(
 target_link_libraries(
   freezermanager_storage_sqlite
   PUBLIC
+    FreezerManager::audit
     FreezerManager::storage
     SQLite::SQLite3
 )

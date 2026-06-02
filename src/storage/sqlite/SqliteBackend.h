@@ -45,8 +45,12 @@ namespace fmgr::storage {
     [[nodiscard]] IsolationLevel isolation_level() const;
 
     void add_commit_hook(std::function<void(sqlite3*)> hook);
-    void note_mutation(std::string entity_name, std::string entity_id,
-                       const MutationContext& context);
+    // Record a mutation for inclusion in the audit chain written at commit time.
+    // action defaults to "mutation"; repos that know the specific operation
+    // (insert/update/soft_delete) may pass it explicitly.
+    void note_mutation(std::string entity_kind, std::string entity_id,
+                       const MutationContext& context,
+                       std::string action = "mutation");
 
     template <typename Entity>
     void register_sqlite_repository(std::unique_ptr<IRepository<Entity>> repository) {

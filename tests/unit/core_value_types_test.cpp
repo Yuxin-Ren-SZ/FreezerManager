@@ -116,5 +116,108 @@ namespace fmgr::core {
       EXPECT_EQ(container_kind_json.get<ContainerKind>(), ContainerKind::Compartment);
     }
 
+    TEST(CoreEnums, AllSampleStatusVariantsRoundTrip) {
+      using namespace fmgr::core;
+
+      EXPECT_EQ(to_string(SampleStatus::Active), "active");
+      EXPECT_EQ(to_string(SampleStatus::CheckedOut), "checked_out");
+      EXPECT_EQ(to_string(SampleStatus::Depleted), "depleted");
+      EXPECT_EQ(to_string(SampleStatus::Destroyed), "destroyed");
+      EXPECT_EQ(to_string(SampleStatus::Tombstoned), "tombstoned");
+
+      EXPECT_EQ(parse_sample_status("active"), SampleStatus::Active);
+      EXPECT_EQ(parse_sample_status("checked_out"), SampleStatus::CheckedOut);
+      EXPECT_EQ(parse_sample_status("depleted"), SampleStatus::Depleted);
+      EXPECT_EQ(parse_sample_status("destroyed"), SampleStatus::Destroyed);
+      EXPECT_EQ(parse_sample_status("tombstoned"), SampleStatus::Tombstoned);
+
+      nlohmann::json j = SampleStatus::Active;
+      EXPECT_EQ(j.get<std::string>(), "active");
+      auto parsed = j.get<SampleStatus>();
+      EXPECT_EQ(parsed, SampleStatus::Active);
+    }
+
+    TEST(CoreEnums, AllCheckoutActionVariantsRoundTrip) {
+      using namespace fmgr::core;
+
+      EXPECT_EQ(to_string(CheckoutAction::CheckedOut), "out");
+      EXPECT_EQ(to_string(CheckoutAction::CheckedIn), "in");
+      EXPECT_EQ(to_string(CheckoutAction::Destroyed), "destroy");
+
+      EXPECT_EQ(parse_checkout_action("out"), CheckoutAction::CheckedOut);
+      EXPECT_EQ(parse_checkout_action("in"), CheckoutAction::CheckedIn);
+      EXPECT_EQ(parse_checkout_action("destroy"), CheckoutAction::Destroyed);
+
+      nlohmann::json j = CheckoutAction::CheckedIn;
+      EXPECT_EQ(j.get<std::string>(), "in");
+      EXPECT_EQ(j.get<CheckoutAction>(), CheckoutAction::CheckedIn);
+    }
+
+    TEST(CoreEnums, AllRoleKindVariantsRoundTrip) {
+      using namespace fmgr::core;
+
+      EXPECT_EQ(to_string(RoleKind::SystemAdmin), "system_admin");
+      EXPECT_EQ(to_string(RoleKind::LabAdmin), "lab_admin");
+      EXPECT_EQ(to_string(RoleKind::Member), "member");
+      EXPECT_EQ(to_string(RoleKind::ReadOnly), "read_only");
+      EXPECT_EQ(to_string(RoleKind::ApiClient), "api_client");
+
+      EXPECT_EQ(parse_role_kind("system_admin"), RoleKind::SystemAdmin);
+      EXPECT_EQ(parse_role_kind("lab_admin"), RoleKind::LabAdmin);
+      EXPECT_EQ(parse_role_kind("member"), RoleKind::Member);
+      EXPECT_EQ(parse_role_kind("read_only"), RoleKind::ReadOnly);
+      EXPECT_EQ(parse_role_kind("api_client"), RoleKind::ApiClient);
+
+      nlohmann::json j = RoleKind::Member;
+      EXPECT_EQ(j.get<std::string>(), "member");
+      EXPECT_EQ(j.get<RoleKind>(), RoleKind::Member);
+    }
+
+    TEST(CoreEnums, AllContainerKindVariantsRoundTrip) {
+      using namespace fmgr::core;
+
+      EXPECT_EQ(to_string(ContainerKind::Compartment), "compartment");
+      EXPECT_EQ(to_string(ContainerKind::Shelf), "shelf");
+      EXPECT_EQ(to_string(ContainerKind::Rack), "rack");
+      EXPECT_EQ(to_string(ContainerKind::Drawer), "drawer");
+      EXPECT_EQ(to_string(ContainerKind::Custom), "custom");
+
+      EXPECT_EQ(parse_container_kind("compartment"), ContainerKind::Compartment);
+      EXPECT_EQ(parse_container_kind("shelf"), ContainerKind::Shelf);
+      EXPECT_EQ(parse_container_kind("rack"), ContainerKind::Rack);
+      EXPECT_EQ(parse_container_kind("drawer"), ContainerKind::Drawer);
+      EXPECT_EQ(parse_container_kind("custom"), ContainerKind::Custom);
+
+      nlohmann::json j = ContainerKind::Rack;
+      EXPECT_EQ(j.get<std::string>(), "rack");
+      EXPECT_EQ(j.get<ContainerKind>(), ContainerKind::Rack);
+    }
+
+    TEST(CoreEnums, UserStatusRoundTrip) {
+      using namespace fmgr::core;
+
+      EXPECT_EQ(to_string(UserStatus::Active), "active");
+      EXPECT_EQ(to_string(UserStatus::Disabled), "disabled");
+
+      EXPECT_EQ(parse_user_status("active"), UserStatus::Active);
+      EXPECT_EQ(parse_user_status("disabled"), UserStatus::Disabled);
+
+      nlohmann::json j = UserStatus::Active;
+      EXPECT_EQ(j.get<std::string>(), "active");
+      EXPECT_EQ(j.get<UserStatus>(), UserStatus::Active);
+    }
+
+    TEST(CoreEnums, UserStatusRejectsInvalidString) {
+      using namespace fmgr::core;
+      EXPECT_THROW(parse_user_status("invalid_status"), std::invalid_argument);
+      EXPECT_THROW(parse_user_status(""), std::invalid_argument);
+    }
+
+    TEST(CoreEnums, RoleKindRejectsInvalidString) {
+      using namespace fmgr::core;
+      EXPECT_THROW(parse_role_kind("super_admin"), std::invalid_argument);
+      EXPECT_THROW(parse_role_kind(""), std::invalid_argument);
+    }
+
   } // namespace
 } // namespace fmgr::core

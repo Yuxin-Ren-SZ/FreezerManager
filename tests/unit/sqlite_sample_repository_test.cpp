@@ -1320,5 +1320,161 @@ namespace fmgr::storage {
       }
     }
 
+    TEST_F(SqliteSampleRepositoryTest, SampleUpdateOnNonexistentThrows) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto s = make_sample(99999, lab_id, it_id, user_id);
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().update(s, mutation_context()), NotFound);
+      txn->rollback();
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleQueryBetweenCreatedAt) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.created_at = ts(100);
+      s1.last_modified_at = ts(100);
+
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.created_at = ts(150);
+      s2.last_modified_at = ts(150);
+
+      auto s3 = make_sample(12, lab_id, it_id, user_id);
+      s3.created_at = ts(200);
+      s3.last_modified_at = ts(200);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->repo<core::Sample>().insert(s3, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::Sample>().query(Query<core::Sample>::where(
+                between(field<core::Sample, std::int64_t>(core::Sample::Field::CreatedAt),
+                        ts(120).unix_micros(), ts(180).unix_micros())));
+        txn->commit();
+        ASSERT_EQ(results.size(), 1U);
+        EXPECT_EQ(results.front().created_at, ts(150));
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleQueryJsonPathOnCustomFields) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.custom_fields_json = R"({"color":"red","size":"large"})";
+
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.custom_fields_json = R"({"color":"blue","size":"small"})";
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::Sample>().query(Query<core::Sample>::where(
+                json_path<core::Sample>(core::Sample::Field::CustomFieldsJson, {"color"}) ==
+                "red"));
+        txn->commit();
+        ASSERT_EQ(results.size(), 1U);
+        EXPECT_EQ(results.front().id, s1.id);
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, ProjectQuerySortByCreatedAt) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+
+      auto p1 = make_project(10, lab_id, user_id);
+      p1.created_at = ts(100);
+
+      auto p2 = make_project(11, lab_id, user_id);
+      p2.created_at = ts(200);
+
+      auto p3 = make_project(12, lab_id, user_id);
+      p3.created_at = ts(300);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Project>().insert(p1, mutation_context());
+        txn->repo<core::Project>().insert(p2, mutation_context());
+        txn->repo<core::Project>().insert(p3, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::Project>().query(Query<core::Project>::all().order_by(
+                field<core::Project, std::int64_t>(core::Project::Field::CreatedAt)));
+        txn->commit();
+        ASSERT_EQ(results.size(), 3U);
+        EXPECT_EQ(results[0].created_at, ts(100));
+        EXPECT_EQ(results[1].created_at, ts(200));
+        EXPECT_EQ(results[2].created_at, ts(300));
+      }
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, SampleProjectFindByNonexistentIdReturnsEmpty) {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      const auto found = txn->repo<core::SampleProject>().find_by_id(
+          core::SampleProjectId{id_from_low<core::SampleId>(1),
+                                id_from_low<core::ProjectId>(99999)});
+      txn->commit();
+      EXPECT_FALSE(found.has_value());
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, CheckoutEventQueryByTargetUserId) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(1, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+
+      const auto target_user_id_1 = seed_user(2, lab_id);
+      const auto target_user_id_2 = seed_user(3, lab_id);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      auto e1 = make_event(50, sample.id, lab_id, target_user_id_1,
+                            core::CheckoutAction::CheckedOut);
+      auto e2 = make_event(51, sample.id, lab_id, target_user_id_2,
+                            core::CheckoutAction::CheckedOut);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CheckoutEvent>().insert(e1, mutation_context());
+        txn->repo<core::CheckoutEvent>().insert(e2, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results =
+            txn->repo<core::CheckoutEvent>().query(Query<core::CheckoutEvent>::where(
+                field<core::CheckoutEvent, std::string>(core::CheckoutEvent::Field::UserId) ==
+                target_user_id_1.to_string()));
+        txn->commit();
+        ASSERT_EQ(results.size(), 1U);
+        EXPECT_EQ(results.front().id, e1.id);
+      }
+    }
+
   } // namespace
 } // namespace fmgr::storage
