@@ -819,5 +819,65 @@ namespace fmgr::auth {
       EXPECT_THROW(provider_->validate_token(tok2.plaintext_token), InvalidCredentials);
     }
 
+    // ---- Permission caching: disabled TTL ---- 
+
+    TEST_F(LocalAuthProviderTest, CacheDisabledWithTtlZeroStillBuildsContext) {
+      LocalAuthProviderConfig cfg = fast_config();
+      cfg.session_ctx_cache_ttl_seconds = 0; // disable cache
+      auto prov = LocalAuthProvider(*backend_, cfg);
+
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // No cache — but context builds from DB and works.
+      const SessionContext ctx = prov.validate_token(token.plaintext_token);
+      EXPECT_EQ(ctx.user_id, kUserNoTotpId);
+      EXPECT_TRUE(ctx.mfa_complete);
+    }
+
+    // ---- Permission caching: stale refresh ---- 
+
+    TEST_F(LocalAuthProviderTest, CacheStaleEntryIsRefreshedAfterTtlExpires) {
+      LocalAuthProviderConfig cfg = fast_config();
+      cfg.session_ctx_cache_ttl_seconds = 0; // cache expires immediately
+      auto prov = LocalAuthProvider(*backend_, cfg);
+
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // First call: builds and caches context, then TTL=0 makes it stale.
+      const SessionContext ctx1 = prov.validate_token(token.plaintext_token);
+      EXPECT_EQ(ctx1.user_id, kUserNoTotpId);
+
+      // Second call: stale cache → rebuild from DB → still correct.
+      const SessionContext ctx2 = prov.validate_token(token.plaintext_token);
+      EXPECT_EQ(ctx2.user_id, kUserNoTotpId);
+      EXPECT_EQ(ctx2.visible_labs, ctx1.visible_labs);
+    }
+
+    // ---- Session expiry: boundary ---- 
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenSucceedsOneSecondBeforeIdleLimit) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // One second before the 1 h idle limit — must succeed.
+      backdate_session(token.session_id, 0, -(3600LL - 1) * 1'000'000);
+
+      EXPECT_NO_THROW(prov.validate_token(token.plaintext_token));
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenThrowsOneSecondPastIdleLimit) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // One second past the 1 h idle limit — must expire.
+      backdate_session(token.session_id, 0, -(3600LL + 1) * 1'000'000);
+
+      EXPECT_THROW(prov.validate_token(token.plaintext_token), TokenExpired);
+    }
+
   } // namespace
 } // namespace fmgr::auth

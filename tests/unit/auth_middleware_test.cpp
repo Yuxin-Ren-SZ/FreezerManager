@@ -386,5 +386,26 @@ namespace fmgr::rpc {
       EXPECT_TRUE(ctx.mfa_complete);
     }
 
+    TEST_F(AuthMiddlewareTest, RpcRegistryReturnsSnapshotForAllRegisteredRpcs) {
+      // Clear any previous registrations by checking what is not yet registered.
+      EXPECT_FALSE(AuthMiddleware::is_rpc_registered("e3_test.GetSample"));
+      AuthMiddleware::register_rpc("e3_test.GetSample", core::Permission::SampleRead);
+      AuthMiddleware::register_rpc("e3_test.CreateSample", core::Permission::SampleWrite);
+
+      const auto snapshot = AuthMiddleware::registered_rpcs();
+      EXPECT_GE(snapshot.size(), 2U);
+      EXPECT_EQ(snapshot.at("e3_test.GetSample"), core::Permission::SampleRead);
+      EXPECT_EQ(snapshot.at("e3_test.CreateSample"), core::Permission::SampleWrite);
+    }
+
+    TEST_F(AuthMiddlewareTest, RpcRegistryDuplicateRegistrationOverwrites) {
+      AuthMiddleware::register_rpc("e3_test.DupRpc", core::Permission::SampleRead);
+      AuthMiddleware::register_rpc("e3_test.DupRpc", core::Permission::SampleWrite); // overwrite
+
+      const auto snapshot = AuthMiddleware::registered_rpcs();
+      ASSERT_TRUE(snapshot.contains("e3_test.DupRpc"));
+      EXPECT_EQ(snapshot.at("e3_test.DupRpc"), core::Permission::SampleWrite);
+    }
+
   } // namespace
 } // namespace fmgr::rpc
