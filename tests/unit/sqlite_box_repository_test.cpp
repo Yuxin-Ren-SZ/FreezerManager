@@ -420,4 +420,16 @@ namespace fmgr::storage {
     EXPECT_EQ(results.front().label, "Box A");
   }
 
+  TEST_F(SqliteBoxRepositoryTest, DuplicateBoxLabelInSameLabThrowsUniqueViolation) {
+    const auto seed = seed_lab_with_prereqs(10);
+    auto txn = backend().begin(IsolationLevel::Serializable);
+    auto box1 = make_box(1, seed.lab_id, seed.box_type_id, seed.storage_container_id);
+    box1.label = "Duplicate";
+    auto box2 = make_box(2, seed.lab_id, seed.box_type_id, seed.storage_container_id);
+    box2.label = "Duplicate";
+    txn->repo<core::Box>().insert(box1, mutation_context());
+    txn->repo<core::Box>().insert(box2, mutation_context());
+    EXPECT_THROW(txn->commit(), UniqueViolation);
+  }
+
 } // namespace fmgr::storage

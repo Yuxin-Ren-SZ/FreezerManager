@@ -282,5 +282,69 @@ namespace fmgr::storage {
       EXPECT_THROW(transaction->commit(), ForeignKeyViolation);
     }
 
+    TEST_F(SqliteRoleRepositoryTest, DuplicateRoleNameInSameLabThrowsUniqueViolation) {
+      const core::Lab lab{.id = id_from_low<core::LabId>(2001),
+                          .name = "DupRoleLab",
+                          .contact = "lab@example.org",
+                          .created_at = core::Timestamp::from_unix_micros(1),
+                          .settings_json = nlohmann::json::object()};
+      auto seed = backend().begin(IsolationLevel::Serializable);
+      seed->repo<core::Lab>().insert(lab, mutation_context());
+      seed->commit();
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      txn->repo<core::Role>().insert(
+          core::Role{.id = id_from_low<core::RoleId>(2002),
+                     .lab_id = lab.id,
+                     .kind = core::RoleKind::Member,
+                     .name = "Conflicting",
+                     .description = "First",
+                     .is_builtin = false,
+                     .created_at = core::Timestamp::from_unix_micros(10)},
+          mutation_context());
+      txn->repo<core::Role>().insert(
+          core::Role{.id = id_from_low<core::RoleId>(2003),
+                     .lab_id = lab.id,
+                     .kind = core::RoleKind::Member,
+                     .name = "Conflicting",
+                     .description = "Second",
+                     .is_builtin = false,
+                     .created_at = core::Timestamp::from_unix_micros(11)},
+          mutation_context());
+      EXPECT_THROW(txn->commit(), UniqueViolation);
+    }
+
+    TEST_F(SqliteRoleRepositoryTest, DuplicatePermissionGrantThrowsUniqueViolation) {
+      const core::Lab lab{.id = id_from_low<core::LabId>(2101),
+                          .name = "GrantDupLab",
+                          .contact = "lab@example.org",
+                          .created_at = core::Timestamp::from_unix_micros(1),
+                          .settings_json = nlohmann::json::object()};
+      auto seed = backend().begin(IsolationLevel::Serializable);
+      seed->repo<core::Lab>().insert(lab, mutation_context());
+      seed->commit();
+
+      const auto role_id = id_from_low<core::RoleId>(2102);
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      txn->repo<core::Role>().insert(
+          core::Role{.id = role_id,
+                     .lab_id = lab.id,
+                     .kind = core::RoleKind::Member,
+                     .name = "Duplicate Grant Role",
+                     .description = "Test duplicate grants",
+                     .is_builtin = false,
+                     .created_at = core::Timestamp::from_unix_micros(10)},
+          mutation_context());
+      txn->repo<core::RolePermission>().insert(
+          core::RolePermission{.role_id = role_id, .permission = core::Permission::AuditExport},
+          mutation_context());
+      // Second insert with same (role_id, permission) — repo rejects at stage time.
+      EXPECT_THROW(
+          txn->repo<core::RolePermission>().insert(
+              core::RolePermission{.role_id = role_id, .permission = core::Permission::AuditExport},
+              mutation_context()),
+          UniqueViolation);
+    }
+
   } // namespace
 } // namespace fmgr::storage

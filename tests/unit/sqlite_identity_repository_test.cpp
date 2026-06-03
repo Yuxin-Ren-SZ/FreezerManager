@@ -217,5 +217,18 @@ namespace fmgr::storage {
       EXPECT_EQ(backend().audit_event_count_for_tests(), 1U);
     }
 
+    TEST_F(SqliteIdentityRepositoryTest, UpdateNonexistentUserThrowsNotFound) {
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      auto entity = user(99, "nonexistent@example.org");
+      EXPECT_THROW(transaction->repo<core::User>().update(entity, mutation_context()), NotFound);
+    }
+
+    TEST_F(SqliteIdentityRepositoryTest, UpdateNonexistentLabMembershipThrowsNotFound) {
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      auto entity = membership(id_from_low<core::UserId>(9999), id_from_low<core::LabId>(9999));
+      EXPECT_THROW(transaction->repo<core::LabMembership>().update(entity, mutation_context()),
+                   NotFound);
+    }
+
   } // namespace
 } // namespace fmgr::storage

@@ -1476,5 +1476,25 @@ namespace fmgr::storage {
       }
     }
 
+    TEST_F(SqliteSampleRepositoryTest, InsertSampleWithInvalidParentThrowsForeignKeyViolation) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto sample = make_sample(50, lab_id, it_id, user_id);
+      sample.parent_sample_id = id_from_low<core::SampleId>(99999); // nonexistent
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      txn->repo<core::Sample>().insert(sample, mutation_context());
+      EXPECT_THROW(txn->commit(), ForeignKeyViolation);
+    }
+
+    TEST_F(SqliteSampleRepositoryTest, UpdateNonexistentSampleThrowsNotFound) {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      auto sample = make_sample(9999, id_from_low<core::LabId>(1),
+                                id_from_low<core::ItemTypeId>(2), id_from_low<core::UserId>(3));
+      EXPECT_THROW(txn->repo<core::Sample>().update(sample, mutation_context()), NotFound);
+    }
+
   } // namespace
 } // namespace fmgr::storage
