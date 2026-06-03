@@ -19,8 +19,8 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ `IStorageBackend` pluggable abstraction — swap backends without touching domain code
 - ✅ Typed query DSL — equality, range, IN-list, JSON-path predicates, pagination, soft-delete-aware filters
 - ✅ Rich backend error hierarchy — `UniqueViolation`, `SerializationFailure`, `Unavailable`, etc.
-- 🔲 SQLite reference backend (dev / small labs) — WAL mode, busy-timeout, json1 extension
-- 🔲 PostgreSQL reference backend (production-recommended) — connection pool, RLS, JSONB GIN indexes
+- ✅ SQLite reference backend (dev / small labs) — WAL mode, busy-timeout, json1 extension
+- ⚙️ PostgreSQL reference backend (production-recommended) — connection pool ✅, RLS policies ✅, migrations 0001–0012 ✅, JSONB ✅, domain repositories 🔲
 - 🔲 Atomic sample moves — single transaction, either both vacate + place succeed or neither does
 - 🔲 No-double-booking invariant — partial unique index on `(box_id, position_label)` for active samples
 - 🔲 Soft-delete only — end-user "delete" tombstones the row; hard delete is `SystemAdmin`-only and audited
@@ -113,7 +113,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **D1–D9 — Domain entities** | Lab / User / Role / Freezer / Box / Sample / ShareRequest / Session entities, SQLite backend, 259 tests | ✅ Complete |
 | **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
 | **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3); 409 tests total | ✅ Complete |
-| **M1 — Full domain + CSV + CLI** | PostgreSQL backend, CSV export, `freezerctl` CLI | 🔲 Next |
+| **M1 — Full domain + CSV + CLI** | PostgreSQL backend (core ✅, domain repos 🔲), CSV export, `freezerctl` CLI | ⚙️ In progress |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PostgreSQL RLS | 🔲 Planned |
 | **M3 — gRPC + Qt client** | Proto definitions, gRPC server, REST gateway, Qt 6 desktop client — first end-to-end usable build | 🔲 Planned |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |

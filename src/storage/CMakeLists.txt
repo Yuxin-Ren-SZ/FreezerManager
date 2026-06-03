@@ -47,3 +47,5 @@ target_link_libraries(
 )
 
 freezermanager_enable_sanitizers(freezermanager_storage_sqlite)
+
+add_subdirectory(postgres)
