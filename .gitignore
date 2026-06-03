@@ -11,3 +11,8 @@ compile_commands.json
 .clangd/
 .cache/
 .conan/
+
+# Agent / tooling artifacts (not project source)
+.agents/
+package-lock.json
+skills-lock.json

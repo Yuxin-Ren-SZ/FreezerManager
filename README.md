@@ -168,6 +168,37 @@ gcovr -r . --filter 'src/' --print-summary
 The build directory `out/build/coverage/` is isolated from the default `dev`
 build and can coexist with it.
 
+### Performance Tests
+
+Performance tests are planned under `tests/benchmark/` (to be committed in a
+follow-up PR).  They will use GTest with manual `std::chrono` timing rather
+than Google Benchmark, to avoid a static library template-instantiation linker
+issue (see below).
+
+**Status:** No tests are committed yet.  The investigation below documents the
+plan and the known blocker.
+
+| Benchmark | Status | What it measures |
+|---|---|---|
+| Canonical JSON + audit hash pipeline | 🔲 Planned | `Sample → to_json → canonical_json → compute_audit_hash` |
+| Custom-field validator | 🔲 Planned | `validate_custom_fields()` against 1–100 field definitions |
+| Sample placement (insert + commit) | 🔲 Blocked | End-to-end `SampleRepository::insert()` + audit append + commit |
+| Sample list/filter (query) | 🔲 Blocked | `Query<Sample>` with compound filter, sort, and limit |
+| Audit append (mutation + audit row) | 🔲 Blocked | `Lab::insert()` + atomic audit row append + commit |
+
+**Known blocker (cross-TU static library linker issue):** The
+`register_*_repositories()` template functions (`register_identity_repositories`,
+`register_layout_repositories`, etc.) instantiate `std::function`-wrapped
+lambdas inside static library object files. When these registration calls live
+in a separate translation unit from the test code that calls
+`ITransaction::repo<Entity>()`, the linker may drop some template
+instantiations, causing runtime `UnsupportedOperation: repository is not
+available for entity type`. The workaround is to call the registration
+functions directly from the same `.cc` file as the test code. A proper fix
+should replace the per-entity `register_repository_factory` template with a
+single non-template function that registers all entities at once, so the
+template instantiations are never split across translation units.
+
 ---
 
 ## Documentation

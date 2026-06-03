@@ -1,8 +1,11 @@
 # Test Coverage Inventory
 
-357 tests across 23 files. All pass. Document maps each
-module/function → test status. ✓=explicit test ○=indirect
-✗=untested —=N/A
+_Last updated: 2026-06-02._
+
+435 tests across 33 test source files (+ 6 benchmark files). All pass
+(13 Postgres conformance tests skip without `FMGR_TEST_POSTGRES_URL`).
+Document maps each module/function → test status. ✓=explicit test
+○=indirect ✗=untested —=N/A
 
 ---
 
@@ -387,8 +390,10 @@ is: `find_by_id`, `query`, `insert`, `update`, `soft_delete`.
 
 ## 6. Backend Conformance Suite
 
-10 tests for IStorageBackend contract. Both in-memory and SQLite
-pass.
+10 tests for IStorageBackend contract. In-memory and SQLite pass;
+the Postgres backend runs the same 10 plus 3 Postgres-specific tests
+(`postgres_backend_conformance_test.cpp`), all of which `GTEST_SKIP`
+unless `FMGR_TEST_POSTGRES_URL` points at a live database.
 
 | Test                                            | Category       |
 | ----------------------------------------------- | -------------- |
@@ -521,6 +526,42 @@ Argon2id params).
 
 ---
 
+## 8b. RBAC Middleware, Seed Templates & Postgres (added E3 / C5.1)
+
+Test files not in the original inventory:
+
+### `tests/unit/auth_middleware_test.cpp` — `AuthMiddleware` 4-step gate
+| Case                                              | Status |
+| ------------------------------------------------- | ------ |
+| `authorize` valid token + perm + lab → context    | ✓      |
+| `authorize` invalid/expired token rethrows        | ✓      |
+| `authorize` `mfa_complete=false` → `MfaRequired`   | ✓      |
+| `authorize` missing permission → `PermissionDenied`| ✓      |
+| `authorize` lab not visible → `PermissionDenied`   | ✓      |
+| `inject_rls_vars` sets user_id + comma-joined labs | ✓ (mock captures raw key; see note) |
+| RPC registry register / is_registered / list      | ✓      |
+
+> Note: the mock transaction records the raw key passed to `set_session_var` and does
+> **not** reproduce the Postgres `"app."` prefix, so it does not catch the double-prefix
+> defect (CODE_REVIEW_2026-06-02 B1). An AuthMiddleware↔Postgres RLS integration test is
+> still missing.
+
+### `tests/unit/seed_templates_test.cpp` — box/container seed-template fixtures
+| Case                                              | Status |
+| ------------------------------------------------- | ------ |
+| Container-type seed file parses + non-empty       | ✓      |
+| 9×9 cryobox template has 81 positions             | ✓      |
+| 10×10 cryobox template has 100 positions          | ✓      |
+| 96-well rack template has 96 positions            | ✓      |
+| Mixed-Eppendorf template has 13 positions         | ✓      |
+
+### `tests/backend_conformance/postgres_backend_conformance_test.cpp`
+13 tests (10 shared conformance + `CapabilitiesReportRowLevelSecurity`,
+`MigrateToLatestIdempotent`, `SetSessionVarVisibleWithinTransaction`). All skip without
+`FMGR_TEST_POSTGRES_URL`. See §6 and CODE_REVIEW_2026-06-02.
+
+---
+
 ## 9. Intentionally Not Tested
 
 | Item                       | Reason                                                             |
@@ -531,10 +572,9 @@ Argon2id params).
 | Datetime format validation | Same as above                                                      |
 | Enum without "values" key  | Malformed validation_json is data-integrity concern, not validator |
 | volume_delta auto-deplete  | D7.3 deferred to RPC layer per TODO.md                             |
-| Postgres backend           | Not yet implemented (C5 in roadmap)                                |
+| Postgres backend (live DB) | 13-test conformance suite exists; skips without `FMGR_TEST_POSTGRES_URL`. **Never run end-to-end** — see CODE_REVIEW_2026-06-02 B1–B3 |
 | Property tests             | tests/property/ empty; RapidCheck not yet integrated               |
 | Fuzz tests                 | tests/fuzz/ empty; libFuzzer harnesses not yet written             |
-| RBAC middleware tests      | E3 not yet implemented; planned for next slice                     |
 | Audit hash-chain tests     | Only event counting tested; hash-chain verification deferred       |
 | PHI encryption tests       | is_phi flag exists; encryption not yet implemented                 |
 | Log redaction tests        | Not yet implemented                                                |

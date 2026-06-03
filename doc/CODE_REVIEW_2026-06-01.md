@@ -1,5 +1,10 @@
 # Code Review Report — FreezerManager v0.1
 
+> **⚠️ Superseded by [`CODE_REVIEW_2026-06-02.md`](./CODE_REVIEW_2026-06-02.md).**
+> Findings F1–F5 are resolved (F1/F4/F5 in commit `fc71cca`; F2/F3 in commit `a15bf9e`);
+> F6 and F7 remain open. Kept for history. See the 2026-06-02 report for current findings,
+> including 3 🔴 bugs in the new PostgreSQL backend.
+
 **Date:** 2026-06-01
 **Review scope:** Full codebase (~23,348 lines C++20 across 89 headers/sources/tests)
 **Methodology:** Manual read of every source header, every `.cc` implementation, CMake build, and select test files.
@@ -14,7 +19,9 @@ The foundation is **solid and well-engineered**. The domain model, storage abstr
 
 ## Findings
 
-### F1. 🔵 `detail::optional_to_json` duplicated 7 times
+### F1. 🔵 `detail::optional_to_json` duplicated 7 times — ✅ RESOLVED (`fc71cca`)
+
+> Consolidated into `src/core/json_helpers.h`; per-header copies removed.
 
 **Files:**
 - `src/core/identity.h:24–43` (`optional_to_json` / `optional_from_json`)
@@ -75,7 +82,9 @@ Delete each local copy of `detail::*optional_*`.
 
 ---
 
-### F2. 🟡 `Volume`/`Mass` cross-unit arithmetic throws at runtime
+### F2. 🟡 `Volume`/`Mass` cross-unit arithmetic throws at runtime — ✅ RESOLVED (`a15bf9e`)
+
+> `to_unit()` conversion added to `Volume`/`Mass`; cross-unit add still throws by design.
 
 **File:** `src/core/quantity.h:117–121`, `src/core/quantity.h:174–178`
 
@@ -129,7 +138,9 @@ TEST(CoreValueTypes, VolumeCrossUnitAddThrows) {
 
 ---
 
-### F3. 🔵 Date/Datetime custom field validation accepts any string
+### F3. 🔵 Date/Datetime custom field validation accepts any string — ✅ RESOLVED (`a15bf9e`)
+
+> ISO-8601 format validation added for Date/Datetime fields.
 
 **File:** `src/core/custom_field_validator.h:163–170`
 
@@ -229,7 +240,10 @@ TEST(CustomFieldValidator, DateFieldRespectsMinMax) {
 
 ---
 
-### F4. 🔵 Permission catalog lookup is O(n) linear scan
+### F4. 🔵 Permission catalog lookup is O(n) linear scan — ✅ RESOLVED (`fc71cca`)
+
+> `to_key()`/`describe()` now O(1) index; `parse_permission()` binary-searches a
+> compile-time key-sorted catalog (`permissions.h:120–170`).
 
 **File:** `src/core/permissions.h:119–144`
 
@@ -279,7 +293,9 @@ inline constexpr auto k_permission_by_value = [] {
 
 ---
 
-### F5. 🔵 Test helper functions duplicated across test files
+### F5. 🔵 Test helper functions duplicated across test files — ✅ RESOLVED (`fc71cca`)
+
+> Shared helpers extracted to `tests/test_helpers.{h,cc}`.
 
 **Affected test files:**
 - `tests/unit/sqlite_sample_repository_test.cpp`
@@ -426,11 +442,15 @@ No test needed.
 
 ## Summary
 
-| Severity | Count | Items |
-|---|---|---|
-| 🔴 bug | 0 | — |
-| 🟡 risk | 1 | F2: Volume/Mass cross-unit throws |
-| 🔵 nit | 5 | F1, F3, F4, F5, F7 |
-| ❓ question | 1 | F6: hash algorithm divergence |
+| Severity | Count | Items | Resolution |
+|---|---|---|---|
+| 🔴 bug | 0 | — | — |
+| 🟡 risk | 1 | F2: Volume/Mass cross-unit throws | ✅ `a15bf9e` |
+| 🔵 nit | 5 | F1, F3, F4, F5, F7 | F1/F4/F5 ✅ `fc71cca`; F3 ✅ `a15bf9e`; F7 ⏳ open |
+| ❓ question | 1 | F6: hash algorithm divergence | ⏳ open |
 
 All findings are fixable with targeted, mechanical changes. No architectural redesign is needed. The project is in excellent shape for pre-alpha.
+
+**Update 2026-06-02:** F1–F5 resolved. F6/F7 remain open. A fresh review
+([`CODE_REVIEW_2026-06-02.md`](./CODE_REVIEW_2026-06-02.md)) covers the new PostgreSQL
+backend and found 3 🔴 bugs there.
