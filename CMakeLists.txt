@@ -15,6 +15,13 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 option(FREEZERMANAGER_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(FREEZERMANAGER_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(FREEZERMANAGER_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+option(FREEZERMANAGER_ENABLE_COVERAGE "Enable code coverage instrumentation (--coverage)" OFF)
+option(FREEZERMANAGER_BUILD_BENCHMARKS "Build performance benchmarks (Google Benchmark)" OFF)
+
+if(FREEZERMANAGER_ENABLE_COVERAGE)
+  add_compile_options(--coverage)
+  add_link_options(--coverage)
+endif()
 
 function(freezermanager_enable_sanitizers target)
   if(FREEZERMANAGER_ENABLE_ASAN)

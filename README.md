@@ -31,14 +31,14 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ `Volume` / `Mass` value types with unit enums — arithmetic across units rejected at compile time
 - ✅ UTC microsecond `Timestamp` — all storage and transport in UTC; local conversion at display only
 - ✅ Domain enums — `SampleStatus`, `CheckoutAction`, `RoleKind`, `ContainerKind` with JSON conversion
-- 🔲 `Lab`, `User`, `LabMembership` — every entity scoped by `lab_id`; strict multi-lab isolation
-- 🔲 `Role`, `Permission`, `RolePermission` — five built-in roles; lab admins define custom roles
-- 🔲 `Freezer` + `StorageContainer` — recursive adjacency-list hierarchy (compartment / shelf / rack / drawer)
-- 🔲 `BoxType` + `Position` — template with per-position `size_class` acceptance list; supports mixed-format boxes
-- 🔲 `Box` — instance of a `BoxType` placed in a `StorageContainer`
-- 🔲 `ContainerType` — physical tube/vial type with `size_class` token
-- 🔲 `ItemType` — hierarchical taxonomy per lab; custom field definitions inherited from ancestors
-- 🔲 `CustomFieldDefinition` — `string | int | float | bool | date | datetime | enum | reference`; `is_phi` flag
+- ✅ `Lab`, `User`, `LabMembership` — every entity scoped by `lab_id`; strict multi-lab isolation
+- ✅ `Role`, `Permission`, `RolePermission` — five built-in roles; lab admins define custom roles
+- ✅ `Freezer` + `StorageContainer` — recursive adjacency-list hierarchy (compartment / shelf / rack / drawer)
+- ✅ `BoxType` + `Position` — template with per-position `size_class` acceptance list; supports mixed-format boxes
+- ✅ `Box` — instance of a `BoxType` placed in a `StorageContainer`
+- ✅ `ContainerType` — physical tube/vial type with `size_class` token
+- ✅ `ItemType` — hierarchical taxonomy per lab; custom field definitions inherited from ancestors
+- ✅ `CustomFieldDefinition` — `string | int | float | bool | date | datetime | enum | reference`; `is_phi` flag
 - ✅ `Sample` — full lifecycle: `active → checked_out → active`, `→ depleted`, `→ tombstoned`; no-double-booking enforced by partial unique index
 - ✅ Parent–child aliquot lineage — child is independent; lineage preserved across soft-delete
 - ✅ Volume / mass tracking — `CheckoutEvent.volume_delta`; auto-depletes at zero
@@ -93,14 +93,14 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 ### Developer Experience
 
 - ✅ CMake 3.25+ with C++20; Conan 2 lockfile for reproducible dependency resolution
-- ✅ CMake presets — `dev`, `release`, `asan`, `ubsan`, `tsan`, `release-deterministic`
+- ✅ CMake presets — `dev`, `release`, `asan`, `ubsan`, `tsan`, `release-deterministic`, `coverage`
 - ✅ GitHub Actions CI — gcc-13 / clang-17 × Debug / Release × sanitizer builds; Conan cache
 - ✅ clang-format + clang-tidy enforced in CI; SPDX header checks on every source file
 - ✅ CLA Assistant Lite bot — required before any PR is merged
-- 🔲 Abstract backend conformance suite — parameterized GoogleTest fixtures; new backend = pass the suite
+- ✅ Abstract backend conformance suite — parameterized GoogleTest fixtures; new backend = pass the suite (SQLite + in-memory pass; Postgres suite skips without `FMGR_TEST_POSTGRES_URL`)
 - 🔲 Property tests (RapidCheck) — box geometry invariants, audit-chain integrity
 - 🔲 Fuzz harnesses (libFuzzer) — RPC parsers, custom-field validator, CSV importer, canonical-JSON serializer
-- 🔲 Authorization tests — every RPC has at least one positive and one negative auth test
+- ⚙️ Authorization tests — `AuthMiddleware` 4-step gate covered in `auth_middleware_test.cpp`; per-RPC positive/negative tests land with the gRPC server
 
 ---
 
@@ -112,8 +112,9 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **C1/C2 — Core types & storage interface** | Domain value types, `IStorageBackend` + typed query DSL, 15 unit tests | ✅ Complete |
 | **D1–D9 — Domain entities** | Lab / User / Role / Freezer / Box / Sample / ShareRequest / Session entities, SQLite backend, 259 tests | ✅ Complete |
 | **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
-| **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3); 409 tests total | ✅ Complete |
-| **M1 — Full domain + CSV + CLI** | PostgreSQL backend (core ✅, domain repos 🔲), CSV export, `freezerctl` CLI | ⚙️ In progress |
+| **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3) | ✅ Complete |
+| **C5.1 — PostgreSQL backend core** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0012 + RLS policies + 13-test conformance suite (skipped without a live DB); **435 tests total** | ⚙️ Core landed, not yet run against a live Postgres — see [`doc/CODE_REVIEW_2026-06-02.md`](./doc/CODE_REVIEW_2026-06-02.md) |
+| **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories (🔲), CI Postgres service, CSV export, `freezerctl` CLI | ⚙️ In progress |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PostgreSQL RLS | 🔲 Planned |
 | **M3 — gRPC + Qt client** | Proto definitions, gRPC server, REST gateway, Qt 6 desktop client — first end-to-end usable build | 🔲 Planned |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
@@ -141,6 +142,31 @@ For sanitizer builds substitute `dev` with `asan`, `ubsan`, or `tsan`.
 > **Note:** Always pass `-s compiler.cppstd=20` to `conan install` — Conan's
 > auto-detected default profile may use an older standard, and `libpqxx`
 > requires C++20.
+
+### Code Coverage
+
+Install `gcovr` (≥ 7.0), then use the `coverage` preset:
+
+```sh
+# Install coverage tool
+sudo apt install gcovr
+
+# Configure, build, and test with coverage instrumentation
+conan install . --output-folder=out/conan/coverage --build=missing \
+    -s build_type=Debug -s compiler.cppstd=20
+cmake --preset coverage
+cmake --build --preset coverage
+ctest --preset coverage
+
+# Generate HTML coverage report (like Go's `go tool cover -html`)
+gcovr -r . --filter 'src/' --html --html-details -o coverage.html
+
+# Terminal summary only
+gcovr -r . --filter 'src/' --print-summary
+```
+
+The build directory `out/build/coverage/` is isolated from the default `dev`
+build and can coexist with it.
 
 ---
 
