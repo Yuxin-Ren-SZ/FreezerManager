@@ -389,6 +389,10 @@ namespace fmgr::storage {
     virtual void commit() = 0;
     virtual void rollback() = 0;
 
+    // Set a backend-specific session variable. No-op for SQLite; PostgresTransaction
+    // overrides this to issue "SET LOCAL app.<key> = '<value>'" for RLS.
+    virtual void set_session_var(std::string_view /*key*/, std::string_view /*value*/) {}
+
     template <typename Entity> IRepository<Entity>& repo() {
       const auto iterator = repositories_.find(std::type_index(typeid(Entity)));
       if (iterator == repositories_.end()) {

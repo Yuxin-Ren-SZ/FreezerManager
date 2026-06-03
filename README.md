@@ -56,7 +56,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - 🔲 `OidcAuthProvider` — OIDC discovery + PKCE; per-lab issuer config
 - 🔲 `LdapAuthProvider` — bind + search; configurable group → role mapping
 - 🔲 `MtlsAuthProvider` — client certs for machine/instrument clients
-- 🔲 RBAC with per-resource scopes — effective perms computed once per session and cached
+- ✅ `AuthMiddleware` — 4-step RBAC gate (token → MFA → permission → lab); `inject_rls_vars()` sets Postgres session vars; static RPC permission registry; session expiry (12 h idle / 7 d absolute); permission-context cache (5 min TTL, invalidated on revoke)
 - 🔲 PHI field-level encryption — per-record DEK wrapped by master KEK; `IKmsProvider` pluggable
 - 🔲 `OsKeyringKms` / `VaultKms` / `EnvVarKms` — production, Vault, and dev/test key sources
 - 🔲 TLS 1.3 only — HSTS; modern cipher suites; self-signed cert for dev, required for production
@@ -112,8 +112,9 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **C1/C2 — Core types & storage interface** | Domain value types, `IStorageBackend` + typed query DSL, 15 unit tests | ✅ Complete |
 | **D1–D9 — Domain entities** | Lab / User / Role / Freezer / Box / Sample / ShareRequest / Session entities, SQLite backend, 259 tests | ✅ Complete |
 | **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
+| **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3); 409 tests total | ✅ Complete |
 | **M1 — Full domain + CSV + CLI** | PostgreSQL backend, CSV export, `freezerctl` CLI | 🔲 Next |
-| **M2 — Auth & Audit** | RBAC middleware (E3), OIDC/LDAP, audit export, PostgreSQL RLS | 🔲 Planned |
+| **M2 — Auth & Audit** | OIDC/LDAP, audit export, PostgreSQL RLS | 🔲 Planned |
 | **M3 — gRPC + Qt client** | Proto definitions, gRPC server, REST gateway, Qt 6 desktop client — first end-to-end usable build | 🔲 Planned |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
 | **M5 — PHI + KMS + Backups** | Field-level encryption, KMS adapters, backup/restore, weekly restore-drill | 🔲 Planned |

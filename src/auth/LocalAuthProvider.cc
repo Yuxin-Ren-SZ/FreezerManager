@@ -198,6 +198,7 @@ namespace fmgr::auth {
       // Already revoked or never existed — idempotent per interface contract.
     }
     txn->commit();
+    cache_evict(session_id.to_string());
   }
 
   // ---- Public: revoke_all_sessions ----
@@ -212,6 +213,7 @@ namespace fmgr::auth {
       txn->repo<core::Session>().soft_delete(session.id, ctx);
     }
     txn->commit();
+    cache_evict_user(uid);
   }
 
   // ---- Private: do_password_auth ----
@@ -360,10 +362,86 @@ namespace fmgr::auth {
       if (!verify_token_hash(bearer_token, session.token_hash)) {
         continue;
       }
-      return build_session_context(session);
+      const auto now = now_ts();
+      check_session_expiry(session, now); // throws TokenExpired on violation
+      update_last_seen_if_needed(session, now);
+      return lookup_or_build_context(session);
     }
 
     throw InvalidCredentials("invalid or expired session token");
+  }
+
+  // ---- Private: check_session_expiry ----
+
+  void LocalAuthProvider::check_session_expiry(const core::Session& session,
+                                               core::Timestamp now) const {
+    const auto idle_micros = now.unix_micros() - session.last_seen_at.unix_micros();
+    if (idle_micros > config_.max_session_idle_seconds * 1'000'000LL) {
+      throw TokenExpired("session idle timeout exceeded");
+    }
+    const auto abs_micros = now.unix_micros() - session.created_at.unix_micros();
+    if (abs_micros > config_.max_session_abs_seconds * 1'000'000LL) {
+      throw TokenExpired("session absolute timeout exceeded");
+    }
+  }
+
+  // ---- Private: update_last_seen_if_needed ----
+
+  void LocalAuthProvider::update_last_seen_if_needed(const core::Session& session,
+                                                     core::Timestamp now) {
+    const auto idle_micros = now.unix_micros() - session.last_seen_at.unix_micros();
+    if (idle_micros < config_.last_seen_update_interval_seconds * 1'000'000LL) {
+      return; // within rate-limit window; skip update
+    }
+    try {
+      auto updated = session;
+      updated.last_seen_at = now;
+      auto wtxn = backend_.begin(storage::IsolationLevel::Serializable);
+      wtxn->repo<core::Session>().update(updated, system_ctx("update_last_seen"));
+      wtxn->commit();
+      // NOLINTNEXTLINE(bugprone-empty-catch)
+    } catch (const storage::BackendError&) {
+      // Non-fatal: a race between concurrent requests may cause a conflict; ignore.
+    }
+  }
+
+  // ---- Private: lookup_or_build_context ----
+
+  SessionContext LocalAuthProvider::lookup_or_build_context(const core::Session& session) {
+    // MFA flag always comes from the live DB session row, never from the cache.
+    const std::string session_key = session.id.to_string();
+
+    if (config_.session_ctx_cache_ttl_seconds > 0) {
+      std::scoped_lock guard(cache_mutex_);
+      const auto iter = ctx_cache_.find(session_key);
+      if (iter != ctx_cache_.end()) {
+        const auto age = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::steady_clock::now() - iter->second.cached_at)
+                             .count();
+        if (age < config_.session_ctx_cache_ttl_seconds) {
+          return SessionContext{
+              .session_id = session.id,
+              .user_id = session.user_id,
+              .visible_labs = iter->second.visible_labs,
+              .permissions = iter->second.permissions,
+              .mfa_complete = session.mfa_complete,
+          };
+        }
+        ctx_cache_.erase(iter); // stale entry
+      }
+    }
+
+    SessionContext ctx = build_session_context(session);
+    if (config_.session_ctx_cache_ttl_seconds > 0) {
+      std::scoped_lock guard(cache_mutex_);
+      ctx_cache_.insert_or_assign(session_key, CachedContext{
+                                                   .user_id = session.user_id,
+                                                   .visible_labs = ctx.visible_labs,
+                                                   .permissions = ctx.permissions,
+                                                   .cached_at = std::chrono::steady_clock::now(),
+                                               });
+    }
+    return ctx;
   }
 
   // ---- Private: validate_api_token ----
@@ -519,6 +597,24 @@ namespace fmgr::auth {
 
   core::Timestamp LocalAuthProvider::now_ts() {
     return now_timestamp();
+  }
+
+  // ---- Private: cache helpers ----
+
+  void LocalAuthProvider::cache_evict(const std::string& session_id_str) {
+    std::scoped_lock guard(cache_mutex_);
+    ctx_cache_.erase(session_id_str);
+  }
+
+  void LocalAuthProvider::cache_evict_user(const core::UserId& uid) {
+    std::scoped_lock guard(cache_mutex_);
+    for (auto iter = ctx_cache_.begin(); iter != ctx_cache_.end();) {
+      if (iter->second.user_id == uid) {
+        iter = ctx_cache_.erase(iter);
+      } else {
+        ++iter;
+      }
+    }
   }
 
   // ---- Private: lockout helpers ----

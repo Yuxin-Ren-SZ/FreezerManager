@@ -32,10 +32,12 @@
 #include "core/session.h"
 #include "storage/IStorageBackend.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -58,6 +60,16 @@ namespace fmgr::auth {
 
     // TOTP window / step parameters.
     TotpConfig totp{};
+
+    // D9.3: session expiry limits (seconds).
+    std::int64_t max_session_idle_seconds{12LL * 3600};    // 12 h idle
+    std::int64_t max_session_abs_seconds{7LL * 24 * 3600}; // 7 d absolute
+
+    // Rate-limit last_seen_at updates: skip if updated within this interval.
+    std::int64_t last_seen_update_interval_seconds{60};
+
+    // Permission-context cache TTL (seconds). 0 disables caching.
+    std::int64_t session_ctx_cache_ttl_seconds{300}; // 5 min default
   };
 
   class LocalAuthProvider final : public IAuthProvider {
@@ -94,6 +106,27 @@ namespace fmgr::auth {
 
     mutable std::mutex lockout_mutex_;
     std::unordered_map<std::string, LockoutState> lockout_map_;
+
+    // Permission-context cache (D9.3 / E3). Caches the resolve_permissions result
+    // keyed by session-id string. MFA flag always comes from the DB session row,
+    // not from this cache, so verify_totp() takes effect on the next request.
+    struct CachedContext {
+      core::UserId user_id;
+      std::vector<core::LabId> visible_labs;
+      std::set<core::Permission> permissions;
+      std::chrono::steady_clock::time_point cached_at;
+    };
+
+    mutable std::mutex cache_mutex_;
+    mutable std::unordered_map<std::string, CachedContext> ctx_cache_;
+
+    void cache_evict(const std::string& session_id_str);
+    void cache_evict_user(const core::UserId& uid);
+
+    // D9.3 session expiry helpers (called from validate_session_token).
+    void check_session_expiry(const core::Session& session, core::Timestamp now) const;
+    void update_last_seen_if_needed(const core::Session& session, core::Timestamp now);
+    [[nodiscard]] SessionContext lookup_or_build_context(const core::Session& session);
 
     // ---- internal helpers ----
 

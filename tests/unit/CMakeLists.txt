@@ -70,8 +70,18 @@ target_link_libraries(
     GTest::gtest_main
 )
 
+add_executable(freezermanager_rpc_unit_tests auth_middleware_test.cpp)
+target_link_libraries(
+  freezermanager_rpc_unit_tests
+  PRIVATE
+    FreezerManager::rpc
+    FreezerManager::storage_sqlite
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
 gtest_discover_tests(freezermanager_storage_unit_tests)
 gtest_discover_tests(freezermanager_sqlite_storage_unit_tests)
 gtest_discover_tests(freezermanager_auth_unit_tests)
+gtest_discover_tests(freezermanager_rpc_unit_tests)

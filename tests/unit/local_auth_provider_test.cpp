@@ -127,6 +127,31 @@ namespace fmgr::auth {
       std::unique_ptr<storage::SqliteBackend> backend_;
       std::unique_ptr<LocalAuthProvider> provider_;
 
+      // D9.3 test helpers: manipulate session timestamps directly via backend.
+      void backdate_session(const core::SessionId& sid, std::int64_t created_offset_micros,
+                            std::int64_t last_seen_offset_micros) {
+        const auto now_micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch())
+                                    .count();
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto maybe_s = txn->repo<core::Session>().find_by_id(sid);
+        ASSERT_TRUE(maybe_s.has_value());
+        auto updated = *maybe_s;
+        updated.created_at = core::Timestamp::from_unix_micros(now_micros + created_offset_micros);
+        updated.last_seen_at =
+            core::Timestamp::from_unix_micros(now_micros + last_seen_offset_micros);
+        txn->repo<core::Session>().update(updated, test_ctx());
+        txn->commit();
+      }
+
+      [[nodiscard]] LocalAuthProvider make_expiry_provider() const {
+        LocalAuthProviderConfig cfg = fast_config();
+        cfg.max_session_idle_seconds = 3600;           // 1 h idle limit
+        cfg.max_session_abs_seconds = 7LL * 24 * 3600; // 7 d absolute
+        cfg.last_seen_update_interval_seconds = 60;    // rate limit: update every 60 s
+        return LocalAuthProvider(*backend_, cfg);
+      }
+
     private:
       void seed_test_data() {
         // Hash passwords using the fast config.
@@ -488,7 +513,7 @@ namespace fmgr::auth {
     };
 
     [[nodiscard]] static PreparedApiToken prepare_api_token(const core::UserId& user_id,
-                                                             std::uint64_t token_id_low) {
+                                                            std::uint64_t token_id_low) {
       // Generate 32 random bytes → 64-char hex string (matching generate_token()).
       std::array<unsigned char, 32> buf{};
       randombytes_buf(buf.data(), buf.size());
@@ -545,8 +570,8 @@ namespace fmgr::auth {
         txn->commit();
       }
 
-      const AuthToken auth_token = provider_->authenticate(
-          ApiTokenCredentials{.token = pat.full_token}, ClientInfo{});
+      const AuthToken auth_token =
+          provider_->authenticate(ApiTokenCredentials{.token = pat.full_token}, ClientInfo{});
       EXPECT_FALSE(auth_token.plaintext_token.empty());
       EXPECT_TRUE(auth_token.mfa_complete);
 
@@ -576,9 +601,9 @@ namespace fmgr::auth {
         txn->commit();
       }
 
-      EXPECT_THROW(provider_->authenticate(
-                       ApiTokenCredentials{.token = pat.full_token}, ClientInfo{}),
-                   TokenExpired);
+      EXPECT_THROW(
+          provider_->authenticate(ApiTokenCredentials{.token = pat.full_token}, ClientInfo{}),
+          TokenExpired);
     }
 
     // ---- validate_token: API token revocation ----
@@ -601,8 +626,8 @@ namespace fmgr::auth {
       }
 
       // Authenticate once to confirm the token works.
-      const AuthToken auth_token = provider_->authenticate(
-          ApiTokenCredentials{.token = pat.full_token}, ClientInfo{});
+      const AuthToken auth_token =
+          provider_->authenticate(ApiTokenCredentials{.token = pat.full_token}, ClientInfo{});
       const SessionContext ctx = provider_->validate_token(auth_token.plaintext_token);
       EXPECT_EQ(ctx.user_id, kUserNoTotpId);
 
@@ -653,7 +678,7 @@ namespace fmgr::auth {
       EXPECT_THROW(provider_->verify_totp(token.session_id, "000000"), InvalidCredentials);
     }
 
-    // ---- verify_totp: disabled user ---- 
+    // ---- verify_totp: disabled user ----
 
     TEST_F(LocalAuthProviderTest, VerifyTotpDisabledUser) {
       // Authenticate as TOTP user → session created with mfa_complete=false.
@@ -674,7 +699,7 @@ namespace fmgr::auth {
       EXPECT_THROW(provider_->verify_totp(token.session_id, "000000"), InvalidCredentials);
     }
 
-    // ---- lockout: per-email isolation ---- 
+    // ---- lockout: per-email isolation ----
 
     TEST_F(LocalAuthProviderTest, LockoutIsPerEmail) {
       LocalAuthProviderConfig cfg = fast_config();
@@ -698,6 +723,100 @@ namespace fmgr::auth {
       // totp@example.com should still be able to authenticate.
       EXPECT_NO_THROW(local_provider.authenticate(
           PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{}));
+    }
+
+    // ---- D9.3: session expiry ----
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenThrowsTokenExpiredWhenIdleTimeoutExceeded) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // Set last_seen_at to 2 hours ago (exceeds 1 h idle limit).
+      backdate_session(token.session_id, 0, -2LL * 3600 * 1'000'000);
+
+      EXPECT_THROW(prov.validate_token(token.plaintext_token), TokenExpired);
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenThrowsTokenExpiredWhenAbsoluteTtlExceeded) {
+      LocalAuthProviderConfig cfg = fast_config();
+      cfg.max_session_idle_seconds = 7 * 24 * 3600; // large idle limit
+      cfg.max_session_abs_seconds = 3600;           // 1 h absolute limit
+      cfg.last_seen_update_interval_seconds = 60;
+      auto prov = LocalAuthProvider(*backend_, cfg);
+
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // Set created_at to 2 hours ago (exceeds 1 h absolute limit).
+      // Set last_seen_at to now (so idle limit is not triggered).
+      backdate_session(token.session_id, -2LL * 3600 * 1'000'000, 0);
+
+      EXPECT_THROW(prov.validate_token(token.plaintext_token), TokenExpired);
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenSucceedsWithinBothLimits) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // Timestamps are current → both limits satisfied.
+      EXPECT_NO_THROW(prov.validate_token(token.plaintext_token));
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenUpdatesLastSeenAfterInterval) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // Backdate last_seen_at by 2 minutes (> 60 s rate-limit interval).
+      backdate_session(token.session_id, 0, -2LL * 60 * 1'000'000);
+
+      const std::size_t before = backend_->audit_event_count_for_tests();
+      prov.validate_token(token.plaintext_token);
+      // An update to last_seen_at must have emitted an audit event.
+      EXPECT_GT(backend_->audit_event_count_for_tests(), before);
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenDoesNotUpdateLastSeenWithinInterval) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // last_seen_at is current (< 60 s ago); no update expected.
+      const std::size_t before = backend_->audit_event_count_for_tests();
+      prov.validate_token(token.plaintext_token);
+      EXPECT_EQ(backend_->audit_event_count_for_tests(), before);
+    }
+
+    // ---- Permission caching ----
+
+    TEST_F(LocalAuthProviderTest, RevokeSessionPreventsFutureValidateTokenDespiteCache) {
+      // Populate the permission cache by calling validate_token once.
+      const AuthToken token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+      EXPECT_NO_THROW(provider_->validate_token(token.plaintext_token));
+
+      // Revoke session — cache entry should be invalidated.
+      provider_->revoke_session(token.session_id, test_ctx());
+
+      // Validation must fail despite the session having been cached.
+      EXPECT_THROW(provider_->validate_token(token.plaintext_token), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, RevokeAllSessionsPreventsFutureValidateTokenDespiteCache) {
+      // Two sessions; populate both into the permission cache.
+      const AuthToken tok1 = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+      const AuthToken tok2 = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+      EXPECT_NO_THROW(provider_->validate_token(tok1.plaintext_token));
+      EXPECT_NO_THROW(provider_->validate_token(tok2.plaintext_token));
+
+      provider_->revoke_all_sessions(kUserNoTotpId, test_ctx());
+
+      EXPECT_THROW(provider_->validate_token(tok1.plaintext_token), InvalidCredentials);
+      EXPECT_THROW(provider_->validate_token(tok2.plaintext_token), InvalidCredentials);
     }
 
   } // namespace
