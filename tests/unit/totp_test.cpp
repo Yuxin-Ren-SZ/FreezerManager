@@ -112,5 +112,22 @@ namespace fmgr::auth {
       EXPECT_FALSE(totp_verify(kRfc6238Secret, "000000", 1234567890LL));
     }
 
+    TEST(TotpTest, Base32DecodeEmptyStringReturnsEmpty) {
+      const auto bytes = base32_decode("");
+      EXPECT_TRUE(bytes.empty());
+    }
+
+    TEST(TotpTest, TotpVerifyRejectsEmptyCode) {
+      EXPECT_FALSE(totp_verify(kRfc6238Secret, "", 1234567890LL));
+    }
+
+    TEST(TotpTest, TotpVerifyRejectsTooShortCode) {
+      EXPECT_FALSE(totp_verify(kRfc6238Secret, "12345", 1234567890LL));
+    }
+
+    TEST(TotpTest, TotpVerifyRejectsTooLongCode) {
+      EXPECT_FALSE(totp_verify(kRfc6238Secret, "1234567", 1234567890LL));
+    }
+
   } // namespace
 } // namespace fmgr::auth

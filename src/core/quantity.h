@@ -81,6 +81,21 @@ namespace fmgr::core {
       return unit_;
     }
 
+    // Convert to another volume unit.  Same-unit is a no-op.  mL ↔ µL uses
+    // factor 1000; integer division truncates toward zero for µL→mL.
+    [[nodiscard]] constexpr Volume to_unit(VolumeUnit target) const {
+      if (unit_ == target) {
+        return *this;
+      }
+      if (unit_ == VolumeUnit::Milliliter && target == VolumeUnit::Microliter) {
+        return {raw_value_ * 1'000, target};
+      }
+      if (unit_ == VolumeUnit::Microliter && target == VolumeUnit::Milliliter) {
+        return {raw_value_ / 1'000, target};
+      }
+      throw std::invalid_argument("unsupported volume unit conversion");
+    }
+
     friend constexpr bool operator==(const Volume&, const Volume&) = default;
 
     [[nodiscard]] friend Volume operator+(const Volume& left, const Volume& right) {
@@ -138,6 +153,21 @@ namespace fmgr::core {
     }
     [[nodiscard]] constexpr MassUnit unit() const {
       return unit_;
+    }
+
+    // Convert to another mass unit.  Same-unit is a no-op.  g ↔ mg uses
+    // factor 1000; integer division truncates toward zero for mg→g.
+    [[nodiscard]] constexpr Mass to_unit(MassUnit target) const {
+      if (unit_ == target) {
+        return *this;
+      }
+      if (unit_ == MassUnit::Gram && target == MassUnit::Milligram) {
+        return {raw_value_ * 1'000, target};
+      }
+      if (unit_ == MassUnit::Milligram && target == MassUnit::Gram) {
+        return {raw_value_ / 1'000, target};
+      }
+      throw std::invalid_argument("unsupported mass unit conversion");
     }
 
     friend constexpr bool operator==(const Mass&, const Mass&) = default;

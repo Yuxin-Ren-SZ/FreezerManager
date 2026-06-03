@@ -130,6 +130,50 @@ namespace fmgr::core {
       }
     }
 
+    inline void validate_date_or_datetime_value(const std::string& key,
+                                                  const nlohmann::json& value,
+                                                  FieldDataType data_type,
+                                                  const std::string& validation_json,
+                                                  std::vector<FieldValidationError>& errors) {
+      if (!value.is_string()) {
+        errors.push_back(
+            {.key = key,
+             .message = "expected string value for " + std::string(to_string(data_type))});
+        return;
+      }
+      const auto str = value.get<std::string>();
+
+      // Basic ISO-8601 format check.
+      bool format_ok = false;
+      if (data_type == FieldDataType::Date) {
+        // YYYY-MM-DD (10 chars)
+        format_ok = str.size() >= 10 && str[4] == '-' && str[7] == '-';
+      } else {
+        // YYYY-MM-DDTHH:MM:SS (19 chars min)
+        format_ok = str.size() >= 19 && str[4] == '-' && str[7] == '-' && str[10] == 'T' &&
+                    str[13] == ':' && str[16] == ':';
+      }
+      if (!format_ok) {
+        errors.push_back(
+            {.key = key,
+             .message = std::string(to_string(data_type)) + " must be in ISO-8601 format"});
+        return;
+      }
+
+      // Min/max range check from validation_json constraints.
+      const auto constraints = parse_constraints(validation_json);
+      if (constraints.contains("min") && constraints.at("min").is_string() &&
+          str < constraints.at("min").get<std::string>()) {
+        errors.push_back({.key = key, .message = std::string(to_string(data_type)) +
+                                                 " is before minimum"});
+      }
+      if (constraints.contains("max") && constraints.at("max").is_string() &&
+          str > constraints.at("max").get<std::string>()) {
+        errors.push_back({.key = key, .message = std::string(to_string(data_type)) +
+                                                 " is after maximum"});
+      }
+    }
+
     inline void validate_single_field(const CustomFieldDefinition& def,
                                       const nlohmann::json& fields_json,
                                       std::vector<FieldValidationError>& errors) {
@@ -162,11 +206,7 @@ namespace fmgr::core {
         break;
       case FieldDataType::Date:
       case FieldDataType::Datetime:
-        if (!value.is_string()) {
-          errors.push_back(
-              {.key = def.key,
-               .message = "expected string value for " + std::string(to_string(def.data_type))});
-        }
+        validate_date_or_datetime_value(def.key, value, def.data_type, def.validation_json, errors);
         break;
       case FieldDataType::Enum:
         validate_enum_value(def.key, value, def.validation_json, errors);

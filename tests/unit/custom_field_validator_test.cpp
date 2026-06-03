@@ -181,6 +181,43 @@ namespace fmgr::core {
       EXPECT_EQ(errors.front().key, "dob");
     }
 
+    TEST(CustomFieldValidatorTest, DateFieldRejectsBadFormat) {
+      const auto def = make_def("dob", FieldDataType::Date);
+      const auto fields = nlohmann::json{{"dob", "next Tuesday"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "dob");
+    }
+
+    TEST(CustomFieldValidatorTest, DateFieldRejectsWrongSeparators) {
+      const auto def = make_def("dob", FieldDataType::Date);
+      const auto fields = nlohmann::json{{"dob", "2024/01/15"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_FALSE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, DateFieldRejectsTooShort) {
+      const auto def = make_def("dob", FieldDataType::Date);
+      const auto fields = nlohmann::json{{"dob", "2024-01"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_FALSE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, DateFieldRespectsMinMaxFromValidationJson) {
+      const auto def = make_def("dob", FieldDataType::Date, false,
+                                R"({"min":"2025-01-01","max":"2025-12-31"})");
+      // Before min
+      auto errors =
+          validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"dob", "2024-12-31"}});
+      EXPECT_FALSE(errors.empty());
+      // After max
+      errors = validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"dob", "2026-01-01"}});
+      EXPECT_FALSE(errors.empty());
+      // Within range
+      errors = validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"dob", "2025-06-15"}});
+      EXPECT_TRUE(errors.empty());
+    }
+
     TEST(CustomFieldValidatorTest, DatetimeFieldAcceptsIso8601String) {
       const auto def = make_def("updated_at", FieldDataType::Datetime);
       const auto fields = nlohmann::json{{"updated_at", "2024-01-15T10:30:00Z"}};
@@ -195,9 +232,55 @@ namespace fmgr::core {
       ASSERT_EQ(errors.size(), 1U);
     }
 
+    TEST(CustomFieldValidatorTest, DatetimeFieldRejectsBadFormat) {
+      const auto def = make_def("updated_at", FieldDataType::Datetime);
+      const auto fields = nlohmann::json{{"updated_at", "tomorrow morning"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_FALSE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, DatetimeFieldRejectsTooShort) {
+      const auto def = make_def("updated_at", FieldDataType::Datetime);
+      const auto fields = nlohmann::json{{"updated_at", "2024-01-15"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_FALSE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, DatetimeFieldRejectsMissingT) {
+      const auto def = make_def("updated_at", FieldDataType::Datetime);
+      const auto fields = nlohmann::json{{"updated_at", "2024-01-15 10:30:00"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_FALSE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, DatetimeFieldRespectsMinMaxFromValidationJson) {
+      const auto def = make_def("updated_at", FieldDataType::Datetime, false,
+                                R"({"min":"2025-01-01T00:00:00Z","max":"2025-12-31T23:59:59Z"})");
+      // Before min
+      auto errors = validate_custom_fields(std::span{&def, 1},
+                                           nlohmann::json{{"updated_at", "2024-12-31T23:59:59Z"}});
+      EXPECT_FALSE(errors.empty());
+      // After max
+      errors = validate_custom_fields(std::span{&def, 1},
+                                      nlohmann::json{{"updated_at", "2026-01-01T00:00:00Z"}});
+      EXPECT_FALSE(errors.empty());
+      // Within range
+      errors = validate_custom_fields(std::span{&def, 1},
+                                      nlohmann::json{{"updated_at", "2025-06-15T12:00:00Z"}});
+      EXPECT_TRUE(errors.empty());
+    }
+
     TEST(CustomFieldValidatorTest, FloatFieldExceedsMaxProducesError) {
       const auto def = make_def("score", FieldDataType::Float, false, R"({"max":100.0})");
       const auto fields = nlohmann::json{{"score", 150.0}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "score");
+    }
+
+    TEST(CustomFieldValidatorTest, FloatFieldBelowMinProducesError) {
+      const auto def = make_def("score", FieldDataType::Float, false, R"({"min":0.0})");
+      const auto fields = nlohmann::json{{"score", -5.0}};
       const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
       ASSERT_EQ(errors.size(), 1U);
       EXPECT_EQ(errors.front().key, "score");

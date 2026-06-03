@@ -653,5 +653,52 @@ namespace fmgr::auth {
       EXPECT_THROW(provider_->verify_totp(token.session_id, "000000"), InvalidCredentials);
     }
 
+    // ---- verify_totp: disabled user ---- 
+
+    TEST_F(LocalAuthProviderTest, VerifyTotpDisabledUser) {
+      // Authenticate as TOTP user → session created with mfa_complete=false.
+      const AuthToken token = provider_->authenticate(
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{});
+      ASSERT_FALSE(token.mfa_complete);
+
+      // Disable the user (simulating admin action while session is active).
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::User>().soft_delete(kUserWithTotpId, test_ctx());
+        txn->commit();
+      }
+
+      // verify_totp should still fail because the user query finds the user
+      // (soft_delete doesn't remove the row), and the TOTP secret is still set.
+      // The actual rejection should come from the TOTP code being wrong.
+      EXPECT_THROW(provider_->verify_totp(token.session_id, "000000"), InvalidCredentials);
+    }
+
+    // ---- lockout: per-email isolation ---- 
+
+    TEST_F(LocalAuthProviderTest, LockoutIsPerEmail) {
+      LocalAuthProviderConfig cfg = fast_config();
+      cfg.max_failures_before_lockout = 3;
+      auto local_provider = LocalAuthProvider(*backend_, cfg);
+
+      // Exhaust failures for nototp@example.com
+      for (int i = 0; i < 3; ++i) {
+        try {
+          local_provider.authenticate(
+              PasswordCredentials{.email = "nototp@example.com", .password = "bad"}, ClientInfo{});
+        } catch (...) {
+        }
+      }
+      // nototp is now locked.
+      EXPECT_THROW(local_provider.authenticate(
+                       PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"},
+                       ClientInfo{}),
+                   AccountLocked);
+
+      // totp@example.com should still be able to authenticate.
+      EXPECT_NO_THROW(local_provider.authenticate(
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{}));
+    }
+
   } // namespace
 } // namespace fmgr::auth

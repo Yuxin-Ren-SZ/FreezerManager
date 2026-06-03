@@ -54,8 +54,38 @@ namespace fmgr::core {
       EXPECT_EQ((left + right).raw_value(), 1'750'000);
       EXPECT_EQ((left - right).raw_value(), 1'250'000);
       EXPECT_GT(left, right);
+      EXPECT_GE(left, right);
+      EXPECT_LE(right, left);
+      EXPECT_LT(right, left);
       EXPECT_THROW((void)(left + microliters), std::invalid_argument);
       EXPECT_THROW((void)(left < microliters), std::invalid_argument);
+    }
+
+    TEST(CoreQuantity, VolumeConvertsMilliliterToMicroliter) {
+      const auto v = Volume::from_raw(1, VolumeUnit::Milliliter);
+      const auto converted = v.to_unit(VolumeUnit::Microliter);
+      EXPECT_EQ(converted.raw_value(), 1'000);
+      EXPECT_EQ(converted.unit(), VolumeUnit::Microliter);
+    }
+
+    TEST(CoreQuantity, VolumeConvertsMicroliterToMilliliterTruncates) {
+      const auto v = Volume::from_raw(500, VolumeUnit::Microliter);
+      const auto converted = v.to_unit(VolumeUnit::Milliliter);
+      EXPECT_EQ(converted.raw_value(), 0);
+      EXPECT_EQ(converted.unit(), VolumeUnit::Milliliter);
+    }
+
+    TEST(CoreQuantity, VolumeSameUnitConversionIsNoop) {
+      const auto v = Volume::from_raw(42, VolumeUnit::Microliter);
+      const auto converted = v.to_unit(VolumeUnit::Microliter);
+      EXPECT_EQ(converted.raw_value(), 42);
+      EXPECT_EQ(converted.unit(), VolumeUnit::Microliter);
+    }
+
+    TEST(CoreQuantity, VolumeToUnitPreservesEquality) {
+      const auto ml = Volume::from_raw(1, VolumeUnit::Milliliter);
+      const auto ul = Volume::from_raw(1000, VolumeUnit::Microliter);
+      EXPECT_EQ(ml.to_unit(VolumeUnit::Microliter), ul);
     }
 
     TEST(CoreQuantity, MassSupportsSameUnitArithmeticAndRejectsMixedUnits) {
@@ -65,7 +95,29 @@ namespace fmgr::core {
 
       EXPECT_EQ((left + right).raw_value(), 2'500'000);
       EXPECT_GT(left, right);
+      EXPECT_GE(left, right);
+      EXPECT_LE(right, left);
       EXPECT_THROW((void)(left + milligrams), std::invalid_argument);
+    }
+
+    TEST(CoreQuantity, MassConvertsGramToMilligram) {
+      const auto m = Mass::from_raw(1, MassUnit::Gram);
+      const auto converted = m.to_unit(MassUnit::Milligram);
+      EXPECT_EQ(converted.raw_value(), 1'000);
+      EXPECT_EQ(converted.unit(), MassUnit::Milligram);
+    }
+
+    TEST(CoreQuantity, MassConvertsMilligramToGramTruncates) {
+      const auto m = Mass::from_raw(500, MassUnit::Milligram);
+      const auto converted = m.to_unit(MassUnit::Gram);
+      EXPECT_EQ(converted.raw_value(), 0);
+      EXPECT_EQ(converted.unit(), MassUnit::Gram);
+    }
+
+    TEST(CoreQuantity, MassSameUnitConversionIsNoop) {
+      const auto m = Mass::from_raw(99, MassUnit::Milligram);
+      const auto converted = m.to_unit(MassUnit::Milligram);
+      EXPECT_EQ(converted.raw_value(), 99);
     }
 
     TEST(CoreQuantity, QuantityJsonRoundTrips) {
