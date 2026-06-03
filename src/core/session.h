@@ -23,6 +23,7 @@
 #define FMGR_CORE_SESSION_H
 
 #include "core/ids.h"
+#include "core/json_helpers.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -53,7 +54,7 @@ namespace fmgr::core {
 
     SessionId id;
     UserId user_id;
-    std::string token_hash;   // BLAKE2b hash; never contains plaintext
+    std::string token_hash;   // BLAKE2b-256 hash; faster than SHA-256 for high-freq token verification; never contains plaintext
     std::string token_prefix; // first N chars of plaintext token; indexed for lookup
     Timestamp created_at;
     Timestamp last_seen_at;
@@ -99,25 +100,6 @@ namespace fmgr::core {
     friend bool operator==(const ApiToken&, const ApiToken&) = default;
   };
 
-  // ---- JSON helpers ----
-
-  namespace detail {
-    template <typename Value>
-    [[nodiscard]] inline nlohmann::json sess_opt_to_json(const std::optional<Value>& value) {
-      if (!value.has_value()) {
-        return nullptr;
-      }
-      return nlohmann::json(value.value());
-    }
-
-    template <typename Value>
-    [[nodiscard]] inline std::optional<Value> sess_opt_from_json(const nlohmann::json& json) {
-      if (json.is_null()) {
-        return std::nullopt;
-      }
-      return json.get<Value>();
-    }
-  } // namespace detail
 
   // ---- Session JSON ----
 
@@ -129,9 +111,9 @@ namespace fmgr::core {
         {"token_prefix", session.token_prefix},
         {"created_at", session.created_at},
         {"last_seen_at", session.last_seen_at},
-        {"ip", detail::sess_opt_to_json(session.ip)},
-        {"user_agent", detail::sess_opt_to_json(session.user_agent)},
-        {"revoked_at", detail::sess_opt_to_json(session.revoked_at)},
+        {"ip", json_helpers::opt_to_json(session.ip)},
+        {"user_agent", json_helpers::opt_to_json(session.user_agent)},
+        {"revoked_at", json_helpers::opt_to_json(session.revoked_at)},
         {"mfa_complete", session.mfa_complete},
     };
   }
@@ -144,9 +126,9 @@ namespace fmgr::core {
         .token_prefix = json.at("token_prefix").get<std::string>(),
         .created_at = json.at("created_at").get<Timestamp>(),
         .last_seen_at = json.at("last_seen_at").get<Timestamp>(),
-        .ip = detail::sess_opt_from_json<std::string>(json.at("ip")),
-        .user_agent = detail::sess_opt_from_json<std::string>(json.at("user_agent")),
-        .revoked_at = detail::sess_opt_from_json<Timestamp>(json.at("revoked_at")),
+        .ip = json_helpers::opt_from_json<std::string>(json.at("ip")),
+        .user_agent = json_helpers::opt_from_json<std::string>(json.at("user_agent")),
+        .revoked_at = json_helpers::opt_from_json<Timestamp>(json.at("revoked_at")),
         .mfa_complete = json.at("mfa_complete").get<bool>(),
     };
   }
@@ -157,14 +139,14 @@ namespace fmgr::core {
     json = nlohmann::json{
         {"id", token.id},
         {"user_id", token.user_id},
-        {"lab_id", detail::sess_opt_to_json(token.lab_id)},
+        {"lab_id", json_helpers::opt_to_json(token.lab_id)},
         {"name", token.name},
         {"scope_json", token.scope_json},
         {"token_hash", token.token_hash},
         {"token_prefix", token.token_prefix},
         {"created_at", token.created_at},
-        {"expires_at", detail::sess_opt_to_json(token.expires_at)},
-        {"revoked_at", detail::sess_opt_to_json(token.revoked_at)},
+        {"expires_at", json_helpers::opt_to_json(token.expires_at)},
+        {"revoked_at", json_helpers::opt_to_json(token.revoked_at)},
     };
   }
 
@@ -172,14 +154,14 @@ namespace fmgr::core {
     token = ApiToken{
         .id = json.at("id").get<ApiTokenId>(),
         .user_id = json.at("user_id").get<UserId>(),
-        .lab_id = detail::sess_opt_from_json<LabId>(json.at("lab_id")),
+        .lab_id = json_helpers::opt_from_json<LabId>(json.at("lab_id")),
         .name = json.at("name").get<std::string>(),
         .scope_json = json.at("scope_json").get<std::string>(),
         .token_hash = json.at("token_hash").get<std::string>(),
         .token_prefix = json.at("token_prefix").get<std::string>(),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .expires_at = detail::sess_opt_from_json<Timestamp>(json.at("expires_at")),
-        .revoked_at = detail::sess_opt_from_json<Timestamp>(json.at("revoked_at")),
+        .expires_at = json_helpers::opt_from_json<Timestamp>(json.at("expires_at")),
+        .revoked_at = json_helpers::opt_from_json<Timestamp>(json.at("revoked_at")),
     };
   }
 

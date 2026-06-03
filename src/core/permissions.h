@@ -11,6 +11,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <set>
@@ -116,29 +117,54 @@ namespace fmgr::core {
        .description = "Revoke another user's sessions."},
   }};
 
-  [[nodiscard]] inline std::string_view to_key(Permission permission) {
-    for (const auto& entry : k_permission_catalog) {
-      if (entry.value == permission) {
-        return entry.key;
+  // Guard: catalog must be in enum value order for O(1) value lookups below.
+  static_assert([] {
+    for (std::size_t i = 0; i < k_permission_catalog.size(); ++i) {
+      if (static_cast<std::size_t>(k_permission_catalog[i].value) != i) {
+        return false;
       }
     }
-    throw std::invalid_argument("unknown permission");
+    return true;
+  }(), "k_permission_catalog entries must appear in Permission enum value order");
+
+  // Catalog sorted by key for O(log n) binary search in parse_permission().
+  inline constexpr auto k_permission_by_key = [] {
+    auto sorted = k_permission_catalog;
+    for (std::size_t i = 1; i < sorted.size(); ++i) {
+      const auto pivot = sorted[i];
+      auto j = static_cast<std::ptrdiff_t>(i) - 1;
+      while (j >= 0 && sorted[static_cast<std::size_t>(j)].key > pivot.key) {
+        sorted[static_cast<std::size_t>(j + 1)] = sorted[static_cast<std::size_t>(j)];
+        --j;
+      }
+      sorted[static_cast<std::size_t>(j + 1)] = pivot;
+    }
+    return sorted;
+  }();
+
+  // O(1) — catalog is in enum value order, so enum value == array index.
+  [[nodiscard]] inline std::string_view to_key(Permission permission) {
+    const auto idx = static_cast<std::size_t>(permission);
+    if (idx >= k_permission_catalog.size()) {
+      throw std::invalid_argument("unknown permission");
+    }
+    return k_permission_catalog[idx].key;
   }
 
   [[nodiscard]] inline std::string_view describe(Permission permission) {
-    for (const auto& entry : k_permission_catalog) {
-      if (entry.value == permission) {
-        return entry.description;
-      }
+    const auto idx = static_cast<std::size_t>(permission);
+    if (idx >= k_permission_catalog.size()) {
+      throw std::invalid_argument("unknown permission");
     }
-    throw std::invalid_argument("unknown permission");
+    return k_permission_catalog[idx].description;
   }
 
+  // O(log n) binary search over the key-sorted catalog.
   [[nodiscard]] inline Permission parse_permission(std::string_view key) {
-    for (const auto& entry : k_permission_catalog) {
-      if (entry.key == key) {
-        return entry.value;
-      }
+    const auto it = std::ranges::lower_bound(k_permission_by_key, key, std::less<>{},
+                                             &PermissionEntry::key);
+    if (it != k_permission_by_key.end() && it->key == key) {
+      return it->value;
     }
     throw std::invalid_argument("unknown permission key: " + std::string(key));
   }

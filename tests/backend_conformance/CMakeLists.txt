@@ -7,6 +7,11 @@ target_link_libraries(
     FreezerManager::storage
     GTest::gtest_main
 )
+target_include_directories(
+  freezermanager_backend_conformance_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
 
 add_executable(freezermanager_sqlite_backend_conformance_tests sqlite_backend_conformance_test.cpp)
 target_link_libraries(
@@ -14,6 +19,11 @@ target_link_libraries(
   PRIVATE
     FreezerManager::storage_sqlite
     GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_sqlite_backend_conformance_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
 )
 
 add_executable(
@@ -25,6 +35,11 @@ target_link_libraries(
   PRIVATE
     FreezerManager::storage_postgres
     GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_postgres_backend_conformance_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
 )
 
 include(GoogleTest)

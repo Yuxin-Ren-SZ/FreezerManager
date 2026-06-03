@@ -11,6 +11,7 @@
 #include "core/permissions.h"
 #include "core/timestamp.h"
 
+#include "test_helpers.h"
 #include <gtest/gtest.h>
 
 #include <set>
@@ -22,12 +23,10 @@
 
 namespace fmgr::auth {
   namespace {
+    using namespace fmgr::test;
 
     // ---- helpers ----
 
-    [[nodiscard]] core::Timestamp ts(std::int64_t micros) {
-      return core::Timestamp::from_unix_micros(micros);
-    }
 
     [[nodiscard]] core::SessionId session_id_1() {
       return core::SessionId::parse("00000000-0000-0000-0000-000000000001");

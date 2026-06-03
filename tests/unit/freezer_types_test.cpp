@@ -2,6 +2,7 @@
 
 #include "core/freezer.h"
 
+#include "test_helpers.h"
 #include <gtest/gtest.h>
 
 #include <array>
@@ -9,18 +10,9 @@
 
 namespace fmgr::core {
   namespace {
+    using namespace fmgr::test;
 
-    [[nodiscard]] Uuid uuid_from_low(std::uint64_t low_bits) {
-      std::array<std::uint8_t, 16> bytes{};
-      for (std::size_t index = 0; index < 8; ++index) {
-        bytes.at(15 - index) = static_cast<std::uint8_t>((low_bits >> (index * 8U)) & 0xffU);
-      }
-      return Uuid(bytes);
-    }
 
-    template <typename StrongIdT> [[nodiscard]] StrongIdT id_from_low(std::uint64_t low_bits) {
-      return StrongIdT(uuid_from_low(low_bits));
-    }
 
     TEST(FreezerTypesTest, CapacityHintJsonRoundTripPreservesNullableFields) {
       const CapacityHint hint{.rows = 9, .cols = 9, .depth = std::nullopt};

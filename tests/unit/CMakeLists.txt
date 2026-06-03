@@ -21,6 +21,11 @@ target_link_libraries(
     FreezerManager::core
     GTest::gtest_main
 )
+target_include_directories(
+  freezermanager_core_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
 target_compile_definitions(
   freezermanager_core_unit_tests
   PRIVATE
@@ -33,6 +38,11 @@ target_link_libraries(
   PRIVATE
     FreezerManager::storage
     GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_storage_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
 )
 
 add_executable(
@@ -55,6 +65,11 @@ target_link_libraries(
     FreezerManager::storage_sqlite
     GTest::gtest_main
 )
+target_include_directories(
+  freezermanager_sqlite_storage_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
 
 add_executable(
   freezermanager_auth_unit_tests
@@ -69,6 +84,11 @@ target_link_libraries(
     FreezerManager::storage_sqlite
     GTest::gtest_main
 )
+target_include_directories(
+  freezermanager_auth_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
 
 add_executable(freezermanager_rpc_unit_tests auth_middleware_test.cpp)
 target_link_libraries(
@@ -77,6 +97,11 @@ target_link_libraries(
     FreezerManager::rpc
     FreezerManager::storage_sqlite
     GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_rpc_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
 )
 
 include(GoogleTest)

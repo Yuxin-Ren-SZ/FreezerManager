@@ -11,6 +11,7 @@
 #include "core/enums.h"
 #include "core/ids.h"
 #include "core/quantity.h"
+#include "core/json_helpers.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -22,25 +23,6 @@
 
 namespace fmgr::core {
 
-  namespace detail {
-
-    template <typename Value>
-    [[nodiscard]] inline nlohmann::json sample_opt_to_json(const std::optional<Value>& value) {
-      if (!value.has_value()) {
-        return nullptr;
-      }
-      return nlohmann::json(value.value());
-    }
-
-    template <typename Value>
-    [[nodiscard]] inline std::optional<Value> sample_opt_from_json(const nlohmann::json& json) {
-      if (json.is_null()) {
-        return std::nullopt;
-      }
-      return json.get<Value>();
-    }
-
-  } // namespace detail
 
   // ---- VolumeUnit / MassUnit JSON converters ----
   // (to_string / parse_* are in quantity.h; JSON adapters live here
@@ -210,7 +192,7 @@ namespace fmgr::core {
         {"name", project.name},
         {"owner_user_id", project.owner_user_id},
         {"created_at", project.created_at},
-        {"archived_at", detail::sample_opt_to_json(project.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(project.archived_at)},
     };
   }
 
@@ -221,7 +203,7 @@ namespace fmgr::core {
         .name = json.at("name").get<std::string>(),
         .owner_user_id = json.at("owner_user_id").get<UserId>(),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .archived_at = detail::sample_opt_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 
@@ -260,11 +242,11 @@ namespace fmgr::core {
         {"lab_id", event.lab_id},
         {"user_id", event.user_id},
         {"action", event.action},
-        {"reason", detail::sample_opt_to_json(event.reason)},
+        {"reason", json_helpers::opt_to_json(event.reason)},
         {"at", event.at},
-        {"volume_delta", detail::sample_opt_to_json(event.volume_delta)},
-        {"volume_unit", detail::sample_opt_to_json(event.volume_unit)},
-        {"location_after", detail::sample_opt_to_json(event.location_after)},
+        {"volume_delta", json_helpers::opt_to_json(event.volume_delta)},
+        {"volume_unit", json_helpers::opt_to_json(event.volume_unit)},
+        {"location_after", json_helpers::opt_to_json(event.location_after)},
     };
   }
 
@@ -275,11 +257,11 @@ namespace fmgr::core {
         .lab_id = json.at("lab_id").get<LabId>(),
         .user_id = json.at("user_id").get<UserId>(),
         .action = json.at("action").get<CheckoutAction>(),
-        .reason = detail::sample_opt_from_json<std::string>(json.at("reason")),
+        .reason = json_helpers::opt_from_json<std::string>(json.at("reason")),
         .at = json.at("at").get<Timestamp>(),
-        .volume_delta = detail::sample_opt_from_json<std::int64_t>(json.at("volume_delta")),
-        .volume_unit = detail::sample_opt_from_json<VolumeUnit>(json.at("volume_unit")),
-        .location_after = detail::sample_opt_from_json<std::string>(json.at("location_after")),
+        .volume_delta = json_helpers::opt_from_json<std::int64_t>(json.at("volume_delta")),
+        .volume_unit = json_helpers::opt_from_json<VolumeUnit>(json.at("volume_unit")),
+        .location_after = json_helpers::opt_from_json<std::string>(json.at("location_after")),
     };
   }
 
@@ -289,16 +271,16 @@ namespace fmgr::core {
         {"lab_id", sample.lab_id},
         {"item_type_id", sample.item_type_id},
         {"name", sample.name},
-        {"barcode", detail::sample_opt_to_json(sample.barcode)},
-        {"container_type_id", detail::sample_opt_to_json(sample.container_type_id)},
-        {"box_id", detail::sample_opt_to_json(sample.box_id)},
-        {"position_label", detail::sample_opt_to_json(sample.position_label)},
-        {"volume_value", detail::sample_opt_to_json(sample.volume_value)},
-        {"volume_unit", detail::sample_opt_to_json(sample.volume_unit)},
-        {"mass_value", detail::sample_opt_to_json(sample.mass_value)},
-        {"mass_unit", detail::sample_opt_to_json(sample.mass_unit)},
+        {"barcode", json_helpers::opt_to_json(sample.barcode)},
+        {"container_type_id", json_helpers::opt_to_json(sample.container_type_id)},
+        {"box_id", json_helpers::opt_to_json(sample.box_id)},
+        {"position_label", json_helpers::opt_to_json(sample.position_label)},
+        {"volume_value", json_helpers::opt_to_json(sample.volume_value)},
+        {"volume_unit", json_helpers::opt_to_json(sample.volume_unit)},
+        {"mass_value", json_helpers::opt_to_json(sample.mass_value)},
+        {"mass_unit", json_helpers::opt_to_json(sample.mass_unit)},
         {"status", sample.status},
-        {"parent_sample_id", detail::sample_opt_to_json(sample.parent_sample_id)},
+        {"parent_sample_id", json_helpers::opt_to_json(sample.parent_sample_id)},
         {"created_by", sample.created_by},
         {"created_at", sample.created_at},
         {"last_modified_by", sample.last_modified_by},
@@ -314,17 +296,17 @@ namespace fmgr::core {
         .lab_id = json.at("lab_id").get<LabId>(),
         .item_type_id = json.at("item_type_id").get<ItemTypeId>(),
         .name = json.at("name").get<std::string>(),
-        .barcode = detail::sample_opt_from_json<std::string>(json.at("barcode")),
+        .barcode = json_helpers::opt_from_json<std::string>(json.at("barcode")),
         .container_type_id =
-            detail::sample_opt_from_json<ContainerTypeId>(json.at("container_type_id")),
-        .box_id = detail::sample_opt_from_json<BoxId>(json.at("box_id")),
-        .position_label = detail::sample_opt_from_json<std::string>(json.at("position_label")),
-        .volume_value = detail::sample_opt_from_json<std::int64_t>(json.at("volume_value")),
-        .volume_unit = detail::sample_opt_from_json<VolumeUnit>(json.at("volume_unit")),
-        .mass_value = detail::sample_opt_from_json<std::int64_t>(json.at("mass_value")),
-        .mass_unit = detail::sample_opt_from_json<MassUnit>(json.at("mass_unit")),
+            json_helpers::opt_from_json<ContainerTypeId>(json.at("container_type_id")),
+        .box_id = json_helpers::opt_from_json<BoxId>(json.at("box_id")),
+        .position_label = json_helpers::opt_from_json<std::string>(json.at("position_label")),
+        .volume_value = json_helpers::opt_from_json<std::int64_t>(json.at("volume_value")),
+        .volume_unit = json_helpers::opt_from_json<VolumeUnit>(json.at("volume_unit")),
+        .mass_value = json_helpers::opt_from_json<std::int64_t>(json.at("mass_value")),
+        .mass_unit = json_helpers::opt_from_json<MassUnit>(json.at("mass_unit")),
         .status = json.at("status").get<SampleStatus>(),
-        .parent_sample_id = detail::sample_opt_from_json<SampleId>(json.at("parent_sample_id")),
+        .parent_sample_id = json_helpers::opt_from_json<SampleId>(json.at("parent_sample_id")),
         .created_by = json.at("created_by").get<UserId>(),
         .created_at = json.at("created_at").get<Timestamp>(),
         .last_modified_by = json.at("last_modified_by").get<UserId>(),

@@ -23,6 +23,7 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "test_helpers.h"
 #include <gtest/gtest.h>
 #include <sodium.h>
 
@@ -38,6 +39,7 @@
 
 namespace fmgr::auth {
   namespace {
+    using namespace fmgr::test;
 
     // ---- Helpers ----
 
@@ -53,9 +55,6 @@ namespace fmgr::auth {
       return StrongId(uuid_from_low(low_bits));
     }
 
-    [[nodiscard]] core::Timestamp ts(std::int64_t micros) {
-      return core::Timestamp::from_unix_micros(micros);
-    }
 
     [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
       const auto seed = std::to_string(
@@ -66,11 +65,6 @@ namespace fmgr::auth {
               ".db");
     }
 
-    void remove_sqlite_files(const std::filesystem::path& path) {
-      std::filesystem::remove(path);
-      std::filesystem::remove(path.string() + "-wal");
-      std::filesystem::remove(path.string() + "-shm");
-    }
 
     [[nodiscard]] storage::MutationContext test_ctx() {
       return storage::MutationContext{

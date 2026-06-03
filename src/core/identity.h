@@ -10,6 +10,7 @@
 
 #include "core/enums.h"
 #include "core/ids.h"
+#include "core/json_helpers.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -21,27 +22,6 @@
 #include <string_view>
 
 namespace fmgr::core {
-  namespace detail {
-
-    // Serialize `std::nullopt` as JSON `null` rather than omitting the key entirely,
-    // so downstream consumers can rely on every documented key being present in the object.
-    template <typename Value>
-    [[nodiscard]] nlohmann::json optional_to_json(const std::optional<Value>& value) {
-      if (!value.has_value()) {
-        return nullptr;
-      }
-      return value.value();
-    }
-
-    template <typename Value>
-    [[nodiscard]] std::optional<Value> optional_from_json(const nlohmann::json& json) {
-      if (json.is_null()) {
-        return std::nullopt;
-      }
-      return json.get<Value>();
-    }
-
-  } // namespace detail
 
   // Composite primary key encoded as `"{user_uuid}:{lab_uuid}"` for use in
   // audit log foreign-key columns and cross-entity references that need a
@@ -170,7 +150,7 @@ namespace fmgr::core {
         {"created_at", lab.created_at},
         {"settings_json", lab.settings_json},
         {"is_phi_enabled", lab.is_phi_enabled},
-        {"archived_at", detail::optional_to_json(lab.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(lab.archived_at)},
     };
   }
 
@@ -182,7 +162,7 @@ namespace fmgr::core {
         .created_at = json.at("created_at").get<Timestamp>(),
         .settings_json = json.at("settings_json"),
         .is_phi_enabled = json.at("is_phi_enabled").get<bool>(),
-        .archived_at = detail::optional_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 
@@ -194,8 +174,8 @@ namespace fmgr::core {
         {"status", user.status},
         {"created_at", user.created_at},
         {"auth_bindings", user.auth_bindings},
-        {"totp_secret_enc", detail::optional_to_json(user.totp_secret_enc)},
-        {"default_lab_id", detail::optional_to_json(user.default_lab_id)},
+        {"totp_secret_enc", json_helpers::opt_to_json(user.totp_secret_enc)},
+        {"default_lab_id", json_helpers::opt_to_json(user.default_lab_id)},
     };
   }
 
@@ -207,8 +187,8 @@ namespace fmgr::core {
         .status = json.at("status").get<UserStatus>(),
         .created_at = json.at("created_at").get<Timestamp>(),
         .auth_bindings = json.at("auth_bindings"),
-        .totp_secret_enc = detail::optional_from_json<std::string>(json.at("totp_secret_enc")),
-        .default_lab_id = detail::optional_from_json<LabId>(json.at("default_lab_id")),
+        .totp_secret_enc = json_helpers::opt_from_json<std::string>(json.at("totp_secret_enc")),
+        .default_lab_id = json_helpers::opt_from_json<LabId>(json.at("default_lab_id")),
     };
   }
 
@@ -216,11 +196,11 @@ namespace fmgr::core {
     json = nlohmann::json{
         {"user_id", membership.user_id},
         {"lab_id", membership.lab_id},
-        {"role_id", detail::optional_to_json(membership.role_id)},
+        {"role_id", json_helpers::opt_to_json(membership.role_id)},
         {"scope_filters_json", membership.scope_filters_json},
-        {"invited_by", detail::optional_to_json(membership.invited_by)},
+        {"invited_by", json_helpers::opt_to_json(membership.invited_by)},
         {"joined_at", membership.joined_at},
-        {"revoked_at", detail::optional_to_json(membership.revoked_at)},
+        {"revoked_at", json_helpers::opt_to_json(membership.revoked_at)},
     };
   }
 
@@ -228,11 +208,11 @@ namespace fmgr::core {
     membership = LabMembership{
         .user_id = json.at("user_id").get<UserId>(),
         .lab_id = json.at("lab_id").get<LabId>(),
-        .role_id = detail::optional_from_json<RoleId>(json.at("role_id")),
+        .role_id = json_helpers::opt_from_json<RoleId>(json.at("role_id")),
         .scope_filters_json = json.at("scope_filters_json"),
-        .invited_by = detail::optional_from_json<UserId>(json.at("invited_by")),
+        .invited_by = json_helpers::opt_from_json<UserId>(json.at("invited_by")),
         .joined_at = json.at("joined_at").get<Timestamp>(),
-        .revoked_at = detail::optional_from_json<Timestamp>(json.at("revoked_at")),
+        .revoked_at = json_helpers::opt_from_json<Timestamp>(json.at("revoked_at")),
     };
   }
 

@@ -6,6 +6,7 @@
 #include "core/enums.h"
 #include "core/identity.h"
 #include "core/ids.h"
+#include "core/json_helpers.h"
 #include "core/permissions.h"
 #include "core/timestamp.h"
 
@@ -150,26 +151,26 @@ namespace fmgr::core {
   inline void to_json(nlohmann::json& json, const Role& role) {
     json = nlohmann::json{
         {"id", role.id},
-        {"lab_id", detail::optional_to_json(role.lab_id)},
+        {"lab_id", json_helpers::opt_to_json(role.lab_id)},
         {"kind", role.kind},
         {"name", role.name},
         {"description", role.description},
         {"is_builtin", role.is_builtin},
         {"created_at", role.created_at},
-        {"archived_at", detail::optional_to_json(role.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(role.archived_at)},
     };
   }
 
   inline void from_json(const nlohmann::json& json, Role& role) {
     role = Role{
         .id = json.at("id").get<RoleId>(),
-        .lab_id = detail::optional_from_json<LabId>(json.at("lab_id")),
+        .lab_id = json_helpers::opt_from_json<LabId>(json.at("lab_id")),
         .kind = json.at("kind").get<RoleKind>(),
         .name = json.at("name").get<std::string>(),
         .description = json.at("description").get<std::string>(),
         .is_builtin = json.at("is_builtin").get<bool>(),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .archived_at = detail::optional_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 

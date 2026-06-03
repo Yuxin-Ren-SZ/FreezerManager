@@ -17,6 +17,7 @@
 #include "storage/sqlite/SampleRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "test_helpers.h"
 #include <gtest/gtest.h>
 
 #include <array>
@@ -28,22 +29,10 @@
 
 namespace fmgr::storage {
   namespace {
+    using namespace fmgr::test;
 
-    [[nodiscard]] core::Uuid uuid_from_low(std::uint64_t low_bits) {
-      std::array<std::uint8_t, 16> bytes{};
-      for (std::size_t index = 0; index < 8; ++index) {
-        bytes.at(15 - index) = static_cast<std::uint8_t>((low_bits >> (index * 8U)) & 0xffU);
-      }
-      return core::Uuid(bytes);
-    }
 
-    template <typename StrongId> [[nodiscard]] StrongId id_from_low(std::uint64_t low_bits) {
-      return StrongId(uuid_from_low(low_bits));
-    }
 
-    [[nodiscard]] core::Timestamp ts(std::int64_t micros) {
-      return core::Timestamp::from_unix_micros(micros);
-    }
 
     [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
       const auto unique = std::to_string(static_cast<unsigned long long>(
@@ -54,11 +43,6 @@ namespace fmgr::storage {
               ".db");
     }
 
-    void remove_sqlite_files(const std::filesystem::path& path) {
-      std::filesystem::remove(path);
-      std::filesystem::remove(path.string() + "-wal");
-      std::filesystem::remove(path.string() + "-shm");
-    }
 
     [[nodiscard]] MutationContext mutation_context() {
       return MutationContext{

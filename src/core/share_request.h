@@ -10,6 +10,7 @@
 
 #include "core/enums.h"
 #include "core/ids.h"
+#include "core/json_helpers.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -96,23 +97,6 @@ namespace fmgr::core {
 
   // ---- JSON serialization ----
 
-  namespace detail {
-    template <typename Value>
-    [[nodiscard]] inline nlohmann::json sr_opt_to_json(const std::optional<Value>& value) {
-      if (!value.has_value()) {
-        return nullptr;
-      }
-      return nlohmann::json(value.value());
-    }
-
-    template <typename Value>
-    [[nodiscard]] inline std::optional<Value> sr_opt_from_json(const nlohmann::json& json) {
-      if (json.is_null()) {
-        return std::nullopt;
-      }
-      return json.get<Value>();
-    }
-  } // namespace detail
 
   inline void to_json(nlohmann::json& json, const ShareRequestApprovalId& id) {
     json = nlohmann::json{
@@ -132,7 +116,7 @@ namespace fmgr::core {
     json = nlohmann::json{
         {"share_request_id", approval.share_request_id}, {"approver_role", approval.approver_role},
         {"approver_user_id", approval.approver_user_id}, {"decided_at", approval.decided_at},
-        {"note", detail::sr_opt_to_json(approval.note)},
+        {"note", json_helpers::opt_to_json(approval.note)},
     };
   }
 
@@ -142,7 +126,7 @@ namespace fmgr::core {
         .approver_role = json.at("approver_role").get<ShareApprovalRole>(),
         .approver_user_id = json.at("approver_user_id").get<UserId>(),
         .decided_at = json.at("decided_at").get<Timestamp>(),
-        .note = detail::sr_opt_from_json<std::string>(json.at("note")),
+        .note = json_helpers::opt_from_json<std::string>(json.at("note")),
     };
   }
 
@@ -155,7 +139,7 @@ namespace fmgr::core {
         {"scope_json", request.scope_json},
         {"status", request.status},
         {"created_at", request.created_at},
-        {"decided_at", detail::sr_opt_to_json(request.decided_at)},
+        {"decided_at", json_helpers::opt_to_json(request.decided_at)},
     };
   }
 
@@ -168,7 +152,7 @@ namespace fmgr::core {
         .scope_json = json.at("scope_json").get<std::string>(),
         .status = json.at("status").get<ShareRequestStatus>(),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .decided_at = detail::sr_opt_from_json<Timestamp>(json.at("decided_at")),
+        .decided_at = json_helpers::opt_from_json<Timestamp>(json.at("decided_at")),
     };
   }
 

@@ -9,6 +9,7 @@
 #define FMGR_CORE_ITEM_TYPE_H
 
 #include "core/ids.h"
+#include "core/json_helpers.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -20,25 +21,6 @@
 #include <string_view>
 
 namespace fmgr::core {
-  namespace detail {
-
-    template <typename Value>
-    [[nodiscard]] inline nlohmann::json it_optional_to_json(const std::optional<Value>& value) {
-      if (!value.has_value()) {
-        return nullptr;
-      }
-      return value.value();
-    }
-
-    template <typename Value>
-    [[nodiscard]] inline std::optional<Value> it_optional_from_json(const nlohmann::json& json) {
-      if (json.is_null()) {
-        return std::nullopt;
-      }
-      return json.get<Value>();
-    }
-
-  } // namespace detail
 
   // Which entity kind a CustomFieldDefinition applies to.
   enum class ScopeKind : std::uint8_t { Sample, Box, Freezer, Container };
@@ -218,10 +200,10 @@ namespace fmgr::core {
     json = nlohmann::json{
         {"id", item_type.id},
         {"lab_id", item_type.lab_id},
-        {"parent_id", detail::it_optional_to_json(item_type.parent_id)},
+        {"parent_id", json_helpers::opt_to_json(item_type.parent_id)},
         {"name", item_type.name},
         {"created_at", item_type.created_at},
-        {"archived_at", detail::it_optional_to_json(item_type.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(item_type.archived_at)},
     };
   }
 
@@ -229,10 +211,10 @@ namespace fmgr::core {
     item_type = ItemType{
         .id = json.at("id").get<ItemTypeId>(),
         .lab_id = json.at("lab_id").get<LabId>(),
-        .parent_id = detail::it_optional_from_json<ItemTypeId>(json.at("parent_id")),
+        .parent_id = json_helpers::opt_from_json<ItemTypeId>(json.at("parent_id")),
         .name = json.at("name").get<std::string>(),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .archived_at = detail::it_optional_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 
@@ -241,7 +223,7 @@ namespace fmgr::core {
         {"id", cfd.id},
         {"lab_id", cfd.lab_id},
         {"scope_kind", cfd.scope_kind},
-        {"item_type_id", detail::it_optional_to_json(cfd.item_type_id)},
+        {"item_type_id", json_helpers::opt_to_json(cfd.item_type_id)},
         {"key", cfd.key},
         {"label", cfd.label},
         {"data_type", cfd.data_type},
@@ -250,7 +232,7 @@ namespace fmgr::core {
         {"indexed", cfd.indexed},
         {"is_phi", cfd.is_phi},
         {"created_at", cfd.created_at},
-        {"archived_at", detail::it_optional_to_json(cfd.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(cfd.archived_at)},
     };
   }
 
@@ -259,7 +241,7 @@ namespace fmgr::core {
         .id = json.at("id").get<CustomFieldDefinitionId>(),
         .lab_id = json.at("lab_id").get<LabId>(),
         .scope_kind = json.at("scope_kind").get<ScopeKind>(),
-        .item_type_id = detail::it_optional_from_json<ItemTypeId>(json.at("item_type_id")),
+        .item_type_id = json_helpers::opt_from_json<ItemTypeId>(json.at("item_type_id")),
         .key = json.at("key").get<std::string>(),
         .label = json.at("label").get<std::string>(),
         .data_type = json.at("data_type").get<FieldDataType>(),
@@ -268,7 +250,7 @@ namespace fmgr::core {
         .indexed = json.at("indexed").get<bool>(),
         .is_phi = json.at("is_phi").get<bool>(),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .archived_at = detail::it_optional_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 

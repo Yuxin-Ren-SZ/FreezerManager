@@ -2,6 +2,7 @@
 
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "test_helpers.h"
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -11,6 +12,7 @@
 
 namespace fmgr::storage {
   namespace {
+    using namespace fmgr::test;
 
     [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
       const auto unique = std::to_string(static_cast<unsigned long long>(
@@ -20,11 +22,6 @@ namespace fmgr::storage {
                                                        unique + "-" + std::string(suffix) + ".db");
     }
 
-    void remove_sqlite_files(const std::filesystem::path& path) {
-      std::filesystem::remove(path);
-      std::filesystem::remove(path.string() + "-wal");
-      std::filesystem::remove(path.string() + "-shm");
-    }
 
     TEST(SqliteBackend, InMemoryDatabaseMigratesAndReportsCapabilities) {
       SqliteBackend backend(SqliteBackendOptions{

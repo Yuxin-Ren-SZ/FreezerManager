@@ -6,6 +6,7 @@
 #include "core/ids.h"
 #include "core/timestamp.h"
 
+#include "test_helpers.h"
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
@@ -26,18 +27,9 @@
 
 namespace fmgr::storage {
   namespace {
+    using namespace fmgr::test;
 
-    [[nodiscard]] core::Uuid uuid_from_low(std::uint64_t low_bits) {
-      std::array<std::uint8_t, 16> bytes{};
-      for (std::size_t index = 0; index < 8; ++index) {
-        bytes.at(15 - index) = static_cast<std::uint8_t>((low_bits >> (index * 8U)) & 0xffU);
-      }
-      return core::Uuid(bytes);
-    }
 
-    template <typename StrongId> [[nodiscard]] StrongId id_from_low(std::uint64_t low_bits) {
-      return StrongId(uuid_from_low(low_bits));
-    }
 
     struct ConformanceSample {
       using Id = core::SampleId;

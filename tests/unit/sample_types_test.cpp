@@ -2,6 +2,7 @@
 
 #include "core/sample.h"
 
+#include "test_helpers.h"
 #include <gtest/gtest.h>
 
 #include <array>
@@ -10,6 +11,7 @@
 
 namespace fmgr::core {
   namespace {
+    using namespace fmgr::test;
 
     [[nodiscard]] Uuid uuid_from_low(std::uint64_t low_bits) {
       std::array<std::uint8_t, 16> bytes{};

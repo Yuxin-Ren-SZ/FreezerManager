@@ -11,6 +11,7 @@
 
 #include "core/enums.h"
 #include "core/ids.h"
+#include "core/json_helpers.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -20,29 +21,6 @@
 #include <string>
 
 namespace fmgr::core {
-  namespace detail {
-
-    // Duplicates `detail::optional_*` from identity.h to avoid pulling the entire
-    // identity header into compilation units that only need the freezer layout types.
-    template <typename Value>
-    [[nodiscard]] inline nlohmann::json
-    freezer_optional_to_json(const std::optional<Value>& value) {
-      if (!value.has_value()) {
-        return nullptr;
-      }
-      return value.value();
-    }
-
-    template <typename Value>
-    [[nodiscard]] inline std::optional<Value>
-    freezer_optional_from_json(const nlohmann::json& json) {
-      if (json.is_null()) {
-        return std::nullopt;
-      }
-      return json.get<Value>();
-    }
-
-  } // namespace detail
 
   // Advisory grid dimensions shown in the UI. Not an enforced constraint —
   // actual capacity is determined by the box types placed inside the container.
@@ -57,17 +35,17 @@ namespace fmgr::core {
 
   inline void to_json(nlohmann::json& json, const CapacityHint& hint) {
     json = nlohmann::json{
-        {"rows", detail::freezer_optional_to_json(hint.rows)},
-        {"cols", detail::freezer_optional_to_json(hint.cols)},
-        {"depth", detail::freezer_optional_to_json(hint.depth)},
+        {"rows", json_helpers::opt_to_json(hint.rows)},
+        {"cols", json_helpers::opt_to_json(hint.cols)},
+        {"depth", json_helpers::opt_to_json(hint.depth)},
     };
   }
 
   inline void from_json(const nlohmann::json& json, CapacityHint& hint) {
     hint = CapacityHint{
-        .rows = detail::freezer_optional_from_json<int>(json.at("rows")),
-        .cols = detail::freezer_optional_from_json<int>(json.at("cols")),
-        .depth = detail::freezer_optional_from_json<int>(json.at("depth")),
+        .rows = json_helpers::opt_from_json<int>(json.at("rows")),
+        .cols = json_helpers::opt_from_json<int>(json.at("cols")),
+        .depth = json_helpers::opt_from_json<int>(json.at("depth")),
     };
   }
 
@@ -142,10 +120,10 @@ namespace fmgr::core {
         {"name", freezer.name},
         {"location", freezer.location},
         {"model", freezer.model},
-        {"temp_target_c", detail::freezer_optional_to_json(freezer.temp_target_c)},
+        {"temp_target_c", json_helpers::opt_to_json(freezer.temp_target_c)},
         {"layout_root_id", freezer.layout_root_id},
         {"created_at", freezer.created_at},
-        {"archived_at", detail::freezer_optional_to_json(freezer.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(freezer.archived_at)},
     };
   }
 
@@ -156,10 +134,10 @@ namespace fmgr::core {
         .name = json.at("name").get<std::string>(),
         .location = json.at("location").get<std::string>(),
         .model = json.at("model").get<std::string>(),
-        .temp_target_c = detail::freezer_optional_from_json<double>(json.at("temp_target_c")),
+        .temp_target_c = json_helpers::opt_from_json<double>(json.at("temp_target_c")),
         .layout_root_id = json.at("layout_root_id").get<StorageContainerId>(),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .archived_at = detail::freezer_optional_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 
@@ -167,14 +145,14 @@ namespace fmgr::core {
     json = nlohmann::json{
         {"id", container.id},
         {"lab_id", container.lab_id},
-        {"parent_id", detail::freezer_optional_to_json(container.parent_id)},
+        {"parent_id", json_helpers::opt_to_json(container.parent_id)},
         {"kind", container.kind},
         {"name", container.name},
         {"label", container.label},
         {"ordering_index", container.ordering_index},
-        {"capacity_hint", detail::freezer_optional_to_json(container.capacity_hint)},
+        {"capacity_hint", json_helpers::opt_to_json(container.capacity_hint)},
         {"created_at", container.created_at},
-        {"archived_at", detail::freezer_optional_to_json(container.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(container.archived_at)},
     };
   }
 
@@ -182,14 +160,14 @@ namespace fmgr::core {
     container = StorageContainer{
         .id = json.at("id").get<StorageContainerId>(),
         .lab_id = json.at("lab_id").get<LabId>(),
-        .parent_id = detail::freezer_optional_from_json<StorageContainerId>(json.at("parent_id")),
+        .parent_id = json_helpers::opt_from_json<StorageContainerId>(json.at("parent_id")),
         .kind = json.at("kind").get<ContainerKind>(),
         .name = json.at("name").get<std::string>(),
         .label = json.at("label").get<std::string>(),
         .ordering_index = json.at("ordering_index").get<std::int32_t>(),
-        .capacity_hint = detail::freezer_optional_from_json<CapacityHint>(json.at("capacity_hint")),
+        .capacity_hint = json_helpers::opt_from_json<CapacityHint>(json.at("capacity_hint")),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .archived_at = detail::freezer_optional_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 

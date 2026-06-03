@@ -9,6 +9,7 @@
 #define FMGR_CORE_BOX_H
 
 #include "core/ids.h"
+#include "core/json_helpers.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -19,26 +20,6 @@
 #include <vector>
 
 namespace fmgr::core {
-  namespace detail {
-
-    // Duplicates `detail::optional_*` from identity.h to avoid a cross-header dependency.
-    template <typename Value>
-    [[nodiscard]] inline nlohmann::json box_optional_to_json(const std::optional<Value>& value) {
-      if (!value.has_value()) {
-        return nullptr;
-      }
-      return value.value();
-    }
-
-    template <typename Value>
-    [[nodiscard]] inline std::optional<Value> box_optional_from_json(const nlohmann::json& json) {
-      if (json.is_null()) {
-        return std::nullopt;
-      }
-      return json.get<Value>();
-    }
-
-  } // namespace detail
 
   struct OuterDimensionsMm {
     double width{0.0};
@@ -142,11 +123,11 @@ namespace fmgr::core {
         {"lab_id", container_type.lab_id},
         {"name", container_type.name},
         {"size_class", container_type.size_class},
-        {"outer_dimensions_mm", detail::box_optional_to_json(container_type.outer_dimensions_mm)},
+        {"outer_dimensions_mm", json_helpers::opt_to_json(container_type.outer_dimensions_mm)},
         {"material", container_type.material},
         {"supplier_sku", container_type.supplier_sku},
         {"created_at", container_type.created_at},
-        {"archived_at", detail::box_optional_to_json(container_type.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(container_type.archived_at)},
     };
   }
 
@@ -157,18 +138,18 @@ namespace fmgr::core {
         .name = json.at("name").get<std::string>(),
         .size_class = json.at("size_class").get<std::string>(),
         .outer_dimensions_mm =
-            detail::box_optional_from_json<OuterDimensionsMm>(json.at("outer_dimensions_mm")),
+            json_helpers::opt_from_json<OuterDimensionsMm>(json.at("outer_dimensions_mm")),
         .material = json.at("material").get<std::string>(),
         .supplier_sku = json.at("supplier_sku").get<std::string>(),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .archived_at = detail::box_optional_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 
   inline void to_json(nlohmann::json& json, const Position& position) {
     json = nlohmann::json{
         {"label", position.label},     {"row", position.row},
-        {"col", position.col},         {"z", detail::box_optional_to_json(position.z)},
+        {"col", position.col},         {"z", json_helpers::opt_to_json(position.z)},
         {"accepts", position.accepts},
     };
   }
@@ -178,7 +159,7 @@ namespace fmgr::core {
         .label = json.at("label").get<std::string>(),
         .row = json.at("row").get<std::int32_t>(),
         .col = json.at("col").get<std::int32_t>(),
-        .z = detail::box_optional_from_json<std::int32_t>(json.at("z")),
+        .z = json_helpers::opt_from_json<std::int32_t>(json.at("z")),
         .accepts = json.at("accepts").get<std::vector<std::string>>(),
     };
   }
@@ -222,7 +203,7 @@ namespace fmgr::core {
         {"sku", box_type.sku},
         {"positions", box_type.positions},
         {"created_at", box_type.created_at},
-        {"archived_at", detail::box_optional_to_json(box_type.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(box_type.archived_at)},
     };
   }
 
@@ -235,7 +216,7 @@ namespace fmgr::core {
         .sku = json.at("sku").get<std::string>(),
         .positions = json.at("positions").get<std::vector<Position>>(),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .archived_at = detail::box_optional_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 
@@ -246,10 +227,10 @@ namespace fmgr::core {
         {"box_type_id", box.box_type_id},
         {"storage_container_id", box.storage_container_id},
         {"label", box.label},
-        {"serial", detail::box_optional_to_json(box.serial)},
-        {"barcode", detail::box_optional_to_json(box.barcode)},
+        {"serial", json_helpers::opt_to_json(box.serial)},
+        {"barcode", json_helpers::opt_to_json(box.barcode)},
         {"created_at", box.created_at},
-        {"archived_at", detail::box_optional_to_json(box.archived_at)},
+        {"archived_at", json_helpers::opt_to_json(box.archived_at)},
     };
   }
 
@@ -260,10 +241,10 @@ namespace fmgr::core {
         .box_type_id = json.at("box_type_id").get<BoxTypeId>(),
         .storage_container_id = json.at("storage_container_id").get<StorageContainerId>(),
         .label = json.at("label").get<std::string>(),
-        .serial = detail::box_optional_from_json<std::string>(json.at("serial")),
-        .barcode = detail::box_optional_from_json<std::string>(json.at("barcode")),
+        .serial = json_helpers::opt_from_json<std::string>(json.at("serial")),
+        .barcode = json_helpers::opt_from_json<std::string>(json.at("barcode")),
         .created_at = json.at("created_at").get<Timestamp>(),
-        .archived_at = detail::box_optional_from_json<Timestamp>(json.at("archived_at")),
+        .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
     };
   }
 

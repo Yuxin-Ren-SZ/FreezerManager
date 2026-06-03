@@ -402,6 +402,7 @@ namespace fmgr::storage {
     }
 
   protected:
+    // type_index hash_code is stable per-process (C++ standard) — safe for single-process use.
     template <typename Entity>
     void register_repository(std::unique_ptr<IRepository<Entity>> repository) {
       repositories_.insert_or_assign(std::type_index(typeid(Entity)), std::move(repository));

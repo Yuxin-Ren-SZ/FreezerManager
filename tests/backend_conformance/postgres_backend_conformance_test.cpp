@@ -6,6 +6,7 @@
 #include "core/ids.h"
 #include "core/timestamp.h"
 
+#include "test_helpers.h"
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 #include <pqxx/pqxx>
@@ -26,6 +27,7 @@
 
 namespace fmgr::storage {
   namespace {
+    using namespace fmgr::test;
 
     // ---- URL helper ----
 

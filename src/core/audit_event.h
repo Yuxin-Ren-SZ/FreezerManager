@@ -6,6 +6,7 @@
 //   this_hash = SHA-256(prev_hash_bytes || content_canonical_json_bytes)
 // where content_canonical_json is the canonical JSON of all fields
 // except prev_hash and this_hash.
+// SHA-256 chosen over BLAKE2b for FIPS/compliance-auditor familiarity.
 // The first row uses a zero-filled prev_hash (64 hex '0' characters).
 //
 // The storage layer writes these rows inside the same transaction as the
@@ -15,6 +16,7 @@
 #define FMGR_CORE_AUDIT_EVENT_H
 
 #include "core/ids.h"
+#include "core/json_helpers.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -72,22 +74,6 @@ namespace fmgr::core {
     friend bool operator==(const AuditEvent&, const AuditEvent&) = default;
   };
 
-  // ---- JSON helpers ----
-
-  namespace detail {
-    template <typename T>
-    [[nodiscard]] inline nlohmann::json ae_opt_to_json(const std::optional<T>& opt) {
-      return opt.has_value() ? nlohmann::json(*opt) : nlohmann::json(nullptr);
-    }
-
-    template <typename T>
-    [[nodiscard]] inline std::optional<T> ae_opt_from_json(const nlohmann::json& json) {
-      if (json.is_null()) {
-        return std::nullopt;
-      }
-      return json.get<T>();
-    }
-  } // namespace detail
 
   inline void to_json(nlohmann::json& json, const AuditEvent& event) {
     json = nlohmann::json{
@@ -95,10 +81,10 @@ namespace fmgr::core {
         {"at", event.at},
         {"actor_user_id", event.actor_user_id},
         {"actor_session_id", event.actor_session_id},
-        {"lab_id", detail::ae_opt_to_json(event.lab_id)},
+        {"lab_id", json_helpers::opt_to_json(event.lab_id)},
         {"action", event.action},
         {"entity_kind", event.entity_kind},
-        {"entity_id", detail::ae_opt_to_json(event.entity_id)},
+        {"entity_id", json_helpers::opt_to_json(event.entity_id)},
         {"before_json", event.before_json},
         {"after_json", event.after_json},
         {"request_id", event.request_id},
@@ -113,10 +99,10 @@ namespace fmgr::core {
         .at = json.at("at").get<Timestamp>(),
         .actor_user_id = json.at("actor_user_id").get<UserId>(),
         .actor_session_id = json.at("actor_session_id").get<std::string>(),
-        .lab_id = detail::ae_opt_from_json<LabId>(json.at("lab_id")),
+        .lab_id = json_helpers::opt_from_json<LabId>(json.at("lab_id")),
         .action = json.at("action").get<std::string>(),
         .entity_kind = json.at("entity_kind").get<std::string>(),
-        .entity_id = detail::ae_opt_from_json<std::string>(json.at("entity_id")),
+        .entity_id = json_helpers::opt_from_json<std::string>(json.at("entity_id")),
         .before_json = json.at("before_json").get<std::string>(),
         .after_json = json.at("after_json").get<std::string>(),
         .request_id = json.at("request_id").get<std::string>(),
