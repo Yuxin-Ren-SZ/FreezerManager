@@ -4,6 +4,8 @@
 
 #include "core/identity.h"
 #include "storage/IdentityTraits.h"
+#include "storage/detail/IdentityColumns.h"
+#include "storage/detail/QuerySqlBuilder.h"
 
 #include <sqlite3.h>
 
@@ -181,38 +183,6 @@ namespace fmgr::storage {
       return core::Timestamp::from_unix_micros(now.time_since_epoch().count());
     }
 
-    [[nodiscard]] bool looks_like_email(std::string_view email) {
-      const auto delimiter = email.find('@');
-      return delimiter != std::string_view::npos && delimiter != 0 && delimiter != email.size() - 1;
-    }
-
-    void validate_lab(const core::Lab& lab) {
-      if (lab.name.empty()) {
-        throw ConstraintViolation("lab name is required");
-      }
-      if (!lab.settings_json.is_object()) {
-        throw ConstraintViolation("lab settings_json must be an object");
-      }
-    }
-
-    void validate_user(const core::User& user) {
-      if (!looks_like_email(user.primary_email)) {
-        throw ConstraintViolation("user primary_email is invalid");
-      }
-      if (user.display_name.empty()) {
-        throw ConstraintViolation("user display_name is required");
-      }
-      if (!user.auth_bindings.is_array()) {
-        throw ConstraintViolation("user auth_bindings must be an array");
-      }
-    }
-
-    void validate_membership(const core::LabMembership& membership) {
-      if (!membership.scope_filters_json.is_object()) {
-        throw ConstraintViolation("lab membership scope_filters_json must be an object");
-      }
-    }
-
     template <typename Entity> class SqliteIdentityRepositoryBase : public IRepository<Entity> {
     public:
       explicit SqliteIdentityRepositoryBase(SqliteTransaction& transaction)
@@ -286,68 +256,6 @@ namespace fmgr::storage {
       std::map<typename EntityTraits<Entity>::Id, PendingEntity> pending_;
     };
 
-    [[nodiscard]] std::string lab_column_name(core::Lab::Field field) {
-      switch (field) {
-      case core::Lab::Field::Id:
-        return "id";
-      case core::Lab::Field::Name:
-        return "name";
-      case core::Lab::Field::Contact:
-        return "contact";
-      case core::Lab::Field::CreatedAt:
-        return "created_at_micros";
-      case core::Lab::Field::SettingsJson:
-        return "settings_json";
-      case core::Lab::Field::IsPhiEnabled:
-        return "is_phi_enabled";
-      case core::Lab::Field::ArchivedAt:
-        return "archived_at_micros";
-      }
-      throw ConstraintViolation("unknown lab field");
-    }
-
-    [[nodiscard]] std::string user_column_name(core::User::Field field) {
-      switch (field) {
-      case core::User::Field::Id:
-        return "id";
-      case core::User::Field::PrimaryEmail:
-        return "primary_email";
-      case core::User::Field::DisplayName:
-        return "display_name";
-      case core::User::Field::Status:
-        return "status";
-      case core::User::Field::CreatedAt:
-        return "created_at_micros";
-      case core::User::Field::AuthBindings:
-        return "auth_bindings_json";
-      case core::User::Field::TotpSecretEnc:
-        return "totp_secret_enc";
-      case core::User::Field::DefaultLabId:
-        return "default_lab_id";
-      }
-      throw ConstraintViolation("unknown user field");
-    }
-
-    [[nodiscard]] std::string membership_column_name(core::LabMembership::Field field) {
-      switch (field) {
-      case core::LabMembership::Field::UserId:
-        return "user_id";
-      case core::LabMembership::Field::LabId:
-        return "lab_id";
-      case core::LabMembership::Field::RoleId:
-        return "role_id";
-      case core::LabMembership::Field::ScopeFiltersJson:
-        return "scope_filters_json";
-      case core::LabMembership::Field::InvitedBy:
-        return "invited_by";
-      case core::LabMembership::Field::JoinedAt:
-        return "joined_at_micros";
-      case core::LabMembership::Field::RevokedAt:
-        return "revoked_at_micros";
-      }
-      throw ConstraintViolation("unknown lab membership field");
-    }
-
     void bind_json_parameter(sqlite3_stmt* statement, int index, const nlohmann::json& value) {
       if (value.is_null()) {
         bind_null(statement, index);
@@ -368,104 +276,11 @@ namespace fmgr::storage {
       bind_text(statement, index, value.dump());
     }
 
-    template <typename Entity, typename ColumnName>
-    void append_query_tail(std::string& sql, std::vector<nlohmann::json>& parameters,
-                           const Query<Entity>& query_spec, ColumnName column_name) {
-      if (!query_spec.sorts().empty()) {
-        sql += " ORDER BY ";
-        for (std::size_t index = 0; index < query_spec.sorts().size(); ++index) {
-          if (index != 0) {
-            sql += ", ";
-          }
-          const auto sort = query_spec.sorts().at(index);
-          sql += column_name(sort.field);
-          sql += sort.direction == SortDirection::Ascending ? " ASC" : " DESC";
-        }
-      }
-      if (query_spec.limit_count().has_value()) {
-        sql += " LIMIT ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.limit_count().value()));
-      }
-      if (query_spec.offset_count().has_value()) {
-        if (!query_spec.limit_count().has_value()) {
-          sql += " LIMIT -1";
-        }
-        sql += " OFFSET ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.offset_count().value()));
-      }
-    }
-
-    [[nodiscard]] std::string json_path(const std::vector<std::string>& segments) {
-      std::string path = "$";
-      for (const auto& segment : segments) {
-        path += ".";
-        path += segment;
-      }
-      return path;
-    }
-
     void bind_parameters(sqlite3_stmt* statement, const std::vector<nlohmann::json>& parameters) {
       int index = 1;
       for (const auto& parameter : parameters) {
         bind_json_parameter(statement, index, parameter);
         ++index;
-      }
-    }
-
-    template <typename Entity, typename ColumnName>
-    void append_generic_predicates(std::string& sql, std::vector<nlohmann::json>& parameters,
-                                   const std::vector<std::string>& default_predicates,
-                                   const std::vector<Predicate<Entity>>& predicates,
-                                   ColumnName column_name) {
-      std::vector<std::string> clauses = default_predicates;
-      for (const auto& predicate : predicates) {
-        const auto column = column_name(predicate.field);
-        switch (predicate.op) {
-        case PredicateOperator::Equal:
-          clauses.push_back(column + " = ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::GreaterThanOrEqual:
-          clauses.push_back(column + " >= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::LessThanOrEqual:
-          clauses.push_back(column + " <= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::Between:
-          clauses.push_back(column + " BETWEEN ? AND ?");
-          parameters.push_back(predicate.lower);
-          parameters.push_back(predicate.upper);
-          break;
-        case PredicateOperator::In: {
-          std::string clause = column + " IN (";
-          for (std::size_t index = 0; index < predicate.values.size(); ++index) {
-            if (index != 0) {
-              clause += ", ";
-            }
-            clause += "?";
-            parameters.push_back(predicate.values.at(index));
-          }
-          clause += ")";
-          clauses.push_back(std::move(clause));
-          break;
-        }
-        case PredicateOperator::JsonPathEqual:
-          clauses.push_back("json_extract(" + column + ", ?) = ?");
-          parameters.emplace_back(json_path(predicate.json_path));
-          parameters.push_back(predicate.value);
-          break;
-        }
-      }
-      if (!clauses.empty()) {
-        sql += " WHERE ";
-        for (std::size_t index = 0; index < clauses.size(); ++index) {
-          if (index != 0) {
-            sql += " AND ";
-          }
-          sql += clauses.at(index);
-        }
       }
     }
 
@@ -524,9 +339,10 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"archived_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  lab_column_name);
-        append_query_tail(sql, parameters, query_spec, lab_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::lab_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::lab_column_name, dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -579,7 +395,7 @@ namespace fmgr::storage {
       }
 
       void validate(const core::Lab& entity) const override {
-        validate_lab(entity);
+        detail::validate_lab(entity);
       }
 
       [[nodiscard]] core::LabId id_of(const core::Lab& entity) const override {
@@ -633,9 +449,10 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"status != 'disabled'"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  user_column_name);
-        append_query_tail(sql, parameters, query_spec, user_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::user_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::user_column_name, dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -689,7 +506,7 @@ namespace fmgr::storage {
       }
 
       void validate(const core::User& entity) const override {
-        validate_user(entity);
+        detail::validate_user(entity);
       }
 
       [[nodiscard]] core::UserId id_of(const core::User& entity) const override {
@@ -747,9 +564,11 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"revoked_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  membership_column_name);
-        append_query_tail(sql, parameters, query_spec, membership_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::membership_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::membership_column_name,
+                                   dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -806,7 +625,7 @@ namespace fmgr::storage {
       }
 
       void validate(const core::LabMembership& entity) const override {
-        validate_membership(entity);
+        detail::validate_membership(entity);
       }
 
       [[nodiscard]] core::LabMembershipId id_of(const core::LabMembership& entity) const override {
