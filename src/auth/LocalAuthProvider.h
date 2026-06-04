@@ -35,6 +35,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -112,8 +113,8 @@ namespace fmgr::auth {
     // not from this cache, so verify_totp() takes effect on the next request.
     struct CachedContext {
       core::UserId user_id;
-      std::vector<core::LabId> visible_labs;
-      std::set<core::Permission> permissions;
+      std::map<core::LabId, std::set<core::Permission>> permissions_by_lab;
+      std::set<core::Permission> global_permissions;
       std::chrono::steady_clock::time_point cached_at;
     };
 

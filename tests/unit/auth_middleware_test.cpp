@@ -61,7 +61,6 @@ namespace fmgr::rpc {
       return StrongId(uuid_from_low(low_bits));
     }
 
-
     [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
       const auto seed = std::to_string(
           static_cast<unsigned long long>(::testing::UnitTest::GetInstance()->random_seed()));
@@ -70,7 +69,6 @@ namespace fmgr::rpc {
              (std::string("freezermanager-mw-") + seed + "-" + addr + "-" + std::string(suffix) +
               ".db");
     }
-
 
     [[nodiscard]] storage::MutationContext test_ctx() {
       return storage::MutationContext{
@@ -125,6 +123,8 @@ namespace fmgr::rpc {
       const core::UserId kLabAdminId{id_from_low<core::UserId>(11)};
       const core::UserId kMemberId{id_from_low<core::UserId>(12)};
       const core::UserId kReadOnlyId{id_from_low<core::UserId>(13)};
+      const core::UserId kAdminAReadOnlyBId{id_from_low<core::UserId>(14)};
+      const core::UserId kMemberAAdminBId{id_from_low<core::UserId>(15)};
 
       void SetUp() override {
         db_path_ = sqlite_test_path("middleware");
@@ -152,6 +152,14 @@ namespace fmgr::rpc {
             auth::ClientInfo{});
         readonly_token_ = provider_->authenticate(
             auth::PasswordCredentials{.email = "readonly@example.com", .password = "pw-readonly"},
+            auth::ClientInfo{});
+        admin_a_readonly_b_token_ = provider_->authenticate(
+            auth::PasswordCredentials{.email = "admin-a-readonly-b@example.com",
+                                      .password = "pw-admin-a-readonly-b"},
+            auth::ClientInfo{});
+        member_a_admin_b_token_ = provider_->authenticate(
+            auth::PasswordCredentials{.email = "member-a-admin-b@example.com",
+                                      .password = "pw-member-a-admin-b"},
             auth::ClientInfo{});
       }
 
@@ -181,6 +189,8 @@ namespace fmgr::rpc {
       auth::AuthToken lab_admin_token_;
       auth::AuthToken member_token_;
       auth::AuthToken readonly_token_;
+      auth::AuthToken admin_a_readonly_b_token_;
+      auth::AuthToken member_a_admin_b_token_;
 
     private:
       void seed_test_data() {
@@ -188,6 +198,8 @@ namespace fmgr::rpc {
         const auto pw_lab_admin = provider_->hash_password("pw-labadmin");
         const auto pw_member = provider_->hash_password("pw-member");
         const auto pw_readonly = provider_->hash_password("pw-readonly");
+        const auto pw_admin_a_readonly_b = provider_->hash_password("pw-admin-a-readonly-b");
+        const auto pw_member_a_admin_b = provider_->hash_password("pw-member-a-admin-b");
 
         auto txn = backend_->begin(storage::IsolationLevel::Serializable);
         const auto ctx = test_ctx();
@@ -222,22 +234,28 @@ namespace fmgr::rpc {
         insert_user(kLabAdminId, "labadmin@example.com", pw_lab_admin, std::string(kTotpSecret));
         insert_user(kMemberId, "member@example.com", pw_member);
         insert_user(kReadOnlyId, "readonly@example.com", pw_readonly);
+        insert_user(kAdminAReadOnlyBId, "admin-a-readonly-b@example.com", pw_admin_a_readonly_b);
+        insert_user(kMemberAAdminBId, "member-a-admin-b@example.com", pw_member_a_admin_b);
 
         // Memberships (all in lab_a)
-        auto insert_mem = [&](core::UserId uid, core::RoleKind role) {
+        auto insert_mem = [&](core::UserId uid, core::LabId lab_id, core::RoleKind role) {
           txn->repo<core::LabMembership>().insert(
               core::LabMembership{
                   .user_id = uid,
-                  .lab_id = kLabA,
+                  .lab_id = lab_id,
                   .role_id = core::builtin_role_id(role),
                   .joined_at = ts(3'000),
               },
               ctx);
         };
-        insert_mem(kSysAdminId, core::RoleKind::SystemAdmin);
-        insert_mem(kLabAdminId, core::RoleKind::LabAdmin);
-        insert_mem(kMemberId, core::RoleKind::Member);
-        insert_mem(kReadOnlyId, core::RoleKind::ReadOnly);
+        insert_mem(kSysAdminId, kLabA, core::RoleKind::SystemAdmin);
+        insert_mem(kLabAdminId, kLabA, core::RoleKind::LabAdmin);
+        insert_mem(kMemberId, kLabA, core::RoleKind::Member);
+        insert_mem(kReadOnlyId, kLabA, core::RoleKind::ReadOnly);
+        insert_mem(kAdminAReadOnlyBId, kLabA, core::RoleKind::LabAdmin);
+        insert_mem(kAdminAReadOnlyBId, kLabB, core::RoleKind::ReadOnly);
+        insert_mem(kMemberAAdminBId, kLabA, core::RoleKind::Member);
+        insert_mem(kMemberAAdminBId, kLabB, core::RoleKind::LabAdmin);
 
         txn->commit();
       }
@@ -246,8 +264,8 @@ namespace fmgr::rpc {
     // ---- Tests ----
 
     TEST_F(AuthMiddlewareTest, AuthorizeSucceedsAndReturnsSessionContext) {
-      const auto ctx =
-          middleware_->authorize(member_token_.plaintext_token, core::Permission::SampleRead);
+      const auto ctx = middleware_->authorize(member_token_.plaintext_token,
+                                              core::Permission::SampleRead, kLabA);
       EXPECT_EQ(ctx.user_id, kMemberId);
       EXPECT_TRUE(ctx.mfa_complete);
       EXPECT_TRUE(ctx.can_see_lab(kLabA));
@@ -271,7 +289,7 @@ namespace fmgr::rpc {
     TEST_F(AuthMiddlewareTest, AuthorizeThrowsPermissionDeniedForInsufficientRole) {
       // ReadOnly cannot write samples.
       EXPECT_THROW(do_authorize(*middleware_, readonly_token_.plaintext_token,
-                                core::Permission::SampleWrite),
+                                core::Permission::SampleWrite, kLabA),
                    auth::PermissionDenied);
     }
 
@@ -281,16 +299,18 @@ namespace fmgr::rpc {
                    auth::PermissionDenied);
     }
 
-    TEST_F(AuthMiddlewareTest, SystemAdminPassesForAllPermissionsExceptPhi) {
-      // SystemAdmin has all 20 non-PHI permissions.
+    TEST_F(AuthMiddlewareTest, SystemAdminPassesForLabPermissionsInMemberLabExceptPhi) {
       for (const auto& entry : core::k_permission_catalog) {
-        if (entry.value == core::Permission::PhiRead) {
-          EXPECT_THROW(do_authorize(*middleware_, sysadmin_token_.plaintext_token, entry.value),
-                       auth::PermissionDenied)
-              << "expected PhiRead to be denied for SystemAdmin by default";
+        if (entry.value == core::Permission::PhiRead ||
+            core::is_global_only_permission(entry.value)) {
+          EXPECT_THROW(
+              do_authorize(*middleware_, sysadmin_token_.plaintext_token, entry.value, kLabA),
+              auth::PermissionDenied)
+              << "expected lab-scoped authorization to deny: " << entry.key;
         } else {
-          EXPECT_NO_THROW(do_authorize(*middleware_, sysadmin_token_.plaintext_token, entry.value))
-              << "expected SystemAdmin to have permission: " << entry.key;
+          EXPECT_NO_THROW(
+              do_authorize(*middleware_, sysadmin_token_.plaintext_token, entry.value, kLabA))
+              << "expected SystemAdmin to have lab-scoped permission: " << entry.key;
         }
       }
     }
@@ -326,33 +346,81 @@ namespace fmgr::rpc {
       EXPECT_EQ(ctx.user_id, kMemberId);
     }
 
+    TEST_F(AuthMiddlewareTest, AuthorizeScopesMixedLabAdminAndReadOnlyByLab) {
+      EXPECT_NO_THROW(do_authorize(*middleware_, admin_a_readonly_b_token_.plaintext_token,
+                                   core::Permission::SampleRead, kLabA));
+      EXPECT_NO_THROW(do_authorize(*middleware_, admin_a_readonly_b_token_.plaintext_token,
+                                   core::Permission::SampleWrite, kLabA));
+      EXPECT_NO_THROW(do_authorize(*middleware_, admin_a_readonly_b_token_.plaintext_token,
+                                   core::Permission::SampleRead, kLabB));
+
+      EXPECT_THROW(do_authorize(*middleware_, admin_a_readonly_b_token_.plaintext_token,
+                                core::Permission::SampleWrite, kLabB),
+                   auth::PermissionDenied);
+      EXPECT_THROW(do_authorize(*middleware_, admin_a_readonly_b_token_.plaintext_token,
+                                core::Permission::BoxConfigure, kLabB),
+                   auth::PermissionDenied);
+    }
+
+    TEST_F(AuthMiddlewareTest, AuthorizeScopesMixedMemberAndLabAdminAsymmetrically) {
+      EXPECT_NO_THROW(do_authorize(*middleware_, member_a_admin_b_token_.plaintext_token,
+                                   core::Permission::SampleWrite, kLabA));
+      EXPECT_THROW(do_authorize(*middleware_, member_a_admin_b_token_.plaintext_token,
+                                core::Permission::BoxConfigure, kLabA),
+                   auth::PermissionDenied);
+
+      EXPECT_NO_THROW(do_authorize(*middleware_, member_a_admin_b_token_.plaintext_token,
+                                   core::Permission::SampleWrite, kLabB));
+      EXPECT_NO_THROW(do_authorize(*middleware_, member_a_admin_b_token_.plaintext_token,
+                                   core::Permission::BoxConfigure, kLabB));
+    }
+
+    TEST_F(AuthMiddlewareTest, AuthorizeRequiresGlobalPermissionWhenNoLabIdIsProvided) {
+      EXPECT_NO_THROW(
+          do_authorize(*middleware_, sysadmin_token_.plaintext_token, core::Permission::KeyRotate));
+      EXPECT_NO_THROW(
+          do_authorize(*middleware_, sysadmin_token_.plaintext_token, core::Permission::BackupRun));
+      EXPECT_NO_THROW(do_authorize(*middleware_, sysadmin_token_.plaintext_token,
+                                   core::Permission::SampleDeleteHard));
+
+      const auto completed_token = lab_admin_mfa_complete();
+      EXPECT_THROW(
+          do_authorize(*middleware_, completed_token.plaintext_token, core::Permission::BackupRun),
+          auth::PermissionDenied);
+      EXPECT_THROW(
+          do_authorize(*middleware_, member_token_.plaintext_token, core::Permission::SampleRead),
+          auth::PermissionDenied);
+    }
+
     TEST_F(AuthMiddlewareTest, InjectRlsVarsCallsSetSessionVarWithUserAndLabs) {
       // Build a SessionContext directly (no DB needed for this test).
       auth::SessionContext ctx;
       ctx.user_id = kMemberId;
-      ctx.visible_labs = {kLabA, kLabB};
+      ctx.permissions_by_lab = {
+          {kLabA, {core::Permission::SampleRead}},
+          {kLabB, {core::Permission::SampleRead}},
+      };
       ctx.mfa_complete = true;
 
       CapturingTransaction tx;
       AuthMiddleware::inject_rls_vars(tx, ctx);
 
-      EXPECT_EQ(tx.captured.at("app.current_user_id"), kMemberId.to_string());
+      EXPECT_EQ(tx.captured.at("current_user_id"), kMemberId.to_string());
 
       const auto expected_labs = kLabA.to_string() + "," + kLabB.to_string();
-      EXPECT_EQ(tx.captured.at("app.current_lab_ids"), expected_labs);
+      EXPECT_EQ(tx.captured.at("current_lab_ids"), expected_labs);
     }
 
     TEST_F(AuthMiddlewareTest, InjectRlsVarsEmptyLabsProducesEmptyString) {
       auth::SessionContext ctx;
       ctx.user_id = kSysAdminId;
-      ctx.visible_labs = {};
       ctx.mfa_complete = true;
 
       CapturingTransaction tx;
       AuthMiddleware::inject_rls_vars(tx, ctx);
 
-      EXPECT_EQ(tx.captured.at("app.current_user_id"), kSysAdminId.to_string());
-      EXPECT_EQ(tx.captured.at("app.current_lab_ids"), "");
+      EXPECT_EQ(tx.captured.at("current_user_id"), kSysAdminId.to_string());
+      EXPECT_EQ(tx.captured.at("current_lab_ids"), "");
     }
 
     TEST_F(AuthMiddlewareTest, RpcRegistryRegisterAndLookup) {
@@ -376,7 +444,7 @@ namespace fmgr::rpc {
       // After TOTP verification, lab_admin's session should pass for LabAdmin perms.
       auth::SessionContext ctx;
       EXPECT_NO_THROW(ctx = do_authorize(*middleware_, completed.plaintext_token,
-                                         core::Permission::AuditExport));
+                                         core::Permission::AuditExport, kLabA));
       EXPECT_TRUE(ctx.mfa_complete);
     }
 

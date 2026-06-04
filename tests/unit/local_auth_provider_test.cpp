@@ -55,7 +55,6 @@ namespace fmgr::auth {
       return StrongId(uuid_from_low(low_bits));
     }
 
-
     [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
       const auto seed = std::to_string(
           static_cast<unsigned long long>(::testing::UnitTest::GetInstance()->random_seed()));
@@ -64,7 +63,6 @@ namespace fmgr::auth {
              (std::string("freezermanager-auth-") + seed + "-" + addr + "-" + std::string(suffix) +
               ".db");
     }
-
 
     [[nodiscard]] storage::MutationContext test_ctx() {
       return storage::MutationContext{
@@ -404,7 +402,7 @@ namespace fmgr::auth {
       const SessionContext ctx = provider_->validate_token(token.plaintext_token);
       EXPECT_EQ(ctx.user_id, kUserWithTotpId);
       // LabAdmin has sample.read at minimum.
-      EXPECT_TRUE(ctx.has(core::Permission::SampleRead));
+      EXPECT_TRUE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
     }
 
     TEST_F(LocalAuthProviderTest, ValidateTokenBadToken) {
@@ -574,7 +572,7 @@ namespace fmgr::auth {
       EXPECT_TRUE(ctx.mfa_complete);
       EXPECT_TRUE(ctx.can_see_lab(kLabId));
       // no-totp user has Member role → at least SampleRead
-      EXPECT_TRUE(ctx.has(core::Permission::SampleRead));
+      EXPECT_TRUE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
     }
 
     TEST_F(LocalAuthProviderTest, AuthenticateApiTokenExpired) {
@@ -813,7 +811,7 @@ namespace fmgr::auth {
       EXPECT_THROW(provider_->validate_token(tok2.plaintext_token), InvalidCredentials);
     }
 
-    // ---- Permission caching: disabled TTL ---- 
+    // ---- Permission caching: disabled TTL ----
 
     TEST_F(LocalAuthProviderTest, CacheDisabledWithTtlZeroStillBuildsContext) {
       LocalAuthProviderConfig cfg = fast_config();
@@ -829,7 +827,7 @@ namespace fmgr::auth {
       EXPECT_TRUE(ctx.mfa_complete);
     }
 
-    // ---- Permission caching: stale refresh ---- 
+    // ---- Permission caching: stale refresh ----
 
     TEST_F(LocalAuthProviderTest, CacheStaleEntryIsRefreshedAfterTtlExpires) {
       LocalAuthProviderConfig cfg = fast_config();
@@ -846,10 +844,10 @@ namespace fmgr::auth {
       // Second call: stale cache → rebuild from DB → still correct.
       const SessionContext ctx2 = prov.validate_token(token.plaintext_token);
       EXPECT_EQ(ctx2.user_id, kUserNoTotpId);
-      EXPECT_EQ(ctx2.visible_labs, ctx1.visible_labs);
+      EXPECT_EQ(ctx2.permissions_by_lab, ctx1.permissions_by_lab);
     }
 
-    // ---- Session expiry: boundary ---- 
+    // ---- Session expiry: boundary ----
 
     TEST_F(LocalAuthProviderTest, ValidateTokenSucceedsOneSecondBeforeIdleLimit) {
       auto prov = make_expiry_provider();

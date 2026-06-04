@@ -774,8 +774,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
         return auth::SessionContext{
             .session_id = id_from_low<core::SessionId>(998),
             .user_id = id_from_low<core::UserId>(999),
-            .visible_labs = {lab},
-            .permissions = {},
+            .permissions_by_lab = {{lab, {}}},
             .mfa_complete = true,
         };
       }

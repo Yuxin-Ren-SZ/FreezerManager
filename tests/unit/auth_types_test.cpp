@@ -27,7 +27,6 @@ namespace fmgr::auth {
 
     // ---- helpers ----
 
-
     [[nodiscard]] core::SessionId session_id_1() {
       return core::SessionId::parse("00000000-0000-0000-0000-000000000001");
     }
@@ -113,36 +112,45 @@ namespace fmgr::auth {
 
     // ---- SessionContext ----
 
-    TEST(AuthTypesTest, SessionContextHasPermissionTrue) {
+    TEST(AuthTypesTest, SessionContextHasLabPermissionTrue) {
       const SessionContext ctx{
           .session_id = session_id_1(),
           .user_id = user_id_1(),
-          .visible_labs = {lab_id_1()},
-          .permissions = {core::Permission::SampleRead, core::Permission::SampleWrite},
+          .permissions_by_lab = {{lab_id_1(),
+                                  {core::Permission::SampleRead, core::Permission::SampleWrite}}},
           .mfa_complete = true,
       };
-      EXPECT_TRUE(ctx.has(core::Permission::SampleRead));
-      EXPECT_TRUE(ctx.has(core::Permission::SampleWrite));
+      EXPECT_TRUE(ctx.has_for_lab(lab_id_1(), core::Permission::SampleRead));
+      EXPECT_TRUE(ctx.has_for_lab(lab_id_1(), core::Permission::SampleWrite));
     }
 
-    TEST(AuthTypesTest, SessionContextHasPermissionFalse) {
+    TEST(AuthTypesTest, SessionContextHasLabPermissionFalse) {
       const SessionContext ctx{
           .session_id = session_id_1(),
           .user_id = user_id_1(),
-          .visible_labs = {},
-          .permissions = {core::Permission::SampleRead},
+          .permissions_by_lab = {{lab_id_1(), {core::Permission::SampleRead}}},
           .mfa_complete = true,
       };
-      EXPECT_FALSE(ctx.has(core::Permission::SampleWrite));
-      EXPECT_FALSE(ctx.has(core::Permission::AuditRead));
+      EXPECT_FALSE(ctx.has_for_lab(lab_id_1(), core::Permission::SampleWrite));
+      EXPECT_FALSE(ctx.has_for_lab(lab_id_2(), core::Permission::SampleRead));
+    }
+
+    TEST(AuthTypesTest, SessionContextHasGlobalPermission) {
+      const SessionContext ctx{
+          .session_id = session_id_1(),
+          .user_id = user_id_1(),
+          .global_permissions = {core::Permission::KeyRotate},
+          .mfa_complete = true,
+      };
+      EXPECT_TRUE(ctx.has_global(core::Permission::KeyRotate));
+      EXPECT_FALSE(ctx.has_global(core::Permission::BackupRun));
     }
 
     TEST(AuthTypesTest, SessionContextCanSeeLabTrue) {
       const SessionContext ctx{
           .session_id = session_id_1(),
           .user_id = user_id_1(),
-          .visible_labs = {lab_id_1(), lab_id_2()},
-          .permissions = {},
+          .permissions_by_lab = {{lab_id_1(), {}}, {lab_id_2(), {}}},
           .mfa_complete = true,
       };
       EXPECT_TRUE(ctx.can_see_lab(lab_id_1()));
@@ -153,8 +161,7 @@ namespace fmgr::auth {
       const SessionContext ctx{
           .session_id = session_id_1(),
           .user_id = user_id_1(),
-          .visible_labs = {lab_id_1()},
-          .permissions = {},
+          .permissions_by_lab = {{lab_id_1(), {}}},
           .mfa_complete = true,
       };
       const auto other_lab = core::LabId::parse("00000000-0000-0000-0000-000000000099");
@@ -165,8 +172,6 @@ namespace fmgr::auth {
       const SessionContext ctx{
           .session_id = session_id_1(),
           .user_id = user_id_1(),
-          .visible_labs = {},
-          .permissions = {},
           .mfa_complete = true,
       };
       EXPECT_FALSE(ctx.can_see_lab(lab_id_1()));

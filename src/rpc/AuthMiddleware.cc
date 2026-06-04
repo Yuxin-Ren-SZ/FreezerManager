@@ -38,15 +38,13 @@ namespace fmgr::rpc {
       throw auth::MfaRequired("MFA verification required before accessing this operation");
     }
 
-    // Step 3: permission gate
-    if (!ctx.has(required_perm)) {
-      throw auth::PermissionDenied("caller lacks required permission: " +
-                                   std::string(core::to_key(required_perm)));
-    }
-
-    // Step 4: lab visibility gate
-    if (lab_id.has_value() && !ctx.can_see_lab(*lab_id)) {
-      throw auth::PermissionDenied("caller cannot access lab: " + lab_id->to_string());
+    // Step 3: scoped permission gate
+    if (lab_id.has_value()) {
+      if (!ctx.has_for_lab(*lab_id, required_perm)) {
+        throw auth::PermissionDenied("caller lacks required permission for target lab");
+      }
+    } else if (!ctx.has_global(required_perm)) {
+      throw auth::PermissionDenied("caller lacks required deployment-wide permission");
     }
 
     return ctx;
@@ -59,7 +57,8 @@ namespace fmgr::rpc {
     txn.set_session_var("current_user_id", ctx.user_id.to_string());
 
     std::string lab_ids;
-    for (const auto& lab : ctx.visible_labs) {
+    for (const auto& [lab, permissions] : ctx.permissions_by_lab) {
+      (void)permissions;
       if (!lab_ids.empty()) {
         lab_ids += ',';
       }

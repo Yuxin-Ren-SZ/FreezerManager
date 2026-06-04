@@ -25,13 +25,12 @@
 #include "core/permissions.h"
 #include "core/timestamp.h"
 
-#include <algorithm>
+#include <map>
 #include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <variant>
-#include <vector>
 
 namespace fmgr::auth {
 
@@ -70,26 +69,28 @@ namespace fmgr::auth {
   };
 
   // Resolved per-request context derived from a valid bearer token.
-  // Lives for the duration of a single request; never cached across requests.
+  // Permission grants may be cached by auth providers between requests.
   //
-  // visible_labs = user's member labs ∪ {source_lab | approved ShareRequest
-  //                  targets one of user's labs}
-  // permissions  = intersection of role grants and scope filters from
-  //                LabMembership.scope_filters_json
+  // permissions_by_lab = active lab memberships and their lab-scoped grants.
+  // global_permissions = deployment-wide grants that are not tied to one lab.
   struct SessionContext {
     core::SessionId session_id;
     core::UserId user_id;
-    std::vector<core::LabId> visible_labs;
-    std::set<core::Permission> permissions;
+    std::map<core::LabId, std::set<core::Permission>> permissions_by_lab;
+    std::set<core::Permission> global_permissions;
     bool mfa_complete{true};
 
-    [[nodiscard]] bool has(core::Permission perm) const {
-      return permissions.contains(perm);
+    [[nodiscard]] bool can_see_lab(const core::LabId& lab_id) const {
+      return permissions_by_lab.contains(lab_id);
     }
 
-    [[nodiscard]] bool can_see_lab(const core::LabId& lab_id) const {
-      return std::ranges::any_of(visible_labs,
-                                 [&](const core::LabId& lab) { return lab == lab_id; });
+    [[nodiscard]] bool has_for_lab(const core::LabId& lab_id, core::Permission perm) const {
+      const auto iter = permissions_by_lab.find(lab_id);
+      return iter != permissions_by_lab.end() && iter->second.contains(perm);
+    }
+
+    [[nodiscard]] bool has_global(core::Permission perm) const {
+      return global_permissions.contains(perm);
     }
   };
 

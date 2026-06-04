@@ -18,6 +18,7 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -68,32 +69,78 @@ namespace fmgr::auth {
       return perms;
     }
 
-    // Resolve effective permissions for a user from their lab memberships.
-    [[nodiscard]] std::pair<std::vector<core::LabId>, std::set<core::Permission>>
-    resolve_permissions(storage::ITransaction& txn, const core::UserId& user_id) {
+    struct ScopedPermissionGrants {
+      std::map<core::LabId, std::set<core::Permission>> permissions_by_lab;
+      std::set<core::Permission> global_permissions;
+    };
+
+    [[nodiscard]] std::set<core::Permission>
+    intersect_permissions(const std::set<core::Permission>& base,
+                          const std::set<core::Permission>& scope) {
+      std::set<core::Permission> result;
+      for (const auto permission : base) {
+        if (scope.contains(permission)) {
+          result.insert(permission);
+        }
+      }
+      return result;
+    }
+
+    [[nodiscard]] ScopedPermissionGrants
+    intersect_grants_with_scope(ScopedPermissionGrants grants,
+                                const std::set<core::Permission>& scope) {
+      if (scope.empty()) {
+        return grants;
+      }
+      for (auto& [lab_id, permissions] : grants.permissions_by_lab) {
+        (void)lab_id;
+        permissions = intersect_permissions(permissions, scope);
+      }
+      grants.global_permissions = intersect_permissions(grants.global_permissions, scope);
+      return grants;
+    }
+
+    // Resolve effective permissions for a user from their active lab memberships.
+    [[nodiscard]] ScopedPermissionGrants resolve_permissions(storage::ITransaction& txn,
+                                                             const core::UserId& user_id) {
       const auto memberships =
           txn.repo<core::LabMembership>().query(storage::Query<core::LabMembership>::where(
               storage::field<core::LabMembership, std::string>(
                   core::LabMembership::Field::UserId) == user_id.to_string()));
 
-      std::vector<core::LabId> visible_labs;
-      std::set<core::Permission> permissions;
+      ScopedPermissionGrants grants;
 
       for (const auto& membership : memberships) {
-        visible_labs.push_back(membership.lab_id);
+        if (membership.revoked_at.has_value()) {
+          continue;
+        }
+
+        auto& lab_permissions = grants.permissions_by_lab[membership.lab_id];
         if (!membership.role_id.has_value()) {
           continue;
         }
+
+        const auto role = txn.repo<core::Role>().find_by_id(*membership.role_id);
+        if (!role.has_value() || role->archived_at.has_value()) {
+          continue;
+        }
+
         const auto role_perms =
             txn.repo<core::RolePermission>().query(storage::Query<core::RolePermission>::where(
                 storage::field<core::RolePermission, std::string>(
                     core::RolePermission::Field::RoleId) == membership.role_id->to_string()));
         for (const auto& role_perm : role_perms) {
-          permissions.insert(role_perm.permission);
+          if (core::is_global_only_permission(role_perm.permission)) {
+            if (role->kind == core::RoleKind::SystemAdmin) {
+              grants.global_permissions.insert(role_perm.permission);
+            }
+            continue;
+          }
+          lab_permissions.insert(role_perm.permission);
         }
       }
 
-      return {std::move(visible_labs), std::move(permissions)};
+      return grants;
     }
 
   } // namespace
@@ -422,8 +469,8 @@ namespace fmgr::auth {
           return SessionContext{
               .session_id = session.id,
               .user_id = session.user_id,
-              .visible_labs = iter->second.visible_labs,
-              .permissions = iter->second.permissions,
+              .permissions_by_lab = iter->second.permissions_by_lab,
+              .global_permissions = iter->second.global_permissions,
               .mfa_complete = session.mfa_complete,
           };
         }
@@ -436,8 +483,8 @@ namespace fmgr::auth {
       std::scoped_lock guard(cache_mutex_);
       ctx_cache_.insert_or_assign(session_key, CachedContext{
                                                    .user_id = session.user_id,
-                                                   .visible_labs = ctx.visible_labs,
-                                                   .permissions = ctx.permissions,
+                                                   .permissions_by_lab = ctx.permissions_by_lab,
+                                                   .global_permissions = ctx.global_permissions,
                                                    .cached_at = std::chrono::steady_clock::now(),
                                                });
     }
@@ -479,14 +526,14 @@ namespace fmgr::auth {
 
   SessionContext LocalAuthProvider::build_session_context(const core::Session& session) const {
     auto rtxn = backend_.begin(storage::IsolationLevel::ReadCommitted);
-    auto [visible_labs, permissions] = resolve_permissions(*rtxn, session.user_id);
+    auto grants = resolve_permissions(*rtxn, session.user_id);
     rtxn->commit();
 
     return SessionContext{
         .session_id = session.id,
         .user_id = session.user_id,
-        .visible_labs = std::move(visible_labs),
-        .permissions = std::move(permissions),
+        .permissions_by_lab = std::move(grants.permissions_by_lab),
+        .global_permissions = std::move(grants.global_permissions),
         .mfa_complete = session.mfa_complete,
     };
   }
@@ -495,27 +542,18 @@ namespace fmgr::auth {
 
   SessionContext LocalAuthProvider::build_api_token_context(const core::ApiToken& token) const {
     auto rtxn = backend_.begin(storage::IsolationLevel::ReadCommitted);
-    auto [visible_labs, base_permissions] = resolve_permissions(*rtxn, token.user_id);
+    auto grants = resolve_permissions(*rtxn, token.user_id);
     rtxn->commit();
 
     // Intersect base permissions with the token's own scope_json (if non-empty).
     const auto scoped = permissions_from_scope_json(token.scope_json);
-    std::set<core::Permission> permissions;
-    if (scoped.empty()) {
-      permissions = std::move(base_permissions);
-    } else {
-      for (const auto& perm : scoped) {
-        if (base_permissions.contains(perm)) {
-          permissions.insert(perm);
-        }
-      }
-    }
+    grants = intersect_grants_with_scope(std::move(grants), scoped);
 
     return SessionContext{
         .session_id = core::SessionId(token.id.value()),
         .user_id = token.user_id,
-        .visible_labs = std::move(visible_labs),
-        .permissions = std::move(permissions),
+        .permissions_by_lab = std::move(grants.permissions_by_lab),
+        .global_permissions = std::move(grants.global_permissions),
         .mfa_complete = true,
     };
   }

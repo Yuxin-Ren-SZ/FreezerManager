@@ -55,5 +55,20 @@ namespace fmgr::core {
       EXPECT_FALSE(member.contains(Permission::SampleDeleteHard));
     }
 
+    TEST(PermissionCatalog, GlobalOnlyPermissionsAreExplicitlyClassified) {
+      EXPECT_TRUE(is_global_only_permission(Permission::SampleDeleteHard));
+      EXPECT_TRUE(is_global_only_permission(Permission::BackupRun));
+      EXPECT_TRUE(is_global_only_permission(Permission::KeyRotate));
+
+      EXPECT_FALSE(is_global_only_permission(Permission::SampleRead));
+      EXPECT_FALSE(is_global_only_permission(Permission::AuditExport));
+      EXPECT_FALSE(is_global_only_permission(Permission::SessionRevoke));
+    }
+
+    TEST(PermissionCatalog, LabAdminDoesNotGrantDeploymentWideBackupRun) {
+      const auto lab_admin = builtin_role_permissions(RoleKind::LabAdmin);
+      EXPECT_FALSE(lab_admin.contains(Permission::BackupRun));
+    }
+
   } // namespace
 } // namespace fmgr::core

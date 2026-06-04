@@ -118,14 +118,16 @@ namespace fmgr::core {
   }};
 
   // Guard: catalog must be in enum value order for O(1) value lookups below.
-  static_assert([] {
-    for (std::size_t i = 0; i < k_permission_catalog.size(); ++i) {
-      if (static_cast<std::size_t>(k_permission_catalog[i].value) != i) {
-        return false;
-      }
-    }
-    return true;
-  }(), "k_permission_catalog entries must appear in Permission enum value order");
+  static_assert(
+      [] {
+        for (std::size_t i = 0; i < k_permission_catalog.size(); ++i) {
+          if (static_cast<std::size_t>(k_permission_catalog[i].value) != i) {
+            return false;
+          }
+        }
+        return true;
+      }(),
+      "k_permission_catalog entries must appear in Permission enum value order");
 
   // Catalog sorted by key for O(log n) binary search in parse_permission().
   inline constexpr auto k_permission_by_key = [] {
@@ -161,8 +163,8 @@ namespace fmgr::core {
 
   // O(log n) binary search over the key-sorted catalog.
   [[nodiscard]] inline Permission parse_permission(std::string_view key) {
-    const auto it = std::ranges::lower_bound(k_permission_by_key, key, std::less<>{},
-                                             &PermissionEntry::key);
+    const auto it =
+        std::ranges::lower_bound(k_permission_by_key, key, std::less<>{}, &PermissionEntry::key);
     if (it != k_permission_by_key.end() && it->key == key) {
       return it->value;
     }
@@ -175,6 +177,35 @@ namespace fmgr::core {
       result.insert(entry.value);
     }
     return result;
+  }
+
+  [[nodiscard]] inline bool is_global_only_permission(Permission permission) {
+    switch (permission) {
+    case Permission::SampleDeleteHard:
+    case Permission::BackupRun:
+    case Permission::KeyRotate:
+      return true;
+    case Permission::SampleRead:
+    case Permission::SampleWrite:
+    case Permission::SampleCheckout:
+    case Permission::SampleDeleteSoft:
+    case Permission::BoxConfigure:
+    case Permission::FreezerConfigure:
+    case Permission::CustomFieldDefine:
+    case Permission::ItemTypeDefine:
+    case Permission::UserInvite:
+    case Permission::UserManageRoles:
+    case Permission::AuditRead:
+    case Permission::AuditExport:
+    case Permission::ShareRequest:
+    case Permission::ShareApprove:
+    case Permission::PhiRead:
+    case Permission::LabConfigure:
+    case Permission::LabEnablePhi:
+    case Permission::SessionRevoke:
+      return false;
+    }
+    throw std::invalid_argument("unknown permission");
   }
 
   // Built-in permission grants per role. Custom roles get whatever the lab
@@ -201,8 +232,7 @@ namespace fmgr::core {
           Permission::SampleDeleteSoft,  Permission::BoxConfigure,   Permission::FreezerConfigure,
           Permission::CustomFieldDefine, Permission::ItemTypeDefine, Permission::UserInvite,
           Permission::UserManageRoles,   Permission::AuditRead,      Permission::AuditExport,
-          Permission::BackupRun,         Permission::ShareRequest,   Permission::ShareApprove,
-          Permission::LabConfigure,
+          Permission::ShareRequest,      Permission::ShareApprove,   Permission::LabConfigure,
       };
     case RoleKind::Member:
       return {

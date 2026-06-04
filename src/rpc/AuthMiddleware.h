@@ -11,8 +11,7 @@
 //
 // authorize() guarantee:
 //   On success: the returned SessionContext is fully populated; the caller
-//   holds the required permission; mfa_complete == true; if lab_id was
-//   provided, the caller can see that lab.
+//   holds the required permission in the requested scope; mfa_complete == true.
 //   On failure: an AuthError subclass is thrown and the handler must not
 //   proceed. The specific subtype tells the caller what to surface to the
 //   client (InvalidCredentials → 401, PermissionDenied → 403, etc.).
@@ -41,8 +40,10 @@ namespace fmgr::rpc {
     // Steps (in order, short-circuits on first failure):
     //   1. Validates bearer token via IAuthProvider::validate_token().
     //   2. Throws MfaRequired if ctx.mfa_complete == false.
-    //   3. Throws PermissionDenied if ctx.has(required_perm) == false.
-    //   4. If lab_id is set, throws PermissionDenied if !ctx.can_see_lab(lab_id).
+    //   3. If lab_id is set, throws PermissionDenied unless the caller holds
+    //      required_perm for that lab.
+    //   4. If lab_id is unset, throws PermissionDenied unless the caller holds
+    //      required_perm as a deployment-wide permission.
     //
     // Throws: any AuthError subclass (InvalidCredentials, TokenExpired,
     //         MfaRequired, PermissionDenied, …)
