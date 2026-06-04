@@ -5,34 +5,22 @@
 #include "core/role.h"
 #include "storage/IdentityTraits.h"
 #include "storage/RoleTraits.h"
+#include "storage/postgres/IdentityRepositories.h"
+#include "storage/postgres/RoleRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
-#include "storage/sqlite/SqliteBackend.h"
 
+#include "repo_backend_harness.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
-#include <array>
-#include <cstdint>
-#include <filesystem>
+#include <memory>
 #include <set>
 #include <string>
-#include <string_view>
 
 namespace fmgr::storage {
   namespace {
     using namespace fmgr::test;
-
-
-
-    [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
-      const auto unique = std::to_string(static_cast<unsigned long long>(
-                              ::testing::UnitTest::GetInstance()->random_seed())) +
-                          "-" + std::to_string(reinterpret_cast<std::uintptr_t>(&suffix));
-      return std::filesystem::temp_directory_path() / (std::string("freezermanager-sqlite-roles-") +
-                                                       unique + "-" + std::string(suffix) + ".db");
-    }
-
 
     [[nodiscard]] MutationContext mutation_context() {
       return MutationContext{
@@ -42,34 +30,6 @@ namespace fmgr::storage {
           .reason = "role repository test",
       };
     }
-
-    class SqliteRoleRepositoryTest : public ::testing::Test {
-    protected:
-      SqliteRoleRepositoryTest()
-          : db_path_(sqlite_test_path("repositories")), backend_(SqliteBackendOptions{
-                                                            .database_path = db_path_.string(),
-                                                        }) {
-        register_identity_repositories(backend_);
-        register_role_repositories(backend_);
-      }
-
-      void SetUp() override {
-        remove_sqlite_files(db_path_);
-        backend_.migrate_to_latest();
-      }
-
-      void TearDown() override {
-        remove_sqlite_files(db_path_);
-      }
-
-      [[nodiscard]] SqliteBackend& backend() {
-        return backend_;
-      }
-
-    private:
-      std::filesystem::path db_path_;
-      SqliteBackend backend_;
-    };
 
     void assert_role_archived(IRepository<core::Role>& roles, const core::RoleId& role_id) {
       const auto active = roles.query(Query<core::Role>::all());
@@ -108,7 +68,33 @@ namespace fmgr::storage {
       EXPECT_EQ(actual, expected) << "permission grants for " << core::to_string(kind);
     }
 
-    TEST_F(SqliteRoleRepositoryTest, MigrationSeedsBuiltinRolesAndPermissionGrants) {
+    class RoleRepositoryTest : public ::testing::TestWithParam<BackendKind> {
+    protected:
+      void SetUp() override {
+        if (GetParam() == BackendKind::Postgres && !postgres_test_url().has_value()) {
+          GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres repository tests";
+        }
+        harness_ = std::make_unique<RepoBackendHarness>(
+            GetParam(),
+            [](SqliteBackend& backend) {
+              register_identity_repositories(backend);
+              register_role_repositories(backend);
+            },
+            [](PostgresBackend& backend) {
+              register_identity_repositories(backend);
+              register_role_repositories(backend);
+            });
+      }
+
+      [[nodiscard]] IStorageBackend& backend() {
+        return harness_->backend();
+      }
+
+    private:
+      std::unique_ptr<RepoBackendHarness> harness_;
+    };
+
+    TEST_P(RoleRepositoryTest, MigrationSeedsBuiltinRolesAndPermissionGrants) {
       auto transaction = backend().begin(IsolationLevel::Serializable);
       auto& roles = transaction->repo<core::Role>();
       auto& grants = transaction->repo<core::RolePermission>();
@@ -123,7 +109,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteRoleRepositoryTest, CustomRoleInsertAndArchiveRoundTrip) {
+    TEST_P(RoleRepositoryTest, CustomRoleInsertAndArchiveRoundTrip) {
       const core::Lab lab_entity{
           .id = id_from_low<core::LabId>(700),
           .name = "Custom Lab",
@@ -164,14 +150,14 @@ namespace fmgr::storage {
       assert_role_archived(check->repo<core::Role>(), role.id);
     }
 
-    TEST_F(SqliteRoleRepositoryTest, ArchivingBuiltinRoleIsRejected) {
+    TEST_P(RoleRepositoryTest, ArchivingBuiltinRoleIsRejected) {
       auto transaction = backend().begin(IsolationLevel::Serializable);
       EXPECT_THROW(transaction->repo<core::Role>().soft_delete(
                        core::builtin_role_id(core::RoleKind::SystemAdmin), mutation_context()),
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteRoleRepositoryTest, GrantingPermissionToMissingRoleIsForeignKeyViolation) {
+    TEST_P(RoleRepositoryTest, GrantingPermissionToMissingRoleIsForeignKeyViolation) {
       auto transaction = backend().begin(IsolationLevel::Serializable);
       transaction->repo<core::RolePermission>().insert(
           core::RolePermission{
@@ -183,7 +169,7 @@ namespace fmgr::storage {
       EXPECT_THROW(transaction->commit(), ForeignKeyViolation);
     }
 
-    TEST_F(SqliteRoleRepositoryTest, RevokingPermissionDeletesRow) {
+    TEST_P(RoleRepositoryTest, RevokingPermissionDeletesRow) {
       const auto role_id = core::builtin_role_id(core::RoleKind::Member);
       auto transaction = backend().begin(IsolationLevel::Serializable);
       transaction->repo<core::RolePermission>().soft_delete(
@@ -198,7 +184,7 @@ namespace fmgr::storage {
                        .has_value());
     }
 
-    TEST_F(SqliteRoleRepositoryTest, LabMembershipPersistsRoleId) {
+    TEST_P(RoleRepositoryTest, LabMembershipPersistsRoleId) {
       const core::Lab lab_entity{
           .id = id_from_low<core::LabId>(800),
           .name = "Membership Lab",
@@ -237,7 +223,7 @@ namespace fmgr::storage {
       // NOLINTEND(bugprone-unchecked-optional-access)
     }
 
-    TEST_F(SqliteRoleRepositoryTest, LabMembershipWithMissingRoleIsForeignKeyViolation) {
+    TEST_P(RoleRepositoryTest, LabMembershipWithMissingRoleIsForeignKeyViolation) {
       const core::Lab lab_entity{
           .id = id_from_low<core::LabId>(810),
           .name = "FK Lab",
@@ -269,7 +255,7 @@ namespace fmgr::storage {
       EXPECT_THROW(transaction->commit(), ForeignKeyViolation);
     }
 
-    TEST_F(SqliteRoleRepositoryTest, DuplicateRoleNameInSameLabThrowsUniqueViolation) {
+    TEST_P(RoleRepositoryTest, DuplicateRoleNameInSameLabThrowsUniqueViolation) {
       const core::Lab lab{.id = id_from_low<core::LabId>(2001),
                           .name = "DupRoleLab",
                           .contact = "lab@example.org",
@@ -289,19 +275,27 @@ namespace fmgr::storage {
                      .is_builtin = false,
                      .created_at = core::Timestamp::from_unix_micros(10)},
           mutation_context());
-      txn->repo<core::Role>().insert(
-          core::Role{.id = id_from_low<core::RoleId>(2003),
-                     .lab_id = lab.id,
-                     .kind = core::RoleKind::Member,
-                     .name = "Conflicting",
-                     .description = "Second",
-                     .is_builtin = false,
-                     .created_at = core::Timestamp::from_unix_micros(11)},
-          mutation_context());
-      EXPECT_THROW(txn->commit(), UniqueViolation);
+      // The second same-name role collides on the (lab_id, name) unique index.
+      // SQLite stages both and fails the index check at commit; Postgres writes
+      // immediately and fails on the second insert. Wrap both so either path is
+      // caught.
+      EXPECT_THROW(
+          {
+            txn->repo<core::Role>().insert(
+                core::Role{.id = id_from_low<core::RoleId>(2003),
+                           .lab_id = lab.id,
+                           .kind = core::RoleKind::Member,
+                           .name = "Conflicting",
+                           .description = "Second",
+                           .is_builtin = false,
+                           .created_at = core::Timestamp::from_unix_micros(11)},
+                mutation_context());
+            txn->commit();
+          },
+          UniqueViolation);
     }
 
-    TEST_F(SqliteRoleRepositoryTest, DuplicatePermissionGrantThrowsUniqueViolation) {
+    TEST_P(RoleRepositoryTest, DuplicatePermissionGrantThrowsUniqueViolation) {
       const core::Lab lab{.id = id_from_low<core::LabId>(2101),
                           .name = "GrantDupLab",
                           .contact = "lab@example.org",
@@ -325,13 +319,20 @@ namespace fmgr::storage {
       txn->repo<core::RolePermission>().insert(
           core::RolePermission{.role_id = role_id, .permission = core::Permission::AuditExport},
           mutation_context());
-      // Second insert with same (role_id, permission) — repo rejects at stage time.
+      // Second insert with same (role_id, permission) — both backends reject it
+      // at insert time (SQLite via stage-time check, Postgres via the PK).
       EXPECT_THROW(
           txn->repo<core::RolePermission>().insert(
               core::RolePermission{.role_id = role_id, .permission = core::Permission::AuditExport},
               mutation_context()),
           UniqueViolation);
     }
+
+    INSTANTIATE_TEST_SUITE_P(Backends, RoleRepositoryTest,
+                             ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
+                             [](const ::testing::TestParamInfo<BackendKind>& info) {
+                               return backend_kind_name(info.param);
+                             });
 
   } // namespace
 } // namespace fmgr::storage

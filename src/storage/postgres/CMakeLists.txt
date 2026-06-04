@@ -5,6 +5,7 @@ add_library(
   freezermanager_storage_postgres
   PostgresBackend.cc
   IdentityRepositories.cc
+  RoleRepositories.cc
 )
 add_library(FreezerManager::storage_postgres ALIAS freezermanager_storage_postgres)
 

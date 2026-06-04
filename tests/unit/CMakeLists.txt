@@ -53,7 +53,6 @@ add_executable(
   sqlite_box_repository_test.cpp
   sqlite_item_type_repository_test.cpp
   sqlite_layout_repository_test.cpp
-  sqlite_role_repository_test.cpp
   sqlite_sample_repository_test.cpp
   sqlite_session_repository_test.cpp
   sqlite_share_request_repository_test.cpp
@@ -94,6 +93,7 @@ target_include_directories(
 add_executable(
   freezermanager_storage_repository_tests
   identity_repository_test.cpp
+  role_repository_test.cpp
 )
 target_link_libraries(
   freezermanager_storage_repository_tests

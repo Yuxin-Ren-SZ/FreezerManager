@@ -20,40 +20,18 @@
 namespace fmgr::storage {
   namespace {
 
+    using detail::id_or_null;
+    using detail::micros_or_null;
     using detail::pg_bind_params;
     using detail::pg_optional_id;
     using detail::pg_optional_string;
+    using detail::pg_optional_timestamp;
     using detail::throw_pqxx_error;
 
     [[nodiscard]] core::Timestamp now_timestamp() {
       const auto now =
           std::chrono::time_point_cast<std::chrono::microseconds>(std::chrono::system_clock::now());
       return core::Timestamp::from_unix_micros(now.time_since_epoch().count());
-    }
-
-    [[nodiscard]] std::optional<core::Timestamp> pg_optional_timestamp(pqxx::row_ref row,
-                                                                       const char* column) {
-      const auto field = row.at(column);
-      if (field.is_null()) {
-        return std::nullopt;
-      }
-      return core::Timestamp::from_unix_micros(field.as<std::int64_t>());
-    }
-
-    [[nodiscard]] std::optional<std::int64_t>
-    micros_or_null(const std::optional<core::Timestamp>& timestamp) {
-      if (!timestamp.has_value()) {
-        return std::nullopt;
-      }
-      return timestamp->unix_micros();
-    }
-
-    template <typename StrongId>
-    [[nodiscard]] std::optional<std::string> id_or_null(const std::optional<StrongId>& strong_id) {
-      if (!strong_id.has_value()) {
-        return std::nullopt;
-      }
-      return strong_id->to_string();
     }
 
     // ---- Row readers ----

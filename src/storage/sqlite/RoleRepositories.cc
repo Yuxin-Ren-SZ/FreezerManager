@@ -4,6 +4,7 @@
 
 #include "core/role.h"
 #include "storage/RoleTraits.h"
+#include "storage/detail/RoleColumns.h"
 
 #include <sqlite3.h>
 
@@ -156,24 +157,7 @@ namespace fmgr::storage {
       return core::Timestamp::from_unix_micros(now.time_since_epoch().count());
     }
 
-    void validate_role(const core::Role& role) {
-      if (role.name.empty()) {
-        throw ConstraintViolation("role name is required");
-      }
-      // Built-in roles are global (lab_id NULL); custom lab-defined roles
-      // must carry a lab_id. The DB schema enforces this through the two
-      // partial unique indexes; we mirror the contract here so the violation
-      // surfaces as a clean ConstraintViolation rather than a UNIQUE error
-      // from a name collision against another lab's seed-named role.
-      if (role.is_builtin && role.lab_id.has_value()) {
-        throw ConstraintViolation("built-in role must not be lab-scoped");
-      }
-      if (!role.is_builtin && role.kind != core::RoleKind::SystemAdmin &&
-          role.kind != core::RoleKind::LabAdmin && role.kind != core::RoleKind::Member &&
-          role.kind != core::RoleKind::ReadOnly && role.kind != core::RoleKind::ApiClient) {
-        // No-op: kind enum is exhaustive; defensive guard kept for symmetry.
-      }
-    }
+    using detail::validate_role;
 
     [[nodiscard]] core::Role read_role(sqlite3_stmt* statement) {
       const auto lab_id_text = column_optional_text(statement, 1);

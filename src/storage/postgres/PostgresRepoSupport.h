@@ -3,6 +3,7 @@
 #ifndef FMGR_STORAGE_POSTGRES_POSTGRESREPOSUPPORT_H
 #define FMGR_STORAGE_POSTGRES_POSTGRESREPOSUPPORT_H
 
+#include "core/timestamp.h"
 #include "storage/IStorageBackend.h"
 
 #include <pqxx/pqxx>
@@ -89,6 +90,34 @@ namespace fmgr::storage::detail {
       return std::nullopt;
     }
     return StrongId::parse(text.value());
+  }
+
+  // Read a nullable microsecond-timestamp column as std::optional<Timestamp>.
+  [[nodiscard]] inline std::optional<core::Timestamp> pg_optional_timestamp(pqxx::row_ref row,
+                                                                            const char* column) {
+    const auto field = row.at(column);
+    if (field.is_null()) {
+      return std::nullopt;
+    }
+    return core::Timestamp::from_unix_micros(field.as<std::int64_t>());
+  }
+
+  // Convert an optional timestamp to its microsecond value for binding (NULL if empty).
+  [[nodiscard]] inline std::optional<std::int64_t>
+  micros_or_null(const std::optional<core::Timestamp>& timestamp) {
+    if (!timestamp.has_value()) {
+      return std::nullopt;
+    }
+    return timestamp->unix_micros();
+  }
+
+  // Convert an optional strong id to its string value for binding (NULL if empty).
+  template <typename StrongId>
+  [[nodiscard]] std::optional<std::string> id_or_null(const std::optional<StrongId>& strong_id) {
+    if (!strong_id.has_value()) {
+      return std::nullopt;
+    }
+    return strong_id->to_string();
   }
 
 } // namespace fmgr::storage::detail
