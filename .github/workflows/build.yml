@@ -49,6 +49,21 @@ jobs:
             preset: tsan
             build_type: Debug
 
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: fmgr_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v4
 
@@ -99,6 +114,8 @@ jobs:
 
       - name: Test
         if: ${{ matrix.preset == 'dev' }}
+        env:
+          FMGR_TEST_POSTGRES_URL: postgresql://postgres:test@localhost/fmgr_test
         run: ctest --preset dev
 
       - name: Check SPDX headers

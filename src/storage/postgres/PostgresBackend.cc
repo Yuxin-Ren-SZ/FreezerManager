@@ -36,7 +36,11 @@ namespace fmgr::storage {
       if (state == "23503") { throw ForeignKeyViolation(error.what()); }
       if (state == "23514" || state == "23502" || state == "23000") { throw ConstraintViolation(error.what()); }
       if (state == "40001" || state == "40P01") { throw SerializationFailure(error.what()); }
-      throw BackendError(BackendErrorCode::ConstraintViolation, error.what());
+      // Connection-class errors (08xxx) and admin shutdown (57P01) → Unavailable.
+      if (state.size() >= 2 && state.substr(0, 2) == "08") { throw Unavailable(error.what()); }
+      if (state == "57P01") { throw Unavailable(error.what()); }
+      // Unrecognised SQLSTATE — fall back to ConstraintViolation (safest for data-layer errors).
+      throw ConstraintViolation(error.what());
     }
 
     // ---- UUID generation ----
@@ -161,9 +165,16 @@ CREATE TABLE IF NOT EXISTS role_permissions (
   permission_key TEXT NOT NULL REFERENCES permissions(key) DEFERRABLE INITIALLY DEFERRED,
   PRIMARY KEY (role_id, permission_key)
 );
-ALTER TABLE lab_memberships
-  ADD CONSTRAINT IF NOT EXISTS lab_memberships_role_id_fk
-  FOREIGN KEY (role_id) REFERENCES roles(id) DEFERRABLE INITIALLY DEFERRED;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'lab_memberships_role_id_fk'
+  ) THEN
+    ALTER TABLE lab_memberships
+      ADD CONSTRAINT lab_memberships_role_id_fk
+      FOREIGN KEY (role_id) REFERENCES roles(id) DEFERRABLE INITIALLY DEFERRED;
+  END IF;
+END $$;
 INSERT INTO permissions (key, description) VALUES
   ('sample.read','Read sample records.'),
   ('sample.write','Create or modify samples.'),
@@ -282,13 +293,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS freezers_lab_name_unique
 ALTER TABLE storage_containers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE storage_containers FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_storage_containers_lab ON storage_containers USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 ALTER TABLE freezers ENABLE ROW LEVEL SECURITY;
 ALTER TABLE freezers FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_freezers_lab ON freezers USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 )sql"},
           {.version = 5, .name = "0005_box_types", .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS container_types (
@@ -337,13 +346,11 @@ CREATE TABLE IF NOT EXISTS box_type_position_accepts (
 ALTER TABLE container_types ENABLE ROW LEVEL SECURITY;
 ALTER TABLE container_types FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_container_types_lab ON container_types USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 ALTER TABLE box_types ENABLE ROW LEVEL SECURITY;
 ALTER TABLE box_types FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_box_types_lab ON box_types USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 )sql"},
           {.version = 6, .name = "0006_boxes", .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS boxes (
@@ -366,8 +373,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_lab_label_unique
 ALTER TABLE boxes ENABLE ROW LEVEL SECURITY;
 ALTER TABLE boxes FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_boxes_lab ON boxes USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 )sql"},
           {.version = 7, .name = "0007_item_types", .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS item_types (
@@ -407,13 +413,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS cfd_lab_scope_type_key_unique
 ALTER TABLE item_types ENABLE ROW LEVEL SECURITY;
 ALTER TABLE item_types FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_item_types_lab ON item_types USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 ALTER TABLE custom_field_definitions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE custom_field_definitions FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_cfd_lab ON custom_field_definitions USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 )sql"},
           {.version = 8, .name = "0008_samples", .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS projects (
@@ -481,18 +485,15 @@ CREATE INDEX IF NOT EXISTS checkout_events_user_idx   ON checkout_events(user_id
 ALTER TABLE projects ENABLE ROW LEVEL SECURITY;
 ALTER TABLE projects FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_projects_lab ON projects USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 ALTER TABLE samples ENABLE ROW LEVEL SECURITY;
 ALTER TABLE samples FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_samples_lab ON samples USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 ALTER TABLE checkout_events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE checkout_events FORCE ROW LEVEL SECURITY;
 CREATE POLICY fmgr_checkout_events_lab ON checkout_events USING (
-  lab_id = ANY(string_to_array(COALESCE(current_setting('app.current_lab_ids',true),''),','))
-  OR COALESCE(current_setting('app.current_lab_ids',true),'') = '');
+  lab_id = ANY(string_to_array(current_setting('app.current_lab_ids', true), ',')));
 )sql"},
           {.version = 9, .name = "0009_share_requests", .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS share_requests (
@@ -564,10 +565,29 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
       };
     }
 
+    // BLAKE2b-256 hex digest of `data` via libsodium. Stable across platforms/compilers.
+    [[nodiscard]] std::string blake2b_hex(const std::string& data) {
+      if (sodium_init() < 0) {
+        throw std::runtime_error("libsodium initialisation failed");
+      }
+      std::array<unsigned char, crypto_generichash_BYTES> hash{};
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+      crypto_generichash(hash.data(), hash.size(),
+                         reinterpret_cast<const unsigned char*>(data.data()), data.size(),
+                         nullptr, 0);
+      std::string hex;
+      hex.reserve(hash.size() * 2);
+      for (const unsigned char byte : hash) {
+        constexpr char k_nibbles[] = "0123456789abcdef";
+        hex += k_nibbles[byte >> 4U];
+        hex += k_nibbles[byte & 0x0fU];
+      }
+      return hex;
+    }
+
     [[nodiscard]] std::string checksum(const PostgresMigration& migration) {
-      std::hash<std::string> hasher;
-      return std::to_string(hasher(std::to_string(migration.version) + ":" + migration.name + ":" +
-                                   migration.up_sql));
+      return blake2b_hex(std::to_string(migration.version) + ":" + migration.name + ":" +
+                         migration.up_sql);
     }
 
   } // namespace
@@ -596,6 +616,16 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
       for (std::size_t i = 0; i < connection_available.size(); ++i) {
         if (connection_available[i]) {
           connection_available[i] = false;
+          // Health-check: reconnect if the connection dropped (DB restart, idle timeout, etc.).
+          if (!connections.at(i)->is_open()) {
+            try {
+              connections.at(i) = std::make_unique<pqxx::connection>(options.connection_string);
+            } catch (const std::exception&) {
+              connection_available[i] = true; // return to pool on reconnect failure
+              pool_cv.notify_one();
+              throw Unavailable("postgres reconnect failed");
+            }
+          }
           return i;
         }
       }
@@ -745,34 +775,45 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
 
         for (const auto& mutation : impl_->audit_mutations) {
           const auto event_id = generate_random_uuid();
+          const std::string before_str =
+              mutation.context.before_json.has_value()
+                  ? mutation.context.before_json->dump()
+                  : "{}";
+          const std::string after_str =
+              mutation.context.after_json.has_value()
+                  ? mutation.context.after_json->dump()
+                  : "{}";
+          const nlohmann::json lab_id_val =
+              mutation.context.lab_id.has_value()
+                  ? nlohmann::json(*mutation.context.lab_id)
+                  : nlohmann::json(nullptr);
           const nlohmann::json content = {
               {"action", mutation.action},
               {"actor_session_id", mutation.context.actor_session_id},
               {"actor_user_id", mutation.context.actor_user_id.to_string()},
-              {"after_json", "{}"},
+              {"after_json", after_str},
               {"at", now_micros},
-              {"before_json", "{}"},
+              {"before_json", before_str},
               {"entity_id", mutation.entity_id},
               {"entity_kind", mutation.entity_kind},
               {"id", event_id},
-              {"lab_id", nullptr},
+              {"lab_id", lab_id_val},
               {"request_id", mutation.context.request_id},
           };
           const auto content_json = audit::canonical_json(content);
           const auto this_hash = audit::compute_audit_hash(prev_hash, content_json);
 
-          const std::optional<std::string> null_lab_id; // bind NULL for lab_id
           pqxx::params audit_params;
           audit_params.append(event_id);
           audit_params.append(now_micros);
           audit_params.append(mutation.context.actor_user_id.to_string());
           audit_params.append(mutation.context.actor_session_id);
-          audit_params.append(null_lab_id);
+          audit_params.append(mutation.context.lab_id); // optional: binds NULL if empty
           audit_params.append(mutation.action);
           audit_params.append(mutation.entity_kind);
           audit_params.append(mutation.entity_id);
-          audit_params.append(std::string("{}"));
-          audit_params.append(std::string("{}"));
+          audit_params.append(before_str);
+          audit_params.append(after_str);
           audit_params.append(mutation.context.request_id);
           audit_params.append(prev_hash);
           audit_params.append(this_hash);
@@ -892,9 +933,13 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
       const auto result = txn.exec("SELECT COALESCE(MAX(version),0) FROM schema_migrations");
       if (!result.empty()) { version = result[0][0].as<int>(); }
       txn.commit();
-      // NOLINTNEXTLINE(bugprone-empty-catch)
-    } catch (const pqxx::sql_error&) {
-      // schema_migrations doesn't exist yet — version 0 is correct
+    } catch (const pqxx::sql_error& err) {
+      if (std::string_view(err.sqlstate()) != "42P01") {
+        // 42P01 = "undefined_table" (schema_migrations not yet created) — treat as version 0.
+        // Any other error (permissions denied, connection lost, etc.) is a real failure.
+        state_->release(idx);
+        throw Unavailable(err.what());
+      }
     }
     state_->release(idx);
     return SchemaVersion{version};

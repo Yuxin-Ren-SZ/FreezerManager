@@ -54,7 +54,9 @@ namespace fmgr::rpc {
 
   void AuthMiddleware::inject_rls_vars(storage::ITransaction& txn,
                                        const auth::SessionContext& ctx) {
-    txn.set_session_var("app.current_user_id", ctx.user_id.to_string());
+    // Pass bare keys — PostgresTransaction::set_session_var prepends "app." automatically.
+    // SQLite no-op override is unaffected.
+    txn.set_session_var("current_user_id", ctx.user_id.to_string());
 
     std::string lab_ids;
     for (const auto& lab : ctx.visible_labs) {
@@ -63,7 +65,7 @@ namespace fmgr::rpc {
       }
       lab_ids += lab.to_string();
     }
-    txn.set_session_var("app.current_lab_ids", lab_ids);
+    txn.set_session_var("current_lab_ids", lab_ids);
   }
 
   void AuthMiddleware::register_rpc(std::string rpc_name, core::Permission required_perm) {

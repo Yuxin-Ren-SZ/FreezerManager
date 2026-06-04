@@ -792,10 +792,29 @@ ALTER TABLE sessions ADD COLUMN mfa_complete INTEGER NOT NULL DEFAULT 1;
       return (text == nullptr) ? std::string(audit::zero_hash()) : std::string(text);
     }
 
+    // BLAKE2b-256 hex digest of `data` via libsodium. Stable across platforms/compilers.
+    [[nodiscard]] std::string blake2b_hex(const std::string& data) {
+      if (sodium_init() < 0) {
+        throw std::runtime_error("libsodium initialisation failed");
+      }
+      std::array<unsigned char, crypto_generichash_BYTES> hash{};
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+      crypto_generichash(hash.data(), hash.size(),
+                         reinterpret_cast<const unsigned char*>(data.data()), data.size(),
+                         nullptr, 0);
+      std::string hex;
+      hex.reserve(hash.size() * 2);
+      for (const unsigned char byte : hash) {
+        constexpr char k_nibbles[] = "0123456789abcdef";
+        hex += k_nibbles[byte >> 4U];
+        hex += k_nibbles[byte & 0x0fU];
+      }
+      return hex;
+    }
+
     [[nodiscard]] std::string checksum(const SqliteMigration& migration) {
-      std::hash<std::string> hasher;
-      return std::to_string(hasher(std::to_string(migration.version) + ":" + migration.name + ":" +
-                                   migration.up_sql));
+      return blake2b_hex(std::to_string(migration.version) + ":" + migration.name + ":" +
+                         migration.up_sql);
     }
 
     [[nodiscard]] std::int64_t now_unix_seconds() {
@@ -1016,18 +1035,31 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
         for (const auto& mutation : impl_->audit_mutations) {
           const auto event_id = generate_random_uuid();
 
+          const std::string before_str =
+              mutation.context.before_json.has_value()
+                  ? mutation.context.before_json->dump()
+                  : "{}";
+          const std::string after_str =
+              mutation.context.after_json.has_value()
+                  ? mutation.context.after_json->dump()
+                  : "{}";
+
           // Build the content JSON (alphabetically sorted; nlohmann uses std::map).
+          const nlohmann::json lab_id_val =
+              mutation.context.lab_id.has_value()
+                  ? nlohmann::json(*mutation.context.lab_id)
+                  : nlohmann::json(nullptr);
           const nlohmann::json content = {
               {"action", mutation.action},
               {"actor_session_id", mutation.context.actor_session_id},
               {"actor_user_id", mutation.context.actor_user_id.to_string()},
-              {"after_json", "{}"},
+              {"after_json", after_str},
               {"at", now_micros},
-              {"before_json", "{}"},
+              {"before_json", before_str},
               {"entity_id", mutation.entity_id},
               {"entity_kind", mutation.entity_kind},
               {"id", event_id},
-              {"lab_id", nullptr},
+              {"lab_id", lab_id_val},
               {"request_id", mutation.context.request_id},
           };
           const auto content_json = audit::canonical_json(content);
@@ -1039,12 +1071,16 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
           bind_int64(audit_stmt.get(), 2, now_micros);
           bind_text(audit_stmt.get(), 3, mutation.context.actor_user_id.to_string());
           bind_text(audit_stmt.get(), 4, mutation.context.actor_session_id);
-          sqlite3_bind_null(audit_stmt.get(), 5); // lab_id (set by auth middleware later)
+          if (mutation.context.lab_id.has_value()) {
+            bind_text(audit_stmt.get(), 5, *mutation.context.lab_id);
+          } else {
+            sqlite3_bind_null(audit_stmt.get(), 5);
+          }
           bind_text(audit_stmt.get(), 6, mutation.action);
           bind_text(audit_stmt.get(), 7, mutation.entity_kind);
           bind_text(audit_stmt.get(), 8, mutation.entity_id);
-          bind_text(audit_stmt.get(), 9, "{}");  // before_json
-          bind_text(audit_stmt.get(), 10, "{}"); // after_json
+          bind_text(audit_stmt.get(), 9, before_str);
+          bind_text(audit_stmt.get(), 10, after_str);
           bind_text(audit_stmt.get(), 11, mutation.context.request_id);
           bind_text(audit_stmt.get(), 12, prev_hash);
           bind_text(audit_stmt.get(), 13, this_hash);

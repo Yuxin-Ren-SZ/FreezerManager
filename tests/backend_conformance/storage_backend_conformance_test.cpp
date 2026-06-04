@@ -547,6 +547,7 @@ namespace fmgr::storage {
           .actor_session_id = "conformance-session",
           .request_id = "conformance-request",
           .reason = "backend conformance test",
+          .lab_id = id_from_low<core::LabId>(1).to_string(),
       };
     }
 

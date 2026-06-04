@@ -34,6 +34,7 @@ target_link_libraries(
   freezermanager_postgres_backend_conformance_tests
   PRIVATE
     FreezerManager::storage_postgres
+    FreezerManager::rpc
     GTest::gtest_main
 )
 target_include_directories(
@@ -45,4 +46,7 @@ target_include_directories(
 include(GoogleTest)
 gtest_discover_tests(freezermanager_backend_conformance_tests)
 gtest_discover_tests(freezermanager_sqlite_backend_conformance_tests)
-gtest_discover_tests(freezermanager_postgres_backend_conformance_tests)
+# All Postgres conformance tests share one DB; serialize them with a resource lock
+# so ctest -j N doesn't run two fixtures that DROP SCHEMA in parallel.
+gtest_discover_tests(freezermanager_postgres_backend_conformance_tests
+    PROPERTIES RESOURCE_LOCK fmgr_postgres_test_db)

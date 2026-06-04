@@ -44,6 +44,12 @@ namespace fmgr::storage {
     std::string actor_session_id;
     std::string request_id;
     std::string reason;
+    // Lab that owns the mutated entity. Null for cross-lab entities (sessions, audit).
+    std::optional<std::string> lab_id;
+    // Serialized entity state before the mutation (null for inserts).
+    std::optional<nlohmann::json> before_json;
+    // Serialized entity state after the mutation (null for hard deletes / tombstones).
+    std::optional<nlohmann::json> after_json;
   };
 
   enum class BackendErrorCode : std::uint8_t {

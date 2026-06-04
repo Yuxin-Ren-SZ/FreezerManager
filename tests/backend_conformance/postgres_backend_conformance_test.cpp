@@ -2,9 +2,11 @@
 
 #include "storage/postgres/PostgresBackend.h"
 
+#include "auth/AuthTypes.h"
 #include "core/enums.h"
 #include "core/ids.h"
 #include "core/timestamp.h"
+#include "rpc/AuthMiddleware.h"
 
 #include "test_helpers.h"
 #include <gtest/gtest.h>
@@ -120,6 +122,7 @@ namespace fmgr::storage {
           .actor_session_id = "pg-conformance-session",
           .request_id = "pg-conformance-request",
           .reason = "postgres backend conformance test",
+          .lab_id = id_from_low<core::LabId>(1).to_string(),
       };
     }
 
@@ -693,7 +696,149 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
                       .has_value());
     }
 
-    // ---- Postgres-specific: RLS isolation ----
+    // ---- Postgres-specific: RLS isolation via AuthMiddleware ----
+
+    // Fixture using full domain migrations to test RLS on real domain tables.
+    //
+    // The postgres superuser bypasses RLS even with FORCE ROW LEVEL SECURITY.
+    // To exercise RLS policies we create a non-superuser role (fmgr_rls_tester)
+    // and use SET LOCAL ROLE inside each test transaction so queries run under
+    // that role, which IS subject to the policies.
+    class PostgresRlsIntegrationTest : public ::testing::Test {
+    protected:
+      PostgresRlsIntegrationTest() {
+        const auto url = postgres_test_url();
+        if (!url.has_value())
+          return;
+
+        // Fresh schema for each test class instantiation.
+        {
+          pqxx::connection setup_conn(*url);
+          pqxx::work txn(setup_conn);
+          txn.exec("DROP SCHEMA public CASCADE");
+          txn.exec("CREATE SCHEMA public");
+          txn.commit();
+        }
+
+        backend_ = std::make_unique<PostgresBackend>(
+            PostgresBackendOptions{.connection_string = *url, .pool_size = 2});
+        backend_->migrate_to_latest();
+
+        // Grant the non-superuser role access to the migrated schema.
+        // This must happen after migrate_to_latest so the tables exist.
+        {
+          pqxx::connection grant_conn(*url);
+          pqxx::work grant_txn(grant_conn);
+          // Create the role idempotently.
+          grant_txn.exec(
+              "DO $$ BEGIN "
+              "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='fmgr_rls_tester') THEN "
+              "    CREATE ROLE fmgr_rls_tester; "
+              "  END IF; "
+              "END $$");
+          grant_txn.exec("GRANT USAGE ON SCHEMA public TO fmgr_rls_tester");
+          grant_txn.exec("GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO fmgr_rls_tester");
+          grant_txn.commit();
+        }
+
+        // Seed two labs and a storage_container scoped to lab_a_ (superuser bypasses RLS).
+        {
+          pqxx::connection seed_conn(*url);
+          pqxx::work seed_txn(seed_conn);
+          const auto now = static_cast<std::int64_t>(1'000'000LL);
+          seed_txn.exec(
+              "INSERT INTO labs (id,name,contact,created_at_micros,settings_json,is_phi_enabled) "
+              "VALUES ($1,'Lab A','a@lab.org',$3,'{}',false),"
+              "       ($2,'Lab B','b@lab.org',$3,'{}',false)",
+              pqxx::params{lab_a_.to_string(), lab_b_.to_string(), now});
+          seed_txn.exec(
+              "INSERT INTO storage_containers "
+              "(id,lab_id,kind,name,label,ordering_index,capacity_hint_json,created_at_micros) "
+              "VALUES ($1,$2,'shelf','Shelf A','shelf-a',0,'{}', $3)",
+              pqxx::params{container_id_.to_string(), lab_a_.to_string(), now});
+          seed_txn.commit();
+        }
+      }
+
+      void SetUp() override {
+        if (!postgres_test_url().has_value()) {
+          GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping RLS integration tests";
+        }
+      }
+
+      [[nodiscard]] PostgresBackend& backend() {
+        return *backend_;
+      }
+
+      [[nodiscard]] auth::SessionContext ctx_for_lab(core::LabId lab) {
+        return auth::SessionContext{
+            .session_id = id_from_low<core::SessionId>(998),
+            .user_id = id_from_low<core::UserId>(999),
+            .visible_labs = {lab},
+            .permissions = {},
+            .mfa_complete = true,
+        };
+      }
+
+      const core::LabId lab_a_ = id_from_low<core::LabId>(10);
+      const core::LabId lab_b_ = id_from_low<core::LabId>(20);
+      const core::StorageContainerId container_id_ = id_from_low<core::StorageContainerId>(30);
+
+    private:
+      std::unique_ptr<PostgresBackend> backend_;
+    };
+
+    TEST_F(PostgresRlsIntegrationTest, InjectRlsVarsBlocksWrongLab) {
+      auto txn = backend().begin(IsolationLevel::ReadCommitted);
+      auto* pg_txn = dynamic_cast<storage::PostgresTransaction*>(txn.get());
+      ASSERT_NE(pg_txn, nullptr);
+
+      // Set session vars for lab_b_ — the container belongs to lab_a_.
+      rpc::AuthMiddleware::inject_rls_vars(*txn, ctx_for_lab(lab_b_));
+      // Switch to the non-superuser role so RLS policies actually apply.
+      pg_txn->work().exec("SET LOCAL ROLE fmgr_rls_tester");
+
+      const auto result = pg_txn->work().exec(
+          "SELECT id FROM storage_containers WHERE id=$1",
+          pqxx::params{container_id_.to_string()});
+      EXPECT_TRUE(result.empty()) << "RLS should block cross-lab access";
+      txn->rollback();
+    }
+
+    TEST_F(PostgresRlsIntegrationTest, InjectRlsVarsAllowsCorrectLab) {
+      auto txn = backend().begin(IsolationLevel::ReadCommitted);
+      auto* pg_txn = dynamic_cast<storage::PostgresTransaction*>(txn.get());
+      ASSERT_NE(pg_txn, nullptr);
+
+      // Set session vars for lab_a_ — the container belongs to lab_a_.
+      rpc::AuthMiddleware::inject_rls_vars(*txn, ctx_for_lab(lab_a_));
+      // Switch to the non-superuser role so RLS policies actually apply.
+      pg_txn->work().exec("SET LOCAL ROLE fmgr_rls_tester");
+
+      const auto result = pg_txn->work().exec(
+          "SELECT id FROM storage_containers WHERE id=$1",
+          pqxx::params{container_id_.to_string()});
+      EXPECT_FALSE(result.empty()) << "RLS should allow access for the owning lab";
+      txn->rollback();
+    }
+
+    TEST_F(PostgresRlsIntegrationTest, InjectRlsVarsSetsCorrectSessionVariable) {
+      // Verify inject_rls_vars sets the right key (no double-prefix, B1 regression check).
+      auto txn = backend().begin(IsolationLevel::ReadCommitted);
+      auto* pg_txn = dynamic_cast<storage::PostgresTransaction*>(txn.get());
+      ASSERT_NE(pg_txn, nullptr);
+
+      rpc::AuthMiddleware::inject_rls_vars(*txn, ctx_for_lab(lab_a_));
+
+      const auto result =
+          pg_txn->work().exec("SELECT current_setting('app.current_lab_ids', true)");
+      ASSERT_FALSE(result.empty());
+      // Must match lab_a_'s UUID string, not 'app.current_lab_ids' or empty.
+      EXPECT_EQ(result[0][0].as<std::string>(), lab_a_.to_string());
+      txn->rollback();
+    }
+
+    // ---- Postgres-specific: misc capabilities ----
 
     TEST_F(PostgresBackendConformanceTest, CapabilitiesReportRowLevelSecurity) {
       EXPECT_TRUE(backend().caps().row_level_security);
