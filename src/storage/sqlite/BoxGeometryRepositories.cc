@@ -4,6 +4,8 @@
 
 #include "core/box.h"
 #include "storage/BoxGeometryTraits.h"
+#include "storage/detail/BoxGeometryColumns.h"
+#include "storage/detail/QuerySqlBuilder.h"
 
 #include <sqlite3.h>
 
@@ -163,67 +165,10 @@ namespace fmgr::storage {
       return core::Timestamp::from_unix_micros(now.time_since_epoch().count());
     }
 
-    [[nodiscard]] std::string
-    dimensions_dump(const std::optional<core::OuterDimensionsMm>& dimensions) {
-      if (!dimensions.has_value()) {
-        return "null";
-      }
-      const nlohmann::json json = dimensions.value();
-      return json.dump();
-    }
-
-    [[nodiscard]] std::optional<core::OuterDimensionsMm> parse_dimensions(std::string_view text) {
-      const auto json = nlohmann::json::parse(text);
-      if (json.is_null()) {
-        return std::nullopt;
-      }
-      return json.get<core::OuterDimensionsMm>();
-    }
-
-    void validate_container_type(const core::ContainerType& container_type) {
-      if (container_type.name.empty()) {
-        throw ConstraintViolation("container type name is required");
-      }
-      if (container_type.size_class.empty()) {
-        throw ConstraintViolation("container type size_class is required");
-      }
-      if (container_type.outer_dimensions_mm.has_value()) {
-        const auto& dimensions = container_type.outer_dimensions_mm.value();
-        if (dimensions.width <= 0.0 || dimensions.height <= 0.0 || dimensions.depth <= 0.0) {
-          throw ConstraintViolation("container type dimensions must be positive");
-        }
-      }
-    }
-
-    void validate_box_type_shape(const core::BoxType& box_type) {
-      if (box_type.name.empty()) {
-        throw ConstraintViolation("box type name is required");
-      }
-      std::set<std::string> labels;
-      for (const auto& position : box_type.positions) {
-        if (position.label.empty()) {
-          throw ConstraintViolation("box type position label is required");
-        }
-        if (!labels.insert(position.label).second) {
-          throw ConstraintViolation("box type position labels must be unique");
-        }
-        if (position.row < 0 || position.col < 0 || (position.z.has_value() && *position.z < 0)) {
-          throw ConstraintViolation("box type position coordinates must be non-negative");
-        }
-        if (position.accepts.empty()) {
-          throw ConstraintViolation("box type position accepts must be non-empty");
-        }
-        std::set<std::string> accepts;
-        for (const auto& size_class : position.accepts) {
-          if (size_class.empty()) {
-            throw ConstraintViolation("box type position accepts must be non-empty");
-          }
-          if (!accepts.insert(size_class).second) {
-            throw ConstraintViolation("box type position accepts must be unique");
-          }
-        }
-      }
-    }
+    using detail::dimensions_dump;
+    using detail::parse_dimensions;
+    using detail::validate_box_type_shape;
+    using detail::validate_container_type;
 
     void bind_json_parameter(sqlite3_stmt* statement, int index, const nlohmann::json& value) {
       if (value.is_null()) {
@@ -245,151 +190,12 @@ namespace fmgr::storage {
       bind_text(statement, index, value.dump());
     }
 
-    [[nodiscard]] std::string json_path(const std::vector<std::string>& segments) {
-      std::string path = "$";
-      for (const auto& segment : segments) {
-        path += ".";
-        path += segment;
-      }
-      return path;
-    }
-
     void bind_parameters(sqlite3_stmt* statement, const std::vector<nlohmann::json>& parameters) {
       int index = 1;
       for (const auto& parameter : parameters) {
         bind_json_parameter(statement, index, parameter);
         ++index;
       }
-    }
-
-    template <typename Entity, typename ColumnName>
-    void append_generic_predicates(std::string& sql, std::vector<nlohmann::json>& parameters,
-                                   const std::vector<std::string>& default_predicates,
-                                   const std::vector<Predicate<Entity>>& predicates,
-                                   ColumnName column_name) {
-      std::vector<std::string> clauses = default_predicates;
-      for (const auto& predicate : predicates) {
-        const auto column = column_name(predicate.field);
-        switch (predicate.op) {
-        case PredicateOperator::Equal:
-          clauses.push_back(column + " = ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::GreaterThanOrEqual:
-          clauses.push_back(column + " >= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::LessThanOrEqual:
-          clauses.push_back(column + " <= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::Between:
-          clauses.push_back(column + " BETWEEN ? AND ?");
-          parameters.push_back(predicate.lower);
-          parameters.push_back(predicate.upper);
-          break;
-        case PredicateOperator::In: {
-          std::string clause = column + " IN (";
-          for (std::size_t index = 0; index < predicate.values.size(); ++index) {
-            if (index != 0) {
-              clause += ", ";
-            }
-            clause += "?";
-            parameters.push_back(predicate.values.at(index));
-          }
-          clause += ")";
-          clauses.push_back(std::move(clause));
-          break;
-        }
-        case PredicateOperator::JsonPathEqual:
-          clauses.push_back("json_extract(" + column + ", ?) = ?");
-          parameters.emplace_back(json_path(predicate.json_path));
-          parameters.push_back(predicate.value);
-          break;
-        }
-      }
-      if (!clauses.empty()) {
-        sql += " WHERE ";
-        for (std::size_t index = 0; index < clauses.size(); ++index) {
-          if (index != 0) {
-            sql += " AND ";
-          }
-          sql += clauses.at(index);
-        }
-      }
-    }
-
-    template <typename Entity, typename ColumnName>
-    void append_query_tail(std::string& sql, std::vector<nlohmann::json>& parameters,
-                           const Query<Entity>& query_spec, ColumnName column_name) {
-      if (!query_spec.sorts().empty()) {
-        sql += " ORDER BY ";
-        for (std::size_t index = 0; index < query_spec.sorts().size(); ++index) {
-          if (index != 0) {
-            sql += ", ";
-          }
-          const auto sort = query_spec.sorts().at(index);
-          sql += column_name(sort.field);
-          sql += sort.direction == SortDirection::Ascending ? " ASC" : " DESC";
-        }
-      }
-      if (query_spec.limit_count().has_value()) {
-        sql += " LIMIT ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.limit_count().value()));
-      }
-      if (query_spec.offset_count().has_value()) {
-        if (!query_spec.limit_count().has_value()) {
-          sql += " LIMIT -1";
-        }
-        sql += " OFFSET ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.offset_count().value()));
-      }
-    }
-
-    [[nodiscard]] std::string container_type_column_name(core::ContainerType::Field field) {
-      switch (field) {
-      case core::ContainerType::Field::Id:
-        return "id";
-      case core::ContainerType::Field::LabId:
-        return "lab_id";
-      case core::ContainerType::Field::Name:
-        return "name";
-      case core::ContainerType::Field::SizeClass:
-        return "size_class";
-      case core::ContainerType::Field::OuterDimensionsMm:
-        return "outer_dimensions_json";
-      case core::ContainerType::Field::Material:
-        return "material";
-      case core::ContainerType::Field::SupplierSku:
-        return "supplier_sku";
-      case core::ContainerType::Field::CreatedAt:
-        return "created_at_micros";
-      case core::ContainerType::Field::ArchivedAt:
-        return "archived_at_micros";
-      }
-      throw ConstraintViolation("unknown container type field");
-    }
-
-    [[nodiscard]] std::string box_type_column_name(core::BoxType::Field field) {
-      switch (field) {
-      case core::BoxType::Field::Id:
-        return "id";
-      case core::BoxType::Field::LabId:
-        return "lab_id";
-      case core::BoxType::Field::Name:
-        return "name";
-      case core::BoxType::Field::Manufacturer:
-        return "manufacturer";
-      case core::BoxType::Field::Sku:
-        return "sku";
-      case core::BoxType::Field::Positions:
-        throw UnsupportedOperation("box type position queries are not supported");
-      case core::BoxType::Field::CreatedAt:
-        return "created_at_micros";
-      case core::BoxType::Field::ArchivedAt:
-        return "archived_at_micros";
-      }
-      throw ConstraintViolation("unknown box type field");
     }
 
     [[nodiscard]] core::ContainerType read_container_type(sqlite3_stmt* statement) {
@@ -517,9 +323,11 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"archived_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  container_type_column_name);
-        append_query_tail(sql, parameters, query_spec, container_type_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::container_type_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::container_type_column_name,
+                                   dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -636,9 +444,11 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"archived_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  box_type_column_name);
-        append_query_tail(sql, parameters, query_spec, box_type_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::box_type_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::box_type_column_name,
+                                   dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -839,30 +649,6 @@ namespace fmgr::storage {
       return column_text(statement, column);
     }
 
-    [[nodiscard]] std::string box_column_name(core::Box::Field field) {
-      switch (field) {
-      case core::Box::Field::Id:
-        return "id";
-      case core::Box::Field::LabId:
-        return "lab_id";
-      case core::Box::Field::BoxTypeId:
-        return "box_type_id";
-      case core::Box::Field::StorageContainerId:
-        return "storage_container_id";
-      case core::Box::Field::Label:
-        return "label";
-      case core::Box::Field::Serial:
-        return "serial";
-      case core::Box::Field::Barcode:
-        return "barcode";
-      case core::Box::Field::CreatedAt:
-        return "created_at_micros";
-      case core::Box::Field::ArchivedAt:
-        return "archived_at_micros";
-      }
-      throw ConstraintViolation("unknown box field");
-    }
-
     constexpr std::string_view k_box_columns =
         "id, lab_id, box_type_id, storage_container_id, label, serial, barcode, "
         "created_at_micros, archived_at_micros";
@@ -929,9 +715,10 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"archived_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  box_column_name);
-        append_query_tail(sql, parameters, query_spec, box_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::box_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::box_column_name, dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);

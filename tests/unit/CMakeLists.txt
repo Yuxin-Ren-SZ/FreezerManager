@@ -49,8 +49,6 @@ add_executable(
   freezermanager_sqlite_storage_unit_tests
   audit_event_test.cpp
   sqlite_backend_test.cpp
-  sqlite_box_geometry_repository_test.cpp
-  sqlite_box_repository_test.cpp
   sqlite_item_type_repository_test.cpp
   sqlite_sample_repository_test.cpp
   sqlite_session_repository_test.cpp
@@ -91,6 +89,8 @@ target_include_directories(
 # Postgres parameters skip when FMGR_TEST_POSTGRES_URL is unset.
 add_executable(
   freezermanager_storage_repository_tests
+  box_geometry_repository_test.cpp
+  box_repository_test.cpp
   identity_repository_test.cpp
   layout_repository_test.cpp
   role_repository_test.cpp
