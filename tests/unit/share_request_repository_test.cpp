@@ -4,16 +4,19 @@
 #include "core/share_request.h"
 #include "storage/IdentityTraits.h"
 #include "storage/ShareRequestTraits.h"
+#include "storage/postgres/IdentityRepositories.h"
+#include "storage/postgres/ShareRequestRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
-#include "storage/sqlite/SqliteBackend.h"
 
+#include "repo_backend_harness.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,18 +24,6 @@
 namespace fmgr::storage {
   namespace {
     using namespace fmgr::test;
-
-
-
-
-    [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
-      const auto unique = std::to_string(static_cast<unsigned long long>(
-                              ::testing::UnitTest::GetInstance()->random_seed())) +
-                          "-" + std::to_string(reinterpret_cast<std::uintptr_t>(&suffix));
-      return std::filesystem::temp_directory_path() / (std::string("freezermanager-sqlite-sr-") +
-                                                       unique + "-" + std::string(suffix) + ".db");
-    }
-
 
     [[nodiscard]] MutationContext mutation_context() {
       return MutationContext{
@@ -92,18 +83,22 @@ namespace fmgr::storage {
       };
     }
 
-    class SqliteShareRequestRepositoryTest : public ::testing::Test {
+    class ShareRequestRepositoryTest : public ::testing::TestWithParam<BackendKind> {
     protected:
-      SqliteShareRequestRepositoryTest()
-          : db_path_(sqlite_test_path("sr-repo")),
-            backend_(SqliteBackendOptions{.database_path = db_path_.string()}) {
-        register_identity_repositories(backend_);
-        register_share_request_repositories(backend_);
-      }
-
       void SetUp() override {
-        remove_sqlite_files(db_path_);
-        backend_.migrate_to_latest();
+        if (GetParam() == BackendKind::Postgres && !postgres_test_url().has_value()) {
+          GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres repository tests";
+        }
+        harness_ = std::make_unique<RepoBackendHarness>(
+            GetParam(),
+            [](SqliteBackend& b) {
+              register_identity_repositories(b);
+              register_share_request_repositories(b);
+            },
+            [](PostgresBackend& b) {
+              register_identity_repositories(b);
+              register_share_request_repositories(b);
+            });
 
         // Seed two labs and one user each in separate committed transactions.
         // Two separate labs are needed to satisfy the source != target CHECK.
@@ -136,16 +131,11 @@ namespace fmgr::storage {
         user2_ = id_from_low<core::UserId>(20);
       }
 
-      void TearDown() override {
-        remove_sqlite_files(db_path_);
+      [[nodiscard]] IStorageBackend& backend() {
+        return harness_->backend();
       }
 
-      [[nodiscard]] SqliteBackend& backend() {
-        return backend_;
-      }
-
-      std::filesystem::path db_path_;
-      SqliteBackend backend_;
+      std::unique_ptr<RepoBackendHarness> harness_;
       core::LabId lab1_;
       core::LabId lab2_;
       core::UserId user1_;
@@ -154,7 +144,7 @@ namespace fmgr::storage {
 
     // ---- ShareRequest tests ----
 
-    TEST_F(SqliteShareRequestRepositoryTest, InsertAndFindById) {
+    TEST_P(ShareRequestRepositoryTest, InsertAndFindById) {
       const auto sr = make_share_request(1, lab1_, lab2_, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -170,7 +160,7 @@ namespace fmgr::storage {
       EXPECT_EQ(found->status, core::ShareRequestStatus::Pending);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, DuplicateIdThrowsUniqueViolation) {
+    TEST_P(ShareRequestRepositoryTest, DuplicateIdThrowsUniqueViolation) {
       const auto sr = make_share_request(1, lab1_, lab2_, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -181,7 +171,7 @@ namespace fmgr::storage {
       EXPECT_THROW(txn->repo<core::ShareRequest>().insert(sr, mutation_context()), UniqueViolation);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, SameSourceAndTargetLabThrowsConstraintViolation) {
+    TEST_P(ShareRequestRepositoryTest, SameSourceAndTargetLabThrowsConstraintViolation) {
       auto sr = make_share_request(1, lab1_, lab2_, user1_);
       sr.target_lab_id = lab1_; // same as source
       auto txn = backend().begin(IsolationLevel::Serializable);
@@ -189,7 +179,7 @@ namespace fmgr::storage {
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, SoftDeleteSetsStatusRevokedAndDefaultQueryExcludesIt) {
+    TEST_P(ShareRequestRepositoryTest, SoftDeleteSetsStatusRevokedAndDefaultQueryExcludesIt) {
       const auto sr = make_share_request(1, lab1_, lab2_, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -219,7 +209,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, QueryBySourceLabId) {
+    TEST_P(ShareRequestRepositoryTest, QueryBySourceLabId) {
       const auto sr1 = make_share_request(1, lab1_, lab2_, user1_);
       const auto sr2 = make_share_request(2, lab2_, lab1_, user2_);
       {
@@ -236,7 +226,7 @@ namespace fmgr::storage {
       EXPECT_EQ(results.front().id, sr1.id);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, QueryByTargetLabId) {
+    TEST_P(ShareRequestRepositoryTest, QueryByTargetLabId) {
       const auto sr1 = make_share_request(1, lab1_, lab2_, user1_);
       const auto sr2 = make_share_request(2, lab2_, lab1_, user2_);
       {
@@ -253,7 +243,7 @@ namespace fmgr::storage {
       EXPECT_EQ(results.front().id, sr2.id);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, ShareRequestUpdatePersistsChanges) {
+    TEST_P(ShareRequestRepositoryTest, ShareRequestUpdatePersistsChanges) {
       const auto sr = make_share_request(1, lab1_, lab2_, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -276,7 +266,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, ShareRequestRejectsEmptyScopeJson) {
+    TEST_P(ShareRequestRepositoryTest, ShareRequestRejectsEmptyScopeJson) {
       auto sr = make_share_request(1, lab1_, lab2_, user1_);
       sr.scope_json = "";
       auto txn = backend().begin(IsolationLevel::Serializable);
@@ -284,7 +274,7 @@ namespace fmgr::storage {
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, ShareRequestFindByNonexistentIdReturnsEmpty) {
+    TEST_P(ShareRequestRepositoryTest, ShareRequestFindByNonexistentIdReturnsEmpty) {
       const auto fake_id = id_from_low<core::ShareRequestId>(99999);
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::ShareRequest>().find_by_id(fake_id);
@@ -293,7 +283,7 @@ namespace fmgr::storage {
 
     // ---- ShareRequestApproval tests ----
 
-    TEST_F(SqliteShareRequestRepositoryTest, ApprovalInsertAndFindByCompositeKey) {
+    TEST_P(ShareRequestRepositoryTest, ApprovalInsertAndFindByCompositeKey) {
       const auto sr = make_share_request(1, lab1_, lab2_, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -314,7 +304,7 @@ namespace fmgr::storage {
       EXPECT_EQ(found->approver_user_id, user1_);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, DuplicateApprovalRoleThrowsUniqueViolation) {
+    TEST_P(ShareRequestRepositoryTest, DuplicateApprovalRoleThrowsUniqueViolation) {
       const auto sr = make_share_request(1, lab1_, lab2_, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -332,7 +322,7 @@ namespace fmgr::storage {
                    UniqueViolation);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, ApprovalUpdateThrowsUnsupportedOperation) {
+    TEST_P(ShareRequestRepositoryTest, ApprovalUpdateThrowsUnsupportedOperation) {
       const auto sr = make_share_request(1, lab1_, lab2_, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -345,7 +335,7 @@ namespace fmgr::storage {
                    UnsupportedOperation);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, ApprovalSoftDeleteThrowsUnsupportedOperation) {
+    TEST_P(ShareRequestRepositoryTest, ApprovalSoftDeleteThrowsUnsupportedOperation) {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const core::ShareRequestApprovalId dummy{id_from_low<core::ShareRequestId>(1),
                                                core::ShareApprovalRole::SourceAdmin};
@@ -353,7 +343,7 @@ namespace fmgr::storage {
                    UnsupportedOperation);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, QueryApprovalsByShareRequestId) {
+    TEST_P(ShareRequestRepositoryTest, QueryApprovalsByShareRequestId) {
       const auto sr = make_share_request(1, lab1_, lab2_, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -376,7 +366,7 @@ namespace fmgr::storage {
       EXPECT_EQ(results.size(), 2u);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest,
+    TEST_P(ShareRequestRepositoryTest,
            ApprovalForNonExistentShareRequestThrowsConstraintViolation) {
       const auto fake_sr_id = id_from_low<core::ShareRequestId>(9999);
       const auto approval = make_approval(fake_sr_id, core::ShareApprovalRole::SourceAdmin, user1_);
@@ -385,7 +375,7 @@ namespace fmgr::storage {
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteShareRequestRepositoryTest, AllThreeApprovalRolesCanBeInserted) {
+    TEST_P(ShareRequestRepositoryTest, AllThreeApprovalRolesCanBeInserted) {
       const auto sr = make_share_request(1, lab1_, lab2_, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -409,6 +399,12 @@ namespace fmgr::storage {
                   core::ShareRequestApproval::Field::ShareRequestId) == sr.id.to_string()));
       EXPECT_EQ(results.size(), 3u);
     }
+
+    INSTANTIATE_TEST_SUITE_P(Backends, ShareRequestRepositoryTest,
+                             ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
+                             [](const ::testing::TestParamInfo<BackendKind>& info) {
+                               return backend_kind_name(info.param);
+                             });
 
   } // namespace
 } // namespace fmgr::storage

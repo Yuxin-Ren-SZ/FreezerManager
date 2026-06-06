@@ -49,7 +49,6 @@ add_executable(
   freezermanager_sqlite_storage_unit_tests
   audit_event_test.cpp
   sqlite_backend_test.cpp
-  sqlite_share_request_repository_test.cpp
 )
 target_link_libraries(
   freezermanager_sqlite_storage_unit_tests
@@ -93,6 +92,7 @@ add_executable(
   layout_repository_test.cpp
   sample_repository_test.cpp
   session_repository_test.cpp
+  share_request_repository_test.cpp
   role_repository_test.cpp
 )
 target_link_libraries(
