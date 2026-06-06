@@ -12,6 +12,7 @@ add_library(
   SampleRepositories.cc
   SessionRepositories.cc
   ShareRequestRepositories.cc
+  AuditRepositories.cc
 )
 add_library(FreezerManager::storage_postgres ALIAS freezermanager_storage_postgres)
 

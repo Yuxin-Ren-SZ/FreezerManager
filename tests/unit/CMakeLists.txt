@@ -85,6 +85,7 @@ target_include_directories(
 # Postgres parameters skip when FMGR_TEST_POSTGRES_URL is unset.
 add_executable(
   freezermanager_storage_repository_tests
+  audit_repository_test.cpp
   box_geometry_repository_test.cpp
   box_repository_test.cpp
   identity_repository_test.cpp
