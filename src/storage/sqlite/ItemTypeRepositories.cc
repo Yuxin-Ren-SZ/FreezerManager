@@ -4,6 +4,8 @@
 
 #include "core/item_type.h"
 #include "storage/ItemTypeTraits.h"
+#include "storage/detail/ItemTypeColumns.h"
+#include "storage/detail/QuerySqlBuilder.h"
 
 #include <sqlite3.h>
 
@@ -193,125 +195,12 @@ namespace fmgr::storage {
       bind_text(statement, index, value.dump());
     }
 
-    [[nodiscard]] std::string json_path(const std::vector<std::string>& segments) {
-      std::string path = "$";
-      for (const auto& segment : segments) {
-        path += ".";
-        path += segment;
-      }
-      return path;
-    }
-
     void bind_parameters(sqlite3_stmt* statement, const std::vector<nlohmann::json>& parameters) {
       int index = 1;
       for (const auto& parameter : parameters) {
         bind_json_parameter(statement, index, parameter);
         ++index;
       }
-    }
-
-    template <typename Entity, typename ColumnName>
-    void append_generic_predicates(std::string& sql, std::vector<nlohmann::json>& parameters,
-                                   const std::vector<std::string>& default_predicates,
-                                   const std::vector<Predicate<Entity>>& predicates,
-                                   ColumnName column_name) {
-      std::vector<std::string> clauses = default_predicates;
-      for (const auto& predicate : predicates) {
-        const auto column = column_name(predicate.field);
-        switch (predicate.op) {
-        case PredicateOperator::Equal:
-          clauses.push_back(column + " = ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::GreaterThanOrEqual:
-          clauses.push_back(column + " >= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::LessThanOrEqual:
-          clauses.push_back(column + " <= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::Between:
-          clauses.push_back(column + " BETWEEN ? AND ?");
-          parameters.push_back(predicate.lower);
-          parameters.push_back(predicate.upper);
-          break;
-        case PredicateOperator::In: {
-          std::string clause = column + " IN (";
-          for (std::size_t index = 0; index < predicate.values.size(); ++index) {
-            if (index != 0) {
-              clause += ", ";
-            }
-            clause += "?";
-            parameters.push_back(predicate.values.at(index));
-          }
-          clause += ")";
-          clauses.push_back(std::move(clause));
-          break;
-        }
-        case PredicateOperator::JsonPathEqual:
-          clauses.push_back("json_extract(" + column + ", ?) = ?");
-          parameters.emplace_back(json_path(predicate.json_path));
-          parameters.push_back(predicate.value);
-          break;
-        }
-      }
-      if (!clauses.empty()) {
-        sql += " WHERE ";
-        for (std::size_t index = 0; index < clauses.size(); ++index) {
-          if (index != 0) {
-            sql += " AND ";
-          }
-          sql += clauses.at(index);
-        }
-      }
-    }
-
-    template <typename Entity, typename ColumnName>
-    void append_query_tail(std::string& sql, std::vector<nlohmann::json>& parameters,
-                           const Query<Entity>& query_spec, ColumnName column_name) {
-      if (!query_spec.sorts().empty()) {
-        sql += " ORDER BY ";
-        for (std::size_t index = 0; index < query_spec.sorts().size(); ++index) {
-          if (index != 0) {
-            sql += ", ";
-          }
-          const auto sort = query_spec.sorts().at(index);
-          sql += column_name(sort.field);
-          sql += sort.direction == SortDirection::Ascending ? " ASC" : " DESC";
-        }
-      }
-      if (query_spec.limit_count().has_value()) {
-        sql += " LIMIT ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.limit_count().value()));
-      }
-      if (query_spec.offset_count().has_value()) {
-        if (!query_spec.limit_count().has_value()) {
-          sql += " LIMIT -1";
-        }
-        sql += " OFFSET ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.offset_count().value()));
-      }
-    }
-
-    // ---- ItemType column mapping ----
-
-    [[nodiscard]] std::string item_type_column_name(core::ItemType::Field field) {
-      switch (field) {
-      case core::ItemType::Field::Id:
-        return "id";
-      case core::ItemType::Field::LabId:
-        return "lab_id";
-      case core::ItemType::Field::ParentId:
-        return "parent_id";
-      case core::ItemType::Field::Name:
-        return "name";
-      case core::ItemType::Field::CreatedAt:
-        return "created_at_micros";
-      case core::ItemType::Field::ArchivedAt:
-        return "archived_at_micros";
-      }
-      throw ConstraintViolation("unknown item type field");
     }
 
     constexpr std::string_view k_item_type_columns =
@@ -326,40 +215,6 @@ namespace fmgr::storage {
           .created_at = core::Timestamp::from_unix_micros(sqlite3_column_int64(statement, 4)),
           .archived_at = column_optional_timestamp(statement, 5),
       };
-    }
-
-    // ---- CustomFieldDefinition column mapping ----
-
-    [[nodiscard]] std::string cfd_column_name(core::CustomFieldDefinition::Field field) {
-      switch (field) {
-      case core::CustomFieldDefinition::Field::Id:
-        return "id";
-      case core::CustomFieldDefinition::Field::LabId:
-        return "lab_id";
-      case core::CustomFieldDefinition::Field::ScopeKind:
-        return "scope_kind";
-      case core::CustomFieldDefinition::Field::ItemTypeId:
-        return "item_type_id";
-      case core::CustomFieldDefinition::Field::Key:
-        return "key";
-      case core::CustomFieldDefinition::Field::Label:
-        return "label";
-      case core::CustomFieldDefinition::Field::DataType:
-        return "data_type";
-      case core::CustomFieldDefinition::Field::Required:
-        return "required";
-      case core::CustomFieldDefinition::Field::ValidationJson:
-        return "validation_json";
-      case core::CustomFieldDefinition::Field::Indexed:
-        return "indexed";
-      case core::CustomFieldDefinition::Field::IsPhi:
-        return "is_phi";
-      case core::CustomFieldDefinition::Field::CreatedAt:
-        return "created_at_micros";
-      case core::CustomFieldDefinition::Field::ArchivedAt:
-        return "archived_at_micros";
-      }
-      throw ConstraintViolation("unknown custom field definition field");
     }
 
     constexpr std::string_view k_cfd_columns =
@@ -386,23 +241,12 @@ namespace fmgr::storage {
 
     // ---- Validation ----
 
-    void validate_item_type(const core::ItemType& item_type) {
-      if (item_type.name.empty()) {
-        throw ConstraintViolation("item type name is required");
-      }
-    }
+    using detail::validate_cfd_shape;
+    using detail::validate_item_type;
 
     void validate_cfd(const core::CustomFieldDefinition& cfd,
                       const SqliteTransaction& transaction) {
-      if (cfd.key.empty()) {
-        throw ConstraintViolation("custom field key is required");
-      }
-      if (cfd.label.empty()) {
-        throw ConstraintViolation("custom field label is required");
-      }
-      if (cfd.is_phi && cfd.indexed) {
-        throw ConstraintViolation("PHI fields may not be indexed (see L10.3)");
-      }
+      validate_cfd_shape(cfd);
       if (cfd.item_type_id.has_value()) {
         Statement statement(transaction.handle(),
                             "SELECT 1 FROM item_types "
@@ -517,9 +361,11 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"archived_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  item_type_column_name);
-        append_query_tail(sql, parameters, query_spec, item_type_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::item_type_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::item_type_column_name,
+                                   dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -676,9 +522,10 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"archived_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  cfd_column_name);
-        append_query_tail(sql, parameters, query_spec, cfd_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::cfd_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::cfd_column_name, dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);

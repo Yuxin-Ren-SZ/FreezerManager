@@ -8,6 +8,7 @@ add_library(
   RoleRepositories.cc
   LayoutRepositories.cc
   BoxGeometryRepositories.cc
+  ItemTypeRepositories.cc
 )
 add_library(FreezerManager::storage_postgres ALIAS freezermanager_storage_postgres)
 

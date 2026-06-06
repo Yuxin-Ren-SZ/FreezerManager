@@ -49,7 +49,6 @@ add_executable(
   freezermanager_sqlite_storage_unit_tests
   audit_event_test.cpp
   sqlite_backend_test.cpp
-  sqlite_item_type_repository_test.cpp
   sqlite_sample_repository_test.cpp
   sqlite_session_repository_test.cpp
   sqlite_share_request_repository_test.cpp
@@ -92,6 +91,7 @@ add_executable(
   box_geometry_repository_test.cpp
   box_repository_test.cpp
   identity_repository_test.cpp
+  item_type_repository_test.cpp
   layout_repository_test.cpp
   role_repository_test.cpp
 )
