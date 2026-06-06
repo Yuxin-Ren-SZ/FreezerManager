@@ -10,6 +10,7 @@ add_library(
   BoxGeometryRepositories.cc
   ItemTypeRepositories.cc
   SampleRepositories.cc
+  SessionRepositories.cc
 )
 add_library(FreezerManager::storage_postgres ALIAS freezermanager_storage_postgres)
 

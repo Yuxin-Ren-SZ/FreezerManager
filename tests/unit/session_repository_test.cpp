@@ -4,16 +4,19 @@
 #include "core/session.h"
 #include "storage/IdentityTraits.h"
 #include "storage/SessionTraits.h"
+#include "storage/postgres/IdentityRepositories.h"
+#include "storage/postgres/SessionRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
-#include "storage/sqlite/SqliteBackend.h"
 
+#include "repo_backend_harness.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -21,18 +24,6 @@
 namespace fmgr::storage {
   namespace {
     using namespace fmgr::test;
-
-
-
-
-    [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
-      const auto unique = std::to_string(static_cast<unsigned long long>(
-                              ::testing::UnitTest::GetInstance()->random_seed())) +
-                          "-" + std::to_string(reinterpret_cast<std::uintptr_t>(&suffix));
-      return std::filesystem::temp_directory_path() / (std::string("freezermanager-sqlite-sess-") +
-                                                       unique + "-" + std::string(suffix) + ".db");
-    }
-
 
     [[nodiscard]] MutationContext mutation_context() {
       return MutationContext{
@@ -95,18 +86,22 @@ namespace fmgr::storage {
 
     // ---- Test fixture ----
 
-    class SqliteSessionRepositoryTest : public ::testing::Test {
+    class SessionRepositoryTest : public ::testing::TestWithParam<BackendKind> {
     protected:
-      SqliteSessionRepositoryTest()
-          : db_path_(sqlite_test_path("sess-repo")),
-            backend_(SqliteBackendOptions{.database_path = db_path_.string()}) {
-        register_identity_repositories(backend_);
-        register_session_repositories(backend_);
-      }
-
       void SetUp() override {
-        remove_sqlite_files(db_path_);
-        backend_.migrate_to_latest();
+        if (GetParam() == BackendKind::Postgres && !postgres_test_url().has_value()) {
+          GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres repository tests";
+        }
+        harness_ = std::make_unique<RepoBackendHarness>(
+            GetParam(),
+            [](SqliteBackend& b) {
+              register_identity_repositories(b);
+              register_session_repositories(b);
+            },
+            [](PostgresBackend& b) {
+              register_identity_repositories(b);
+              register_session_repositories(b);
+            });
 
         {
           auto txn = backend().begin(IsolationLevel::Serializable);
@@ -131,16 +126,15 @@ namespace fmgr::storage {
         user2_ = id_from_low<core::UserId>(20);
       }
 
-      void TearDown() override {
-        remove_sqlite_files(db_path_);
+      [[nodiscard]] IStorageBackend& backend() {
+        return harness_->backend();
       }
 
-      [[nodiscard]] SqliteBackend& backend() {
-        return backend_;
+      [[nodiscard]] std::size_t audit_event_count() {
+        return harness_->audit_event_count();
       }
 
-      std::filesystem::path db_path_;
-      SqliteBackend backend_;
+      std::unique_ptr<RepoBackendHarness> harness_;
       core::LabId lab1_;
       core::UserId user1_;
       core::UserId user2_;
@@ -148,7 +142,7 @@ namespace fmgr::storage {
 
     // ---- Session tests ----
 
-    TEST_F(SqliteSessionRepositoryTest, InsertAndFindById) {
+    TEST_P(SessionRepositoryTest, InsertAndFindById) {
       const auto session = make_session(1, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -165,7 +159,7 @@ namespace fmgr::storage {
       EXPECT_FALSE(found->revoked_at.has_value());
     }
 
-    TEST_F(SqliteSessionRepositoryTest, DuplicateIdThrowsUniqueViolation) {
+    TEST_P(SessionRepositoryTest, DuplicateIdThrowsUniqueViolation) {
       const auto session = make_session(1, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -176,7 +170,7 @@ namespace fmgr::storage {
       EXPECT_THROW(txn->repo<core::Session>().insert(session, mutation_context()), UniqueViolation);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, DuplicateActivePrefixThrowsUniqueViolationAtCommit) {
+    TEST_P(SessionRepositoryTest, DuplicateActivePrefixThrowsUniqueViolationAtCommit) {
       const auto session1 = make_session(1, user1_);
       core::Session session2 = make_session(2, user2_);
       // Force same prefix as session1 to trigger the partial unique index at flush.
@@ -187,14 +181,19 @@ namespace fmgr::storage {
         txn->commit();
       }
       {
+        // SQLite stages and fails the partial unique index at commit; Postgres
+        // fails on the immediate insert. Wrap both.
         auto txn = backend().begin(IsolationLevel::Serializable);
-        txn->repo<core::Session>().insert(session2, mutation_context());
-        // Prefix uniqueness is enforced by the DB partial index at flush time (commit).
-        EXPECT_THROW(txn->commit(), UniqueViolation);
+        EXPECT_THROW(
+            {
+              txn->repo<core::Session>().insert(session2, mutation_context());
+              txn->commit();
+            },
+            UniqueViolation);
       }
     }
 
-    TEST_F(SqliteSessionRepositoryTest, RevokedSessionAllowsSamePrefixForNewSession) {
+    TEST_P(SessionRepositoryTest, RevokedSessionAllowsSamePrefixForNewSession) {
       auto session1 = make_session(1, user1_);
       core::Session session2 = make_session(2, user2_);
       session2.token_prefix = session1.token_prefix;
@@ -221,7 +220,7 @@ namespace fmgr::storage {
       EXPECT_FALSE(found->revoked_at.has_value());
     }
 
-    TEST_F(SqliteSessionRepositoryTest, DefaultQueryExcludesRevokedSessions) {
+    TEST_P(SessionRepositoryTest, DefaultQueryExcludesRevokedSessions) {
       const auto session = make_session(1, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -250,7 +249,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSessionRepositoryTest, SoftDeleteSetsRevokedAt) {
+    TEST_P(SessionRepositoryTest, SoftDeleteSetsRevokedAt) {
       const auto session = make_session(1, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -268,13 +267,13 @@ namespace fmgr::storage {
       EXPECT_TRUE(found->revoked_at.has_value());
     }
 
-    TEST_F(SqliteSessionRepositoryTest, SoftDeleteNonExistentThrowsNotFound) {
+    TEST_P(SessionRepositoryTest, SoftDeleteNonExistentThrowsNotFound) {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto fake_id = id_from_low<core::SessionId>(999);
       EXPECT_THROW(txn->repo<core::Session>().soft_delete(fake_id, mutation_context()), NotFound);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, UpdateLastSeenAt) {
+    TEST_P(SessionRepositoryTest, UpdateLastSeenAt) {
       const auto session = make_session(1, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -294,7 +293,7 @@ namespace fmgr::storage {
       EXPECT_EQ(found->last_seen_at.unix_micros(), 99999);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, QueryByUserId) {
+    TEST_P(SessionRepositoryTest, QueryByUserId) {
       const auto s1 = make_session(1, user1_);
       const auto s2 = make_session(2, user2_);
       {
@@ -310,7 +309,7 @@ namespace fmgr::storage {
       EXPECT_EQ(results.front().id, s1.id);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, QueryByTokenPrefix) {
+    TEST_P(SessionRepositoryTest, QueryByTokenPrefix) {
       const auto session = make_session(1, user1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -325,7 +324,7 @@ namespace fmgr::storage {
       EXPECT_EQ(results.front().id, session.id);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, EmptyTokenHashThrowsConstraintViolation) {
+    TEST_P(SessionRepositoryTest, EmptyTokenHashThrowsConstraintViolation) {
       auto session = make_session(1, user1_);
       session.token_hash = "";
       auto txn = backend().begin(IsolationLevel::Serializable);
@@ -333,7 +332,7 @@ namespace fmgr::storage {
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, EmptyTokenPrefixThrowsConstraintViolation) {
+    TEST_P(SessionRepositoryTest, EmptyTokenPrefixThrowsConstraintViolation) {
       auto session = make_session(1, user1_);
       session.token_prefix = "";
       auto txn = backend().begin(IsolationLevel::Serializable);
@@ -343,7 +342,7 @@ namespace fmgr::storage {
 
     // ---- ApiToken tests ----
 
-    TEST_F(SqliteSessionRepositoryTest, ApiTokenInsertAndFindById) {
+    TEST_P(SessionRepositoryTest, ApiTokenInsertAndFindById) {
       const auto token = make_api_token(1, user1_, lab1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -361,7 +360,7 @@ namespace fmgr::storage {
       EXPECT_FALSE(found->revoked_at.has_value());
     }
 
-    TEST_F(SqliteSessionRepositoryTest, ApiTokenWithoutLabId) {
+    TEST_P(SessionRepositoryTest, ApiTokenWithoutLabId) {
       const auto token = make_api_token(2, user1_, std::nullopt);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -374,7 +373,7 @@ namespace fmgr::storage {
       EXPECT_FALSE(found->lab_id.has_value());
     }
 
-    TEST_F(SqliteSessionRepositoryTest, ApiTokenSoftDeleteSetsRevokedAt) {
+    TEST_P(SessionRepositoryTest, ApiTokenSoftDeleteSetsRevokedAt) {
       const auto token = make_api_token(1, user1_, lab1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -392,7 +391,7 @@ namespace fmgr::storage {
       EXPECT_TRUE(found->revoked_at.has_value());
     }
 
-    TEST_F(SqliteSessionRepositoryTest, ApiTokenDefaultQueryExcludesRevoked) {
+    TEST_P(SessionRepositoryTest, ApiTokenDefaultQueryExcludesRevoked) {
       const auto token = make_api_token(1, user1_, lab1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -419,8 +418,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSessionRepositoryTest,
-           ApiTokenDuplicateActivePrefixThrowsUniqueViolationAtCommit) {
+    TEST_P(SessionRepositoryTest, ApiTokenDuplicateActivePrefixThrowsUniqueViolationAtCommit) {
       const auto token1 = make_api_token(1, user1_, lab1_);
       core::ApiToken token2 = make_api_token(2, user2_, std::nullopt);
       token2.token_prefix = token1.token_prefix; // collision
@@ -430,14 +428,19 @@ namespace fmgr::storage {
         txn->commit();
       }
       {
+        // SQLite stages and fails the partial unique index at commit; Postgres
+        // fails on the immediate insert. Wrap both.
         auto txn = backend().begin(IsolationLevel::Serializable);
-        txn->repo<core::ApiToken>().insert(token2, mutation_context());
-        // Prefix uniqueness enforced by partial unique index at flush.
-        EXPECT_THROW(txn->commit(), UniqueViolation);
+        EXPECT_THROW(
+            {
+              txn->repo<core::ApiToken>().insert(token2, mutation_context());
+              txn->commit();
+            },
+            UniqueViolation);
       }
     }
 
-    TEST_F(SqliteSessionRepositoryTest, ApiTokenEmptyNameThrowsConstraintViolation) {
+    TEST_P(SessionRepositoryTest, ApiTokenEmptyNameThrowsConstraintViolation) {
       auto token = make_api_token(1, user1_, std::nullopt);
       token.name = "";
       auto txn = backend().begin(IsolationLevel::Serializable);
@@ -445,7 +448,7 @@ namespace fmgr::storage {
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, ApiTokenQueryByUserId) {
+    TEST_P(SessionRepositoryTest, ApiTokenQueryByUserId) {
       const auto t1 = make_api_token(1, user1_, lab1_);
       const auto t2 = make_api_token(2, user2_, std::nullopt);
       {
@@ -461,7 +464,7 @@ namespace fmgr::storage {
       EXPECT_EQ(results.front().id, t1.id);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, ApiTokenMutationsAreAudited) {
+    TEST_P(SessionRepositoryTest, ApiTokenMutationsAreAudited) {
       const auto token = make_api_token(1, user1_, lab1_);
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -469,20 +472,26 @@ namespace fmgr::storage {
         txn->commit();
       }
       // At least 1 audit row should have been inserted.
-      EXPECT_GE(backend().audit_event_count_for_tests(), 1u);
+      EXPECT_GE(audit_event_count(), 1u);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, SessionUpdateNonExistentThrows) {
+    TEST_P(SessionRepositoryTest, SessionUpdateNonExistentThrows) {
       const auto session = make_session(99999, user1_);
       auto txn = backend().begin(IsolationLevel::Serializable);
       EXPECT_THROW(txn->repo<core::Session>().update(session, mutation_context()), NotFound);
     }
 
-    TEST_F(SqliteSessionRepositoryTest, ApiTokenUpdateNonExistentThrows) {
+    TEST_P(SessionRepositoryTest, ApiTokenUpdateNonExistentThrows) {
       const auto token = make_api_token(99999, user1_, lab1_);
       auto txn = backend().begin(IsolationLevel::Serializable);
       EXPECT_THROW(txn->repo<core::ApiToken>().update(token, mutation_context()), NotFound);
     }
+
+    INSTANTIATE_TEST_SUITE_P(Backends, SessionRepositoryTest,
+                             ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
+                             [](const ::testing::TestParamInfo<BackendKind>& info) {
+                               return backend_kind_name(info.param);
+                             });
 
   } // namespace
 } // namespace fmgr::storage

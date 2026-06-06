@@ -4,6 +4,8 @@
 
 #include "core/session.h"
 #include "storage/SessionTraits.h"
+#include "storage/detail/QuerySqlBuilder.h"
+#include "storage/detail/SessionColumns.h"
 
 #include <sqlite3.h>
 
@@ -157,15 +159,6 @@ namespace fmgr::storage {
       return core::Timestamp::from_unix_micros(now.time_since_epoch().count());
     }
 
-    [[nodiscard]] std::string json_path(const std::vector<std::string>& segments) {
-      std::string path = "$";
-      for (const auto& segment : segments) {
-        path += ".";
-        path += segment;
-      }
-      return path;
-    }
-
     void bind_json_parameter(sqlite3_stmt* statement, int index, const nlohmann::json& value) {
       if (value.is_null()) {
         bind_null(statement, index);
@@ -190,91 +183,10 @@ namespace fmgr::storage {
       }
     }
 
-    // ---- Query tail builder ----
-
-    template <typename Entity, typename ColumnName>
-    void append_generic_predicates(std::string& sql, std::vector<nlohmann::json>& parameters,
-                                   const std::vector<std::string>& default_predicates,
-                                   const std::vector<Predicate<Entity>>& predicates,
-                                   ColumnName column_name) {
-      std::vector<std::string> clauses = default_predicates;
-      for (const auto& predicate : predicates) {
-        const auto column = column_name(predicate.field);
-        switch (predicate.op) {
-        case PredicateOperator::Equal:
-          clauses.push_back(column + " = ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::GreaterThanOrEqual:
-          clauses.push_back(column + " >= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::LessThanOrEqual:
-          clauses.push_back(column + " <= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::Between:
-          clauses.push_back(column + " BETWEEN ? AND ?");
-          parameters.push_back(predicate.lower);
-          parameters.push_back(predicate.upper);
-          break;
-        case PredicateOperator::In: {
-          std::string clause = column + " IN (";
-          for (std::size_t i = 0; i < predicate.values.size(); ++i) {
-            if (i != 0) {
-              clause += ", ";
-            }
-            clause += "?";
-            parameters.push_back(predicate.values.at(i));
-          }
-          clause += ")";
-          clauses.push_back(std::move(clause));
-          break;
-        }
-        case PredicateOperator::JsonPathEqual:
-          clauses.push_back("json_extract(" + column + ", ?) = ?");
-          parameters.emplace_back(json_path(predicate.json_path));
-          parameters.push_back(predicate.value);
-          break;
-        }
-      }
-      if (!clauses.empty()) {
-        sql += " WHERE ";
-        for (std::size_t i = 0; i < clauses.size(); ++i) {
-          if (i != 0) {
-            sql += " AND ";
-          }
-          sql += clauses.at(i);
-        }
-      }
-    }
-
-    template <typename Entity, typename ColumnName>
-    void append_query_tail(std::string& sql, std::vector<nlohmann::json>& parameters,
-                           const Query<Entity>& query_spec, ColumnName column_name) {
-      if (!query_spec.sorts().empty()) {
-        sql += " ORDER BY ";
-        for (std::size_t i = 0; i < query_spec.sorts().size(); ++i) {
-          if (i != 0) {
-            sql += ", ";
-          }
-          const auto sort = query_spec.sorts().at(i);
-          sql += column_name(sort.field);
-          sql += sort.direction == SortDirection::Ascending ? " ASC" : " DESC";
-        }
-      }
-      if (query_spec.limit_count().has_value()) {
-        sql += " LIMIT ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.limit_count().value()));
-      }
-      if (query_spec.offset_count().has_value()) {
-        if (!query_spec.limit_count().has_value()) {
-          sql += " LIMIT -1";
-        }
-        sql += " OFFSET ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.offset_count().value()));
-      }
-    }
+    using detail::api_token_column_name;
+    using detail::session_column_name;
+    using detail::validate_api_token;
+    using detail::validate_session;
 
     // ---- Base repository template ----
 
@@ -354,32 +266,6 @@ namespace fmgr::storage {
 
     // ---- Session column mapping ----
 
-    [[nodiscard]] std::string session_column_name(core::Session::Field field) {
-      switch (field) {
-      case core::Session::Field::Id:
-        return "id";
-      case core::Session::Field::UserId:
-        return "user_id";
-      case core::Session::Field::TokenHash:
-        return "token_hash";
-      case core::Session::Field::TokenPrefix:
-        return "token_prefix";
-      case core::Session::Field::CreatedAt:
-        return "created_at_micros";
-      case core::Session::Field::LastSeenAt:
-        return "last_seen_at_micros";
-      case core::Session::Field::Ip:
-        return "ip";
-      case core::Session::Field::UserAgent:
-        return "user_agent";
-      case core::Session::Field::RevokedAt:
-        return "revoked_at_micros";
-      case core::Session::Field::MfaComplete:
-        return "mfa_complete";
-      }
-      throw ConstraintViolation("unknown session field");
-    }
-
     constexpr std::string_view k_session_columns =
         "id, user_id, token_hash, token_prefix, "
         "created_at_micros, last_seen_at_micros, ip, user_agent, revoked_at_micros, mfa_complete";
@@ -423,9 +309,11 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"revoked_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  session_column_name);
-        append_query_tail(sql, parameters, query_spec, session_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::session_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::session_column_name,
+                                   dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -500,12 +388,7 @@ namespace fmgr::storage {
       }
 
       void validate(const core::Session& entity) const override {
-        if (entity.token_hash.empty()) {
-          throw ConstraintViolation("session token_hash is required");
-        }
-        if (entity.token_prefix.empty()) {
-          throw ConstraintViolation("session token_prefix is required");
-        }
+        validate_session(entity);
       }
 
       [[nodiscard]] core::SessionId id_of(const core::Session& entity) const override {
@@ -548,32 +431,6 @@ namespace fmgr::storage {
     };
 
     // ---- ApiToken column mapping ----
-
-    [[nodiscard]] std::string api_token_column_name(core::ApiToken::Field field) {
-      switch (field) {
-      case core::ApiToken::Field::Id:
-        return "id";
-      case core::ApiToken::Field::UserId:
-        return "user_id";
-      case core::ApiToken::Field::LabId:
-        return "lab_id";
-      case core::ApiToken::Field::Name:
-        return "name";
-      case core::ApiToken::Field::ScopeJson:
-        return "scope_json";
-      case core::ApiToken::Field::TokenHash:
-        return "token_hash";
-      case core::ApiToken::Field::TokenPrefix:
-        return "token_prefix";
-      case core::ApiToken::Field::CreatedAt:
-        return "created_at_micros";
-      case core::ApiToken::Field::ExpiresAt:
-        return "expires_at_micros";
-      case core::ApiToken::Field::RevokedAt:
-        return "revoked_at_micros";
-      }
-      throw ConstraintViolation("unknown api_token field");
-    }
 
     constexpr std::string_view k_api_token_columns =
         "id, user_id, lab_id, name, scope_json, token_hash, token_prefix, "
@@ -620,9 +477,11 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"revoked_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  api_token_column_name);
-        append_query_tail(sql, parameters, query_spec, api_token_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::api_token_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::api_token_column_name,
+                                   dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -696,15 +555,7 @@ namespace fmgr::storage {
       }
 
       void validate(const core::ApiToken& entity) const override {
-        if (entity.token_hash.empty()) {
-          throw ConstraintViolation("api_token token_hash is required");
-        }
-        if (entity.token_prefix.empty()) {
-          throw ConstraintViolation("api_token token_prefix is required");
-        }
-        if (entity.name.empty()) {
-          throw ConstraintViolation("api_token name is required");
-        }
+        validate_api_token(entity);
       }
 
       [[nodiscard]] core::ApiTokenId id_of(const core::ApiToken& entity) const override {
