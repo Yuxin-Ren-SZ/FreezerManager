@@ -4,6 +4,7 @@
 
 #include "core/audit_event.h"
 #include "storage/AuditTraits.h"
+#include "storage/detail/AuditColumns.h"
 
 #include <sqlite3.h>
 
@@ -102,7 +103,8 @@ namespace fmgr::storage {
           .actor_session_id = col_text(stmt, 3),
           .lab_id = [&]() -> std::optional<core::LabId> {
             const auto text_opt = col_opt_text(stmt, 4);
-            return text_opt.has_value() ? std::make_optional(core::LabId::parse(*text_opt)) : std::nullopt;
+            return text_opt.has_value() ? std::make_optional(core::LabId::parse(*text_opt))
+                                        : std::nullopt;
           }(),
           .action = col_text(stmt, 5),
           .entity_kind = col_text(stmt, 6),
@@ -148,7 +150,7 @@ namespace fmgr::storage {
               sql += " AND ";
             }
             const auto& pred = query_spec.predicates().at(i);
-            sql += column_name(pred.field) + " = ?";
+            sql += detail::audit_event_column_name(pred.field) + " = ?";
           }
         }
         // Sort / limit / offset
@@ -159,7 +161,7 @@ namespace fmgr::storage {
               sql += ", ";
             }
             const auto& sort_spec = query_spec.sorts().at(i);
-            sql += column_name(sort_spec.field);
+            sql += detail::audit_event_column_name(sort_spec.field);
             sql += (sort_spec.direction == SortDirection::Ascending) ? " ASC" : " DESC";
           }
         }
@@ -201,43 +203,12 @@ namespace fmgr::storage {
         throw UnsupportedOperation("audit_events is append-only");
       }
 
-      void soft_delete(const core::AuditEventId& /*entity_id*/, const MutationContext& /*context*/) override {
+      void soft_delete(const core::AuditEventId& /*entity_id*/,
+                       const MutationContext& /*context*/) override {
         throw UnsupportedOperation("audit_events is append-only");
       }
 
     private:
-      [[nodiscard]] static std::string column_name(core::AuditEvent::Field field) {
-        switch (field) {
-        case core::AuditEvent::Field::Id:
-          return "id";
-        case core::AuditEvent::Field::At:
-          return "at_micros";
-        case core::AuditEvent::Field::ActorUserId:
-          return "actor_user_id";
-        case core::AuditEvent::Field::ActorSessionId:
-          return "actor_session_id";
-        case core::AuditEvent::Field::LabId:
-          return "lab_id";
-        case core::AuditEvent::Field::Action:
-          return "action";
-        case core::AuditEvent::Field::EntityKind:
-          return "entity_kind";
-        case core::AuditEvent::Field::EntityId:
-          return "entity_id";
-        case core::AuditEvent::Field::BeforeJson:
-          return "before_json";
-        case core::AuditEvent::Field::AfterJson:
-          return "after_json";
-        case core::AuditEvent::Field::RequestId:
-          return "request_id";
-        case core::AuditEvent::Field::PrevHash:
-          return "prev_hash";
-        case core::AuditEvent::Field::ThisHash:
-          return "this_hash";
-        }
-        throw ConstraintViolation("unknown AuditEvent field");
-      }
-
       SqliteTransaction& txn_;
     };
 

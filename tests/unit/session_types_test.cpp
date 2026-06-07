@@ -124,7 +124,7 @@ namespace fmgr::core {
       };
       EXPECT_EQ(token.id, id_from_low<ApiTokenId>(1));
       EXPECT_EQ(token.name, "My token");
-      EXPECT_EQ(token.scope_json, "[]");
+      EXPECT_EQ(token.scope_json, R"(["*"])");
       EXPECT_FALSE(token.lab_id.has_value());
       EXPECT_FALSE(token.expires_at.has_value());
       EXPECT_FALSE(token.revoked_at.has_value());

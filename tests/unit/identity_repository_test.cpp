@@ -2,35 +2,21 @@
 
 #include "core/identity.h"
 #include "storage/IdentityTraits.h"
+#include "storage/postgres/IdentityRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
-#include "storage/sqlite/SqliteBackend.h"
 
+#include "repo_backend_harness.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
-#include <array>
 #include <cstdint>
-#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 
 namespace fmgr::storage {
   namespace {
     using namespace fmgr::test;
-
-
-
-    [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
-      const auto unique = std::to_string(static_cast<unsigned long long>(
-                              ::testing::UnitTest::GetInstance()->random_seed())) +
-                          "-" + std::to_string(reinterpret_cast<std::uintptr_t>(&suffix));
-      return std::filesystem::temp_directory_path() /
-             (std::string("freezermanager-sqlite-identity-") + unique + "-" + std::string(suffix) +
-              ".db");
-    }
-
 
     [[nodiscard]] MutationContext mutation_context() {
       return MutationContext{
@@ -77,34 +63,30 @@ namespace fmgr::storage {
       };
     }
 
-    class SqliteIdentityRepositoryTest : public ::testing::Test {
+    class IdentityRepositoryTest : public ::testing::TestWithParam<BackendKind> {
     protected:
-      SqliteIdentityRepositoryTest()
-          : db_path_(sqlite_test_path("repositories")), backend_(SqliteBackendOptions{
-                                                            .database_path = db_path_.string(),
-                                                        }) {
-        register_identity_repositories(backend_);
-      }
-
       void SetUp() override {
-        remove_sqlite_files(db_path_);
-        backend_.migrate_to_latest();
+        if (GetParam() == BackendKind::Postgres && !postgres_test_url().has_value()) {
+          GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres repository tests";
+        }
+        harness_ = std::make_unique<RepoBackendHarness>(
+            GetParam(), [](SqliteBackend& backend) { register_identity_repositories(backend); },
+            [](PostgresBackend& backend) { register_identity_repositories(backend); });
       }
 
-      void TearDown() override {
-        remove_sqlite_files(db_path_);
+      [[nodiscard]] IStorageBackend& backend() {
+        return harness_->backend();
       }
 
-      [[nodiscard]] SqliteBackend& backend() {
-        return backend_;
+      [[nodiscard]] std::size_t audit_event_count() {
+        return harness_->audit_event_count();
       }
 
     private:
-      std::filesystem::path db_path_;
-      SqliteBackend backend_;
+      std::unique_ptr<RepoBackendHarness> harness_;
     };
 
-    TEST_F(SqliteIdentityRepositoryTest, LabCrudQueryAndSoftDeleteRoundTrip) {
+    TEST_P(IdentityRepositoryTest, LabCrudQueryAndSoftDeleteRoundTrip) {
       auto entity = lab(1, "Neuro Bank");
       auto transaction = backend().begin(IsolationLevel::Serializable);
       auto& repository = transaction->repo<core::Lab>();
@@ -133,16 +115,19 @@ namespace fmgr::storage {
       EXPECT_TRUE(archived.front().archived_at.has_value());
     }
 
-    TEST_F(SqliteIdentityRepositoryTest, UserEmailUniquenessIsCaseInsensitive) {
+    TEST_P(IdentityRepositoryTest, UserEmailUniquenessIsCaseInsensitive) {
       auto transaction = backend().begin(IsolationLevel::Serializable);
       auto& repository = transaction->repo<core::User>();
       repository.insert(user(10, "Ada@Example.ORG"), mutation_context());
-      repository.insert(user(11, "ada@example.org"), mutation_context());
-
-      EXPECT_THROW(transaction->commit(), UniqueViolation);
+      EXPECT_THROW(
+          {
+            repository.insert(user(11, "ada@example.org"), mutation_context());
+            transaction->commit();
+          },
+          UniqueViolation);
     }
 
-    TEST_F(SqliteIdentityRepositoryTest, UserQueryFiltersDisabledRowsByDefault) {
+    TEST_P(IdentityRepositoryTest, UserQueryFiltersDisabledRowsByDefault) {
       auto entity = user(20, "enabled@example.org");
       auto transaction = backend().begin(IsolationLevel::Serializable);
       auto& repository = transaction->repo<core::User>();
@@ -159,7 +144,7 @@ namespace fmgr::storage {
       EXPECT_EQ(disabled.front().status, core::UserStatus::Disabled);
     }
 
-    TEST_F(SqliteIdentityRepositoryTest, MembershipCrudAndRevocationUseCompositeId) {
+    TEST_P(IdentityRepositoryTest, MembershipCrudAndRevocationUseCompositeId) {
       const auto lab_entity = lab(30, "Immunology");
       const auto user_entity = user(31, "member@example.org", lab_entity.id);
       const auto membership_entity = membership(user_entity.id, lab_entity.id);
@@ -187,35 +172,44 @@ namespace fmgr::storage {
       EXPECT_TRUE(revoked.front().revoked_at.has_value());
     }
 
-    TEST_F(SqliteIdentityRepositoryTest, MembershipRejectsMissingUserOrLab) {
+    TEST_P(IdentityRepositoryTest, MembershipRejectsMissingUserOrLab) {
       auto transaction = backend().begin(IsolationLevel::Serializable);
-      transaction->repo<core::LabMembership>().insert(
-          membership(id_from_low<core::UserId>(404), id_from_low<core::LabId>(405)),
-          mutation_context());
-
-      EXPECT_THROW(transaction->commit(), ForeignKeyViolation);
+      EXPECT_THROW(
+          {
+            transaction->repo<core::LabMembership>().insert(
+                membership(id_from_low<core::UserId>(404), id_from_low<core::LabId>(405)),
+                mutation_context());
+            transaction->commit();
+          },
+          ForeignKeyViolation);
     }
 
-    TEST_F(SqliteIdentityRepositoryTest, MutationsAppendAuditEvents) {
+    TEST_P(IdentityRepositoryTest, MutationsAppendAuditEvents) {
       auto transaction = backend().begin(IsolationLevel::Serializable);
       transaction->repo<core::Lab>().insert(lab(50, "Audited Lab"), mutation_context());
       transaction->commit();
 
-      EXPECT_EQ(backend().audit_event_count_for_tests(), 1U);
+      EXPECT_EQ(audit_event_count(), 1U);
     }
 
-    TEST_F(SqliteIdentityRepositoryTest, UpdateNonexistentUserThrowsNotFound) {
+    TEST_P(IdentityRepositoryTest, UpdateNonexistentUserThrowsNotFound) {
       auto transaction = backend().begin(IsolationLevel::Serializable);
       auto entity = user(99, "nonexistent@example.org");
       EXPECT_THROW(transaction->repo<core::User>().update(entity, mutation_context()), NotFound);
     }
 
-    TEST_F(SqliteIdentityRepositoryTest, UpdateNonexistentLabMembershipThrowsNotFound) {
+    TEST_P(IdentityRepositoryTest, UpdateNonexistentLabMembershipThrowsNotFound) {
       auto transaction = backend().begin(IsolationLevel::Serializable);
       auto entity = membership(id_from_low<core::UserId>(9999), id_from_low<core::LabId>(9999));
       EXPECT_THROW(transaction->repo<core::LabMembership>().update(entity, mutation_context()),
                    NotFound);
     }
+
+    INSTANTIATE_TEST_SUITE_P(Backends, IdentityRepositoryTest,
+                             ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
+                             [](const ::testing::TestParamInfo<BackendKind>& info) {
+                               return backend_kind_name(info.param);
+                             });
 
   } // namespace
 } // namespace fmgr::storage

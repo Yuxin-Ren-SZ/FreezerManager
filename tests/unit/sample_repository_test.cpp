@@ -10,19 +10,25 @@
 #include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
 #include "storage/SampleTraits.h"
+#include "storage/postgres/BoxGeometryRepositories.h"
+#include "storage/postgres/IdentityRepositories.h"
+#include "storage/postgres/ItemTypeRepositories.h"
+#include "storage/postgres/LayoutRepositories.h"
+#include "storage/postgres/SampleRepositories.h"
 #include "storage/sqlite/BoxGeometryRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/ItemTypeRepositories.h"
 #include "storage/sqlite/LayoutRepositories.h"
 #include "storage/sqlite/SampleRepositories.h"
-#include "storage/sqlite/SqliteBackend.h"
 
+#include "repo_backend_harness.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -30,19 +36,6 @@
 namespace fmgr::storage {
   namespace {
     using namespace fmgr::test;
-
-
-
-
-    [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
-      const auto unique = std::to_string(static_cast<unsigned long long>(
-                              ::testing::UnitTest::GetInstance()->random_seed())) +
-                          "-" + std::to_string(reinterpret_cast<std::uintptr_t>(&suffix));
-      return std::filesystem::temp_directory_path() /
-             (std::string("freezermanager-sqlite-sample-") + unique + "-" + std::string(suffix) +
-              ".db");
-    }
-
 
     [[nodiscard]] MutationContext mutation_context() {
       return MutationContext{
@@ -205,30 +198,38 @@ namespace fmgr::storage {
       core::BoxId box_id;
     };
 
-    class SqliteSampleRepositoryTest : public ::testing::Test {
+    class SampleRepositoryTest : public ::testing::TestWithParam<BackendKind> {
     protected:
-      SqliteSampleRepositoryTest()
-          : db_path_(sqlite_test_path("sample-repo")),
-            backend_(SqliteBackendOptions{.database_path = db_path_.string()}) {
-        register_identity_repositories(backend_);
-        register_layout_repositories(backend_);
-        register_box_geometry_repositories(backend_);
-        register_box_repositories(backend_);
-        register_item_type_repositories(backend_);
-        register_sample_repositories(backend_);
-      }
-
       void SetUp() override {
-        remove_sqlite_files(db_path_);
-        backend_.migrate_to_latest();
+        if (GetParam() == BackendKind::Postgres && !postgres_test_url().has_value()) {
+          GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres repository tests";
+        }
+        harness_ = std::make_unique<RepoBackendHarness>(
+            GetParam(),
+            [](SqliteBackend& b) {
+              register_identity_repositories(b);
+              register_layout_repositories(b);
+              register_box_geometry_repositories(b);
+              register_box_repositories(b);
+              register_item_type_repositories(b);
+              register_sample_repositories(b);
+            },
+            [](PostgresBackend& b) {
+              register_identity_repositories(b);
+              register_layout_repositories(b);
+              register_box_geometry_repositories(b);
+              register_box_repositories(b);
+              register_item_type_repositories(b);
+              register_sample_repositories(b);
+            });
       }
 
-      void TearDown() override {
-        remove_sqlite_files(db_path_);
+      [[nodiscard]] IStorageBackend& backend() {
+        return harness_->backend();
       }
 
-      [[nodiscard]] SqliteBackend& backend() {
-        return backend_;
+      [[nodiscard]] std::size_t audit_event_count() {
+        return harness_->audit_event_count();
       }
 
       [[nodiscard]] core::LabId seed_lab(std::uint64_t low_bits) {
@@ -307,13 +308,12 @@ namespace fmgr::storage {
       }
 
     private:
-      std::filesystem::path db_path_;
-      SqliteBackend backend_;
+      std::unique_ptr<RepoBackendHarness> harness_;
     };
 
     // ---- Sample CRUD ----
 
-    TEST_F(SqliteSampleRepositoryTest, SampleInsertAndFindById) {
+    TEST_P(SampleRepositoryTest, SampleInsertAndFindById) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -334,7 +334,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleDuplicateIdThrowsUniqueViolation) {
+    TEST_P(SampleRepositoryTest, SampleDuplicateIdThrowsUniqueViolation) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -346,7 +346,7 @@ namespace fmgr::storage {
       txn->rollback();
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleUpdateChangesFields) {
+    TEST_P(SampleRepositoryTest, SampleUpdateChangesFields) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -379,7 +379,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleSoftDeleteSetsTombstoneAndExcludesFromQuery) {
+    TEST_P(SampleRepositoryTest, SampleSoftDeleteSetsTombstoneAndExcludesFromQuery) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -414,7 +414,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, TombstonedSampleVacatesPosition) {
+    TEST_P(SampleRepositoryTest, TombstonedSampleVacatesPosition) {
       // After soft-delete, the position slot is free for another sample.
       const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
           seed_box_prereqs(100);
@@ -457,7 +457,7 @@ namespace fmgr::storage {
 
     // ---- Sample validation ----
 
-    TEST_F(SqliteSampleRepositoryTest, SampleEmptyNameThrows) {
+    TEST_P(SampleRepositoryTest, SampleEmptyNameThrows) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -470,7 +470,7 @@ namespace fmgr::storage {
       txn->rollback();
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleBadItemTypeIdThrows) {
+    TEST_P(SampleRepositoryTest, SampleBadItemTypeIdThrows) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       // item_type_id references a non-existent ItemType.
@@ -482,7 +482,7 @@ namespace fmgr::storage {
       txn->rollback();
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleBadBoxIdThrows) {
+    TEST_P(SampleRepositoryTest, SampleBadBoxIdThrows) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -497,7 +497,7 @@ namespace fmgr::storage {
       txn->rollback();
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleBadPositionLabelThrows) {
+    TEST_P(SampleRepositoryTest, SampleBadPositionLabelThrows) {
       const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
           seed_box_prereqs(100);
       (void)ct_id;
@@ -513,7 +513,7 @@ namespace fmgr::storage {
       txn->rollback();
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleWrongSizeClassThrows) {
+    TEST_P(SampleRepositoryTest, SampleWrongSizeClassThrows) {
       const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
           seed_box_prereqs(100);
       (void)size_class;
@@ -538,7 +538,7 @@ namespace fmgr::storage {
       txn->rollback();
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleCorrectSizeClassSucceeds) {
+    TEST_P(SampleRepositoryTest, SampleCorrectSizeClassSucceeds) {
       const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
           seed_box_prereqs(100);
       (void)bt_id;
@@ -566,7 +566,7 @@ namespace fmgr::storage {
 
     // ---- No-double-booking invariant ----
 
-    TEST_F(SqliteSampleRepositoryTest, NoDoubleBooking) {
+    TEST_P(SampleRepositoryTest, NoDoubleBooking) {
       // Two active samples cannot occupy the same box + position.
       const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
           seed_box_prereqs(100);
@@ -587,14 +587,19 @@ namespace fmgr::storage {
         txn->commit();
       }
       {
+        // SQLite stages and fails the partial unique index at commit; Postgres
+        // fails on the immediate insert. Wrap both so either path is caught.
         auto txn = backend().begin(IsolationLevel::Serializable);
-        txn->repo<core::Sample>().insert(s2, mutation_context());
-        EXPECT_THROW(txn->commit(), UniqueViolation);
-        txn->rollback();
+        EXPECT_THROW(
+            {
+              txn->repo<core::Sample>().insert(s2, mutation_context());
+              txn->commit();
+            },
+            UniqueViolation);
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, DifferentPositionsSameBoxAllowed) {
+    TEST_P(SampleRepositoryTest, DifferentPositionsSameBoxAllowed) {
       const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
           seed_box_prereqs(100);
       (void)ct_id;
@@ -624,7 +629,7 @@ namespace fmgr::storage {
 
     // ---- Parent-child lineage ----
 
-    TEST_F(SqliteSampleRepositoryTest, ParentChildLineagePreservedAfterParentTombstone) {
+    TEST_P(SampleRepositoryTest, ParentChildLineagePreservedAfterParentTombstone) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -661,7 +666,7 @@ namespace fmgr::storage {
 
     // ---- Project CRUD ----
 
-    TEST_F(SqliteSampleRepositoryTest, ProjectInsertFindUpdateSoftDelete) {
+    TEST_P(SampleRepositoryTest, ProjectInsertFindUpdateSoftDelete) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto project = make_project(10, lab_id, user_id);
@@ -703,7 +708,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, ProjectDuplicateNameInSameLabThrows) {
+    TEST_P(SampleRepositoryTest, ProjectDuplicateNameInSameLabThrows) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto p1 = make_project(10, lab_id, user_id);
@@ -716,16 +721,21 @@ namespace fmgr::storage {
         txn->commit();
       }
       {
+        // Unique projects(lab_id, name) index: SQLite fails at commit, Postgres
+        // on the immediate insert. Wrap both.
         auto txn = backend().begin(IsolationLevel::Serializable);
-        txn->repo<core::Project>().insert(p2, mutation_context());
-        EXPECT_THROW(txn->commit(), UniqueViolation);
-        txn->rollback();
+        EXPECT_THROW(
+            {
+              txn->repo<core::Project>().insert(p2, mutation_context());
+              txn->commit();
+            },
+            UniqueViolation);
       }
     }
 
     // ---- SampleProject ----
 
-    TEST_F(SqliteSampleRepositoryTest, SampleProjectInsertFindQueryAndHardDelete) {
+    TEST_P(SampleRepositoryTest, SampleProjectInsertFindQueryAndHardDelete) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -782,7 +792,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleProjectDuplicateLinkThrows) {
+    TEST_P(SampleRepositoryTest, SampleProjectDuplicateLinkThrows) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -811,7 +821,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleProjectUpdateThrowsUnsupportedOperation) {
+    TEST_P(SampleRepositoryTest, SampleProjectUpdateThrowsUnsupportedOperation) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -834,7 +844,7 @@ namespace fmgr::storage {
 
     // ---- CheckoutEvent ----
 
-    TEST_F(SqliteSampleRepositoryTest, CheckoutEventInsertAndFindById) {
+    TEST_P(SampleRepositoryTest, CheckoutEventInsertAndFindById) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -863,7 +873,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, CheckoutEventQueryBySampleId) {
+    TEST_P(SampleRepositoryTest, CheckoutEventQueryBySampleId) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -898,7 +908,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, CheckoutEventUpdateThrowsUnsupportedOperation) {
+    TEST_P(SampleRepositoryTest, CheckoutEventUpdateThrowsUnsupportedOperation) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -918,7 +928,7 @@ namespace fmgr::storage {
       txn->rollback();
     }
 
-    TEST_F(SqliteSampleRepositoryTest, CheckoutEventSoftDeleteThrowsUnsupportedOperation) {
+    TEST_P(SampleRepositoryTest, CheckoutEventSoftDeleteThrowsUnsupportedOperation) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -939,7 +949,7 @@ namespace fmgr::storage {
 
     // ---- Phase 2: Query predicates ----
 
-    TEST_F(SqliteSampleRepositoryTest, SampleQuerySortByCreatedAt) {
+    TEST_P(SampleRepositoryTest, SampleQuerySortByCreatedAt) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -965,9 +975,8 @@ namespace fmgr::storage {
       }
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
-        const auto results =
-            txn->repo<core::Sample>().query(Query<core::Sample>::all().order_by(
-                field<core::Sample, std::int64_t>(core::Sample::Field::CreatedAt)));
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>::all().order_by(
+            field<core::Sample, std::int64_t>(core::Sample::Field::CreatedAt)));
         txn->commit();
         ASSERT_EQ(results.size(), 3U);
         EXPECT_EQ(results[0].created_at, ts(100));
@@ -976,7 +985,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleQueryLimitAndOffset) {
+    TEST_P(SampleRepositoryTest, SampleQueryLimitAndOffset) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1003,14 +1012,14 @@ namespace fmgr::storage {
       }
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
-        const auto results = txn->repo<core::Sample>().query(
-            Query<core::Sample>::all().limit(2).offset(1));
+        const auto results =
+            txn->repo<core::Sample>().query(Query<core::Sample>::all().limit(2).offset(1));
         txn->commit();
         EXPECT_EQ(results.size(), 2U);
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleQueryAndWhereMultiplePredicates) {
+    TEST_P(SampleRepositoryTest, SampleQueryAndWhereMultiplePredicates) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1030,38 +1039,34 @@ namespace fmgr::storage {
       const std::string active_str("active");
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
-        const auto results =
-            txn->repo<core::Sample>().query(Query<core::Sample>::where(
-                field<core::Sample, std::string>(core::Sample::Field::LabId) ==
-                lab_id.to_string())
-                                              .and_where(field<core::Sample, std::string>(
-                                                             core::Sample::Field::Status) ==
-                                                         active_str));
+        const auto results = txn->repo<core::Sample>().query(
+            Query<core::Sample>::where(
+                field<core::Sample, std::string>(core::Sample::Field::LabId) == lab_id.to_string())
+                .and_where(field<core::Sample, std::string>(core::Sample::Field::Status) ==
+                           active_str));
         txn->commit();
         ASSERT_EQ(results.size(), 1U);
         EXPECT_EQ(results.front().status, core::SampleStatus::Active);
       }
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
-        const auto results =
-            txn->repo<core::Sample>().query(Query<core::Sample>::where(
-                field<core::Sample, std::string>(core::Sample::Field::LabId) ==
-                lab_id.to_string())
-                                              .include_tombstoned());
+        const auto results = txn->repo<core::Sample>().query(
+            Query<core::Sample>::where(
+                field<core::Sample, std::string>(core::Sample::Field::LabId) == lab_id.to_string())
+                .include_tombstoned());
         txn->commit();
         EXPECT_EQ(results.size(), 2U);
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleFindByNonexistentIdReturnsEmpty) {
+    TEST_P(SampleRepositoryTest, SampleFindByNonexistentIdReturnsEmpty) {
       auto txn = backend().begin(IsolationLevel::Serializable);
-      const auto found =
-          txn->repo<core::Sample>().find_by_id(id_from_low<core::SampleId>(99999));
+      const auto found = txn->repo<core::Sample>().find_by_id(id_from_low<core::SampleId>(99999));
       txn->commit();
       EXPECT_FALSE(found.has_value());
     }
 
-    TEST_F(SqliteSampleRepositoryTest, CheckoutEventQuerySortByAtDescending) {
+    TEST_P(SampleRepositoryTest, CheckoutEventQuerySortByAtDescending) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1101,7 +1106,7 @@ namespace fmgr::storage {
 
     // ---- Phase 4: Audit ----
 
-    TEST_F(SqliteSampleRepositoryTest, SampleUpdateAppendsAuditEvent) {
+    TEST_P(SampleRepositoryTest, SampleUpdateAppendsAuditEvent) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1113,7 +1118,7 @@ namespace fmgr::storage {
         txn->commit();
       }
 
-      const auto baseline = backend().audit_event_count_for_tests();
+      const auto baseline = audit_event_count();
 
       auto updated = sample;
       updated.name = "Updated Name";
@@ -1124,10 +1129,10 @@ namespace fmgr::storage {
         txn->commit();
       }
 
-      EXPECT_EQ(backend().audit_event_count_for_tests(), baseline + 1U);
+      EXPECT_EQ(audit_event_count(), baseline + 1U);
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleSoftDeleteAppendsAuditEvent) {
+    TEST_P(SampleRepositoryTest, SampleSoftDeleteAppendsAuditEvent) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1139,7 +1144,7 @@ namespace fmgr::storage {
         txn->commit();
       }
 
-      const auto baseline = backend().audit_event_count_for_tests();
+      const auto baseline = audit_event_count();
 
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -1147,15 +1152,15 @@ namespace fmgr::storage {
         txn->commit();
       }
 
-      EXPECT_EQ(backend().audit_event_count_for_tests(), baseline + 1U);
+      EXPECT_EQ(audit_event_count(), baseline + 1U);
     }
 
-    TEST_F(SqliteSampleRepositoryTest, MultipleMutationsInOneTransactionAppendMultipleAuditEvents) {
+    TEST_P(SampleRepositoryTest, MultipleMutationsInOneTransactionAppendMultipleAuditEvents) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
 
-      const auto baseline = backend().audit_event_count_for_tests();
+      const auto baseline = audit_event_count();
 
       const auto s1 = make_sample(10, lab_id, it_id, user_id);
       const auto s2 = make_sample(11, lab_id, it_id, user_id);
@@ -1169,12 +1174,21 @@ namespace fmgr::storage {
         txn->commit();
       }
 
-      EXPECT_EQ(backend().audit_event_count_for_tests(), baseline + 3U);
+      EXPECT_EQ(audit_event_count(), baseline + 3U);
     }
 
     // ---- Phase 5: Concurrency ----
 
-    TEST_F(SqliteSampleRepositoryTest, ConcurrentSampleUpdateSerializesConflicts) {
+    TEST_P(SampleRepositoryTest, ConcurrentSampleUpdateSerializesConflicts) {
+      // This last-writer-wins scenario relies on SQLite's deferred-write staging:
+      // an uncommitted update holds no row lock, so a second concurrent
+      // transaction can update and commit first. On Postgres the immediate UPDATE
+      // takes a row lock, so the interleaving below would deadlock the single
+      // thread. The cross-transaction serialization guarantee itself is covered by
+      // the Postgres conformance suite.
+      if (GetParam() == BackendKind::Postgres) {
+        GTEST_SKIP() << "relies on SQLite deferred-write semantics";
+      }
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1219,7 +1233,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, ConcurrentSoftDeleteAndReadShowsSnapshotIsolation) {
+    TEST_P(SampleRepositoryTest, ConcurrentSoftDeleteAndReadShowsSnapshotIsolation) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1268,7 +1282,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, ConcurrentCheckoutEventInsertsBothSucceed) {
+    TEST_P(SampleRepositoryTest, ConcurrentCheckoutEventInsertsBothSucceed) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1280,10 +1294,8 @@ namespace fmgr::storage {
         txn->commit();
       }
 
-      const auto e1 =
-          make_event(50, sample.id, lab_id, user_id, core::CheckoutAction::CheckedOut);
-      const auto e2 =
-          make_event(51, sample.id, lab_id, user_id, core::CheckoutAction::CheckedIn);
+      const auto e1 = make_event(50, sample.id, lab_id, user_id, core::CheckoutAction::CheckedOut);
+      const auto e2 = make_event(51, sample.id, lab_id, user_id, core::CheckoutAction::CheckedIn);
 
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -1296,15 +1308,14 @@ namespace fmgr::storage {
         auto txn = backend().begin(IsolationLevel::Serializable);
         const auto results =
             txn->repo<core::CheckoutEvent>().query(Query<core::CheckoutEvent>::where(
-                field<core::CheckoutEvent, std::string>(
-                    core::CheckoutEvent::Field::SampleId) ==
+                field<core::CheckoutEvent, std::string>(core::CheckoutEvent::Field::SampleId) ==
                 sample.id.to_string()));
         txn->commit();
         EXPECT_EQ(results.size(), 2U);
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleUpdateOnNonexistentThrows) {
+    TEST_P(SampleRepositoryTest, SampleUpdateOnNonexistentThrows) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1315,7 +1326,7 @@ namespace fmgr::storage {
       txn->rollback();
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleQueryBetweenCreatedAt) {
+    TEST_P(SampleRepositoryTest, SampleQueryBetweenCreatedAt) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1341,17 +1352,16 @@ namespace fmgr::storage {
       }
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
-        const auto results =
-            txn->repo<core::Sample>().query(Query<core::Sample>::where(
-                between(field<core::Sample, std::int64_t>(core::Sample::Field::CreatedAt),
-                        ts(120).unix_micros(), ts(180).unix_micros())));
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>::where(
+            between(field<core::Sample, std::int64_t>(core::Sample::Field::CreatedAt),
+                    ts(120).unix_micros(), ts(180).unix_micros())));
         txn->commit();
         ASSERT_EQ(results.size(), 1U);
         EXPECT_EQ(results.front().created_at, ts(150));
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleQueryJsonPathOnCustomFields) {
+    TEST_P(SampleRepositoryTest, SampleQueryJsonPathOnCustomFields) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1370,17 +1380,15 @@ namespace fmgr::storage {
       }
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
-        const auto results =
-            txn->repo<core::Sample>().query(Query<core::Sample>::where(
-                json_path<core::Sample>(core::Sample::Field::CustomFieldsJson, {"color"}) ==
-                "red"));
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>::where(
+            json_path<core::Sample>(core::Sample::Field::CustomFieldsJson, {"color"}) == "red"));
         txn->commit();
         ASSERT_EQ(results.size(), 1U);
         EXPECT_EQ(results.front().id, s1.id);
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, ProjectQuerySortByCreatedAt) {
+    TEST_P(SampleRepositoryTest, ProjectQuerySortByCreatedAt) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
 
@@ -1402,9 +1410,8 @@ namespace fmgr::storage {
       }
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
-        const auto results =
-            txn->repo<core::Project>().query(Query<core::Project>::all().order_by(
-                field<core::Project, std::int64_t>(core::Project::Field::CreatedAt)));
+        const auto results = txn->repo<core::Project>().query(Query<core::Project>::all().order_by(
+            field<core::Project, std::int64_t>(core::Project::Field::CreatedAt)));
         txn->commit();
         ASSERT_EQ(results.size(), 3U);
         EXPECT_EQ(results[0].created_at, ts(100));
@@ -1413,16 +1420,15 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, SampleProjectFindByNonexistentIdReturnsEmpty) {
+    TEST_P(SampleRepositoryTest, SampleProjectFindByNonexistentIdReturnsEmpty) {
       auto txn = backend().begin(IsolationLevel::Serializable);
-      const auto found = txn->repo<core::SampleProject>().find_by_id(
-          core::SampleProjectId{id_from_low<core::SampleId>(1),
-                                id_from_low<core::ProjectId>(99999)});
+      const auto found = txn->repo<core::SampleProject>().find_by_id(core::SampleProjectId{
+          id_from_low<core::SampleId>(1), id_from_low<core::ProjectId>(99999)});
       txn->commit();
       EXPECT_FALSE(found.has_value());
     }
 
-    TEST_F(SqliteSampleRepositoryTest, CheckoutEventQueryByTargetUserId) {
+    TEST_P(SampleRepositoryTest, CheckoutEventQueryByTargetUserId) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(1, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1437,10 +1443,10 @@ namespace fmgr::storage {
         txn->commit();
       }
 
-      auto e1 = make_event(50, sample.id, lab_id, target_user_id_1,
-                            core::CheckoutAction::CheckedOut);
-      auto e2 = make_event(51, sample.id, lab_id, target_user_id_2,
-                            core::CheckoutAction::CheckedOut);
+      auto e1 =
+          make_event(50, sample.id, lab_id, target_user_id_1, core::CheckoutAction::CheckedOut);
+      auto e2 =
+          make_event(51, sample.id, lab_id, target_user_id_2, core::CheckoutAction::CheckedOut);
 
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
@@ -1460,7 +1466,7 @@ namespace fmgr::storage {
       }
     }
 
-    TEST_F(SqliteSampleRepositoryTest, InsertSampleWithInvalidParentThrowsForeignKeyViolation) {
+    TEST_P(SampleRepositoryTest, InsertSampleWithInvalidParentThrowsForeignKeyViolation) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
@@ -1468,17 +1474,110 @@ namespace fmgr::storage {
       auto sample = make_sample(50, lab_id, it_id, user_id);
       sample.parent_sample_id = id_from_low<core::SampleId>(99999); // nonexistent
 
+      // App-level validation catches nonexistent parent at insert time.
       auto txn = backend().begin(IsolationLevel::Serializable);
-      txn->repo<core::Sample>().insert(sample, mutation_context());
-      EXPECT_THROW(txn->commit(), ForeignKeyViolation);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ForeignKeyViolation);
     }
 
-    TEST_F(SqliteSampleRepositoryTest, UpdateNonexistentSampleThrowsNotFound) {
+    TEST_P(SampleRepositoryTest, InsertSampleWithCrossLabParentThrowsForeignKeyViolation) {
+      const auto lab1_id = seed_lab(500);
+      const auto user1_id = seed_user(501, lab1_id);
+      const auto it1_id = seed_item_type(502, lab1_id);
+      const auto lab2_id = seed_lab(510);
+      const auto user2_id = seed_user(511, lab2_id);
+      const auto it2_id = seed_item_type(512, lab2_id);
+
+      // Insert parent sample in lab2.
+      auto parent = make_sample(520, lab2_id, it2_id, user2_id);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(parent, mutation_context());
+        txn->commit();
+      }
+
+      // Insert child in lab1 referencing the lab2 parent — must fail.
+      auto child = make_sample(521, lab1_id, it1_id, user1_id);
+      child.parent_sample_id = parent.id;
+
       auto txn = backend().begin(IsolationLevel::Serializable);
-      auto sample = make_sample(9999, id_from_low<core::LabId>(1),
-                                id_from_low<core::ItemTypeId>(2), id_from_low<core::UserId>(3));
+      EXPECT_THROW(txn->repo<core::Sample>().insert(child, mutation_context()),
+                   ForeignKeyViolation);
+    }
+
+    TEST_P(SampleRepositoryTest, InsertSampleWithSelfParentThrowsConstraintViolation) {
+      const auto lab_id = seed_lab(530);
+      const auto user_id = seed_user(531, lab_id);
+      const auto it_id = seed_item_type(532, lab_id);
+
+      auto sample = make_sample(540, lab_id, it_id, user_id);
+      sample.parent_sample_id = sample.id; // self-reference
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ConstraintViolation);
+    }
+
+    TEST_P(SampleRepositoryTest, InsertSampleProjectCrossLabThrowsForeignKeyViolation) {
+      const auto lab1_id = seed_lab(600);
+      const auto user1_id = seed_user(601, lab1_id);
+      const auto it1_id = seed_item_type(602, lab1_id);
+      const auto lab2_id = seed_lab(610);
+      const auto user2_id = seed_user(611, lab2_id);
+
+      auto sample = make_sample(620, lab1_id, it1_id, user1_id);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      auto project = make_project(630, lab2_id, user2_id); // project in lab2, sample in lab1
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Project>().insert(project, mutation_context());
+        txn->commit();
+      }
+
+      const core::SampleProject sp{.sample_id = sample.id, .project_id = project.id};
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::SampleProject>().insert(sp, mutation_context()),
+                   ForeignKeyViolation);
+    }
+
+    TEST_P(SampleRepositoryTest, InsertCheckoutEventCrossLabThrowsConstraintViolation) {
+      const auto lab1_id = seed_lab(700);
+      const auto user1_id = seed_user(701, lab1_id);
+      const auto it1_id = seed_item_type(702, lab1_id);
+      const auto lab2_id = seed_lab(710);
+      const auto user2_id = seed_user(711, lab2_id);
+
+      auto sample = make_sample(720, lab1_id, it1_id, user1_id);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      // Event claims lab2 but sample belongs to lab1.
+      auto event = make_event(730, sample.id, lab2_id, user2_id, core::CheckoutAction::CheckedOut);
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::CheckoutEvent>().insert(event, mutation_context()),
+                   ConstraintViolation);
+    }
+
+    TEST_P(SampleRepositoryTest, UpdateNonexistentSampleThrowsNotFound) {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      auto sample = make_sample(9999, id_from_low<core::LabId>(1), id_from_low<core::ItemTypeId>(2),
+                                id_from_low<core::UserId>(3));
       EXPECT_THROW(txn->repo<core::Sample>().update(sample, mutation_context()), NotFound);
     }
+
+    INSTANTIATE_TEST_SUITE_P(Backends, SampleRepositoryTest,
+                             ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
+                             [](const ::testing::TestParamInfo<BackendKind>& info) {
+                               return backend_kind_name(info.param);
+                             });
 
   } // namespace
 } // namespace fmgr::storage

@@ -4,36 +4,23 @@
 #include "core/identity.h"
 #include "storage/BoxGeometryTraits.h"
 #include "storage/IdentityTraits.h"
+#include "storage/postgres/BoxGeometryRepositories.h"
+#include "storage/postgres/IdentityRepositories.h"
 #include "storage/sqlite/BoxGeometryRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
-#include "storage/sqlite/SqliteBackend.h"
 
+#include "repo_backend_harness.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
-#include <array>
 #include <cstdint>
-#include <filesystem>
-#include <optional>
+#include <memory>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace fmgr::storage {
   namespace {
     using namespace fmgr::test;
-
-
-
-    [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
-      const auto unique = std::to_string(static_cast<unsigned long long>(
-                              ::testing::UnitTest::GetInstance()->random_seed())) +
-                          "-" + std::to_string(reinterpret_cast<std::uintptr_t>(&suffix));
-      return std::filesystem::temp_directory_path() /
-             (std::string("freezermanager-sqlite-box-geometry-") + unique + "-" +
-              std::string(suffix) + ".db");
-    }
-
 
     [[nodiscard]] MutationContext mutation_context() {
       return MutationContext{
@@ -92,47 +79,49 @@ namespace fmgr::storage {
       };
     }
 
-    class SqliteBoxGeometryRepositoryTest : public ::testing::Test {
+    class BoxGeometryRepositoryTest : public ::testing::TestWithParam<BackendKind> {
     protected:
-      SqliteBoxGeometryRepositoryTest()
-          : db_path_(sqlite_test_path("repositories")), backend_(SqliteBackendOptions{
-                                                            .database_path = db_path_.string(),
-                                                        }) {
-        register_identity_repositories(backend_);
-        register_box_geometry_repositories(backend_);
-      }
-
       void SetUp() override {
-        remove_sqlite_files(db_path_);
-        backend_.migrate_to_latest();
+        if (GetParam() == BackendKind::Postgres && !postgres_test_url().has_value()) {
+          GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres repository tests";
+        }
+        harness_ = std::make_unique<RepoBackendHarness>(
+            GetParam(),
+            [](SqliteBackend& backend) {
+              register_identity_repositories(backend);
+              register_box_geometry_repositories(backend);
+            },
+            [](PostgresBackend& backend) {
+              register_identity_repositories(backend);
+              register_box_geometry_repositories(backend);
+            });
       }
 
-      void TearDown() override {
-        remove_sqlite_files(db_path_);
+      [[nodiscard]] IStorageBackend& backend() {
+        return harness_->backend();
       }
 
-      [[nodiscard]] SqliteBackend& backend() {
-        return backend_;
+      [[nodiscard]] std::size_t audit_event_count() {
+        return harness_->audit_event_count();
       }
 
       void seed_lab(const core::Lab& lab_entity) {
-        auto transaction = backend_.begin(IsolationLevel::Serializable);
+        auto transaction = backend().begin(IsolationLevel::Serializable);
         transaction->repo<core::Lab>().insert(lab_entity, mutation_context());
         transaction->commit();
       }
 
       void seed_container_type(const core::ContainerType& container_type) {
-        auto transaction = backend_.begin(IsolationLevel::Serializable);
+        auto transaction = backend().begin(IsolationLevel::Serializable);
         transaction->repo<core::ContainerType>().insert(container_type, mutation_context());
         transaction->commit();
       }
 
     private:
-      std::filesystem::path db_path_;
-      SqliteBackend backend_;
+      std::unique_ptr<RepoBackendHarness> harness_;
     };
 
-    TEST_F(SqliteBoxGeometryRepositoryTest, ContainerTypeCrudQueryAndSoftDeleteRoundTrip) {
+    TEST_P(BoxGeometryRepositoryTest, ContainerTypeCrudQueryAndSoftDeleteRoundTrip) {
       const auto lab_entity = make_lab(1, "Lab A");
       seed_lab(lab_entity);
       const auto container_type = make_container_type(10, lab_entity.id, "cryovial_2ml");
@@ -166,7 +155,7 @@ namespace fmgr::storage {
       EXPECT_TRUE(archived.front().archived_at.has_value());
     }
 
-    TEST_F(SqliteBoxGeometryRepositoryTest, BoxTypeWithPositionsRoundTripsAndUpdatesPositions) {
+    TEST_P(BoxGeometryRepositoryTest, BoxTypeWithPositionsRoundTripsAndUpdatesPositions) {
       const auto lab_entity = make_lab(2, "Lab B");
       seed_lab(lab_entity);
       seed_container_type(make_container_type(20, lab_entity.id, "cryovial_2ml"));
@@ -197,7 +186,7 @@ namespace fmgr::storage {
       EXPECT_EQ(stored->positions, box_type.positions);
     }
 
-    TEST_F(SqliteBoxGeometryRepositoryTest, BoxTypeRejectsDuplicatePositionLabels) {
+    TEST_P(BoxGeometryRepositoryTest, BoxTypeRejectsDuplicatePositionLabels) {
       const auto lab_entity = make_lab(3, "Lab C");
       seed_lab(lab_entity);
       seed_container_type(make_container_type(40, lab_entity.id, "cryovial_2ml"));
@@ -210,7 +199,7 @@ namespace fmgr::storage {
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteBoxGeometryRepositoryTest, BoxTypeRejectsEmptyAccepts) {
+    TEST_P(BoxGeometryRepositoryTest, BoxTypeRejectsEmptyAccepts) {
       const auto lab_entity = make_lab(4, "Lab D");
       seed_lab(lab_entity);
 
@@ -222,7 +211,7 @@ namespace fmgr::storage {
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteBoxGeometryRepositoryTest, BoxTypeRejectsUnknownSizeClass) {
+    TEST_P(BoxGeometryRepositoryTest, BoxTypeRejectsUnknownSizeClass) {
       const auto lab_entity = make_lab(5, "Lab E");
       seed_lab(lab_entity);
       seed_container_type(make_container_type(60, lab_entity.id, "cryovial_2ml"));
@@ -235,7 +224,7 @@ namespace fmgr::storage {
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteBoxGeometryRepositoryTest, BoxTypeRejectsSizeClassFromAnotherLab) {
+    TEST_P(BoxGeometryRepositoryTest, BoxTypeRejectsSizeClassFromAnotherLab) {
       const auto lab_a = make_lab(6, "Lab F");
       const auto lab_b = make_lab(7, "Lab G");
       seed_lab(lab_a);
@@ -249,7 +238,7 @@ namespace fmgr::storage {
                    ConstraintViolation);
     }
 
-    TEST_F(SqliteBoxGeometryRepositoryTest, ContainerTypeRejectsInvalidDimensions) {
+    TEST_P(BoxGeometryRepositoryTest, ContainerTypeRejectsInvalidDimensions) {
       const auto lab_entity = make_lab(8, "Lab H");
       seed_lab(lab_entity);
       auto container_type = make_container_type(80, lab_entity.id, "cryovial_2ml");
@@ -262,19 +251,25 @@ namespace fmgr::storage {
           ConstraintViolation);
     }
 
-    TEST_F(SqliteBoxGeometryRepositoryTest, BoxTypeMutationAppendsAuditEvent) {
+    TEST_P(BoxGeometryRepositoryTest, BoxTypeMutationAppendsAuditEvent) {
       const auto lab_entity = make_lab(9, "Lab I");
       seed_lab(lab_entity);
       seed_container_type(make_container_type(90, lab_entity.id, "cryovial_2ml"));
-      const auto baseline_count = backend().audit_event_count_for_tests();
+      const auto baseline_count = audit_event_count();
 
       const auto box_type = make_box_type(91, lab_entity.id, two_positions());
       auto transaction = backend().begin(IsolationLevel::Serializable);
       transaction->repo<core::BoxType>().insert(box_type, mutation_context());
       transaction->commit();
 
-      EXPECT_EQ(backend().audit_event_count_for_tests(), baseline_count + 1U);
+      EXPECT_EQ(audit_event_count(), baseline_count + 1U);
     }
+
+    INSTANTIATE_TEST_SUITE_P(Backends, BoxGeometryRepositoryTest,
+                             ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
+                             [](const ::testing::TestParamInfo<BackendKind>& info) {
+                               return backend_kind_name(info.param);
+                             });
 
   } // namespace
 } // namespace fmgr::storage

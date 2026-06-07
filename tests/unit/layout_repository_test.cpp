@@ -4,35 +4,23 @@
 #include "core/identity.h"
 #include "storage/FreezerTraits.h"
 #include "storage/IdentityTraits.h"
+#include "storage/postgres/IdentityRepositories.h"
+#include "storage/postgres/LayoutRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/LayoutRepositories.h"
-#include "storage/sqlite/SqliteBackend.h"
 
+#include "repo_backend_harness.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
-#include <array>
 #include <cstdint>
-#include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 
 namespace fmgr::storage {
   namespace {
     using namespace fmgr::test;
-
-
-
-    [[nodiscard]] std::filesystem::path sqlite_test_path(std::string_view suffix) {
-      const auto unique = std::to_string(static_cast<unsigned long long>(
-                              ::testing::UnitTest::GetInstance()->random_seed())) +
-                          "-" + std::to_string(reinterpret_cast<std::uintptr_t>(&suffix));
-      return std::filesystem::temp_directory_path() /
-             (std::string("freezermanager-sqlite-layout-") + unique + "-" + std::string(suffix) +
-              ".db");
-    }
-
 
     [[nodiscard]] MutationContext mutation_context() {
       return MutationContext{
@@ -88,41 +76,43 @@ namespace fmgr::storage {
       };
     }
 
-    class SqliteLayoutRepositoryTest : public ::testing::Test {
+    class LayoutRepositoryTest : public ::testing::TestWithParam<BackendKind> {
     protected:
-      SqliteLayoutRepositoryTest()
-          : db_path_(sqlite_test_path("repositories")), backend_(SqliteBackendOptions{
-                                                            .database_path = db_path_.string(),
-                                                        }) {
-        register_identity_repositories(backend_);
-        register_layout_repositories(backend_);
-      }
-
       void SetUp() override {
-        remove_sqlite_files(db_path_);
-        backend_.migrate_to_latest();
+        if (GetParam() == BackendKind::Postgres && !postgres_test_url().has_value()) {
+          GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres repository tests";
+        }
+        harness_ = std::make_unique<RepoBackendHarness>(
+            GetParam(),
+            [](SqliteBackend& backend) {
+              register_identity_repositories(backend);
+              register_layout_repositories(backend);
+            },
+            [](PostgresBackend& backend) {
+              register_identity_repositories(backend);
+              register_layout_repositories(backend);
+            });
       }
 
-      void TearDown() override {
-        remove_sqlite_files(db_path_);
+      [[nodiscard]] IStorageBackend& backend() {
+        return harness_->backend();
       }
 
-      [[nodiscard]] SqliteBackend& backend() {
-        return backend_;
+      [[nodiscard]] std::size_t audit_event_count() {
+        return harness_->audit_event_count();
       }
 
       void seed_lab(const core::Lab& lab_entity) {
-        auto transaction = backend_.begin(IsolationLevel::Serializable);
+        auto transaction = backend().begin(IsolationLevel::Serializable);
         transaction->repo<core::Lab>().insert(lab_entity, mutation_context());
         transaction->commit();
       }
 
     private:
-      std::filesystem::path db_path_;
-      SqliteBackend backend_;
+      std::unique_ptr<RepoBackendHarness> harness_;
     };
 
-    TEST_F(SqliteLayoutRepositoryTest, FreezerWithRootContainerInsertsInOneTransaction) {
+    TEST_P(LayoutRepositoryTest, FreezerWithRootContainerInsertsInOneTransaction) {
       const auto lab_entity = make_lab(1, "Lab A");
       seed_lab(lab_entity);
 
@@ -144,8 +134,9 @@ namespace fmgr::storage {
       EXPECT_EQ(stored.value().name, "Minus80");
     }
 
-    TEST_F(SqliteLayoutRepositoryTest, FreezerWithMissingLabFailsForeignKey) {
-      // No lab seeded.
+    TEST_P(LayoutRepositoryTest, FreezerWithMissingLabFailsForeignKey) {
+      // No lab seeded. The lab_id foreign keys are deferred, so the violation
+      // surfaces at commit on both backends.
       const auto root = make_container(20, id_from_low<core::LabId>(404), std::nullopt);
       const auto freezer = make_freezer(21, id_from_low<core::LabId>(404), root.id, "ghost");
 
@@ -155,7 +146,7 @@ namespace fmgr::storage {
       EXPECT_THROW(transaction->commit(), ForeignKeyViolation);
     }
 
-    TEST_F(SqliteLayoutRepositoryTest, RecursiveContainerTreeQueryByParent) {
+    TEST_P(LayoutRepositoryTest, RecursiveContainerTreeQueryByParent) {
       const auto lab_entity = make_lab(2, "Lab B");
       seed_lab(lab_entity);
 
@@ -188,7 +179,7 @@ namespace fmgr::storage {
       EXPECT_EQ(children_of_shelf.front().id, rack.id);
     }
 
-    TEST_F(SqliteLayoutRepositoryTest, StorageContainerSelfParentIsRejected) {
+    TEST_P(LayoutRepositoryTest, StorageContainerSelfParentIsRejected) {
       const auto lab_entity = make_lab(3, "Lab C");
       seed_lab(lab_entity);
 
@@ -200,7 +191,7 @@ namespace fmgr::storage {
       EXPECT_THROW(repo.insert(self_parent, mutation_context()), ConstraintViolation);
     }
 
-    TEST_F(SqliteLayoutRepositoryTest, ReparentingToOwnDescendantRejected) {
+    TEST_P(LayoutRepositoryTest, ReparentingToOwnDescendantRejected) {
       const auto lab_entity = make_lab(4, "Lab D");
       seed_lab(lab_entity);
 
@@ -222,7 +213,7 @@ namespace fmgr::storage {
       EXPECT_THROW(update_repo.update(cycle_attempt, mutation_context()), ConstraintViolation);
     }
 
-    TEST_F(SqliteLayoutRepositoryTest, FreezerLabNameUniqueAmongLiveRowsOnly) {
+    TEST_P(LayoutRepositoryTest, FreezerLabNameUniqueAmongLiveRowsOnly) {
       const auto lab_entity = make_lab(5, "Lab E");
       seed_lab(lab_entity);
 
@@ -234,13 +225,19 @@ namespace fmgr::storage {
       transaction->repo<core::Freezer>().insert(freezer1, mutation_context());
       transaction->commit();
 
-      // Duplicate name while the first freezer is live -> UniqueViolation.
+      // Duplicate name while the first freezer is live -> UniqueViolation. SQLite
+      // stages and fails the partial unique index at commit; Postgres fails on the
+      // immediate insert. Wrap both so either path is caught.
       const auto root2 = make_container(62, lab_entity.id, std::nullopt);
       const auto freezer2 = make_freezer(63, lab_entity.id, root2.id, "Walk-in");
       transaction = backend().begin(IsolationLevel::Serializable);
       transaction->repo<core::StorageContainer>().insert(root2, mutation_context());
-      transaction->repo<core::Freezer>().insert(freezer2, mutation_context());
-      EXPECT_THROW(transaction->commit(), UniqueViolation);
+      EXPECT_THROW(
+          {
+            transaction->repo<core::Freezer>().insert(freezer2, mutation_context());
+            transaction->commit();
+          },
+          UniqueViolation);
 
       // Archive the original; same name should now be insertable.
       transaction = backend().begin(IsolationLevel::Serializable);
@@ -263,7 +260,7 @@ namespace fmgr::storage {
       EXPECT_EQ(all.size(), 2U);
     }
 
-    TEST_F(SqliteLayoutRepositoryTest, SoftDeleteHidesContainerFromDefaultQuery) {
+    TEST_P(LayoutRepositoryTest, SoftDeleteHidesContainerFromDefaultQuery) {
       const auto lab_entity = make_lab(6, "Lab F");
       seed_lab(lab_entity);
 
@@ -284,20 +281,20 @@ namespace fmgr::storage {
       EXPECT_TRUE(archived.front().archived_at.has_value());
     }
 
-    TEST_F(SqliteLayoutRepositoryTest, ContainerMutationAppendsAuditEvent) {
+    TEST_P(LayoutRepositoryTest, ContainerMutationAppendsAuditEvent) {
       const auto lab_entity = make_lab(7, "Lab G");
       seed_lab(lab_entity);
-      const auto baseline_count = backend().audit_event_count_for_tests();
+      const auto baseline_count = audit_event_count();
 
       const auto root = make_container(80, lab_entity.id, std::nullopt);
       auto transaction = backend().begin(IsolationLevel::Serializable);
       transaction->repo<core::StorageContainer>().insert(root, mutation_context());
       transaction->commit();
 
-      EXPECT_EQ(backend().audit_event_count_for_tests(), baseline_count + 1U);
+      EXPECT_EQ(audit_event_count(), baseline_count + 1U);
     }
 
-    TEST_F(SqliteLayoutRepositoryTest, StorageContainerChildrenStillVisibleAfterParentSoftDelete) {
+    TEST_P(LayoutRepositoryTest, StorageContainerChildrenStillVisibleAfterParentSoftDelete) {
       const auto lab_entity = make_lab(8, "Lab H");
       seed_lab(lab_entity);
 
@@ -319,8 +316,8 @@ namespace fmgr::storage {
 
       {
         auto transaction = backend().begin(IsolationLevel::Serializable);
-        const auto children = transaction->repo<core::StorageContainer>().query(
-            Query<core::StorageContainer>::where(
+        const auto children =
+            transaction->repo<core::StorageContainer>().query(Query<core::StorageContainer>::where(
                 field<core::StorageContainer, core::StorageContainerId>(
                     core::StorageContainer::Field::ParentId) == parent.id));
         ASSERT_EQ(children.size(), 1U);
@@ -334,6 +331,12 @@ namespace fmgr::storage {
         EXPECT_EQ(found->id, child.id);
       }
     }
+
+    INSTANTIATE_TEST_SUITE_P(Backends, LayoutRepositoryTest,
+                             ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
+                             [](const ::testing::TestParamInfo<BackendKind>& info) {
+                               return backend_kind_name(info.param);
+                             });
 
   } // namespace
 } // namespace fmgr::storage

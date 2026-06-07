@@ -48,21 +48,28 @@ namespace fmgr::auth {
       return core::Timestamp::from_unix_micros(micros);
     }
 
-    // Parses a JSON array of permission-key strings into a permission set.
-    [[nodiscard]] std::set<core::Permission>
+    // Parses scope_json into an optional permission set.
+    // Returns nullopt for the unrestricted sentinel ["*"].
+    // Returns an empty set for malformed JSON or "[]" (fail-closed: zero permissions).
+    [[nodiscard]] std::optional<std::set<core::Permission>>
     permissions_from_scope_json(const std::string& scope_json) {
-      std::set<core::Permission> perms;
       const auto parsed = nlohmann::json::parse(scope_json, nullptr, false);
       if (!parsed.is_array()) {
-        return perms;
+        return std::set<core::Permission>{}; // malformed → fail-closed
       }
+      // ["*"] sentinel means unrestricted — inherit all user permissions.
+      if (parsed.size() == 1 && parsed[0].is_string() &&
+          parsed[0].get<std::string>() == "*") {
+        return std::nullopt;
+      }
+      std::set<core::Permission> perms;
       for (const auto& item : parsed) {
         if (item.is_string()) {
           try {
             perms.insert(core::parse_permission(item.get<std::string>()));
             // NOLINTNEXTLINE(bugprone-empty-catch)
           } catch (const std::exception&) {
-            // Unknown permission keys are silently skipped; never crash on bad scope_json.
+            // Unknown permission keys are silently skipped.
           }
         }
       }
@@ -88,15 +95,17 @@ namespace fmgr::auth {
 
     [[nodiscard]] ScopedPermissionGrants
     intersect_grants_with_scope(ScopedPermissionGrants grants,
-                                const std::set<core::Permission>& scope) {
-      if (scope.empty()) {
-        return grants;
+                                const std::optional<std::set<core::Permission>>& scope) {
+      if (!scope.has_value()) {
+        return grants; // unrestricted — inherit all
       }
-      for (auto& [lab_id, permissions] : grants.permissions_by_lab) {
-        (void)lab_id;
-        permissions = intersect_permissions(permissions, scope);
+      // scope is defined (possibly empty → zero permissions after intersect).
+      // Prune labs whose permission set becomes empty so can_see_lab stays accurate.
+      for (auto it = grants.permissions_by_lab.begin(); it != grants.permissions_by_lab.end();) {
+        it->second = intersect_permissions(it->second, *scope);
+        it = it->second.empty() ? grants.permissions_by_lab.erase(it) : std::next(it);
       }
-      grants.global_permissions = intersect_permissions(grants.global_permissions, scope);
+      grants.global_permissions = intersect_permissions(grants.global_permissions, *scope);
       return grants;
     }
 
@@ -409,6 +418,20 @@ namespace fmgr::auth {
       if (!verify_token_hash(bearer_token, session.token_hash)) {
         continue;
       }
+
+      // Verify the owning user is still active (runs before cache lookup).
+      {
+        auto user_rtxn = backend_.begin(storage::IsolationLevel::ReadCommitted);
+        const auto users = user_rtxn->repo<core::User>().query(
+            storage::Query<core::User>::where(
+                storage::field<core::User, std::string>(core::User::Field::Id) ==
+                session.user_id.to_string()));
+        user_rtxn->commit();
+        if (users.empty() || users.front().status != core::UserStatus::Active) {
+          throw InvalidCredentials("user account is not active");
+        }
+      }
+
       const auto now = now_ts();
       check_session_expiry(session, now); // throws TokenExpired on violation
       update_last_seen_if_needed(session, now);
@@ -542,12 +565,32 @@ namespace fmgr::auth {
 
   SessionContext LocalAuthProvider::build_api_token_context(const core::ApiToken& token) const {
     auto rtxn = backend_.begin(storage::IsolationLevel::ReadCommitted);
+
+    // Verify user is still active before granting any access.
+    const auto users = rtxn->repo<core::User>().query(storage::Query<core::User>::where(
+        storage::field<core::User, std::string>(core::User::Field::Id) ==
+        token.user_id.to_string()));
+    if (users.empty() || users.front().status != core::UserStatus::Active) {
+      rtxn->commit();
+      throw InvalidCredentials("user account is not active");
+    }
+
     auto grants = resolve_permissions(*rtxn, token.user_id);
     rtxn->commit();
 
-    // Intersect base permissions with the token's own scope_json (if non-empty).
+    // Intersect with the token's permission scope.
     const auto scoped = permissions_from_scope_json(token.scope_json);
     grants = intersect_grants_with_scope(std::move(grants), scoped);
+
+    // Restrict to the token's designated lab (drops access to all other labs).
+    if (token.lab_id.has_value()) {
+      ScopedPermissionGrants lab_restricted;
+      auto it = grants.permissions_by_lab.find(*token.lab_id);
+      if (it != grants.permissions_by_lab.end()) {
+        lab_restricted.permissions_by_lab[*token.lab_id] = std::move(it->second);
+      }
+      grants = std::move(lab_restricted);
+    }
 
     return SessionContext{
         .session_id = core::SessionId(token.id.value()),

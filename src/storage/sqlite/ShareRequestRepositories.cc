@@ -4,6 +4,8 @@
 
 #include "core/share_request.h"
 #include "storage/ShareRequestTraits.h"
+#include "storage/detail/QuerySqlBuilder.h"
+#include "storage/detail/ShareRequestColumns.h"
 
 #include <sqlite3.h>
 
@@ -157,15 +159,6 @@ namespace fmgr::storage {
       return core::Timestamp::from_unix_micros(now.time_since_epoch().count());
     }
 
-    [[nodiscard]] std::string json_path(const std::vector<std::string>& segments) {
-      std::string path = "$";
-      for (const auto& segment : segments) {
-        path += ".";
-        path += segment;
-      }
-      return path;
-    }
-
     void bind_json_parameter(sqlite3_stmt* statement, int index, const nlohmann::json& value) {
       if (value.is_null()) {
         bind_null(statement, index);
@@ -190,91 +183,9 @@ namespace fmgr::storage {
       }
     }
 
-    // ---- Query tail builder ----
-
-    template <typename Entity, typename ColumnName>
-    void append_generic_predicates(std::string& sql, std::vector<nlohmann::json>& parameters,
-                                   const std::vector<std::string>& default_predicates,
-                                   const std::vector<Predicate<Entity>>& predicates,
-                                   ColumnName column_name) {
-      std::vector<std::string> clauses = default_predicates;
-      for (const auto& predicate : predicates) {
-        const auto column = column_name(predicate.field);
-        switch (predicate.op) {
-        case PredicateOperator::Equal:
-          clauses.push_back(column + " = ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::GreaterThanOrEqual:
-          clauses.push_back(column + " >= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::LessThanOrEqual:
-          clauses.push_back(column + " <= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::Between:
-          clauses.push_back(column + " BETWEEN ? AND ?");
-          parameters.push_back(predicate.lower);
-          parameters.push_back(predicate.upper);
-          break;
-        case PredicateOperator::In: {
-          std::string clause = column + " IN (";
-          for (std::size_t i = 0; i < predicate.values.size(); ++i) {
-            if (i != 0) {
-              clause += ", ";
-            }
-            clause += "?";
-            parameters.push_back(predicate.values.at(i));
-          }
-          clause += ")";
-          clauses.push_back(std::move(clause));
-          break;
-        }
-        case PredicateOperator::JsonPathEqual:
-          clauses.push_back("json_extract(" + column + ", ?) = ?");
-          parameters.emplace_back(json_path(predicate.json_path));
-          parameters.push_back(predicate.value);
-          break;
-        }
-      }
-      if (!clauses.empty()) {
-        sql += " WHERE ";
-        for (std::size_t i = 0; i < clauses.size(); ++i) {
-          if (i != 0) {
-            sql += " AND ";
-          }
-          sql += clauses.at(i);
-        }
-      }
-    }
-
-    template <typename Entity, typename ColumnName>
-    void append_query_tail(std::string& sql, std::vector<nlohmann::json>& parameters,
-                           const Query<Entity>& query_spec, ColumnName column_name) {
-      if (!query_spec.sorts().empty()) {
-        sql += " ORDER BY ";
-        for (std::size_t i = 0; i < query_spec.sorts().size(); ++i) {
-          if (i != 0) {
-            sql += ", ";
-          }
-          const auto sort = query_spec.sorts().at(i);
-          sql += column_name(sort.field);
-          sql += sort.direction == SortDirection::Ascending ? " ASC" : " DESC";
-        }
-      }
-      if (query_spec.limit_count().has_value()) {
-        sql += " LIMIT ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.limit_count().value()));
-      }
-      if (query_spec.offset_count().has_value()) {
-        if (!query_spec.limit_count().has_value()) {
-          sql += " LIMIT -1";
-        }
-        sql += " OFFSET ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.offset_count().value()));
-      }
-    }
+    using detail::share_approval_column_name;
+    using detail::share_request_column_name;
+    using detail::validate_share_request;
 
     // ---- Base template for ShareRequest ----
 
@@ -355,28 +266,6 @@ namespace fmgr::storage {
 
     // ---- ShareRequest column mapping ----
 
-    [[nodiscard]] std::string sr_column_name(core::ShareRequest::Field field) {
-      switch (field) {
-      case core::ShareRequest::Field::Id:
-        return "id";
-      case core::ShareRequest::Field::SourceLabId:
-        return "source_lab_id";
-      case core::ShareRequest::Field::TargetLabId:
-        return "target_lab_id";
-      case core::ShareRequest::Field::RequestedBy:
-        return "requested_by";
-      case core::ShareRequest::Field::ScopeJson:
-        return "scope_json";
-      case core::ShareRequest::Field::Status:
-        return "status";
-      case core::ShareRequest::Field::CreatedAt:
-        return "created_at_micros";
-      case core::ShareRequest::Field::DecidedAt:
-        return "decided_at_micros";
-      }
-      throw ConstraintViolation("unknown share_request field");
-    }
-
     constexpr std::string_view k_sr_columns =
         "id, source_lab_id, target_lab_id, requested_by, scope_json, "
         "status, created_at_micros, decided_at_micros";
@@ -419,9 +308,11 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"status = 'pending'"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  sr_column_name);
-        append_query_tail(sql, parameters, query_spec, sr_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::share_request_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::share_request_column_name,
+                                   dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -483,12 +374,7 @@ namespace fmgr::storage {
       }
 
       void validate(const core::ShareRequest& entity) const override {
-        if (entity.scope_json.empty()) {
-          throw ConstraintViolation("share_request scope_json is required");
-        }
-        if (entity.source_lab_id == entity.target_lab_id) {
-          throw ConstraintViolation("source_lab_id and target_lab_id must differ");
-        }
+        validate_share_request(entity);
       }
 
       [[nodiscard]] core::ShareRequestId id_of(const core::ShareRequest& entity) const override {
@@ -528,22 +414,6 @@ namespace fmgr::storage {
     };
 
     // ---- ShareRequestApproval column mapping ----
-
-    [[nodiscard]] std::string approval_column_name(core::ShareRequestApproval::Field field) {
-      switch (field) {
-      case core::ShareRequestApproval::Field::ShareRequestId:
-        return "share_request_id";
-      case core::ShareRequestApproval::Field::ApproverRole:
-        return "approver_role";
-      case core::ShareRequestApproval::Field::ApproverUserId:
-        return "approver_user_id";
-      case core::ShareRequestApproval::Field::DecidedAt:
-        return "decided_at_micros";
-      case core::ShareRequestApproval::Field::Note:
-        return "note";
-      }
-      throw ConstraintViolation("unknown share_request_approval field");
-    }
 
     constexpr std::string_view k_approval_columns =
         "share_request_id, approver_role, approver_user_id, decided_at_micros, note";
@@ -585,9 +455,11 @@ namespace fmgr::storage {
         sql += " FROM share_request_approvals";
         std::vector<nlohmann::json> parameters;
         // No tombstone — includes_tombstoned() is irrelevant.
-        append_generic_predicates(sql, parameters, {}, query_spec.predicates(),
-                                  approval_column_name);
-        append_query_tail(sql, parameters, query_spec, approval_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, {}, query_spec.predicates(),
+                             detail::share_approval_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::share_approval_column_name,
+                                   dialect);
 
         Statement statement(transaction_.handle(), sql);
         bind_parameters(statement.get(), parameters);

@@ -4,6 +4,15 @@ find_package(libsodium CONFIG REQUIRED)
 add_library(
   freezermanager_storage_postgres
   PostgresBackend.cc
+  IdentityRepositories.cc
+  RoleRepositories.cc
+  LayoutRepositories.cc
+  BoxGeometryRepositories.cc
+  ItemTypeRepositories.cc
+  SampleRepositories.cc
+  SessionRepositories.cc
+  ShareRequestRepositories.cc
+  AuditRepositories.cc
 )
 add_library(FreezerManager::storage_postgres ALIAS freezermanager_storage_postgres)
 

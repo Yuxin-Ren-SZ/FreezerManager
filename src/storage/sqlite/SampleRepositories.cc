@@ -4,6 +4,8 @@
 
 #include "core/sample.h"
 #include "storage/SampleTraits.h"
+#include "storage/detail/QuerySqlBuilder.h"
+#include "storage/detail/SampleColumns.h"
 
 #include <sqlite3.h>
 
@@ -201,15 +203,6 @@ namespace fmgr::storage {
       return core::Timestamp::from_unix_micros(now.time_since_epoch().count());
     }
 
-    [[nodiscard]] std::string json_path(const std::vector<std::string>& segments) {
-      std::string path = "$";
-      for (const auto& segment : segments) {
-        path += ".";
-        path += segment;
-      }
-      return path;
-    }
-
     void bind_json_parameter(sqlite3_stmt* statement, int index, const nlohmann::json& value) {
       if (value.is_null()) {
         bind_null(statement, index);
@@ -235,92 +228,6 @@ namespace fmgr::storage {
       for (const auto& parameter : parameters) {
         bind_json_parameter(statement, index, parameter);
         ++index;
-      }
-    }
-
-    // ---- Query tail builder (shared by all entity repos) ----
-
-    template <typename Entity, typename ColumnName>
-    void append_generic_predicates(std::string& sql, std::vector<nlohmann::json>& parameters,
-                                   const std::vector<std::string>& default_predicates,
-                                   const std::vector<Predicate<Entity>>& predicates,
-                                   ColumnName column_name) {
-      std::vector<std::string> clauses = default_predicates;
-      for (const auto& predicate : predicates) {
-        const auto column = column_name(predicate.field);
-        switch (predicate.op) {
-        case PredicateOperator::Equal:
-          clauses.push_back(column + " = ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::GreaterThanOrEqual:
-          clauses.push_back(column + " >= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::LessThanOrEqual:
-          clauses.push_back(column + " <= ?");
-          parameters.push_back(predicate.value);
-          break;
-        case PredicateOperator::Between:
-          clauses.push_back(column + " BETWEEN ? AND ?");
-          parameters.push_back(predicate.lower);
-          parameters.push_back(predicate.upper);
-          break;
-        case PredicateOperator::In: {
-          std::string clause = column + " IN (";
-          for (std::size_t i = 0; i < predicate.values.size(); ++i) {
-            if (i != 0) {
-              clause += ", ";
-            }
-            clause += "?";
-            parameters.push_back(predicate.values.at(i));
-          }
-          clause += ")";
-          clauses.push_back(std::move(clause));
-          break;
-        }
-        case PredicateOperator::JsonPathEqual:
-          clauses.push_back("json_extract(" + column + ", ?) = ?");
-          parameters.emplace_back(json_path(predicate.json_path));
-          parameters.push_back(predicate.value);
-          break;
-        }
-      }
-      if (!clauses.empty()) {
-        sql += " WHERE ";
-        for (std::size_t i = 0; i < clauses.size(); ++i) {
-          if (i != 0) {
-            sql += " AND ";
-          }
-          sql += clauses.at(i);
-        }
-      }
-    }
-
-    template <typename Entity, typename ColumnName>
-    void append_query_tail(std::string& sql, std::vector<nlohmann::json>& parameters,
-                           const Query<Entity>& query_spec, ColumnName column_name) {
-      if (!query_spec.sorts().empty()) {
-        sql += " ORDER BY ";
-        for (std::size_t i = 0; i < query_spec.sorts().size(); ++i) {
-          if (i != 0) {
-            sql += ", ";
-          }
-          const auto sort = query_spec.sorts().at(i);
-          sql += column_name(sort.field);
-          sql += sort.direction == SortDirection::Ascending ? " ASC" : " DESC";
-        }
-      }
-      if (query_spec.limit_count().has_value()) {
-        sql += " LIMIT ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.limit_count().value()));
-      }
-      if (query_spec.offset_count().has_value()) {
-        if (!query_spec.limit_count().has_value()) {
-          sql += " LIMIT -1";
-        }
-        sql += " OFFSET ?";
-        parameters.emplace_back(static_cast<std::int64_t>(query_spec.offset_count().value()));
       }
     }
 
@@ -401,53 +308,12 @@ namespace fmgr::storage {
       std::map<typename EntityTraits<Entity>::Id, PendingEntity> pending_;
     };
 
-    // ---- Sample column mapping ----
-
-    [[nodiscard]] std::string sample_column_name(core::Sample::Field field) {
-      switch (field) {
-      case core::Sample::Field::Id:
-        return "id";
-      case core::Sample::Field::LabId:
-        return "lab_id";
-      case core::Sample::Field::ItemTypeId:
-        return "item_type_id";
-      case core::Sample::Field::Name:
-        return "name";
-      case core::Sample::Field::Barcode:
-        return "barcode";
-      case core::Sample::Field::ContainerTypeId:
-        return "container_type_id";
-      case core::Sample::Field::BoxId:
-        return "box_id";
-      case core::Sample::Field::PositionLabel:
-        return "position_label";
-      case core::Sample::Field::VolumeValue:
-        return "volume_value";
-      case core::Sample::Field::VolumeUnit:
-        return "volume_unit";
-      case core::Sample::Field::MassValue:
-        return "mass_value";
-      case core::Sample::Field::MassUnit:
-        return "mass_unit";
-      case core::Sample::Field::Status:
-        return "status";
-      case core::Sample::Field::ParentSampleId:
-        return "parent_sample_id";
-      case core::Sample::Field::CreatedBy:
-        return "created_by";
-      case core::Sample::Field::CreatedAt:
-        return "created_at_micros";
-      case core::Sample::Field::LastModifiedBy:
-        return "last_modified_by";
-      case core::Sample::Field::LastModifiedAt:
-        return "last_modified_at_micros";
-      case core::Sample::Field::CustomFieldsJson:
-        return "custom_fields_json";
-      case core::Sample::Field::PhiFieldsEncJson:
-        return "phi_fields_enc_json";
-      }
-      throw ConstraintViolation("unknown sample field");
-    }
+    using detail::checkout_event_column_name;
+    using detail::project_column_name;
+    using detail::sample_column_name;
+    using detail::sample_project_column_name;
+    using detail::validate_project;
+    using detail::validate_sample_shape;
 
     constexpr std::string_view k_sample_columns =
         "id, lab_id, item_type_id, name, barcode, container_type_id, box_id, position_label, "
@@ -496,13 +362,7 @@ namespace fmgr::storage {
     // ---- Sample validation ----
 
     void validate_sample(const core::Sample& sample, const SqliteTransaction& transaction) {
-      if (sample.name.empty()) {
-        throw ConstraintViolation("sample name is required");
-      }
-      // Position-pair invariant (also enforced by DB CHECK).
-      if (sample.box_id.has_value() != sample.position_label.has_value()) {
-        throw ConstraintViolation("box_id and position_label must both be set or both null");
-      }
+      validate_sample_shape(sample);
       if (sample.box_id.has_value()) {
         // Box must exist in same lab and not be archived.
         {
@@ -580,9 +440,11 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"status != 'tombstoned'"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  sample_column_name);
-        append_query_tail(sql, parameters, query_spec, sample_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::sample_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::sample_column_name,
+                                   dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -647,6 +509,27 @@ namespace fmgr::storage {
 
       void validate(const core::Sample& entity) const override {
         validate_sample(entity, transaction());
+        // parent_sample_id must be in the same lab; self-reference is forbidden.
+        // Check pending_ first to allow parent+child insertions in the same transaction.
+        if (entity.parent_sample_id.has_value()) {
+          if (*entity.parent_sample_id == entity.id) {
+            throw ConstraintViolation("sample cannot be its own parent");
+          }
+          const auto pit = pending().find(*entity.parent_sample_id);
+          const bool in_pending =
+              pit != pending().end() && pit->second.entity.lab_id == entity.lab_id &&
+              pit->second.entity.status != core::SampleStatus::Tombstoned;
+          if (!in_pending) {
+            Statement stmt(transaction().handle(),
+                           "SELECT 1 FROM samples WHERE id = ? AND lab_id = ? LIMIT 1");
+            bind_text(stmt.get(), 1, entity.parent_sample_id->to_string());
+            bind_text(stmt.get(), 2, entity.lab_id.to_string());
+            if (!stmt.step_row()) {
+              throw ForeignKeyViolation(
+                  "parent_sample_id does not reference a sample in this lab");
+            }
+          }
+        }
       }
 
       [[nodiscard]] core::SampleId id_of(const core::Sample& entity) const override {
@@ -712,26 +595,6 @@ namespace fmgr::storage {
       }
     };
 
-    // ---- Project column mapping ----
-
-    [[nodiscard]] std::string project_column_name(core::Project::Field field) {
-      switch (field) {
-      case core::Project::Field::Id:
-        return "id";
-      case core::Project::Field::LabId:
-        return "lab_id";
-      case core::Project::Field::Name:
-        return "name";
-      case core::Project::Field::OwnerUserId:
-        return "owner_user_id";
-      case core::Project::Field::CreatedAt:
-        return "created_at_micros";
-      case core::Project::Field::ArchivedAt:
-        return "archived_at_micros";
-      }
-      throw ConstraintViolation("unknown project field");
-    }
-
     constexpr std::string_view k_project_columns =
         "id, lab_id, name, owner_user_id, created_at_micros, archived_at_micros";
 
@@ -769,9 +632,11 @@ namespace fmgr::storage {
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
                                   : std::vector<std::string>{"archived_at_micros IS NULL"};
-        append_generic_predicates(sql, parameters, defaults, query_spec.predicates(),
-                                  project_column_name);
-        append_query_tail(sql, parameters, query_spec, project_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, defaults, query_spec.predicates(),
+                             detail::project_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::project_column_name,
+                                   dialect);
 
         Statement statement(transaction().handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -826,9 +691,7 @@ namespace fmgr::storage {
       }
 
       void validate(const core::Project& entity) const override {
-        if (entity.name.empty()) {
-          throw ConstraintViolation("project name is required");
-        }
+        validate_project(entity);
       }
 
       [[nodiscard]] core::ProjectId id_of(const core::Project& entity) const override {
@@ -862,18 +725,6 @@ namespace fmgr::storage {
         statement.step_done();
       }
     };
-
-    // ---- SampleProject column mapping ----
-
-    [[nodiscard]] std::string sp_column_name(core::SampleProject::Field field) {
-      switch (field) {
-      case core::SampleProject::Field::SampleId:
-        return "sample_id";
-      case core::SampleProject::Field::ProjectId:
-        return "project_id";
-      }
-      throw ConstraintViolation("unknown sample_project field");
-    }
 
     constexpr std::string_view k_sp_columns = "sample_id, project_id";
 
@@ -913,8 +764,11 @@ namespace fmgr::storage {
         sql += " FROM sample_projects";
         std::vector<nlohmann::json> parameters;
         // SampleProject has no tombstone; includes_tombstoned() is irrelevant.
-        append_generic_predicates(sql, parameters, {}, query_spec.predicates(), sp_column_name);
-        append_query_tail(sql, parameters, query_spec, sp_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, {}, query_spec.predicates(),
+                             detail::sample_project_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::sample_project_column_name,
+                                   dialect);
 
         Statement statement(transaction_.handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -937,6 +791,17 @@ namespace fmgr::storage {
         const auto sp_id = entity.id();
         if (pending_inserts_.contains(sp_id) || load(sp_id).has_value()) {
           throw UniqueViolation("sample_project link already exists");
+        }
+        // Sample and project must belong to the same lab.
+        {
+          Statement stmt(transaction_.handle(),
+                         "SELECT 1 FROM samples s JOIN projects p ON s.lab_id = p.lab_id "
+                         "WHERE s.id = ? AND p.id = ? LIMIT 1");
+          bind_text(stmt.get(), 1, entity.sample_id.to_string());
+          bind_text(stmt.get(), 2, entity.project_id.to_string());
+          if (!stmt.step_row()) {
+            throw ForeignKeyViolation("sample and project do not belong to the same lab");
+          }
         }
         pending_inserts_.insert_or_assign(sp_id, entity);
         transaction_.note_mutation(
@@ -1005,34 +870,6 @@ namespace fmgr::storage {
       std::set<core::SampleProjectId> pending_deletes_;
     };
 
-    // ---- CheckoutEvent column mapping ----
-
-    [[nodiscard]] std::string event_column_name(core::CheckoutEvent::Field field) {
-      switch (field) {
-      case core::CheckoutEvent::Field::Id:
-        return "id";
-      case core::CheckoutEvent::Field::SampleId:
-        return "sample_id";
-      case core::CheckoutEvent::Field::LabId:
-        return "lab_id";
-      case core::CheckoutEvent::Field::UserId:
-        return "user_id";
-      case core::CheckoutEvent::Field::Action:
-        return "action";
-      case core::CheckoutEvent::Field::Reason:
-        return "reason";
-      case core::CheckoutEvent::Field::At:
-        return "at_micros";
-      case core::CheckoutEvent::Field::VolumeDelta:
-        return "volume_delta";
-      case core::CheckoutEvent::Field::VolumeUnit:
-        return "volume_unit";
-      case core::CheckoutEvent::Field::LocationAfter:
-        return "location_after";
-      }
-      throw ConstraintViolation("unknown checkout_event field");
-    }
-
     constexpr std::string_view k_event_columns =
         "id, sample_id, lab_id, user_id, action, reason, at_micros, "
         "volume_delta, volume_unit, location_after";
@@ -1083,8 +920,11 @@ namespace fmgr::storage {
         sql += " FROM checkout_events";
         std::vector<nlohmann::json> parameters;
         // CheckoutEvent has no tombstone; includes_tombstoned() is irrelevant.
-        append_generic_predicates(sql, parameters, {}, query_spec.predicates(), event_column_name);
-        append_query_tail(sql, parameters, query_spec, event_column_name);
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, {}, query_spec.predicates(),
+                             detail::checkout_event_column_name, dialect);
+        detail::append_order_limit(sql, parameters, query_spec, detail::checkout_event_column_name,
+                                   dialect);
 
         Statement statement(transaction_.handle(), sql);
         bind_parameters(statement.get(), parameters);
@@ -1103,6 +943,17 @@ namespace fmgr::storage {
       void insert(const core::CheckoutEvent& entity, const MutationContext& context) override {
         if (pending_.contains(entity.id) || load(entity.id).has_value()) {
           throw UniqueViolation("checkout_event id already exists");
+        }
+        // lab_id must match the referenced sample's lab.
+        {
+          Statement stmt(transaction_.handle(),
+                         "SELECT 1 FROM samples WHERE id = ? AND lab_id = ? LIMIT 1");
+          bind_text(stmt.get(), 1, entity.sample_id.to_string());
+          bind_text(stmt.get(), 2, entity.lab_id.to_string());
+          if (!stmt.step_row()) {
+            throw ConstraintViolation(
+                "checkout_event lab_id does not match the sample's lab");
+          }
         }
         pending_.insert_or_assign(entity.id, entity);
         transaction_.note_mutation("checkout_event", entity.id.to_string(), context);
