@@ -710,10 +710,11 @@ namespace fmgr::auth {
       const core::LabId kLabId2{id_from_low<core::LabId>(2)};
       {
         auto txn = backend_->begin(storage::IsolationLevel::Serializable);
-        txn->repo<core::Lab>().insert(
-            core::Lab{.id = kLabId2, .name = "Lab 2", .contact = "l2@example.com",
-                      .created_at = ts(2'000)},
-            test_ctx());
+        txn->repo<core::Lab>().insert(core::Lab{.id = kLabId2,
+                                                .name = "Lab 2",
+                                                .contact = "l2@example.com",
+                                                .created_at = ts(2'000)},
+                                      test_ctx());
         txn->repo<core::LabMembership>().insert(
             core::LabMembership{.user_id = kUserNoTotpId,
                                 .lab_id = kLabId2,
@@ -727,7 +728,7 @@ namespace fmgr::auth {
       const core::ApiToken api_token{
           .id = pat.id,
           .user_id = kUserNoTotpId,
-          .lab_id = kLabId,  // scoped to kLabId only
+          .lab_id = kLabId, // scoped to kLabId only
           .name = "lab-scoped token",
           .token_hash = pat.token_hash,
           .token_prefix = pat.token_prefix,

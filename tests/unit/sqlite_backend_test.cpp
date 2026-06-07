@@ -22,7 +22,6 @@ namespace fmgr::storage {
                                                        unique + "-" + std::string(suffix) + ".db");
     }
 
-
     TEST(SqliteBackend, InMemoryDatabaseMigratesAndReportsCapabilities) {
       SqliteBackend backend(SqliteBackendOptions{
           .database_path = ":memory:",

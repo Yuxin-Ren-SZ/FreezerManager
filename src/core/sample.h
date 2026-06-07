@@ -10,8 +10,8 @@
 
 #include "core/enums.h"
 #include "core/ids.h"
-#include "core/quantity.h"
 #include "core/json_helpers.h"
+#include "core/quantity.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -22,7 +22,6 @@
 #include <string>
 
 namespace fmgr::core {
-
 
   // ---- VolumeUnit / MassUnit JSON converters ----
   // (to_string / parse_* are in quantity.h; JSON adapters live here

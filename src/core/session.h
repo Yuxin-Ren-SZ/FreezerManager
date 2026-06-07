@@ -54,7 +54,8 @@ namespace fmgr::core {
 
     SessionId id;
     UserId user_id;
-    std::string token_hash;   // BLAKE2b-256 hash; faster than SHA-256 for high-freq token verification; never contains plaintext
+    std::string token_hash;   // BLAKE2b-256 hash; faster than SHA-256 for high-freq token
+                              // verification; never contains plaintext
     std::string token_prefix; // first N chars of plaintext token; indexed for lookup
     Timestamp created_at;
     Timestamp last_seen_at;
@@ -88,9 +89,10 @@ namespace fmgr::core {
 
     ApiTokenId id;
     UserId user_id;
-    std::optional<LabId> lab_id;  // null = not scoped to a specific lab
-    std::string name;             // user-visible label, e.g. "Jupyter notebook token"
-    std::string scope_json{R"(["*"])"}; // ["*"] = unrestricted; [] = zero perms; explicit list = restricted
+    std::optional<LabId> lab_id; // null = not scoped to a specific lab
+    std::string name;            // user-visible label, e.g. "Jupyter notebook token"
+    std::string scope_json{
+        R"(["*"])"}; // ["*"] = unrestricted; [] = zero perms; explicit list = restricted
     std::string token_hash;
     std::string token_prefix;
     Timestamp created_at;
@@ -99,7 +101,6 @@ namespace fmgr::core {
 
     friend bool operator==(const ApiToken&, const ApiToken&) = default;
   };
-
 
   // ---- Session JSON ----
 

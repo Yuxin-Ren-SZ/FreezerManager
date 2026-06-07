@@ -12,21 +12,21 @@
 
 namespace fmgr::core::json_helpers {
 
-template <typename Value>
-[[nodiscard]] inline nlohmann::json opt_to_json(const std::optional<Value>& value) {
-  if (!value.has_value()) {
-    return nullptr;
+  template <typename Value>
+  [[nodiscard]] inline nlohmann::json opt_to_json(const std::optional<Value>& value) {
+    if (!value.has_value()) {
+      return nullptr;
+    }
+    return nlohmann::json(value.value());
   }
-  return nlohmann::json(value.value());
-}
 
-template <typename Value>
-[[nodiscard]] inline std::optional<Value> opt_from_json(const nlohmann::json& json) {
-  if (json.is_null()) {
-    return std::nullopt;
+  template <typename Value>
+  [[nodiscard]] inline std::optional<Value> opt_from_json(const nlohmann::json& json) {
+    if (json.is_null()) {
+      return std::nullopt;
+    }
+    return json.get<Value>();
   }
-  return json.get<Value>();
-}
 
 } // namespace fmgr::core::json_helpers
 

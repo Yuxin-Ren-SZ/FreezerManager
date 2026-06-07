@@ -31,6 +31,10 @@ namespace fmgr::storage {
     std::vector<PostgresMigration> migrations;
   };
 
+  // The production Postgres schema as an ordered migration list. Exposed so tests
+  // can build on the real schema instead of duplicating table DDL.
+  [[nodiscard]] std::vector<PostgresMigration> default_postgres_migrations();
+
   struct PostgresBackendState;
 
   class PostgresTransaction final : public ITransaction {

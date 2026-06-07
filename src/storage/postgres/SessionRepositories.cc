@@ -254,7 +254,7 @@ namespace fmgr::storage {
           txn_.work().exec(
               "INSERT INTO api_tokens (id, user_id, lab_id, name, scope_json, token_hash, "
               "token_prefix, created_at_micros, expires_at_micros, revoked_at_micros) "
-              "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)",
+              "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
               bind_api_token(entity));
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
@@ -281,7 +281,7 @@ namespace fmgr::storage {
       void write_update(const core::ApiToken& entity, const MutationContext& context) {
         try {
           const auto result = txn_.work().exec(
-              "UPDATE api_tokens SET user_id = $2, lab_id = $3, name = $4, scope_json = $5::jsonb, "
+              "UPDATE api_tokens SET user_id = $2, lab_id = $3, name = $4, scope_json = $5, "
               "token_hash = $6, token_prefix = $7, created_at_micros = $8, expires_at_micros = $9, "
               "revoked_at_micros = $10 WHERE id = $1",
               bind_api_token(entity));

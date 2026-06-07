@@ -46,6 +46,4 @@ target_link_libraries(
     SQLite::SQLite3
 )
 
-freezermanager_enable_sanitizers(freezermanager_storage_sqlite)
-
 add_subdirectory(postgres)

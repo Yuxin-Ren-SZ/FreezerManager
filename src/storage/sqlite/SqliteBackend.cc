@@ -799,8 +799,8 @@ ALTER TABLE sessions ADD COLUMN mfa_complete INTEGER NOT NULL DEFAULT 1;
       std::array<unsigned char, crypto_generichash_BYTES> hash{};
       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
       crypto_generichash(hash.data(), hash.size(),
-                         reinterpret_cast<const unsigned char*>(data.data()), data.size(),
-                         nullptr, 0);
+                         reinterpret_cast<const unsigned char*>(data.data()), data.size(), nullptr,
+                         0);
       std::string hex;
       hex.reserve(hash.size() * 2);
       for (const unsigned char byte : hash) {
@@ -1034,20 +1034,16 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
         for (const auto& mutation : impl_->audit_mutations) {
           const auto event_id = generate_random_uuid();
 
-          const std::string before_str =
-              mutation.context.before_json.has_value()
-                  ? mutation.context.before_json->dump()
-                  : "{}";
+          const std::string before_str = mutation.context.before_json.has_value()
+                                             ? mutation.context.before_json->dump()
+                                             : "{}";
           const std::string after_str =
-              mutation.context.after_json.has_value()
-                  ? mutation.context.after_json->dump()
-                  : "{}";
+              mutation.context.after_json.has_value() ? mutation.context.after_json->dump() : "{}";
 
           // Build the content JSON (alphabetically sorted; nlohmann uses std::map).
-          const nlohmann::json lab_id_val =
-              mutation.context.lab_id.has_value()
-                  ? nlohmann::json(*mutation.context.lab_id)
-                  : nlohmann::json(nullptr);
+          const nlohmann::json lab_id_val = mutation.context.lab_id.has_value()
+                                                ? nlohmann::json(*mutation.context.lab_id)
+                                                : nlohmann::json(nullptr);
           const nlohmann::json content = {
               {"action", mutation.action},
               {"actor_session_id", mutation.context.actor_session_id},

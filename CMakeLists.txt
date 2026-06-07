@@ -23,22 +23,23 @@ if(FREEZERMANAGER_ENABLE_COVERAGE)
   add_link_options(--coverage)
 endif()
 
-function(freezermanager_enable_sanitizers target)
-  if(FREEZERMANAGER_ENABLE_ASAN)
-    target_compile_options(${target} PRIVATE -fsanitize=address -fno-omit-frame-pointer)
-    target_link_options(${target} PRIVATE -fsanitize=address)
-  endif()
+# Sanitizers are applied globally (compile + link) so every project library and
+# every executable that links them stays consistent. Per-target opt-in let
+# instrumented libs link into uninstrumented test exes -> undefined __tsan_*/etc.
+if(FREEZERMANAGER_ENABLE_ASAN)
+  add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address)
+endif()
 
-  if(FREEZERMANAGER_ENABLE_UBSAN)
-    target_compile_options(${target} PRIVATE -fsanitize=undefined -fno-omit-frame-pointer)
-    target_link_options(${target} PRIVATE -fsanitize=undefined)
-  endif()
+if(FREEZERMANAGER_ENABLE_UBSAN)
+  add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=undefined)
+endif()
 
-  if(FREEZERMANAGER_ENABLE_TSAN)
-    target_compile_options(${target} PRIVATE -fsanitize=thread -fno-omit-frame-pointer)
-    target_link_options(${target} PRIVATE -fsanitize=thread)
-  endif()
-endfunction()
+if(FREEZERMANAGER_ENABLE_TSAN)
+  add_compile_options(-fsanitize=thread -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=thread)
+endif()
 
 include(CTest)
 

@@ -58,8 +58,7 @@ namespace fmgr::auth {
         return std::set<core::Permission>{}; // malformed → fail-closed
       }
       // ["*"] sentinel means unrestricted — inherit all user permissions.
-      if (parsed.size() == 1 && parsed[0].is_string() &&
-          parsed[0].get<std::string>() == "*") {
+      if (parsed.size() == 1 && parsed[0].is_string() && parsed[0].get<std::string>() == "*") {
         return std::nullopt;
       }
       std::set<core::Permission> perms;
@@ -422,10 +421,9 @@ namespace fmgr::auth {
       // Verify the owning user is still active (runs before cache lookup).
       {
         auto user_rtxn = backend_.begin(storage::IsolationLevel::ReadCommitted);
-        const auto users = user_rtxn->repo<core::User>().query(
-            storage::Query<core::User>::where(
-                storage::field<core::User, std::string>(core::User::Field::Id) ==
-                session.user_id.to_string()));
+        const auto users = user_rtxn->repo<core::User>().query(storage::Query<core::User>::where(
+            storage::field<core::User, std::string>(core::User::Field::Id) ==
+            session.user_id.to_string()));
         user_rtxn->commit();
         if (users.empty() || users.front().status != core::UserStatus::Active) {
           throw InvalidCredentials("user account is not active");

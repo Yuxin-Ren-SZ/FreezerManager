@@ -97,7 +97,6 @@ namespace fmgr::core {
 
   // ---- JSON serialization ----
 
-
   inline void to_json(nlohmann::json& json, const ShareRequestApprovalId& id) {
     json = nlohmann::json{
         {"share_request_id", id.share_request_id},
@@ -114,8 +113,10 @@ namespace fmgr::core {
 
   inline void to_json(nlohmann::json& json, const ShareRequestApproval& approval) {
     json = nlohmann::json{
-        {"share_request_id", approval.share_request_id}, {"approver_role", approval.approver_role},
-        {"approver_user_id", approval.approver_user_id}, {"decided_at", approval.decided_at},
+        {"share_request_id", approval.share_request_id},
+        {"approver_role", approval.approver_role},
+        {"approver_user_id", approval.approver_user_id},
+        {"decided_at", approval.decided_at},
         {"note", json_helpers::opt_to_json(approval.note)},
     };
   }

@@ -74,7 +74,6 @@ namespace fmgr::core {
     friend bool operator==(const AuditEvent&, const AuditEvent&) = default;
   };
 
-
   inline void to_json(nlohmann::json& json, const AuditEvent& event) {
     json = nlohmann::json{
         {"id", event.id},

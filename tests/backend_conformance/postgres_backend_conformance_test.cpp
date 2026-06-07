@@ -320,12 +320,14 @@ namespace fmgr::storage {
           txn_.work().exec(
               "INSERT INTO fmgr_pg_conformance_sample "
               "(id,lab_id,name,status,box_id,position_label,custom_fields_json,created_at_micros,"
-              "version) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1)",
+              "version) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,1)",
               ins);
         } catch (const pqxx::sql_error& err) {
           const std::string_view state = err.sqlstate();
-          if (std::string_view(err.sqlstate()) == "23505")
+          if (state == "23505")
             throw UniqueViolation(err.what());
+          if (state == "40001" || state == "40P01")
+            throw SerializationFailure(err.what());
           throw BackendError(BackendErrorCode::ConstraintViolation, err.what());
         }
 
@@ -340,14 +342,16 @@ namespace fmgr::storage {
                                       : std::optional<std::string>{};
         const std::optional<std::string>& pos_label = entity.position_label;
 
-        // Lock the row for update (serialization check).
-        const auto ver_result = txn_.work().exec(
-            "SELECT version FROM fmgr_pg_conformance_sample WHERE id=$1 FOR UPDATE",
-            pqxx::params{entity.id.to_string()});
-        if (ver_result.empty())
-          throw NotFound("pg conformance sample not found");
-
         try {
+          // Lock the row for update (serialization check). Under SERIALIZABLE a
+          // concurrent committed update raises 40001 here, so this must share the
+          // sqlstate mapping below rather than escaping as a raw pqxx error.
+          const auto ver_result = txn_.work().exec(
+              "SELECT version FROM fmgr_pg_conformance_sample WHERE id=$1 FOR UPDATE",
+              pqxx::params{entity.id.to_string()});
+          if (ver_result.empty())
+            throw NotFound("pg conformance sample not found");
+
           pqxx::params upd;
           upd.append(entity.id.to_string());
           upd.append(entity.lab_id.to_string());
@@ -360,12 +364,14 @@ namespace fmgr::storage {
           txn_.work().exec(
               "UPDATE fmgr_pg_conformance_sample SET "
               "id=$1,lab_id=$2,name=$3,status=$4,box_id=$5,position_label=$6,"
-              "custom_fields_json=$7,created_at_micros=$8,version=version+1 WHERE id=$1",
+              "custom_fields_json=$7::jsonb,created_at_micros=$8,version=version+1 WHERE id=$1",
               upd);
         } catch (const pqxx::sql_error& err) {
           const std::string_view state = err.sqlstate();
-          if (std::string_view(err.sqlstate()) == "23505")
+          if (state == "23505")
             throw UniqueViolation(err.what());
+          if (state == "40001" || state == "40P01")
+            throw SerializationFailure(err.what());
           throw BackendError(BackendErrorCode::ConstraintViolation, err.what());
         }
 
@@ -427,8 +433,16 @@ namespace fmgr::storage {
     // ---- Migration for conformance entity ----
 
     [[nodiscard]] std::vector<PostgresMigration> pg_conformance_migrations() {
+      // The conformance entity is a standalone table. The only shared dependency
+      // the backend's audit-append path needs is audit_events (default migration
+      // 1: FK-free and fully idempotent). Bundle it with the sample table as a
+      // single version-1 migration so current_version() stays 1 and a
+      // downgrade -> re-migrate cycle is clean (no domain RLS policies to
+      // re-create). custom_fields_json is JSONB to match the real samples table
+      // and the JSONB query DSL (`->>`).
+      const auto audit = default_postgres_migrations().front(); // 0001_init = audit_events
       return {
-          {.version = 1, .name = "pg_conformance_sample", .up_sql = R"sql(
+          {.version = 1, .name = "pg_conformance", .up_sql = audit.up_sql + R"sql(
 CREATE TABLE IF NOT EXISTS fmgr_pg_conformance_sample (
   id                  TEXT   PRIMARY KEY,
   lab_id              TEXT   NOT NULL,
@@ -436,7 +450,7 @@ CREATE TABLE IF NOT EXISTS fmgr_pg_conformance_sample (
   status              TEXT   NOT NULL,
   box_id              TEXT,
   position_label      TEXT,
-  custom_fields_json  TEXT   NOT NULL DEFAULT '{}',
+  custom_fields_json  JSONB  NOT NULL DEFAULT '{}',
   created_at_micros   BIGINT NOT NULL,
   version             BIGINT NOT NULL DEFAULT 1
 );
@@ -469,7 +483,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
 
         backend_ = std::make_unique<PostgresBackend>(PostgresBackendOptions{
             .connection_string = *url,
-            .pool_size = 4,
+            // Must cover the concurrency test's thread count (6, or 20 under
+            // FMGR_STORAGE_STRESS); each thread holds one pooled connection for
+            // its transaction. Too small -> pool-acquire BackendError escapes a
+            // worker thread -> std::terminate.
+            .pool_size = 24,
             .migrations = pg_conformance_migrations(),
         });
         backend_->register_repository_factory<PgConformanceSample>([](PostgresTransaction& txn) {
@@ -608,11 +626,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       auto right_entity = right.value();
       left_entity.name = "left";
       right_entity.name = "right";
+      // Commit left before right writes: right still holds its pre-commit
+      // snapshot, so its update (a `SELECT ... FOR UPDATE` on the row left just
+      // changed) raises serialization_failure. Issuing right's update *before*
+      // left commits would instead block on left's uncommitted row lock and
+      // deadlock the single-threaded test.
       left_txn->repo<PgConformanceSample>().update(left_entity, mutation_context());
-      right_txn->repo<PgConformanceSample>().update(right_entity, mutation_context());
-
       left_txn->commit();
-      EXPECT_THROW(right_txn->commit(), SerializationFailure);
+
+      EXPECT_THROW(
+          {
+            right_txn->repo<PgConformanceSample>().update(right_entity, mutation_context());
+            right_txn->commit();
+          },
+          SerializationFailure);
     }
 
     TEST_F(PostgresBackendConformanceTest, ConcurrentPlacementPreservesActivePositionUniqueness) {
@@ -643,6 +670,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
               std::scoped_lock lock(result_mutex);
               ++failures;
             } catch (const SerializationFailure&) {
+              std::scoped_lock lock(result_mutex);
+              ++failures;
+            } catch (const BackendError&) {
+              // Any other backend-level error (e.g. pool acquire timeout) still
+              // counts as a non-winning attempt; never let it escape the thread.
               std::scoped_lock lock(result_mutex);
               ++failures;
             }
@@ -797,9 +829,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       // Switch to the non-superuser role so RLS policies actually apply.
       pg_txn->work().exec("SET LOCAL ROLE fmgr_rls_tester");
 
-      const auto result = pg_txn->work().exec(
-          "SELECT id FROM storage_containers WHERE id=$1",
-          pqxx::params{container_id_.to_string()});
+      const auto result = pg_txn->work().exec("SELECT id FROM storage_containers WHERE id=$1",
+                                              pqxx::params{container_id_.to_string()});
       EXPECT_TRUE(result.empty()) << "RLS should block cross-lab access";
       txn->rollback();
     }
@@ -814,9 +845,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       // Switch to the non-superuser role so RLS policies actually apply.
       pg_txn->work().exec("SET LOCAL ROLE fmgr_rls_tester");
 
-      const auto result = pg_txn->work().exec(
-          "SELECT id FROM storage_containers WHERE id=$1",
-          pqxx::params{container_id_.to_string()});
+      const auto result = pg_txn->work().exec("SELECT id FROM storage_containers WHERE id=$1",
+                                              pqxx::params{container_id_.to_string()});
       EXPECT_FALSE(result.empty()) << "RLS should allow access for the owning lab";
       txn->rollback();
     }

@@ -13,8 +13,6 @@ namespace fmgr::core {
   namespace {
     using namespace fmgr::test;
 
-
-
     [[nodiscard]] CustomFieldDefinition make_def(std::string key, FieldDataType data_type,
                                                  bool required = false,
                                                  std::string validation_json = "{}") {
@@ -196,8 +194,8 @@ namespace fmgr::core {
     }
 
     TEST(CustomFieldValidatorTest, DateFieldRespectsMinMaxFromValidationJson) {
-      const auto def = make_def("dob", FieldDataType::Date, false,
-                                R"({"min":"2025-01-01","max":"2025-12-31"})");
+      const auto def =
+          make_def("dob", FieldDataType::Date, false, R"({"min":"2025-01-01","max":"2025-12-31"})");
       // Before min
       auto errors =
           validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"dob", "2024-12-31"}});
