@@ -281,9 +281,9 @@ namespace fmgr::storage {
             throw ConstraintViolation("sample cannot be its own parent");
           }
           if (txn_.work()
-                  .exec("SELECT 1 FROM samples WHERE id = $1 AND lab_id = $2 LIMIT 1",
-                        pqxx::params{sample.parent_sample_id->to_string(),
-                                     sample.lab_id.to_string()})
+                  .exec(
+                      "SELECT 1 FROM samples WHERE id = $1 AND lab_id = $2 LIMIT 1",
+                      pqxx::params{sample.parent_sample_id->to_string(), sample.lab_id.to_string()})
                   .empty()) {
             throw ForeignKeyViolation("parent_sample_id does not reference a sample in this lab");
           }

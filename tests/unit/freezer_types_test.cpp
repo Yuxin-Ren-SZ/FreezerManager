@@ -12,8 +12,6 @@ namespace fmgr::core {
   namespace {
     using namespace fmgr::test;
 
-
-
     TEST(FreezerTypesTest, CapacityHintJsonRoundTripPreservesNullableFields) {
       const CapacityHint hint{.rows = 9, .cols = 9, .depth = std::nullopt};
       nlohmann::json json = hint;

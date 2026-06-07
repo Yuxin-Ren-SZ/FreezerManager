@@ -130,11 +130,10 @@ namespace fmgr::core {
       }
     }
 
-    inline void validate_date_or_datetime_value(const std::string& key,
-                                                  const nlohmann::json& value,
-                                                  FieldDataType data_type,
-                                                  const std::string& validation_json,
-                                                  std::vector<FieldValidationError>& errors) {
+    inline void validate_date_or_datetime_value(const std::string& key, const nlohmann::json& value,
+                                                FieldDataType data_type,
+                                                const std::string& validation_json,
+                                                std::vector<FieldValidationError>& errors) {
       if (!value.is_string()) {
         errors.push_back(
             {.key = key,
@@ -164,13 +163,13 @@ namespace fmgr::core {
       const auto constraints = parse_constraints(validation_json);
       if (constraints.contains("min") && constraints.at("min").is_string() &&
           str < constraints.at("min").get<std::string>()) {
-        errors.push_back({.key = key, .message = std::string(to_string(data_type)) +
-                                                 " is before minimum"});
+        errors.push_back(
+            {.key = key, .message = std::string(to_string(data_type)) + " is before minimum"});
       }
       if (constraints.contains("max") && constraints.at("max").is_string() &&
           str > constraints.at("max").get<std::string>()) {
-        errors.push_back({.key = key, .message = std::string(to_string(data_type)) +
-                                                 " is after maximum"});
+        errors.push_back(
+            {.key = key, .message = std::string(to_string(data_type)) + " is after maximum"});
       }
     }
 

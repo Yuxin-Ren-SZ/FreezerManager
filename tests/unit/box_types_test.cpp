@@ -13,8 +13,6 @@ namespace fmgr::core {
   namespace {
     using namespace fmgr::test;
 
-
-
     TEST(BoxTypesTest, OuterDimensionsJsonRoundTrip) {
       const OuterDimensionsMm dimensions{.width = 12.5, .height = 40.0, .depth = 12.5};
       nlohmann::json json = dimensions;

@@ -16,28 +16,27 @@
 
 namespace fmgr::test {
 
-[[nodiscard]] inline core::Uuid uuid_from_low(std::uint64_t low_bits) {
-  std::array<std::uint8_t, 16> bytes{};
-  for (std::size_t index = 0; index < 8; ++index) {
-    bytes.at(15 - index) = static_cast<std::uint8_t>((low_bits >> (index * 8U)) & 0xffU);
+  [[nodiscard]] inline core::Uuid uuid_from_low(std::uint64_t low_bits) {
+    std::array<std::uint8_t, 16> bytes{};
+    for (std::size_t index = 0; index < 8; ++index) {
+      bytes.at(15 - index) = static_cast<std::uint8_t>((low_bits >> (index * 8U)) & 0xffU);
+    }
+    return core::Uuid(bytes);
   }
-  return core::Uuid(bytes);
-}
 
-template <typename StrongId>
-[[nodiscard]] StrongId id_from_low(std::uint64_t low_bits) {
-  return StrongId(uuid_from_low(low_bits));
-}
+  template <typename StrongId> [[nodiscard]] StrongId id_from_low(std::uint64_t low_bits) {
+    return StrongId(uuid_from_low(low_bits));
+  }
 
-[[nodiscard]] inline core::Timestamp ts(std::int64_t micros) {
-  return core::Timestamp::from_unix_micros(micros);
-}
+  [[nodiscard]] inline core::Timestamp ts(std::int64_t micros) {
+    return core::Timestamp::from_unix_micros(micros);
+  }
 
-inline void remove_sqlite_files(const std::filesystem::path& path) {
-  std::filesystem::remove(path);
-  std::filesystem::remove(path.string() + "-wal");
-  std::filesystem::remove(path.string() + "-shm");
-}
+  inline void remove_sqlite_files(const std::filesystem::path& path) {
+    std::filesystem::remove(path);
+    std::filesystem::remove(path.string() + "-wal");
+    std::filesystem::remove(path.string() + "-shm");
+  }
 
 } // namespace fmgr::test
 

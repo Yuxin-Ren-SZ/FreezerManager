@@ -829,9 +829,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       // Switch to the non-superuser role so RLS policies actually apply.
       pg_txn->work().exec("SET LOCAL ROLE fmgr_rls_tester");
 
-      const auto result = pg_txn->work().exec(
-          "SELECT id FROM storage_containers WHERE id=$1",
-          pqxx::params{container_id_.to_string()});
+      const auto result = pg_txn->work().exec("SELECT id FROM storage_containers WHERE id=$1",
+                                              pqxx::params{container_id_.to_string()});
       EXPECT_TRUE(result.empty()) << "RLS should block cross-lab access";
       txn->rollback();
     }
@@ -846,9 +845,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       // Switch to the non-superuser role so RLS policies actually apply.
       pg_txn->work().exec("SET LOCAL ROLE fmgr_rls_tester");
 
-      const auto result = pg_txn->work().exec(
-          "SELECT id FROM storage_containers WHERE id=$1",
-          pqxx::params{container_id_.to_string()});
+      const auto result = pg_txn->work().exec("SELECT id FROM storage_containers WHERE id=$1",
+                                              pqxx::params{container_id_.to_string()});
       EXPECT_FALSE(result.empty()) << "RLS should allow access for the owning lab";
       txn->rollback();
     }

@@ -32,13 +32,25 @@ namespace fmgr::storage {
 
     [[noreturn]] void throw_pqxx_error(const pqxx::sql_error& error) {
       const std::string_view state = error.sqlstate();
-      if (state == "23505") { throw UniqueViolation(error.what()); }
-      if (state == "23503") { throw ForeignKeyViolation(error.what()); }
-      if (state == "23514" || state == "23502" || state == "23000") { throw ConstraintViolation(error.what()); }
-      if (state == "40001" || state == "40P01") { throw SerializationFailure(error.what()); }
+      if (state == "23505") {
+        throw UniqueViolation(error.what());
+      }
+      if (state == "23503") {
+        throw ForeignKeyViolation(error.what());
+      }
+      if (state == "23514" || state == "23502" || state == "23000") {
+        throw ConstraintViolation(error.what());
+      }
+      if (state == "40001" || state == "40P01") {
+        throw SerializationFailure(error.what());
+      }
       // Connection-class errors (08xxx) and admin shutdown (57P01) → Unavailable.
-      if (state.size() >= 2 && state.substr(0, 2) == "08") { throw Unavailable(error.what()); }
-      if (state == "57P01") { throw Unavailable(error.what()); }
+      if (state.size() >= 2 && state.substr(0, 2) == "08") {
+        throw Unavailable(error.what());
+      }
+      if (state == "57P01") {
+        throw Unavailable(error.what());
+      }
       // Unrecognised SQLSTATE — fall back to ConstraintViolation (safest for data-layer errors).
       throw ConstraintViolation(error.what());
     }
@@ -572,8 +584,8 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
       std::array<unsigned char, crypto_generichash_BYTES> hash{};
       // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
       crypto_generichash(hash.data(), hash.size(),
-                         reinterpret_cast<const unsigned char*>(data.data()), data.size(),
-                         nullptr, 0);
+                         reinterpret_cast<const unsigned char*>(data.data()), data.size(), nullptr,
+                         0);
       std::string hex;
       hex.reserve(hash.size() * 2);
       for (const unsigned char byte : hash) {
@@ -615,7 +627,9 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
       const bool found = pool_cv.wait_for(lock, timeout, [this] {
         return std::ranges::any_of(connection_available, [](bool available) { return available; });
       });
-      if (!found) { throw Unavailable("postgres connection pool exhausted"); }
+      if (!found) {
+        throw Unavailable("postgres connection pool exhausted");
+      }
       for (std::size_t i = 0; i < connection_available.size(); ++i) {
         if (connection_available[i]) {
           connection_available[i] = false;
@@ -759,7 +773,9 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
       }
 
       if (!impl_->audit_mutations.empty()) {
-        if (sodium_init() < 0) { throw ConstraintViolation("libsodium initialisation failed"); }
+        if (sodium_init() < 0) {
+          throw ConstraintViolation("libsodium initialisation failed");
+        }
 
         // Advisory lock serialises concurrent audit appends within this DB.
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
@@ -778,18 +794,14 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
 
         for (const auto& mutation : impl_->audit_mutations) {
           const auto event_id = generate_random_uuid();
-          const std::string before_str =
-              mutation.context.before_json.has_value()
-                  ? mutation.context.before_json->dump()
-                  : "{}";
+          const std::string before_str = mutation.context.before_json.has_value()
+                                             ? mutation.context.before_json->dump()
+                                             : "{}";
           const std::string after_str =
-              mutation.context.after_json.has_value()
-                  ? mutation.context.after_json->dump()
-                  : "{}";
-          const nlohmann::json lab_id_val =
-              mutation.context.lab_id.has_value()
-                  ? nlohmann::json(*mutation.context.lab_id)
-                  : nlohmann::json(nullptr);
+              mutation.context.after_json.has_value() ? mutation.context.after_json->dump() : "{}";
+          const nlohmann::json lab_id_val = mutation.context.lab_id.has_value()
+                                                ? nlohmann::json(*mutation.context.lab_id)
+                                                : nlohmann::json(nullptr);
           const nlohmann::json content = {
               {"action", mutation.action},
               {"actor_session_id", mutation.context.actor_session_id},
@@ -934,7 +946,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     try {
       pqxx::work txn(conn);
       const auto result = txn.exec("SELECT COALESCE(MAX(version),0) FROM schema_migrations");
-      if (!result.empty()) { version = result[0][0].as<int>(); }
+      if (!result.empty()) {
+        version = result[0][0].as<int>();
+      }
       txn.commit();
     } catch (const pqxx::sql_error& err) {
       if (std::string_view(err.sqlstate()) != "42P01") {
@@ -980,7 +994,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     try {
       pqxx::work txn(conn);
       const auto result = txn.exec("SELECT COUNT(*) FROM audit_events");
-      if (!result.empty()) { count = result[0][0].as<std::size_t>(); }
+      if (!result.empty()) {
+        count = result[0][0].as<std::size_t>();
+      }
       txn.commit();
       // NOLINTNEXTLINE(bugprone-empty-catch)
     } catch (const pqxx::sql_error&) {

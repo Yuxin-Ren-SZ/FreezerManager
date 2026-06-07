@@ -14,8 +14,6 @@ namespace fmgr::core {
   namespace {
     using namespace fmgr::test;
 
-
-
     [[nodiscard]] Timestamp ts(std::int64_t micros) {
       return Timestamp::from_unix_micros(micros);
     }

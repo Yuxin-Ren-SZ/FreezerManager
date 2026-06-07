@@ -22,10 +22,10 @@ namespace fmgr::audit {
     }
     crypto_hash_sha256_state state;
     crypto_hash_sha256_init(&state);
-    crypto_hash_sha256_update(
-        &state, reinterpret_cast<const unsigned char*>(prev_hash.data()), prev_hash.size());
-    crypto_hash_sha256_update(
-        &state, reinterpret_cast<const unsigned char*>(content_json.data()), content_json.size());
+    crypto_hash_sha256_update(&state, reinterpret_cast<const unsigned char*>(prev_hash.data()),
+                              prev_hash.size());
+    crypto_hash_sha256_update(&state, reinterpret_cast<const unsigned char*>(content_json.data()),
+                              content_json.size());
     std::array<unsigned char, crypto_hash_sha256_BYTES> hash{};
     crypto_hash_sha256_final(&state, hash.data());
 

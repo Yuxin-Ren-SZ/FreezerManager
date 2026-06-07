@@ -12,8 +12,6 @@ namespace fmgr::core {
   namespace {
     using namespace fmgr::test;
 
-
-
     TEST(ScopeKindTest, StringRoundTrip) {
       for (const auto kind :
            {ScopeKind::Sample, ScopeKind::Box, ScopeKind::Freezer, ScopeKind::Container}) {

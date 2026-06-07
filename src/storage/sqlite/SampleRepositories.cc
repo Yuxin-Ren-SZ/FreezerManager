@@ -516,17 +516,16 @@ namespace fmgr::storage {
             throw ConstraintViolation("sample cannot be its own parent");
           }
           const auto pit = pending().find(*entity.parent_sample_id);
-          const bool in_pending =
-              pit != pending().end() && pit->second.entity.lab_id == entity.lab_id &&
-              pit->second.entity.status != core::SampleStatus::Tombstoned;
+          const bool in_pending = pit != pending().end() &&
+                                  pit->second.entity.lab_id == entity.lab_id &&
+                                  pit->second.entity.status != core::SampleStatus::Tombstoned;
           if (!in_pending) {
             Statement stmt(transaction().handle(),
                            "SELECT 1 FROM samples WHERE id = ? AND lab_id = ? LIMIT 1");
             bind_text(stmt.get(), 1, entity.parent_sample_id->to_string());
             bind_text(stmt.get(), 2, entity.lab_id.to_string());
             if (!stmt.step_row()) {
-              throw ForeignKeyViolation(
-                  "parent_sample_id does not reference a sample in this lab");
+              throw ForeignKeyViolation("parent_sample_id does not reference a sample in this lab");
             }
           }
         }
@@ -951,8 +950,7 @@ namespace fmgr::storage {
           bind_text(stmt.get(), 1, entity.sample_id.to_string());
           bind_text(stmt.get(), 2, entity.lab_id.to_string());
           if (!stmt.step_row()) {
-            throw ConstraintViolation(
-                "checkout_event lab_id does not match the sample's lab");
+            throw ConstraintViolation("checkout_event lab_id does not match the sample's lab");
           }
         }
         pending_.insert_or_assign(entity.id, entity);

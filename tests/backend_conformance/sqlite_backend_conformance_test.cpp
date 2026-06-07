@@ -29,8 +29,6 @@ namespace fmgr::storage {
   namespace {
     using namespace fmgr::test;
 
-
-
     struct SqliteConformanceSample {
       using Id = core::SampleId;
 
