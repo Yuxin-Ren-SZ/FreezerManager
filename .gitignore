@@ -11,6 +11,7 @@ compile_commands.json
 .clangd/
 .cache/
 .conan/
+coverage/
 
 # Agent / tooling artifacts (not project source)
 .agents/
