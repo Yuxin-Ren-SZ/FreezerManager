@@ -591,6 +591,10 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
 
   } // namespace
 
+  std::vector<PostgresMigration> default_postgres_migrations() {
+    return default_migrations();
+  }
+
   // ---- PostgresBackendState ----
 
   struct PostgresBackendState {

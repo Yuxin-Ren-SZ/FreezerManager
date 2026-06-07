@@ -17,5 +17,3 @@ target_link_libraries(
     nlohmann_json::nlohmann_json
     libsodium::libsodium
 )
-
-freezermanager_enable_sanitizers(freezermanager_audit)

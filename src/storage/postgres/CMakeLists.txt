@@ -30,5 +30,3 @@ target_link_libraries(
     libpqxx::pqxx
     libsodium::libsodium
 )
-
-freezermanager_enable_sanitizers(freezermanager_storage_postgres)

@@ -427,8 +427,12 @@ namespace fmgr::storage {
     // ---- Migration for conformance entity ----
 
     [[nodiscard]] std::vector<PostgresMigration> pg_conformance_migrations() {
-      return {
-          {.version = 1, .name = "pg_conformance_sample", .up_sql = R"sql(
+      // Build on the full production schema (audit_events, RLS, etc.) so the
+      // backend's audit-append path has its tables; then add the conformance
+      // entity as the next version after the defaults (1-12).
+      auto migrations = default_postgres_migrations();
+      migrations.push_back(
+          {.version = 13, .name = "pg_conformance_sample", .up_sql = R"sql(
 CREATE TABLE IF NOT EXISTS fmgr_pg_conformance_sample (
   id                  TEXT   PRIMARY KEY,
   lab_id              TEXT   NOT NULL,
@@ -445,8 +449,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
   WHERE status IN ('active','checked_out')
     AND box_id IS NOT NULL
     AND position_label IS NOT NULL;
-)sql"},
-      };
+)sql"});
+      return migrations;
     }
 
     // ---- Test fixture ----
