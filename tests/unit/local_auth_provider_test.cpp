@@ -634,6 +634,167 @@ namespace fmgr::auth {
       EXPECT_THROW(provider_->validate_token(pat.full_token), InvalidCredentials);
     }
 
+    // ---- API token scope enforcement ----
+
+    TEST_F(LocalAuthProviderTest, ValidateApiTokenScopeMalformedJsonGrantsNoPermissions) {
+      const auto pat = prepare_api_token(kUserNoTotpId, 200);
+      // Valid JSON but not an array — passes DB CHECK(json_valid) yet is rejected
+      // by permissions_from_scope_json as structurally invalid → fail-closed.
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .name = "malformed scope token",
+          .scope_json = R"("not-an-array")",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext ctx = provider_->validate_token(pat.full_token);
+      EXPECT_TRUE(ctx.permissions_by_lab.empty());
+      EXPECT_TRUE(ctx.global_permissions.empty());
+      EXPECT_FALSE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateApiTokenScopeEmptyArrayGrantsNoPermissions) {
+      const auto pat = prepare_api_token(kUserNoTotpId, 201);
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .name = "empty scope token",
+          .scope_json = "[]",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext ctx = provider_->validate_token(pat.full_token);
+      EXPECT_FALSE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
+      EXPECT_TRUE(ctx.global_permissions.empty());
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateApiTokenScopeRestrictsToSpecifiedPermission) {
+      const auto pat = prepare_api_token(kUserNoTotpId, 202);
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .name = "scoped token",
+          .scope_json = R"(["sample.read"])",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext ctx = provider_->validate_token(pat.full_token);
+      EXPECT_TRUE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
+      EXPECT_FALSE(ctx.has_for_lab(kLabId, core::Permission::SampleWrite));
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateApiTokenLabIdRestrictsToSpecifiedLab) {
+      // Insert a second lab and a membership for kUserNoTotpId.
+      const core::LabId kLabId2{id_from_low<core::LabId>(2)};
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::Lab>().insert(
+            core::Lab{.id = kLabId2, .name = "Lab 2", .contact = "l2@example.com",
+                      .created_at = ts(2'000)},
+            test_ctx());
+        txn->repo<core::LabMembership>().insert(
+            core::LabMembership{.user_id = kUserNoTotpId,
+                                .lab_id = kLabId2,
+                                .role_id = core::builtin_role_id(core::RoleKind::Member),
+                                .joined_at = ts(2'001)},
+            test_ctx());
+        txn->commit();
+      }
+
+      const auto pat = prepare_api_token(kUserNoTotpId, 203);
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .lab_id = kLabId,  // scoped to kLabId only
+          .name = "lab-scoped token",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext ctx = provider_->validate_token(pat.full_token);
+      // Lab 1 permissions present.
+      EXPECT_TRUE(ctx.can_see_lab(kLabId));
+      EXPECT_TRUE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
+      // Lab 2 permissions absent even though user is a member there.
+      EXPECT_FALSE(ctx.can_see_lab(kLabId2));
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateApiTokenDisabledUserThrowsInvalidCredentials) {
+      const auto pat = prepare_api_token(kUserNoTotpId, 210);
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .name = "disabled-user token",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      // Token works while user is active.
+      EXPECT_NO_THROW(provider_->validate_token(pat.full_token));
+
+      // Disable the user.
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::User>().soft_delete(kUserNoTotpId, test_ctx());
+        txn->commit();
+      }
+
+      // Token must now be rejected.
+      EXPECT_THROW(provider_->validate_token(pat.full_token), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateSessionTokenDisabledUserThrowsInvalidCredentials) {
+      const AuthToken token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // Session works while user is active.
+      EXPECT_NO_THROW(provider_->validate_token(token.plaintext_token));
+
+      // Disable the user.
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::User>().soft_delete(kUserNoTotpId, test_ctx());
+        txn->commit();
+      }
+
+      // Session must now be rejected despite being valid and unexpired.
+      EXPECT_THROW(provider_->validate_token(token.plaintext_token), InvalidCredentials);
+    }
+
     // ---- verify_totp: session revocation ----
 
     TEST_F(LocalAuthProviderTest, VerifyTotpRevokedSession) {

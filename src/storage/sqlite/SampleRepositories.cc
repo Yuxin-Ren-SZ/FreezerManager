@@ -509,6 +509,27 @@ namespace fmgr::storage {
 
       void validate(const core::Sample& entity) const override {
         validate_sample(entity, transaction());
+        // parent_sample_id must be in the same lab; self-reference is forbidden.
+        // Check pending_ first to allow parent+child insertions in the same transaction.
+        if (entity.parent_sample_id.has_value()) {
+          if (*entity.parent_sample_id == entity.id) {
+            throw ConstraintViolation("sample cannot be its own parent");
+          }
+          const auto pit = pending().find(*entity.parent_sample_id);
+          const bool in_pending =
+              pit != pending().end() && pit->second.entity.lab_id == entity.lab_id &&
+              pit->second.entity.status != core::SampleStatus::Tombstoned;
+          if (!in_pending) {
+            Statement stmt(transaction().handle(),
+                           "SELECT 1 FROM samples WHERE id = ? AND lab_id = ? LIMIT 1");
+            bind_text(stmt.get(), 1, entity.parent_sample_id->to_string());
+            bind_text(stmt.get(), 2, entity.lab_id.to_string());
+            if (!stmt.step_row()) {
+              throw ForeignKeyViolation(
+                  "parent_sample_id does not reference a sample in this lab");
+            }
+          }
+        }
       }
 
       [[nodiscard]] core::SampleId id_of(const core::Sample& entity) const override {
@@ -771,6 +792,17 @@ namespace fmgr::storage {
         if (pending_inserts_.contains(sp_id) || load(sp_id).has_value()) {
           throw UniqueViolation("sample_project link already exists");
         }
+        // Sample and project must belong to the same lab.
+        {
+          Statement stmt(transaction_.handle(),
+                         "SELECT 1 FROM samples s JOIN projects p ON s.lab_id = p.lab_id "
+                         "WHERE s.id = ? AND p.id = ? LIMIT 1");
+          bind_text(stmt.get(), 1, entity.sample_id.to_string());
+          bind_text(stmt.get(), 2, entity.project_id.to_string());
+          if (!stmt.step_row()) {
+            throw ForeignKeyViolation("sample and project do not belong to the same lab");
+          }
+        }
         pending_inserts_.insert_or_assign(sp_id, entity);
         transaction_.note_mutation(
             "sample_project", entity.sample_id.to_string() + ":" + entity.project_id.to_string(),
@@ -911,6 +943,17 @@ namespace fmgr::storage {
       void insert(const core::CheckoutEvent& entity, const MutationContext& context) override {
         if (pending_.contains(entity.id) || load(entity.id).has_value()) {
           throw UniqueViolation("checkout_event id already exists");
+        }
+        // lab_id must match the referenced sample's lab.
+        {
+          Statement stmt(transaction_.handle(),
+                         "SELECT 1 FROM samples WHERE id = ? AND lab_id = ? LIMIT 1");
+          bind_text(stmt.get(), 1, entity.sample_id.to_string());
+          bind_text(stmt.get(), 2, entity.lab_id.to_string());
+          if (!stmt.step_row()) {
+            throw ConstraintViolation(
+                "checkout_event lab_id does not match the sample's lab");
+          }
         }
         pending_.insert_or_assign(entity.id, entity);
         transaction_.note_mutation("checkout_event", entity.id.to_string(), context);

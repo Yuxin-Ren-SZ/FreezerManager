@@ -1474,9 +1474,96 @@ namespace fmgr::storage {
       auto sample = make_sample(50, lab_id, it_id, user_id);
       sample.parent_sample_id = id_from_low<core::SampleId>(99999); // nonexistent
 
+      // App-level validation catches nonexistent parent at insert time.
       auto txn = backend().begin(IsolationLevel::Serializable);
-      txn->repo<core::Sample>().insert(sample, mutation_context());
-      EXPECT_THROW(txn->commit(), ForeignKeyViolation);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ForeignKeyViolation);
+    }
+
+    TEST_P(SampleRepositoryTest, InsertSampleWithCrossLabParentThrowsForeignKeyViolation) {
+      const auto lab1_id = seed_lab(500);
+      const auto user1_id = seed_user(501, lab1_id);
+      const auto it1_id = seed_item_type(502, lab1_id);
+      const auto lab2_id = seed_lab(510);
+      const auto user2_id = seed_user(511, lab2_id);
+      const auto it2_id = seed_item_type(512, lab2_id);
+
+      // Insert parent sample in lab2.
+      auto parent = make_sample(520, lab2_id, it2_id, user2_id);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(parent, mutation_context());
+        txn->commit();
+      }
+
+      // Insert child in lab1 referencing the lab2 parent — must fail.
+      auto child = make_sample(521, lab1_id, it1_id, user1_id);
+      child.parent_sample_id = parent.id;
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(child, mutation_context()),
+                   ForeignKeyViolation);
+    }
+
+    TEST_P(SampleRepositoryTest, InsertSampleWithSelfParentThrowsConstraintViolation) {
+      const auto lab_id = seed_lab(530);
+      const auto user_id = seed_user(531, lab_id);
+      const auto it_id = seed_item_type(532, lab_id);
+
+      auto sample = make_sample(540, lab_id, it_id, user_id);
+      sample.parent_sample_id = sample.id; // self-reference
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ConstraintViolation);
+    }
+
+    TEST_P(SampleRepositoryTest, InsertSampleProjectCrossLabThrowsForeignKeyViolation) {
+      const auto lab1_id = seed_lab(600);
+      const auto user1_id = seed_user(601, lab1_id);
+      const auto it1_id = seed_item_type(602, lab1_id);
+      const auto lab2_id = seed_lab(610);
+      const auto user2_id = seed_user(611, lab2_id);
+
+      auto sample = make_sample(620, lab1_id, it1_id, user1_id);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      auto project = make_project(630, lab2_id, user2_id); // project in lab2, sample in lab1
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Project>().insert(project, mutation_context());
+        txn->commit();
+      }
+
+      const core::SampleProject sp{.sample_id = sample.id, .project_id = project.id};
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::SampleProject>().insert(sp, mutation_context()),
+                   ForeignKeyViolation);
+    }
+
+    TEST_P(SampleRepositoryTest, InsertCheckoutEventCrossLabThrowsConstraintViolation) {
+      const auto lab1_id = seed_lab(700);
+      const auto user1_id = seed_user(701, lab1_id);
+      const auto it1_id = seed_item_type(702, lab1_id);
+      const auto lab2_id = seed_lab(710);
+      const auto user2_id = seed_user(711, lab2_id);
+
+      auto sample = make_sample(720, lab1_id, it1_id, user1_id);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      // Event claims lab2 but sample belongs to lab1.
+      auto event = make_event(730, sample.id, lab2_id, user2_id, core::CheckoutAction::CheckedOut);
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::CheckoutEvent>().insert(event, mutation_context()),
+                   ConstraintViolation);
     }
 
     TEST_P(SampleRepositoryTest, UpdateNonexistentSampleThrowsNotFound) {

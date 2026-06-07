@@ -90,7 +90,7 @@ namespace fmgr::core {
     UserId user_id;
     std::optional<LabId> lab_id;  // null = not scoped to a specific lab
     std::string name;             // user-visible label, e.g. "Jupyter notebook token"
-    std::string scope_json{"[]"}; // JSON array of permission-key strings
+    std::string scope_json{R"(["*"])"}; // ["*"] = unrestricted; [] = zero perms; explicit list = restricted
     std::string token_hash;
     std::string token_prefix;
     Timestamp created_at;

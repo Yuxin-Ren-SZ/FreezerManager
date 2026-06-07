@@ -269,6 +269,19 @@ namespace fmgr::storage {
                 .empty()) {
           throw ConstraintViolation("item_type_id does not reference a live ItemType in this lab");
         }
+        // parent_sample_id must be in the same lab; self-reference is forbidden.
+        if (sample.parent_sample_id.has_value()) {
+          if (*sample.parent_sample_id == sample.id) {
+            throw ConstraintViolation("sample cannot be its own parent");
+          }
+          if (txn_.work()
+                  .exec("SELECT 1 FROM samples WHERE id = $1 AND lab_id = $2 LIMIT 1",
+                        pqxx::params{sample.parent_sample_id->to_string(),
+                                     sample.lab_id.to_string()})
+                  .empty()) {
+            throw ForeignKeyViolation("parent_sample_id does not reference a sample in this lab");
+          }
+        }
       }
 
       [[nodiscard]] std::optional<core::Sample> load(const core::SampleId& entity_id) {
@@ -452,6 +465,14 @@ namespace fmgr::storage {
       }
 
       void insert(const core::SampleProject& entity, const MutationContext& context) override {
+        // Sample and project must belong to the same lab.
+        if (txn_.work()
+                .exec("SELECT 1 FROM samples s JOIN projects p ON s.lab_id = p.lab_id "
+                      "WHERE s.id = $1 AND p.id = $2 LIMIT 1",
+                      pqxx::params{entity.sample_id.to_string(), entity.project_id.to_string()})
+                .empty()) {
+          throw ForeignKeyViolation("sample and project do not belong to the same lab");
+        }
         try {
           txn_.work().exec(
               "INSERT INTO sample_projects (sample_id, project_id) VALUES ($1, $2)",
@@ -552,6 +573,13 @@ namespace fmgr::storage {
       }
 
       void insert(const core::CheckoutEvent& entity, const MutationContext& context) override {
+        // lab_id must match the referenced sample's lab.
+        if (txn_.work()
+                .exec("SELECT 1 FROM samples WHERE id = $1 AND lab_id = $2 LIMIT 1",
+                      pqxx::params{entity.sample_id.to_string(), entity.lab_id.to_string()})
+                .empty()) {
+          throw ConstraintViolation("checkout_event lab_id does not match the sample's lab");
+        }
         try {
           pqxx::params params;
           params.append(entity.id.to_string());

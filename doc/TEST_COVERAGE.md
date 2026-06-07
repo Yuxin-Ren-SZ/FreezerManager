@@ -1,9 +1,9 @@
 # Test Coverage Inventory
 
-_Last updated: 2026-06-02._
+_Last updated: 2026-06-06._
 
-435 tests across 33 test source files (+ 6 benchmark files). All pass
-(13 Postgres conformance tests skip without `FMGR_TEST_POSTGRES_URL`).
+601 tests across 35 test source files (+ 6 benchmark files). All pass
+(16 Postgres conformance/RLS tests skip without `FMGR_TEST_POSTGRES_URL`).
 Document maps each module/function → test status. ✓=explicit test
 ○=indirect ✗=untested —=N/A
 
@@ -331,8 +331,10 @@ is: `find_by_id`, `query`, `insert`, `update`, `soft_delete`.
 
 | Entity        | find | query | insert | update   | soft_del | errors tested                              | missing                         |
 | ------------- | ---- | ----- | ------ | -------- | -------- | ------------------------------------------ | ------------------------------- |
-| Sample        | ✓    | ✓     | ✓      | ✓        | ✓        | empty name                                 | parent_sample_id FK validation  |
-|               |      |       |        |          |          | box_id+position_label both-or-null         | update nonexistent throws       |
+| Sample        | ✓    | ✓     | ✓      | ✓        | ✓        | empty name                                 | update nonexistent throws       |
+|               |      |       |        |          |          | box_id+position_label both-or-null         |                                 |
+|               |      |       |        |          |          | parent_sample_id in wrong lab → error      |                                 |
+|               |      |       |        |          |          | parent_sample_id == self → error           |                                 |
 |               |      |       |        |          |          | box exists and not archived                |                                 |
 |               |      |       |        |          |          | position_label exists in BoxType           |                                 |
 |               |      |       |        |          |          | size_class compatible with position        |                                 |
@@ -361,12 +363,14 @@ is: `find_by_id`, `query`, `insert`, `update`, `soft_delete`.
 |               |      |       |        |          |          | duplicate link throws                      |                                 |
 |               |      |       |        |          |          | query by sample_id                         |                                 |
 |               |      |       |        |          |          | find nonexistent → empty                   |                                 |
+|               |      |       |        |          |          | cross-lab sample+project → error           |                                 |
 | CheckoutEvent | ✓    | ✓     | ✓      | ✓(throw) | ✓(throw) | update throws UnsupportedOperation         | query with between, in, sort    |
 |               |      |       |        |          |          | soft_delete throws UnsupportedOperation    | query with and_where            |
 |               |      |       |        |          |          | query by sample_id                         |                                 |
 |               |      |       |        |          |          | query by user_id                           |                                 |
 |               |      |       |        |          |          | sort by at descending                      |                                 |
 |               |      |       |        |          |          | concurrent inserts both succeed            |                                 |
+|               |      |       |        |          |          | lab_id mismatch with sample → error        |                                 |
 
 ### ShareRequest — ShareRequestRepository, ShareRequestApprovalRepository
 
@@ -519,10 +523,17 @@ Argon2id params).
 | `verify_totp` already complete throws        | ✓      |
 | `revoke_session` removes active session      | ✓      |
 | `revoke_all_sessions` revokes all            | ✓      |
+| API token `scope_json = "[]"` → zero perms   | ✓      |
+| API token non-array `scope_json` → zero perms| ✓      |
+| API token `["sample.read"]` scope restriction| ✓      |
+| API token `lab_id` restricts to that lab only| ✓      |
+| API token for disabled user → error          | ✓      |
+| Session token for disabled user → error      | ✓      |
 | API token authenticate path                  | ✗ deferred: needs API token creation RPC (F2/I2) |
 | `validate_token` API token bearer path       | ✗ deferred: same reason |
 | DB-backed account lockout persistence        | ✗ deferred to E2.2; in-memory state resets on restart |
 | Password reset flow                          | ✗ deferred to E2.1; requires email transport (Section O) |
+| Cache eviction on role/membership change     | ✗ deferred: requires gRPC handler layer (M3) |
 
 ---
 
@@ -556,9 +567,10 @@ Test files not in the original inventory:
 | Mixed-Eppendorf template has 13 positions         | ✓      |
 
 ### `tests/backend_conformance/postgres_backend_conformance_test.cpp`
-13 tests (10 shared conformance + `CapabilitiesReportRowLevelSecurity`,
-`MigrateToLatestIdempotent`, `SetSessionVarVisibleWithinTransaction`). All skip without
-`FMGR_TEST_POSTGRES_URL`. See §6 and CODE_REVIEW_2026-06-02.
+16 tests: 10 shared conformance + `CapabilitiesReportRowLevelSecurity`,
+`MigrateToLatestIdempotent`, `SetSessionVarVisibleWithinTransaction` + 3 RLS integration
+tests (`InjectRlsVarsBlocksWrongLab`, `InjectRlsVarsAllowsCorrectLab`,
+`InjectRlsVarsSetsCorrectSessionVariable`). All skip without `FMGR_TEST_POSTGRES_URL`.
 
 ---
 
