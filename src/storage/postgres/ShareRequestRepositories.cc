@@ -116,7 +116,7 @@ namespace fmgr::storage {
           txn_.work().exec(
               "INSERT INTO share_requests (id, source_lab_id, target_lab_id, "
               "requested_by, scope_json, status, created_at_micros, decided_at_micros) "
-              "VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)",
+              "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
               bind_share_request(entity));
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
@@ -147,7 +147,7 @@ namespace fmgr::storage {
         try {
           const auto result = txn_.work().exec(
               "UPDATE share_requests SET source_lab_id = $2, target_lab_id = $3, "
-              "requested_by = $4, scope_json = $5::jsonb, status = $6, created_at_micros = $7, "
+              "requested_by = $4, scope_json = $5, status = $6, created_at_micros = $7, "
               "decided_at_micros = $8 WHERE id = $1",
               bind_share_request(entity));
           if (result.affected_rows() == 0) {

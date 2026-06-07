@@ -500,7 +500,7 @@ CREATE TABLE IF NOT EXISTS share_requests (
   source_lab_id     TEXT   NOT NULL REFERENCES labs(id)  DEFERRABLE INITIALLY DEFERRED,
   target_lab_id     TEXT   NOT NULL REFERENCES labs(id)  DEFERRABLE INITIALLY DEFERRED,
   requested_by      TEXT   NOT NULL REFERENCES users(id) DEFERRABLE INITIALLY DEFERRED,
-  scope_json        JSONB  NOT NULL DEFAULT '{}',
+  scope_json        TEXT   NOT NULL DEFAULT '{}',
   status            TEXT   NOT NULL DEFAULT 'pending'
     CHECK (status IN ('pending','approved','rejected','revoked')),
   created_at_micros BIGINT NOT NULL,
@@ -542,7 +542,7 @@ CREATE TABLE IF NOT EXISTS api_tokens (
   user_id           TEXT   NOT NULL REFERENCES users(id)  DEFERRABLE INITIALLY DEFERRED,
   lab_id            TEXT   REFERENCES labs(id)            DEFERRABLE INITIALLY DEFERRED,
   name              TEXT   NOT NULL CHECK (length(name) > 0),
-  scope_json        JSONB  NOT NULL DEFAULT '[]',
+  scope_json        TEXT   NOT NULL DEFAULT '[]',
   token_hash        TEXT   NOT NULL CHECK (length(token_hash) > 0),
   token_prefix      TEXT   NOT NULL CHECK (length(token_prefix) > 0),
   created_at_micros BIGINT NOT NULL,

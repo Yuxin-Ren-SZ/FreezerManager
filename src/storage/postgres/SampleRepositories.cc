@@ -190,6 +190,12 @@ namespace fmgr::storage {
       }
 
       void update(const core::Sample& entity, const MutationContext& context) override {
+        // Missing-row takes precedence over cross-entity validation so update of a
+        // nonexistent sample reports NotFound (matching the SQLite backend and the
+        // repository contract) rather than a ConstraintViolation about its refs.
+        if (!find_by_id(entity.id).has_value()) {
+          throw NotFound("sample not found");
+        }
         validate_sample(entity);
         write_update(entity, context);
       }
