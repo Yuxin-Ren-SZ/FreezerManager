@@ -24,14 +24,11 @@ jobs:
         uses: contributor-assistant/github-action@v2.6.1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PERSONAL_ACCESS_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
         with:
           path-to-signatures: 'signatures/v1/cla.json'
           path-to-document: 'https://github.com/Yuxin-Ren-SZ/FreezerManager/blob/main/CLA.md'
           branch: 'cla-signatures'
           allowlist: Yuxin-Ren-SZ,dependabot[bot]
-          remote-organization-name: Yuxin-Ren-SZ
-          remote-repository-name: FreezerManager
           custom-notsigned-prcomment: |
             Thanks for the contribution! Before we can merge, we need you to sign the FreezerManager Contributor License Agreement (see [CLA.md](https://github.com/Yuxin-Ren-SZ/FreezerManager/blob/main/CLA.md)).
 
