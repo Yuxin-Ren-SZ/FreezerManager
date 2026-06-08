@@ -416,13 +416,15 @@ namespace fmgr::storage {
         std::set<core::ItemTypeId> visited;
         std::optional<core::ItemTypeId> cursor = entity.parent_id;
         while (cursor.has_value()) {
-          if (cursor.value() == entity.id) {
+          // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guaranteed by loop condition
+          const core::ItemTypeId current = *cursor;
+          if (current == entity.id) {
             throw ConstraintViolation("item type parent chain forms a cycle");
           }
-          if (!visited.insert(cursor.value()).second) {
+          if (!visited.insert(current).second) {
             throw ConstraintViolation("item type parent chain forms a cycle");
           }
-          const auto ancestor = lookup_for_cycle_check(cursor.value());
+          const auto ancestor = lookup_for_cycle_check(current);
           if (!ancestor.has_value()) {
             return;
           }

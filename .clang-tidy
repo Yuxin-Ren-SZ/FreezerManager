@@ -26,3 +26,11 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.PrivateMemberSuffix
     value: _
+  # Allow the project's established short-identifier idioms (loop/temp vars,
+  # numbered pairs in tests, two-letter domain abbreviations like tx/id/sp).
+  # The default 3-char minimum is overly strict for C++; new out-of-list short
+  # names still get flagged, so the check keeps guarding against bad ones.
+  - key: readability-identifier-length.IgnoredVariableNames
+    value: '^(a|b|c|ch|dt|e1|e2|e3|ev|h1|h2|id|it|j|m|ml|mw|os|p1|p2|p3|s|s1|s2|s3|s4|s5|sp|sr|st|t|t1|t2|tx|ul|v)$'
+  - key: readability-identifier-length.IgnoredParameterNames
+    value: '^(a|b|c|ch|dt|e1|e2|e3|ev|h1|h2|id|it|j|m|ml|mw|os|p1|p2|p3|s|s1|s2|s3|s4|s5|sp|sr|st|t|t1|t2|tx|ul|v)$'

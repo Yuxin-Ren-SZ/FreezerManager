@@ -163,7 +163,7 @@ namespace fmgr::core {
 
   // O(log n) binary search over the key-sorted catalog.
   [[nodiscard]] inline Permission parse_permission(std::string_view key) {
-    const auto it =
+    const auto* const it =
         std::ranges::lower_bound(k_permission_by_key, key, std::less<>{}, &PermissionEntry::key);
     if (it != k_permission_by_key.end() && it->key == key) {
       return it->value;

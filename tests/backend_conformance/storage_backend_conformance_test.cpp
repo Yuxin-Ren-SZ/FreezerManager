@@ -251,9 +251,9 @@ namespace fmgr::storage {
       }
       results.erase(results.begin(), results.begin() + static_cast<std::ptrdiff_t>(offset));
 
-      if (query_spec.limit_count().has_value() &&
-          query_spec.limit_count().value() < results.size()) {
-        results.resize(query_spec.limit_count().value());
+      if (const auto limit = query_spec.limit_count();
+          limit.has_value() && limit.value() < results.size()) {
+        results.resize(limit.value());
       }
       return results;
     }

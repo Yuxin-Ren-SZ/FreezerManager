@@ -364,6 +364,12 @@ namespace fmgr::storage {
     void validate_sample(const core::Sample& sample, const SqliteTransaction& transaction) {
       validate_sample_shape(sample);
       if (sample.box_id.has_value()) {
+        // validate_sample_shape already enforces the box_id<->position_label invariant;
+        // re-check here so the dereferences below are provably safe (defense in depth).
+        if (!sample.position_label.has_value()) {
+          throw ConstraintViolation("position_label must be set when box_id is set");
+        }
+        const std::string& position_label = sample.position_label.value();
         // Box must exist in same lab and not be archived.
         {
           Statement stmt(transaction.handle(),
@@ -381,7 +387,7 @@ namespace fmgr::storage {
                                                "JOIN boxes b ON b.box_type_id = btp.box_type_id "
                                                "WHERE b.id = ? AND btp.label = ? LIMIT 1");
           bind_text(stmt.get(), 1, sample.box_id->to_string());
-          bind_text(stmt.get(), 2, sample.position_label.value());
+          bind_text(stmt.get(), 2, position_label);
           if (!stmt.step_row()) {
             throw ConstraintViolation("position_label does not exist in this box's BoxType");
           }
@@ -395,7 +401,7 @@ namespace fmgr::storage {
                          "JOIN container_types ct ON ct.size_class = bpa.size_class "
                          "WHERE b.id = ? AND bpa.position_label = ? AND ct.id = ? LIMIT 1");
           bind_text(stmt.get(), 1, sample.box_id->to_string());
-          bind_text(stmt.get(), 2, sample.position_label.value());
+          bind_text(stmt.get(), 2, position_label);
           bind_text(stmt.get(), 3, sample.container_type_id->to_string());
           if (!stmt.step_row()) {
             throw ConstraintViolation(

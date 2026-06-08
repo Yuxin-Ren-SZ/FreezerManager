@@ -61,7 +61,7 @@ namespace fmgr {
     // ---- compute_audit_hash tests ----
 
     TEST(AuditHash, ZeroHashConstantIs64HexZeros) {
-      ASSERT_EQ(audit::zero_hash().size(), 64u);
+      ASSERT_EQ(audit::zero_hash().size(), 64U);
       for (const char ch : audit::zero_hash()) {
         EXPECT_EQ(ch, '0');
       }
@@ -88,7 +88,7 @@ namespace fmgr {
 
     TEST(AuditHash, OutputIs64LowercaseHexChars) {
       const auto hash = audit::compute_audit_hash(audit::zero_hash(), "{}");
-      ASSERT_EQ(hash.size(), 64u);
+      ASSERT_EQ(hash.size(), 64U);
       for (const char ch : hash) {
         const bool valid = (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
         EXPECT_TRUE(valid) << "non-lowercase-hex char: " << ch;
@@ -161,7 +161,7 @@ namespace fmgr {
 
     TEST(SqliteAuditEvent, MigrationCreatesTableWithZeroRows) {
       const auto backend = make_audit_backend();
-      EXPECT_EQ(backend.audit_event_count_for_tests(), 0u);
+      EXPECT_EQ(backend.audit_event_count_for_tests(), 0U);
     }
 
     TEST(SqliteAuditEvent, AuditRowWrittenOnCommit) {
@@ -175,12 +175,12 @@ namespace fmgr {
         txn->commit();
       }
 
-      EXPECT_EQ(backend.audit_event_count_for_tests(), 1u);
+      EXPECT_EQ(backend.audit_event_count_for_tests(), 1U);
 
       auto read_txn = backend.begin(storage::IsolationLevel::ReadCommitted);
       const auto events =
           read_txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
-      ASSERT_EQ(events.size(), 1u);
+      ASSERT_EQ(events.size(), 1U);
       const auto& ev = events.front();
       EXPECT_EQ(ev.actor_user_id, ctx.actor_user_id);
       EXPECT_EQ(ev.actor_session_id, ctx.actor_session_id);
@@ -201,7 +201,7 @@ namespace fmgr {
         sqlite_txn.note_mutation("lab", "lab-rollback", test_ctx());
         txn->rollback();
       }
-      EXPECT_EQ(backend.audit_event_count_for_tests(), 0u);
+      EXPECT_EQ(backend.audit_event_count_for_tests(), 0U);
     }
 
     TEST(SqliteAuditEvent, FailNextAuditAppendRollsBackEverything) {
@@ -213,7 +213,7 @@ namespace fmgr {
         sqlite_txn.note_mutation("lab", "lab-fail", test_ctx());
         EXPECT_THROW(txn->commit(), storage::ConstraintViolation);
       }
-      EXPECT_EQ(backend.audit_event_count_for_tests(), 0u);
+      EXPECT_EQ(backend.audit_event_count_for_tests(), 0U);
     }
 
     TEST(SqliteAuditEvent, ConsecutiveCommitsFormChain) {
@@ -232,7 +232,7 @@ namespace fmgr {
       auto read_txn = backend.begin(storage::IsolationLevel::ReadCommitted);
       const auto events =
           read_txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
-      ASSERT_EQ(events.size(), 2u);
+      ASSERT_EQ(events.size(), 2U);
       EXPECT_EQ(events[0].prev_hash, std::string(audit::zero_hash()));
       EXPECT_EQ(events[1].prev_hash, events[0].this_hash);
       EXPECT_NE(events[0].this_hash, events[1].this_hash);
@@ -251,7 +251,7 @@ namespace fmgr {
       auto read_txn = backend.begin(storage::IsolationLevel::ReadCommitted);
       const auto events =
           read_txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
-      ASSERT_EQ(events.size(), 2u);
+      ASSERT_EQ(events.size(), 2U);
       EXPECT_EQ(events[0].prev_hash, std::string(audit::zero_hash()));
       EXPECT_EQ(events[1].prev_hash, events[0].this_hash);
     }
@@ -264,7 +264,7 @@ namespace fmgr {
         dynamic_cast<storage::SqliteTransaction&>(*txn).note_mutation("lab", "l-trig", test_ctx());
         txn->commit();
       }
-      ASSERT_EQ(backend.audit_event_count_for_tests(), 1u);
+      ASSERT_EQ(backend.audit_event_count_for_tests(), 1U);
 
       // Attempt an UPDATE via a commit hook; verify the trigger rejects it.
       int update_result = SQLITE_OK;
@@ -284,7 +284,7 @@ namespace fmgr {
       auto read_txn = backend.begin(storage::IsolationLevel::ReadCommitted);
       const auto events =
           read_txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
-      ASSERT_EQ(events.size(), 1u);
+      ASSERT_EQ(events.size(), 1U);
       EXPECT_NE(events.front().action, "tampered");
     }
 
@@ -295,7 +295,7 @@ namespace fmgr {
         dynamic_cast<storage::SqliteTransaction&>(*txn).note_mutation("lab", "l-del", test_ctx());
         txn->commit();
       }
-      ASSERT_EQ(backend.audit_event_count_for_tests(), 1u);
+      ASSERT_EQ(backend.audit_event_count_for_tests(), 1U);
 
       int delete_result = SQLITE_OK;
       {
@@ -308,7 +308,7 @@ namespace fmgr {
         txn->commit();
       }
       EXPECT_NE(delete_result, SQLITE_OK);
-      EXPECT_EQ(backend.audit_event_count_for_tests(), 1u);
+      EXPECT_EQ(backend.audit_event_count_for_tests(), 1U);
     }
 
     TEST(SqliteAuditEvent, RepositoryInsertThrowsUnsupportedOperation) {
@@ -349,10 +349,11 @@ namespace fmgr {
       auto read_txn = backend.begin(storage::IsolationLevel::ReadCommitted);
       const auto events =
           read_txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
-      ASSERT_EQ(events.size(), 1u);
+      ASSERT_EQ(events.size(), 1U);
 
       const auto found = read_txn->repo<core::AuditEvent>().find_by_id(events.front().id);
       ASSERT_TRUE(found.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_EQ(found->entity_kind, "lab");
     }
 
@@ -381,7 +382,7 @@ namespace fmgr {
           storage::field<core::AuditEvent, std::int64_t>(core::AuditEvent::Field::At),
           storage::SortDirection::Descending);
       const auto desc_results = read_txn->repo<core::AuditEvent>().query(desc_query);
-      ASSERT_EQ(desc_results.size(), 3u);
+      ASSERT_EQ(desc_results.size(), 3U);
       EXPECT_GE(desc_results[0].at.unix_micros(), desc_results[1].at.unix_micros());
       EXPECT_GE(desc_results[1].at.unix_micros(), desc_results[2].at.unix_micros());
 
@@ -389,7 +390,7 @@ namespace fmgr {
           storage::field<core::AuditEvent, std::int64_t>(core::AuditEvent::Field::At),
           storage::SortDirection::Ascending);
       const auto asc_results = read_txn->repo<core::AuditEvent>().query(asc_query);
-      ASSERT_EQ(asc_results.size(), 3u);
+      ASSERT_EQ(asc_results.size(), 3U);
       EXPECT_LE(asc_results[0].at.unix_micros(), asc_results[1].at.unix_micros());
       EXPECT_LE(asc_results[1].at.unix_micros(), asc_results[2].at.unix_micros());
     }

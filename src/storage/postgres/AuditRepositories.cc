@@ -92,11 +92,11 @@ namespace fmgr::storage {
             sql += sort_spec.direction == SortDirection::Ascending ? " ASC" : " DESC";
           }
         }
-        if (query_spec.limit_count().has_value()) {
-          sql += " LIMIT " + std::to_string(query_spec.limit_count().value());
+        if (const auto limit = query_spec.limit_count(); limit.has_value()) {
+          sql += " LIMIT " + std::to_string(limit.value());
         }
-        if (query_spec.offset_count().has_value()) {
-          sql += " OFFSET " + std::to_string(query_spec.offset_count().value());
+        if (const auto offset = query_spec.offset_count(); offset.has_value()) {
+          sql += " OFFSET " + std::to_string(offset.value());
         }
 
         try {

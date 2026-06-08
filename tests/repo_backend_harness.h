@@ -94,17 +94,23 @@ namespace fmgr::test {
     RepoBackendHarness(RepoBackendHarness&&) = delete;
     RepoBackendHarness& operator=(RepoBackendHarness&&) = delete;
 
+    // sqlite_/postgres_ engagement is determined by kind_ (exactly one is set);
+    // clang-tidy can't see that cross-variable invariant.
     [[nodiscard]] storage::IStorageBackend& backend() {
       if (kind_ == BackendKind::Sqlite) {
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         return sqlite_.value();
       }
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       return postgres_.value();
     }
 
     [[nodiscard]] std::size_t audit_event_count() {
       if (kind_ == BackendKind::Sqlite) {
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         return sqlite_->audit_event_count_for_tests();
       }
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       return postgres_->audit_event_count_for_tests();
     }
 

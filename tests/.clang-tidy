@@ -1,0 +1,16 @@
+# Inherits the root .clang-tidy. Two checks are relaxed for the test tree only
+# (both stay fully enforced for src/, which has zero hits of either):
+#
+# - readability-function-cognitive-complexity: GTest TEST/TEST_F/TEST_P bodies
+#   trip this purely from macro expansion (EXPECT_*/ASSERT_* expand to if/switch)
+#   plus lambdas and necessary try/catch, not from extractable logic. Splitting a
+#   single-scenario test into helpers hurts arrange-act-assert readability for no
+#   real gain.
+# - readability-identifier-naming: the tests use a consistent kCamelCase constant
+#   convention (kLabId, kTotpSecret, ...) distinct from src's k_lower_snake, and
+#   GTest mandates the CamelCase free function name `PrintTo`. The root rule
+#   encodes the src convention; enforcing it here is a false positive.
+InheritParentConfig: true
+Checks: >
+  -readability-function-cognitive-complexity,
+  -readability-identifier-naming

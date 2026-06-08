@@ -588,8 +588,9 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
                          0);
       std::string hex;
       hex.reserve(hash.size() * 2);
+      static constexpr std::array<char, 16> k_nibbles = {'0', '1', '2', '3', '4', '5', '6', '7',
+                                                         '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
       for (const unsigned char byte : hash) {
-        constexpr char k_nibbles[] = "0123456789abcdef";
         hex += k_nibbles[byte >> 4U];
         hex += k_nibbles[byte & 0x0fU];
       }

@@ -152,11 +152,13 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::Session>().find_by_id(session.id);
       ASSERT_TRUE(found.has_value());
+      // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_EQ(found->id, session.id);
       EXPECT_EQ(found->user_id, user1_);
       EXPECT_EQ(found->token_hash, session.token_hash);
       EXPECT_EQ(found->token_prefix, session.token_prefix);
       EXPECT_FALSE(found->revoked_at.has_value());
+      // NOLINTEND(bugprone-unchecked-optional-access)
     }
 
     TEST_P(SessionRepositoryTest, DuplicateIdThrowsUniqueViolation) {
@@ -217,6 +219,7 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::Session>().find_by_id(session2.id);
       ASSERT_TRUE(found.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_FALSE(found->revoked_at.has_value());
     }
 
@@ -243,7 +246,7 @@ namespace fmgr::storage {
         auto txn = backend().begin(IsolationLevel::Serializable);
         const auto results =
             txn->repo<core::Session>().query(Query<core::Session>{}.include_tombstoned());
-        ASSERT_EQ(results.size(), 1u);
+        ASSERT_EQ(results.size(), 1U);
         EXPECT_EQ(results.front().id, session.id);
         EXPECT_TRUE(results.front().revoked_at.has_value());
       }
@@ -264,6 +267,7 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::Session>().find_by_id(session.id);
       ASSERT_TRUE(found.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_TRUE(found->revoked_at.has_value());
     }
 
@@ -290,6 +294,7 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::Session>().find_by_id(session.id);
       ASSERT_TRUE(found.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_EQ(found->last_seen_at.unix_micros(), 99999);
     }
 
@@ -305,7 +310,7 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto results = txn->repo<core::Session>().query(Query<core::Session>::where(
           field<core::Session, std::string>(core::Session::Field::UserId) == user1_.to_string()));
-      ASSERT_EQ(results.size(), 1u);
+      ASSERT_EQ(results.size(), 1U);
       EXPECT_EQ(results.front().id, s1.id);
     }
 
@@ -320,7 +325,7 @@ namespace fmgr::storage {
       const auto results = txn->repo<core::Session>().query(Query<core::Session>::where(
           field<core::Session, std::string>(core::Session::Field::TokenPrefix) ==
           session.token_prefix));
-      ASSERT_EQ(results.size(), 1u);
+      ASSERT_EQ(results.size(), 1U);
       EXPECT_EQ(results.front().id, session.id);
     }
 
@@ -352,12 +357,14 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::ApiToken>().find_by_id(token.id);
       ASSERT_TRUE(found.has_value());
+      // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_EQ(found->id, token.id);
       EXPECT_EQ(found->user_id, user1_);
       ASSERT_TRUE(found->lab_id.has_value());
       EXPECT_EQ(*found->lab_id, lab1_);
       EXPECT_EQ(found->name, token.name);
       EXPECT_FALSE(found->revoked_at.has_value());
+      // NOLINTEND(bugprone-unchecked-optional-access)
     }
 
     TEST_P(SessionRepositoryTest, ApiTokenWithoutLabId) {
@@ -370,6 +377,7 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::ApiToken>().find_by_id(token.id);
       ASSERT_TRUE(found.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_FALSE(found->lab_id.has_value());
     }
 
@@ -388,6 +396,7 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::ApiToken>().find_by_id(token.id);
       ASSERT_TRUE(found.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_TRUE(found->revoked_at.has_value());
     }
 
@@ -412,7 +421,7 @@ namespace fmgr::storage {
         auto txn = backend().begin(IsolationLevel::Serializable);
         const auto results =
             txn->repo<core::ApiToken>().query(Query<core::ApiToken>{}.include_tombstoned());
-        ASSERT_EQ(results.size(), 1u);
+        ASSERT_EQ(results.size(), 1U);
         EXPECT_EQ(results.front().id, token.id);
         EXPECT_TRUE(results.front().revoked_at.has_value());
       }
@@ -460,7 +469,7 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto results = txn->repo<core::ApiToken>().query(Query<core::ApiToken>::where(
           field<core::ApiToken, std::string>(core::ApiToken::Field::UserId) == user1_.to_string()));
-      ASSERT_EQ(results.size(), 1u);
+      ASSERT_EQ(results.size(), 1U);
       EXPECT_EQ(results.front().id, t1.id);
     }
 
@@ -472,7 +481,7 @@ namespace fmgr::storage {
         txn->commit();
       }
       // At least 1 audit row should have been inserted.
-      EXPECT_GE(audit_event_count(), 1u);
+      EXPECT_GE(audit_event_count(), 1U);
     }
 
     TEST_P(SessionRepositoryTest, SessionUpdateNonExistentThrows) {

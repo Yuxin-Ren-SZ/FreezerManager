@@ -106,6 +106,8 @@ namespace fmgr::core {
       };
       const auto decoded = nlohmann::json(original).get<Session>();
       EXPECT_EQ(original, decoded);
+      ASSERT_TRUE(decoded.revoked_at.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_EQ(decoded.revoked_at->unix_micros(), 999);
     }
 

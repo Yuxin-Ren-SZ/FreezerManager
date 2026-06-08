@@ -198,8 +198,9 @@ namespace fmgr::storage {
             work.exec("SELECT id,lab_id,name,status,box_id,position_label,custom_fields_json,"
                       "created_at_micros FROM fmgr_pg_conformance_sample WHERE id=$1",
                       pqxx::params{entity_id.to_string()});
-        if (result.empty())
+        if (result.empty()) {
           return std::nullopt;
+        }
         for (pqxx::row_ref row : result) {
           return read_sample_row(row);
         }
@@ -236,8 +237,9 @@ namespace fmgr::storage {
           case PredicateOperator::In: {
             std::string in_clause = col + " IN (";
             for (std::size_t i = 0; i < predicate.values.size(); ++i) {
-              if (i != 0)
+              if (i != 0) {
                 in_clause += ",";
+              }
               in_clause += "$" + std::to_string(param_idx++);
               append_json_param(params, predicate.values.at(i));
             }
@@ -265,8 +267,9 @@ namespace fmgr::storage {
         if (!where_clauses.empty()) {
           sql += " WHERE ";
           for (std::size_t i = 0; i < where_clauses.size(); ++i) {
-            if (i != 0)
+            if (i != 0) {
               sql += " AND ";
+            }
             sql += where_clauses.at(i);
           }
         }
@@ -274,21 +277,22 @@ namespace fmgr::storage {
         if (!query_spec.sorts().empty()) {
           sql += " ORDER BY ";
           for (std::size_t i = 0; i < query_spec.sorts().size(); ++i) {
-            if (i != 0)
+            if (i != 0) {
               sql += ", ";
+            }
             const auto& s = query_spec.sorts().at(i);
             sql += column_name(s.field);
             sql += s.direction == SortDirection::Ascending ? " ASC" : " DESC";
           }
         }
 
-        if (query_spec.limit_count().has_value()) {
+        if (const auto limit = query_spec.limit_count(); limit.has_value()) {
           sql += " LIMIT $" + std::to_string(param_idx++);
-          params.append(static_cast<std::int64_t>(query_spec.limit_count().value()));
+          params.append(static_cast<std::int64_t>(limit.value()));
         }
-        if (query_spec.offset_count().has_value()) {
+        if (const auto offset = query_spec.offset_count(); offset.has_value()) {
           sql += " OFFSET $" + std::to_string(param_idx++);
-          params.append(static_cast<std::int64_t>(query_spec.offset_count().value()));
+          params.append(static_cast<std::int64_t>(offset.value()));
         }
 
         const auto result = txn_.work().exec(sql, params);
@@ -324,10 +328,12 @@ namespace fmgr::storage {
               ins);
         } catch (const pqxx::sql_error& err) {
           const std::string_view state = err.sqlstate();
-          if (state == "23505")
+          if (state == "23505") {
             throw UniqueViolation(err.what());
-          if (state == "40001" || state == "40P01")
+          }
+          if (state == "40001" || state == "40P01") {
             throw SerializationFailure(err.what());
+          }
           throw BackendError(BackendErrorCode::ConstraintViolation, err.what());
         }
 
@@ -349,8 +355,9 @@ namespace fmgr::storage {
           const auto ver_result = txn_.work().exec(
               "SELECT version FROM fmgr_pg_conformance_sample WHERE id=$1 FOR UPDATE",
               pqxx::params{entity.id.to_string()});
-          if (ver_result.empty())
+          if (ver_result.empty()) {
             throw NotFound("pg conformance sample not found");
+          }
 
           pqxx::params upd;
           upd.append(entity.id.to_string());
@@ -368,10 +375,12 @@ namespace fmgr::storage {
               upd);
         } catch (const pqxx::sql_error& err) {
           const std::string_view state = err.sqlstate();
-          if (state == "23505")
+          if (state == "23505") {
             throw UniqueViolation(err.what());
-          if (state == "40001" || state == "40P01")
+          }
+          if (state == "40001" || state == "40P01") {
             throw SerializationFailure(err.what());
+          }
           throw BackendError(BackendErrorCode::ConstraintViolation, err.what());
         }
 
@@ -382,8 +391,9 @@ namespace fmgr::storage {
       void soft_delete(const PgConformanceSample::Id& entity_id,
                        const MutationContext& context) override {
         auto entity = find_by_id(entity_id);
-        if (!entity.has_value())
+        if (!entity.has_value()) {
           throw NotFound("pg conformance sample not found");
+        }
         entity->status = core::SampleStatus::Tombstoned;
         update(*entity, context);
       }
@@ -392,8 +402,9 @@ namespace fmgr::storage {
       [[nodiscard]] static std::string pg_json_path(const std::vector<std::string>& segments) {
         // For a single-level path like ["project"], return "'project'"
         // For deeper paths we'd need jsonb path operators, but conformance only uses 1-level.
-        if (segments.empty())
+        if (segments.empty()) {
           return "''";
+        }
         return "'" + segments.front() + "'";
       }
 
@@ -469,8 +480,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
     protected:
       PostgresBackendConformanceTest() {
         const auto url = postgres_test_url();
-        if (!url.has_value())
+        if (!url.has_value()) {
           return;
+        }
 
         // Each test run gets a fresh schema by wiping and recreating.
         {
@@ -532,9 +544,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       txn = backend().begin(IsolationLevel::Serializable);
       stored = txn->repo<PgConformanceSample>().find_by_id(entity.id);
       ASSERT_TRUE(stored.has_value());
-      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_EQ(stored->name, "beta");
       EXPECT_EQ(stored->status, core::SampleStatus::Tombstoned);
+      // NOLINTEND(bugprone-unchecked-optional-access)
     }
 
     TEST_F(PostgresBackendConformanceTest, QueryDslAppliesFiltersSortingAndPagination) {
@@ -653,10 +666,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       std::vector<std::thread> threads;
       threads.reserve(thread_count);
 
-      for (std::size_t t = 0; t < thread_count; ++t) {
-        threads.emplace_back([&, t]() {
+      for (std::size_t thread_idx = 0; thread_idx < thread_count; ++thread_idx) {
+        threads.emplace_back([&, thread_idx]() {
           for (std::size_t attempt = 0; attempt < attempts_per_thread; ++attempt) {
-            auto entity = sample(2000 + (t * attempts_per_thread) + attempt, "placed",
+            auto entity = sample(2000 + (thread_idx * attempts_per_thread) + attempt, "placed",
                                  core::Timestamp::from_unix_micros(100));
             entity.box_id = id_from_low<core::BoxId>(777);
             entity.position_label = "A1";
@@ -681,8 +694,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
           }
         });
       }
-      for (auto& thread : threads)
+      for (auto& thread : threads) {
         thread.join();
+      }
 
       EXPECT_EQ(successes, 1U);
       EXPECT_EQ(failures, (thread_count * attempts_per_thread) - 1U);
@@ -740,8 +754,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
     protected:
       PostgresRlsIntegrationTest() {
         const auto url = postgres_test_url();
-        if (!url.has_value())
+        if (!url.has_value()) {
           return;
+        }
 
         // Fresh schema for each test class instantiation.
         {
@@ -802,7 +817,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
         return *backend_;
       }
 
-      [[nodiscard]] auth::SessionContext ctx_for_lab(core::LabId lab) {
+      [[nodiscard]] static auth::SessionContext ctx_for_lab(core::LabId lab) {
         return auth::SessionContext{
             .session_id = id_from_low<core::SessionId>(998),
             .user_id = id_from_low<core::UserId>(999),

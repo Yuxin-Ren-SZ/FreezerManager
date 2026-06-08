@@ -120,7 +120,7 @@ namespace fmgr::core {
       m[{sr, ShareApprovalRole::SourceAdmin}] = 1;
       m[{sr, ShareApprovalRole::TargetAdmin}] = 2;
       m[{sr, ShareApprovalRole::SystemAdmin}] = 3;
-      EXPECT_EQ(m.size(), 3u);
+      EXPECT_EQ(m.size(), 3U);
       EXPECT_EQ(m.at({sr, ShareApprovalRole::TargetAdmin}), 2);
     }
 
