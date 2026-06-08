@@ -108,7 +108,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ItemType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::ItemType& entity, const MutationContext& context) override {
@@ -142,7 +142,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ItemType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "soft_delete",
+                           detail::audit_after(entity));
       }
 
       void check_no_cycle(const core::ItemType& entity) {
@@ -274,7 +275,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::CustomFieldDefinition>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::CustomFieldDefinition& entity,
@@ -295,7 +296,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::CustomFieldDefinition>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update", detail::audit_after(entity));
       }
 
       void soft_delete(const core::CustomFieldDefinitionId& entity_id,

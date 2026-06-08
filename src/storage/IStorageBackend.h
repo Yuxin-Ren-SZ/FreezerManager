@@ -46,10 +46,17 @@ namespace fmgr::storage {
     std::string reason;
     // Lab that owns the mutated entity. Null for cross-lab entities (sessions, audit).
     std::optional<std::string> lab_id;
-    // Serialized entity state before the mutation (null for inserts).
-    std::optional<nlohmann::json> before_json;
-    // Serialized entity state after the mutation (null for hard deletes / tombstones).
-    std::optional<nlohmann::json> after_json;
+    // NOTE: before/after snapshots are intentionally NOT carried here. The
+    // repository derives them from authoritative entity state and passes them to
+    // ITransaction::note_mutation, so a caller cannot forge audit content.
+  };
+
+  // Repository-derived before/after entity snapshots for one audited mutation.
+  // The repository owns these (it has the authoritative state); callers never
+  // supply them. `before` is null for inserts; `after` is null for hard deletes.
+  struct AuditSnapshot {
+    std::optional<nlohmann::json> before;
+    std::optional<nlohmann::json> after;
   };
 
   enum class BackendErrorCode : std::uint8_t {

@@ -261,6 +261,19 @@ namespace fmgr::storage {
         return pending_;
       }
 
+      // Snapshot of the latest persisted/staged state of `entity_id`, or nullopt
+      // if it does not exist yet. Used as the audit "before" image on updates.
+      [[nodiscard]] std::optional<nlohmann::json>
+      prior_snapshot(const typename EntityTraits<Entity>::Id& entity_id) const {
+        if (const auto staged = find_staged(entity_id); staged.has_value()) {
+          return nlohmann::json(staged.value());
+        }
+        if (const auto loaded = load(entity_id); loaded.has_value()) {
+          return nlohmann::json(loaded.value());
+        }
+        return std::nullopt;
+      }
+
       void stage_insert(const Entity& entity, const MutationContext& context) {
         const auto entity_id = id_of(entity);
         if (pending_.contains(entity_id) || load(entity_id).has_value()) {
@@ -270,7 +283,8 @@ namespace fmgr::storage {
         validate(entity);
         pending_.insert_or_assign(entity_id, PendingEntity{.entity = entity, .is_insert = true});
         transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
-                                   entity_id.to_string(), context);
+                                   entity_id.to_string(), context, "insert",
+                                   AuditSnapshot{.after = nlohmann::json(entity)});
       }
 
       void stage_update(const Entity& entity, const MutationContext& context) {
@@ -279,11 +293,13 @@ namespace fmgr::storage {
           throw NotFound(std::string(EntityTraits<Entity>::entity_name()) + " not found");
         }
         validate(entity);
+        auto before = prior_snapshot(entity_id);
         const auto is_insert = pending_.contains(entity_id) && pending_.at(entity_id).is_insert;
         pending_.insert_or_assign(entity_id,
                                   PendingEntity{.entity = entity, .is_insert = is_insert});
-        transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
-                                   entity_id.to_string(), context);
+        transaction_.note_mutation(
+            std::string(EntityTraits<Entity>::entity_name()), entity_id.to_string(), context,
+            "update", AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity)});
       }
 
       [[nodiscard]] std::optional<Entity>
@@ -498,11 +514,14 @@ namespace fmgr::storage {
         entity->last_modified_at = now;
         // Bypass validate() since tombstone does not change structural fields.
         const auto entity_id2 = entity->id;
+        auto before = prior_snapshot(entity_id2);
         const auto is_insert = pending().contains(entity_id2) && pending().at(entity_id2).is_insert;
         pending().insert_or_assign(entity_id2,
                                    PendingEntity{.entity = entity.value(), .is_insert = is_insert});
-        transaction().note_mutation(std::string(EntityTraits<core::Sample>::entity_name()),
-                                    entity_id2.to_string(), context);
+        transaction().note_mutation(
+            std::string(EntityTraits<core::Sample>::entity_name()), entity_id2.to_string(), context,
+            "soft_delete",
+            AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity.value())});
       }
 
     private:
@@ -869,7 +888,7 @@ namespace fmgr::storage {
         pending_inserts_.insert_or_assign(sp_id, entity);
         transaction_.note_mutation(
             "sample_project", entity.sample_id.to_string() + ":" + entity.project_id.to_string(),
-            context);
+            context, "insert", AuditSnapshot{.after = nlohmann::json(entity)});
       }
 
       void update(const core::SampleProject& /*entity*/,
@@ -890,9 +909,13 @@ namespace fmgr::storage {
         pending_inserts_.erase(entity_id);
         if (in_db) {
           pending_deletes_.insert(entity_id);
+          // The link's only state is its composite key; record it as the before image.
+          const core::SampleProject removed{.sample_id = entity_id.sample_id,
+                                            .project_id = entity_id.project_id};
           transaction_.note_mutation(
               "sample_project",
-              entity_id.sample_id.to_string() + ":" + entity_id.project_id.to_string(), context);
+              entity_id.sample_id.to_string() + ":" + entity_id.project_id.to_string(), context,
+              "soft_delete", AuditSnapshot{.before = nlohmann::json(removed)});
         }
       }
 
@@ -1018,7 +1041,8 @@ namespace fmgr::storage {
           }
         }
         pending_.insert_or_assign(entity.id, entity);
-        transaction_.note_mutation("checkout_event", entity.id.to_string(), context);
+        transaction_.note_mutation("checkout_event", entity.id.to_string(), context, "insert",
+                                   AuditSnapshot{.after = nlohmann::json(entity)});
       }
 
       void update(const core::CheckoutEvent& /*entity*/,

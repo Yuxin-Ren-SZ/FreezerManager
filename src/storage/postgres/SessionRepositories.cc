@@ -129,7 +129,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Session>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Session& entity, const MutationContext& context) override {
@@ -162,7 +162,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Session>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "soft_delete",
+                           detail::audit_after(entity));
       }
 
       PostgresTransaction& txn_;
@@ -260,7 +261,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ApiToken>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::ApiToken& entity, const MutationContext& context) override {
@@ -292,7 +293,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ApiToken>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "soft_delete",
+                           detail::audit_after(entity));
       }
 
       PostgresTransaction& txn_;

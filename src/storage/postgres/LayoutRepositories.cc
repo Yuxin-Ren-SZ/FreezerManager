@@ -133,7 +133,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Freezer>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Freezer& entity, const MutationContext& context) override {
@@ -151,7 +151,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Freezer>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update", detail::audit_after(entity));
       }
 
       void soft_delete(const core::FreezerId& entity_id, const MutationContext& context) override {
@@ -266,7 +266,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::StorageContainer>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::StorageContainer& entity, const MutationContext& context) override {
@@ -303,7 +303,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::StorageContainer>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "soft_delete",
+                           detail::audit_after(entity));
       }
 
       // Walk the prospective parent's ancestor chain; if it ever reaches the

@@ -44,8 +44,6 @@ namespace fmgr::storage {
     }
 
     core::Sample moved = current.value();
-    context.before_json = nlohmann::json(current.value());
-
     moved.box_id = dest_box;
     moved.position_label = std::move(dest_position);
     moved.last_modified_by = context.actor_user_id;
@@ -55,7 +53,8 @@ namespace fmgr::storage {
                                       .count());
     moved.last_modified_at = core::Timestamp::from_unix_micros(now_micros);
 
-    context.after_json = nlohmann::json(moved);
+    // The repository derives the before/after audit snapshots from authoritative
+    // state during update(); the move no longer supplies them via the context.
     repo.update(moved, context);
     return moved;
   }

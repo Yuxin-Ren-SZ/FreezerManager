@@ -699,6 +699,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS authz_version BIGINT NOT NULL DEFAULT
       std::string entity_id;
       std::string action;
       MutationContext context;
+      AuditSnapshot snapshot; // repository-derived before/after state
     };
 
     std::shared_ptr<PostgresBackendState> state;
@@ -756,12 +757,14 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS authz_version BIGINT NOT NULL DEFAULT
   }
 
   void PostgresTransaction::note_mutation(std::string entity_kind, std::string entity_id,
-                                          const MutationContext& context, std::string action) {
+                                          const MutationContext& context, std::string action,
+                                          AuditSnapshot snapshot) {
     impl_->audit_mutations.push_back(Impl::AuditMutation{
         .entity_kind = std::move(entity_kind),
         .entity_id = std::move(entity_id),
         .action = std::move(action),
         .context = context,
+        .snapshot = std::move(snapshot),
     });
   }
 
@@ -807,11 +810,10 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS authz_version BIGINT NOT NULL DEFAULT
 
         for (const auto& mutation : impl_->audit_mutations) {
           const auto event_id = generate_random_uuid();
-          const std::string before_str = mutation.context.before_json.has_value()
-                                             ? mutation.context.before_json->dump()
-                                             : "{}";
+          const std::string before_str =
+              mutation.snapshot.before.has_value() ? mutation.snapshot.before->dump() : "{}";
           const std::string after_str =
-              mutation.context.after_json.has_value() ? mutation.context.after_json->dump() : "{}";
+              mutation.snapshot.after.has_value() ? mutation.snapshot.after->dump() : "{}";
           const nlohmann::json lab_id_val = mutation.context.lab_id.has_value()
                                                 ? nlohmann::json(*mutation.context.lab_id)
                                                 : nlohmann::json(nullptr);

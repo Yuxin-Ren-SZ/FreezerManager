@@ -217,6 +217,19 @@ namespace fmgr::storage {
         return pending_;
       }
 
+      // Snapshot of the latest persisted/staged state of `entity_id`, or nullopt
+      // if it does not exist yet. Used as the audit "before" image on updates.
+      [[nodiscard]] std::optional<nlohmann::json>
+      prior_snapshot(const typename EntityTraits<Entity>::Id& entity_id) const {
+        if (const auto staged = find_staged(entity_id); staged.has_value()) {
+          return nlohmann::json(staged.value());
+        }
+        if (const auto loaded = load(entity_id); loaded.has_value()) {
+          return nlohmann::json(loaded.value());
+        }
+        return std::nullopt;
+      }
+
       void stage_insert(const Entity& entity, const MutationContext& context) {
         const auto entity_id = id_of(entity);
         if (pending_.contains(entity_id) || load(entity_id).has_value()) {
@@ -226,7 +239,8 @@ namespace fmgr::storage {
         validate(entity);
         pending_.insert_or_assign(entity_id, PendingEntity{.entity = entity, .is_insert = true});
         transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
-                                   entity_id.to_string(), context);
+                                   entity_id.to_string(), context, "insert",
+                                   AuditSnapshot{.after = nlohmann::json(entity)});
       }
 
       void stage_update(const Entity& entity, const MutationContext& context) {
@@ -235,11 +249,13 @@ namespace fmgr::storage {
           throw NotFound(std::string(EntityTraits<Entity>::entity_name()) + " not found");
         }
         validate(entity);
+        auto before = prior_snapshot(entity_id);
         const auto is_insert = pending_.contains(entity_id) && pending_.at(entity_id).is_insert;
         pending_.insert_or_assign(entity_id,
                                   PendingEntity{.entity = entity, .is_insert = is_insert});
-        transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
-                                   entity_id.to_string(), context);
+        transaction_.note_mutation(
+            std::string(EntityTraits<Entity>::entity_name()), entity_id.to_string(), context,
+            "update", AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity)});
       }
 
       [[nodiscard]] std::optional<Entity>
@@ -341,11 +357,14 @@ namespace fmgr::storage {
         entity->status = core::ShareRequestStatus::Revoked;
         entity->decided_at = now_timestamp();
         // Bypass validate() — revocation does not change structural fields.
+        auto before = prior_snapshot(entity_id);
         const auto is_insert = pending().contains(entity_id) && pending().at(entity_id).is_insert;
         pending().insert_or_assign(entity_id,
                                    PendingEntity{.entity = entity.value(), .is_insert = is_insert});
-        transaction().note_mutation(std::string(EntityTraits<core::ShareRequest>::entity_name()),
-                                    entity_id.to_string(), context);
+        transaction().note_mutation(
+            std::string(EntityTraits<core::ShareRequest>::entity_name()), entity_id.to_string(),
+            context, "soft_delete",
+            AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity.value())});
       }
 
     private:
@@ -494,7 +513,8 @@ namespace fmgr::storage {
         pending_.insert_or_assign(approval_id, entity);
         const auto composite_key = entity.share_request_id.to_string() + ":" +
                                    std::string(core::to_string(entity.approver_role));
-        transaction_.note_mutation("share_request_approval", composite_key, context);
+        transaction_.note_mutation("share_request_approval", composite_key, context, "insert",
+                                   AuditSnapshot{.after = nlohmann::json(entity)});
       }
 
       void update(const core::ShareRequestApproval& /*entity*/,
