@@ -782,9 +782,14 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         impl_->work->exec("SELECT pg_advisory_xact_lock(8675309)");
 
+        // The chain tail is the row whose this_hash no other row links from. Rows
+        // in one commit share at_micros and have random ids, so an ORDER BY on
+        // those cannot recover the true tail; the link structure can. The
+        // advisory lock above serialises appenders, so exactly one tail exists.
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         const auto last = impl_->work->exec(
-            "SELECT this_hash FROM audit_events ORDER BY at_micros DESC, id DESC LIMIT 1");
+            "SELECT e.this_hash FROM audit_events e "
+            "WHERE NOT EXISTS (SELECT 1 FROM audit_events p WHERE p.prev_hash = e.this_hash)");
         std::string prev_hash =
             last.empty() ? std::string(audit::zero_hash()) : last[0][0].as<std::string>();
 

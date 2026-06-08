@@ -6,6 +6,7 @@ find_package(CLI11 CONFIG REQUIRED)
 # process; the executable is a thin argv shim over it.
 add_library(
   freezermanager_cli
+  AuditCommands.cc
   BackendFactory.cc
   CliApp.cc
   CsvWriter.cc
@@ -25,6 +26,7 @@ target_link_libraries(
   freezermanager_cli
   PUBLIC
     FreezerManager::core
+    FreezerManager::audit
     FreezerManager::storage_sqlite
     FreezerManager::storage_postgres
   PRIVATE

@@ -2,6 +2,7 @@
 
 #include "cli/CliApp.h"
 
+#include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleQuery.h"
@@ -80,6 +81,14 @@ namespace fmgr::cli {
     add_common_args(exporter, export_args);
     exporter->add_option("--out", export_out, "Write CSV to this file instead of stdout");
 
+    CLI::App* audit = app.add_subcommand("audit", "Audit log commands");
+    audit->require_subcommand(1);
+    std::string audit_sqlite;
+    std::string audit_postgres;
+    CLI::App* verify = audit->add_subcommand("verify", "Verify the audit hash chain (global)");
+    verify->add_option("--sqlite", audit_sqlite, "Path to a SQLite database file");
+    verify->add_option("--postgres", audit_postgres, "PostgreSQL connection URL");
+
     try {
       app.parse(argc, argv);
     } catch (const CLI::ParseError& error) {
@@ -106,6 +115,17 @@ namespace fmgr::cli {
           run_sample_export(*backend, query_options, file);
         }
         return 0;
+      }
+      if (verify->parsed()) {
+        BackendOptions options;
+        if (!audit_sqlite.empty()) {
+          options.sqlite_path = audit_sqlite;
+        }
+        if (!audit_postgres.empty()) {
+          options.postgres_url = audit_postgres;
+        }
+        auto backend = open_backend(options);
+        return run_audit_verify(*backend, AuditVerifyOptions{}, out);
       }
     } catch (const std::exception& error) {
       err << "error: " << error.what() << '\n';

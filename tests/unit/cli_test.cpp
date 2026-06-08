@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
 #include "cli/CliApp.h"
 #include "cli/CsvWriter.h"
@@ -306,6 +307,15 @@ namespace fmgr::cli {
         ++line_count;
       }
       EXPECT_EQ(line_count, 7U);
+    }
+
+    TEST_P(CliBackendTest, AuditVerifyPassesOnSeededChain) {
+      // The fixture's seed inserts (labs/users/item-types/samples) each wrote an
+      // audit row at commit; the chain the backend built must verify intact.
+      std::ostringstream out;
+      const int code = run_audit_verify(fixture_->backend(), AuditVerifyOptions{}, out);
+      EXPECT_EQ(code, 0) << out.str();
+      EXPECT_NE(out.str().find("OK:"), std::string::npos);
     }
 
     INSTANTIATE_TEST_SUITE_P(Backends, CliBackendTest,
