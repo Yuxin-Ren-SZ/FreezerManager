@@ -9,6 +9,7 @@
 #include "storage/FreezerTraits.h"
 #include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
+#include "storage/SampleOps.h"
 #include "storage/SampleTraits.h"
 #include "storage/postgres/BoxGeometryRepositories.h"
 #include "storage/postgres/IdentityRepositories.h"
@@ -596,6 +597,164 @@ namespace fmgr::storage {
               txn->commit();
             },
             UniqueViolation);
+      }
+    }
+
+    // ---- Atomic sample move (storage::move_sample) ----
+
+    TEST_P(SampleRepositoryTest, MoveToFreePositionVacatesSource) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.box_id = box_id;
+      sample.position_label = "A1";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        move_sample(*txn, sample.id, box_id, "A2", mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto moved = txn->repo<core::Sample>().find_by_id(sample.id);
+        txn->commit();
+        ASSERT_TRUE(moved.has_value());
+        // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
+        EXPECT_EQ(moved->box_id, box_id);
+        EXPECT_EQ(moved->position_label, "A2");
+        // NOLINTEND(bugprone-unchecked-optional-access)
+      }
+      // A1 is now free: another sample can take it.
+      auto other = make_sample(11, lab_id, it_id, user_id);
+      other.box_id = box_id;
+      other.position_label = "A1";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_NO_THROW({
+          txn->repo<core::Sample>().insert(other, mutation_context());
+          txn->commit();
+        });
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, MoveToOccupiedPositionThrowsAndRollsBack) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.box_id = box_id;
+      s1.position_label = "A1";
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.box_id = box_id;
+      s2.position_label = "A2";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->commit();
+      }
+      {
+        // SQLite fails at commit (deferred index), Postgres on the update; either
+        // way the transaction rolls back as a unit.
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_THROW(
+            {
+              move_sample(*txn, s1.id, box_id, "A2", mutation_context());
+              txn->commit();
+            },
+            UniqueViolation);
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found1 = txn->repo<core::Sample>().find_by_id(s1.id);
+        const auto found2 = txn->repo<core::Sample>().find_by_id(s2.id);
+        txn->commit();
+        ASSERT_TRUE(found1.has_value());
+        ASSERT_TRUE(found2.has_value());
+        // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
+        EXPECT_EQ(found1->position_label, "A1"); // unchanged
+        EXPECT_EQ(found2->position_label, "A2"); // unchanged
+        // NOLINTEND(bugprone-unchecked-optional-access)
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, MoveToInvalidPositionThrows) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.box_id = box_id;
+      sample.position_label = "A1";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_THROW(
+            {
+              move_sample(*txn, sample.id, box_id, "Z9", mutation_context());
+              txn->commit();
+            },
+            ConstraintViolation);
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, MoveNonexistentThrowsNotFound) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)lab_id;
+      (void)user_id;
+      (void)it_id;
+      (void)ct_id;
+      (void)size_class;
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(
+          move_sample(*txn, id_from_low<core::SampleId>(999), box_id, "A1", mutation_context()),
+          NotFound);
+      txn->rollback();
+    }
+
+    TEST_P(SampleRepositoryTest, MoveUnplacesWhenDestinationNull) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.box_id = box_id;
+      sample.position_label = "A1";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        move_sample(*txn, sample.id, std::nullopt, std::nullopt, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto unplaced = txn->repo<core::Sample>().find_by_id(sample.id);
+        txn->commit();
+        ASSERT_TRUE(unplaced.has_value());
+        // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
+        EXPECT_FALSE(unplaced->box_id.has_value());
+        EXPECT_FALSE(unplaced->position_label.has_value());
+        // NOLINTEND(bugprone-unchecked-optional-access)
       }
     }
 
