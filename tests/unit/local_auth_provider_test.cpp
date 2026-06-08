@@ -120,6 +120,7 @@ namespace fmgr::auth {
       std::unique_ptr<LocalAuthProvider> provider_;
 
       // D9.3 test helpers: manipulate session timestamps directly via backend.
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       void backdate_session(const core::SessionId& sid, std::int64_t created_offset_micros,
                             std::int64_t last_seen_offset_micros) {
         const auto now_micros = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -128,6 +129,7 @@ namespace fmgr::auth {
         auto txn = backend_->begin(storage::IsolationLevel::Serializable);
         auto maybe_s = txn->repo<core::Session>().find_by_id(sid);
         ASSERT_TRUE(maybe_s.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
         auto updated = *maybe_s;
         updated.created_at = core::Timestamp::from_unix_micros(now_micros + created_offset_micros);
         updated.last_seen_at =
@@ -305,6 +307,7 @@ namespace fmgr::auth {
         try {
           local_provider.authenticate(
               PasswordCredentials{.email = "nototp@example.com", .password = "bad"}, ClientInfo{});
+          // NOLINTNEXTLINE(bugprone-empty-catch): expected auth failure, drives lockout counter
         } catch (...) {
         }
       };
@@ -329,6 +332,7 @@ namespace fmgr::auth {
         try {
           local_provider.authenticate(
               PasswordCredentials{.email = "nototp@example.com", .password = "bad"}, ClientInfo{});
+          // NOLINTNEXTLINE(bugprone-empty-catch): expected auth failure, drives lockout counter
         } catch (...) {
         }
       };
@@ -351,6 +355,7 @@ namespace fmgr::auth {
         try {
           local_provider.authenticate(
               PasswordCredentials{.email = "nototp@example.com", .password = "bad"}, ClientInfo{});
+          // NOLINTNEXTLINE(bugprone-empty-catch): expected auth failure, drives lockout counter
         } catch (...) {
         }
       }
@@ -363,6 +368,7 @@ namespace fmgr::auth {
         try {
           local_provider.authenticate(
               PasswordCredentials{.email = "nototp@example.com", .password = "bad"}, ClientInfo{});
+          // NOLINTNEXTLINE(bugprone-empty-catch): expected auth failure, drives lockout counter
         } catch (...) {
         }
       }
@@ -504,17 +510,18 @@ namespace fmgr::auth {
       std::string token_prefix;
     };
 
-    [[nodiscard]] static PreparedApiToken prepare_api_token(const core::UserId& user_id,
-                                                            std::uint64_t token_id_low) {
+    [[nodiscard]] PreparedApiToken prepare_api_token(const core::UserId& user_id,
+                                                     std::uint64_t token_id_low) {
       // Generate 32 random bytes → 64-char hex string (matching generate_token()).
       std::array<unsigned char, 32> buf{};
       randombytes_buf(buf.data(), buf.size());
-      constexpr char k_hex[] = "0123456789abcdef";
+      static constexpr std::array<char, 16> k_hex = {'0', '1', '2', '3', '4', '5', '6', '7',
+                                                     '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
       std::string hex_part;
       hex_part.reserve(64);
-      for (std::size_t i = 0; i < buf.size(); ++i) {
-        hex_part.push_back(k_hex[(buf[i] >> 4U) & 0xFU]);
-        hex_part.push_back(k_hex[buf[i] & 0xFU]);
+      for (unsigned char byte : buf) {
+        hex_part.push_back(k_hex[(byte >> 4U) & 0xFU]);
+        hex_part.push_back(k_hex[byte & 0xFU]);
       }
 
       const std::string full = "fmgr_pat_" + hex_part;
@@ -530,9 +537,9 @@ namespace fmgr::auth {
                          nullptr, 0);
       std::string hash_hex;
       hash_hex.reserve(crypto_generichash_BYTES * 2);
-      for (std::size_t i = 0; i < hash_bytes.size(); ++i) {
-        hash_hex.push_back(k_hex[(hash_bytes[i] >> 4U) & 0xFU]);
-        hash_hex.push_back(k_hex[hash_bytes[i] & 0xFU]);
+      for (unsigned char hash_byte : hash_bytes) {
+        hash_hex.push_back(k_hex[(hash_byte >> 4U) & 0xFU]);
+        hash_hex.push_back(k_hex[hash_byte & 0xFU]);
       }
 
       return PreparedApiToken{
@@ -865,6 +872,7 @@ namespace fmgr::auth {
         try {
           local_provider.authenticate(
               PasswordCredentials{.email = "nototp@example.com", .password = "bad"}, ClientInfo{});
+          // NOLINTNEXTLINE(bugprone-empty-catch): expected auth failure, drives lockout counter
         } catch (...) {
         }
       }
@@ -894,8 +902,8 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, ValidateTokenThrowsTokenExpiredWhenAbsoluteTtlExceeded) {
       LocalAuthProviderConfig cfg = fast_config();
-      cfg.max_session_idle_seconds = 7 * 24 * 3600; // large idle limit
-      cfg.max_session_abs_seconds = 3600;           // 1 h absolute limit
+      cfg.max_session_idle_seconds = 7LL * 24 * 3600; // large idle limit
+      cfg.max_session_abs_seconds = 3600;             // 1 h absolute limit
       cfg.last_seen_update_interval_seconds = 60;
       auto prov = LocalAuthProvider(*backend_, cfg);
 

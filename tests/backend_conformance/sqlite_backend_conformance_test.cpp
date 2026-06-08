@@ -359,16 +359,18 @@ namespace fmgr::storage {
           }
         }
 
-        if (query_spec.limit_count().has_value()) {
+        const auto limit = query_spec.limit_count();
+        const auto offset = query_spec.offset_count();
+        if (limit.has_value()) {
           sql += " LIMIT ?";
-          parameters.emplace_back(static_cast<std::int64_t>(query_spec.limit_count().value()));
+          parameters.emplace_back(static_cast<std::int64_t>(limit.value()));
         }
-        if (query_spec.offset_count().has_value()) {
-          if (!query_spec.limit_count().has_value()) {
+        if (offset.has_value()) {
+          if (!limit.has_value()) {
             sql += " LIMIT -1";
           }
           sql += " OFFSET ?";
-          parameters.emplace_back(static_cast<std::int64_t>(query_spec.offset_count().value()));
+          parameters.emplace_back(static_cast<std::int64_t>(offset.value()));
         }
 
         Statement statement(transaction_.handle(), sql);

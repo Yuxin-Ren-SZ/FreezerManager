@@ -80,9 +80,13 @@ namespace fmgr::auth {
       std::set<core::Permission> global_permissions;
     };
 
+    // base = the user's role permissions, scope = the token's allowed subset; the
+    // intersection is order-independent so swapping is harmless, but keep names clear.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
     [[nodiscard]] std::set<core::Permission>
     intersect_permissions(const std::set<core::Permission>& base,
                           const std::set<core::Permission>& scope) {
+      // NOLINTEND(bugprone-easily-swappable-parameters)
       std::set<core::Permission> result;
       for (const auto permission : base) {
         if (scope.contains(permission)) {
@@ -219,12 +223,17 @@ namespace fmgr::auth {
     const auto users = txn->repo<core::User>().query(storage::Query<core::User>::where(
         storage::field<core::User, std::string>(core::User::Field::Id) ==
         maybe_session->user_id.to_string()));
-    if (users.empty() || !users.front().totp_secret_enc.has_value()) {
+    if (users.empty()) {
+      txn->commit();
+      throw InvalidCredentials("no TOTP secret configured for this user");
+    }
+    const auto& user = users.front();
+    if (!user.totp_secret_enc.has_value()) {
       txn->commit();
       throw InvalidCredentials("no TOTP secret configured for this user");
     }
 
-    const auto& totp_secret = *users.front().totp_secret_enc;
+    const auto& totp_secret = *user.totp_secret_enc;
     const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
                                  std::chrono::system_clock::now().time_since_epoch())
                                  .count();

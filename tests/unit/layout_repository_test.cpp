@@ -328,6 +328,7 @@ namespace fmgr::storage {
         auto transaction = backend().begin(IsolationLevel::Serializable);
         const auto found = transaction->repo<core::StorageContainer>().find_by_id(child.id);
         ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
         EXPECT_EQ(found->id, child.id);
       }
     }

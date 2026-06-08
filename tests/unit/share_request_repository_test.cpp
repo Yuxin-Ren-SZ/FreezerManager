@@ -154,10 +154,12 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::ShareRequest>().find_by_id(sr.id);
       ASSERT_TRUE(found.has_value());
+      // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_EQ(found->id, sr.id);
       EXPECT_EQ(found->source_lab_id, lab1_);
       EXPECT_EQ(found->target_lab_id, lab2_);
       EXPECT_EQ(found->status, core::ShareRequestStatus::Pending);
+      // NOLINTEND(bugprone-unchecked-optional-access)
     }
 
     TEST_P(ShareRequestRepositoryTest, DuplicateIdThrowsUniqueViolation) {
@@ -202,7 +204,7 @@ namespace fmgr::storage {
         auto txn = backend().begin(IsolationLevel::Serializable);
         const auto results =
             txn->repo<core::ShareRequest>().query(Query<core::ShareRequest>{}.include_tombstoned());
-        ASSERT_EQ(results.size(), 1u);
+        ASSERT_EQ(results.size(), 1U);
         EXPECT_EQ(results.front().id, sr.id);
         EXPECT_EQ(results.front().status, core::ShareRequestStatus::Revoked);
         EXPECT_TRUE(results.front().decided_at.has_value());
@@ -222,7 +224,7 @@ namespace fmgr::storage {
       const auto results = txn->repo<core::ShareRequest>().query(Query<core::ShareRequest>::where(
           field<core::ShareRequest, std::string>(core::ShareRequest::Field::SourceLabId) ==
           lab1_.to_string()));
-      ASSERT_EQ(results.size(), 1u);
+      ASSERT_EQ(results.size(), 1U);
       EXPECT_EQ(results.front().id, sr1.id);
     }
 
@@ -239,7 +241,7 @@ namespace fmgr::storage {
       const auto results = txn->repo<core::ShareRequest>().query(Query<core::ShareRequest>::where(
           field<core::ShareRequest, std::string>(core::ShareRequest::Field::TargetLabId) ==
           lab1_.to_string()));
-      ASSERT_EQ(results.size(), 1u);
+      ASSERT_EQ(results.size(), 1U);
       EXPECT_EQ(results.front().id, sr2.id);
     }
 
@@ -262,6 +264,7 @@ namespace fmgr::storage {
         const auto found = txn->repo<core::ShareRequest>().find_by_id(sr.id);
         txn->commit();
         ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
         EXPECT_EQ(found->scope_json, R"({"project_ids":["abc","def"]})");
       }
     }
@@ -299,9 +302,11 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       const auto found = txn->repo<core::ShareRequestApproval>().find_by_id(approval.id());
       ASSERT_TRUE(found.has_value());
+      // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
       EXPECT_EQ(found->share_request_id, sr.id);
       EXPECT_EQ(found->approver_role, core::ShareApprovalRole::SourceAdmin);
       EXPECT_EQ(found->approver_user_id, user1_);
+      // NOLINTEND(bugprone-unchecked-optional-access)
     }
 
     TEST_P(ShareRequestRepositoryTest, DuplicateApprovalRoleThrowsUniqueViolation) {
@@ -363,7 +368,7 @@ namespace fmgr::storage {
           txn->repo<core::ShareRequestApproval>().query(Query<core::ShareRequestApproval>::where(
               field<core::ShareRequestApproval, std::string>(
                   core::ShareRequestApproval::Field::ShareRequestId) == sr.id.to_string()));
-      EXPECT_EQ(results.size(), 2u);
+      EXPECT_EQ(results.size(), 2U);
     }
 
     TEST_P(ShareRequestRepositoryTest,
@@ -397,7 +402,7 @@ namespace fmgr::storage {
           txn->repo<core::ShareRequestApproval>().query(Query<core::ShareRequestApproval>::where(
               field<core::ShareRequestApproval, std::string>(
                   core::ShareRequestApproval::Field::ShareRequestId) == sr.id.to_string()));
-      EXPECT_EQ(results.size(), 3u);
+      EXPECT_EQ(results.size(), 3U);
     }
 
     INSTANTIATE_TEST_SUITE_P(Backends, ShareRequestRepositoryTest,

@@ -80,8 +80,8 @@ namespace fmgr::storage {
           sql += " WHERE archived_at_micros IS NULL";
         }
         sql += " ORDER BY created_at_micros ASC, id ASC";
-        if (query_spec.limit_count().has_value()) {
-          sql += " LIMIT " + std::to_string(query_spec.limit_count().value());
+        if (const auto limit = query_spec.limit_count(); limit.has_value()) {
+          sql += " LIMIT " + std::to_string(limit.value());
         }
 
         try {

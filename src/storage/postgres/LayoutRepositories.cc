@@ -316,13 +316,15 @@ namespace fmgr::storage {
         std::set<core::StorageContainerId> visited;
         std::optional<core::StorageContainerId> cursor = entity.parent_id;
         while (cursor.has_value()) {
-          if (cursor.value() == entity.id) {
+          // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guaranteed by loop condition
+          const core::StorageContainerId current = *cursor;
+          if (current == entity.id) {
             throw ConstraintViolation("storage container parent chain forms a cycle");
           }
-          if (!visited.insert(cursor.value()).second) {
+          if (!visited.insert(current).second) {
             throw ConstraintViolation("storage container parent chain forms a cycle");
           }
-          const auto ancestor = load(cursor.value());
+          const auto ancestor = load(current);
           if (!ancestor.has_value()) {
             return;
           }

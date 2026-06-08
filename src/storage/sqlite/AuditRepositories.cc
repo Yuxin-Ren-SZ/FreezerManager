@@ -165,14 +165,16 @@ namespace fmgr::storage {
             sql += (sort_spec.direction == SortDirection::Ascending) ? " ASC" : " DESC";
           }
         }
-        if (query_spec.limit_count().has_value()) {
-          sql += " LIMIT " + std::to_string(*query_spec.limit_count());
+        const auto limit = query_spec.limit_count();
+        const auto offset = query_spec.offset_count();
+        if (limit.has_value()) {
+          sql += " LIMIT " + std::to_string(*limit);
         }
-        if (query_spec.offset_count().has_value()) {
-          if (!query_spec.limit_count().has_value()) {
+        if (offset.has_value()) {
+          if (!limit.has_value()) {
             sql += " LIMIT -1";
           }
-          sql += " OFFSET " + std::to_string(*query_spec.offset_count());
+          sql += " OFFSET " + std::to_string(*offset);
         }
 
         Statement stmt(txn_.handle(), sql);
