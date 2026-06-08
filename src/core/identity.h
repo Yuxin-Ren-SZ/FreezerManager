@@ -83,7 +83,8 @@ namespace fmgr::core {
       CreatedAt,
       AuthBindings,
       TotpSecretEnc,
-      DefaultLabId
+      DefaultLabId,
+      AuthzVersion
     };
 
     UserId id;
@@ -97,6 +98,13 @@ namespace fmgr::core {
     // TOTP secret encrypted with the deployment KMS key. Never stored in plaintext.
     std::optional<std::string> totp_secret_enc;
     std::optional<LabId> default_lab_id;
+    // Monotonic authorization epoch. Bumped in-transaction whenever this user's
+    // effective permissions change (membership add/revoke/role change, or a
+    // permission grant on a role they hold). Auth providers cache a resolved
+    // SessionContext keyed on this value; a mismatch forces a rebuild, so a
+    // permission downgrade takes effect on the next request rather than waiting
+    // for the cache TTL. Never decreases.
+    std::int64_t authz_version{0};
 
     friend bool operator==(const User&, const User&) = default;
   };
@@ -176,6 +184,7 @@ namespace fmgr::core {
         {"auth_bindings", user.auth_bindings},
         {"totp_secret_enc", json_helpers::opt_to_json(user.totp_secret_enc)},
         {"default_lab_id", json_helpers::opt_to_json(user.default_lab_id)},
+        {"authz_version", user.authz_version},
     };
   }
 
@@ -189,6 +198,8 @@ namespace fmgr::core {
         .auth_bindings = json.at("auth_bindings"),
         .totp_secret_enc = json_helpers::opt_from_json<std::string>(json.at("totp_secret_enc")),
         .default_lab_id = json_helpers::opt_from_json<LabId>(json.at("default_lab_id")),
+        // Tolerate rows/snapshots written before the authz_version column existed.
+        .authz_version = json.value("authz_version", std::int64_t{0}),
     };
   }
 

@@ -157,6 +157,17 @@ namespace fmgr::storage {
       PostgresTransaction& txn_;
     };
 
+    // Bump the authorization epoch of every user holding the given role in this
+    // transaction, so a permission grant/revoke on the role invalidates their
+    // cached SessionContext on the next request (mirrors SQLite
+    // detail::bump_authz_version_for_role).
+    void bump_authz_version_for_role(PostgresTransaction& txn, const core::RoleId& role_id) {
+      txn.work().exec("UPDATE users SET authz_version = authz_version + 1 WHERE id IN "
+                      "(SELECT user_id FROM lab_memberships "
+                      " WHERE role_id = $1 AND revoked_at_micros IS NULL)",
+                      pqxx::params{role_id.to_string()});
+    }
+
     class RolePermissionRepository final : public IRepository<core::RolePermission> {
     public:
       explicit RolePermissionRepository(PostgresTransaction& txn) : txn_(txn) {}
@@ -222,6 +233,7 @@ namespace fmgr::storage {
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
+        bump_authz_version_for_role(txn_, entity.role_id);
         txn_.note_mutation(std::string(EntityTraits<core::RolePermission>::entity_name()),
                            entity.id().to_string(), context);
       }
@@ -246,6 +258,7 @@ namespace fmgr::storage {
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
+        bump_authz_version_for_role(txn_, entity_id.role_id);
         txn_.note_mutation(std::string(EntityTraits<core::RolePermission>::entity_name()),
                            entity_id.to_string(), context);
       }

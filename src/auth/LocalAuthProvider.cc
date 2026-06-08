@@ -428,6 +428,9 @@ namespace fmgr::auth {
       }
 
       // Verify the owning user is still active (runs before cache lookup).
+      // The same row carries authz_version, used below to invalidate a stale
+      // permission cache without waiting for the TTL.
+      std::int64_t authz_version = 0;
       {
         auto user_rtxn = backend_.begin(storage::IsolationLevel::ReadCommitted);
         const auto users = user_rtxn->repo<core::User>().query(storage::Query<core::User>::where(
@@ -437,12 +440,13 @@ namespace fmgr::auth {
         if (users.empty() || users.front().status != core::UserStatus::Active) {
           throw InvalidCredentials("user account is not active");
         }
+        authz_version = users.front().authz_version;
       }
 
       const auto now = now_ts();
       check_session_expiry(session, now); // throws TokenExpired on violation
       update_last_seen_if_needed(session, now);
-      return lookup_or_build_context(session);
+      return lookup_or_build_context(session, authz_version);
     }
 
     throw InvalidCredentials("invalid or expired session token");
@@ -484,7 +488,8 @@ namespace fmgr::auth {
 
   // ---- Private: lookup_or_build_context ----
 
-  SessionContext LocalAuthProvider::lookup_or_build_context(const core::Session& session) {
+  SessionContext LocalAuthProvider::lookup_or_build_context(const core::Session& session,
+                                                            std::int64_t authz_version) {
     // MFA flag always comes from the live DB session row, never from the cache.
     const std::string session_key = session.id.to_string();
 
@@ -495,7 +500,10 @@ namespace fmgr::auth {
         const auto age = std::chrono::duration_cast<std::chrono::seconds>(
                              std::chrono::steady_clock::now() - iter->second.cached_at)
                              .count();
-        if (age < config_.session_ctx_cache_ttl_seconds) {
+        // A cache hit must be both within the TTL and at the current authz epoch;
+        // a permission change bumps the user's authz_version and forces a rebuild.
+        if (age < config_.session_ctx_cache_ttl_seconds &&
+            iter->second.authz_version == authz_version) {
           return SessionContext{
               .session_id = session.id,
               .user_id = session.user_id,
@@ -504,7 +512,7 @@ namespace fmgr::auth {
               .mfa_complete = session.mfa_complete,
           };
         }
-        ctx_cache_.erase(iter); // stale entry
+        ctx_cache_.erase(iter); // stale (expired or superseded epoch)
       }
     }
 
@@ -516,6 +524,7 @@ namespace fmgr::auth {
                                                    .permissions_by_lab = ctx.permissions_by_lab,
                                                    .global_permissions = ctx.global_permissions,
                                                    .cached_at = std::chrono::steady_clock::now(),
+                                                   .authz_version = authz_version,
                                                });
     }
     return ctx;

@@ -693,6 +693,18 @@ CREATE INDEX IF NOT EXISTS api_tokens_lab_id_idx  ON api_tokens(lab_id);
 ALTER TABLE sessions ADD COLUMN mfa_complete INTEGER NOT NULL DEFAULT 1;
 )sql",
           },
+          {
+              .version = 13,
+              .name = "0013_authz_version",
+              .up_sql = R"sql(
+-- Authorization epoch for cache invalidation. Bumped in-transaction whenever a
+-- user's effective permissions change (membership/role/grant). Auth providers
+-- key their resolved-permission cache on this value so a downgrade takes effect
+-- on the next request rather than waiting for the cache TTL. Existing rows start
+-- at 0; any later authz change increments it.
+ALTER TABLE users ADD COLUMN authz_version INTEGER NOT NULL DEFAULT 0;
+)sql",
+          },
       };
     }
 
