@@ -123,6 +123,19 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
+add_executable(freezermanager_cli_unit_tests cli_test.cpp)
+target_link_libraries(
+  freezermanager_cli_unit_tests
+  PRIVATE
+    FreezerManager::cli
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_cli_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
 gtest_discover_tests(freezermanager_storage_unit_tests)
@@ -132,4 +145,8 @@ gtest_discover_tests(freezermanager_rpc_unit_tests)
 # The Postgres parameter of these tests DROPs/CREATEs the shared public schema;
 # serialize against every other Postgres-touching suite with one resource lock.
 gtest_discover_tests(freezermanager_storage_repository_tests
+    PROPERTIES RESOURCE_LOCK fmgr_postgres_test_db)
+# The Postgres parameter of the CLI tests also DROP/CREATEs the shared public
+# schema; share the same lock so it never races the repository suite.
+gtest_discover_tests(freezermanager_cli_unit_tests
     PROPERTIES RESOURCE_LOCK fmgr_postgres_test_db)
