@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -159,7 +160,11 @@ namespace fmgr::cli {
           remove_sqlite_files(db_path_);
           return BackendOptions{.sqlite_path = db_path_.string()};
         }
-        const auto url = postgres_test_url().value();
+        const auto url_opt = postgres_test_url();
+        if (!url_opt.has_value()) {
+          throw std::logic_error("postgres url required (SetUp must skip when unset)");
+        }
+        const auto& url = url_opt.value();
         // Per-test isolation: wipe the shared public schema so open_backend()
         // migrates from scratch (mirrors RepoBackendHarness).
         pqxx::connection setup_conn(url);
@@ -316,10 +321,10 @@ namespace fmgr::cli {
       std::ostringstream out;
       std::ostringstream err;
       // Hold the argument strings alive; CLI11 reads the char* in place.
-      const std::string db = fixture.db_path();
+      const std::string sqlite_db = fixture.db_path();
       const std::string lab = fixture.lab_a().to_string();
-      const std::vector<const char*> args = {"freezerctl", "sample", "export",   "--sqlite",
-                                             db.c_str(),   "--lab",  lab.c_str()};
+      const std::vector<const char*> args = {"freezerctl",      "sample", "export",   "--sqlite",
+                                             sqlite_db.c_str(), "--lab",  lab.c_str()};
       const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
       EXPECT_EQ(code, 0) << err.str();
       EXPECT_NE(out.str().find("# freezermanager-export"), std::string::npos);

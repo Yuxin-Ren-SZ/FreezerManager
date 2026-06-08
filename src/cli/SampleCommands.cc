@@ -20,14 +20,14 @@ namespace fmgr::cli {
       const auto now = std::chrono::system_clock::now();
       const std::time_t seconds = std::chrono::system_clock::to_time_t(now);
       std::tm utc{};
-#if defined(_WIN32)
+#ifdef _WIN32
       gmtime_s(&utc, &seconds);
 #else
       gmtime_r(&seconds, &utc);
 #endif
       std::array<char, sizeof("2026-06-07T12:34:56Z")> buffer{};
       std::strftime(buffer.data(), buffer.size(), "%Y-%m-%dT%H:%M:%SZ", &utc);
-      return std::string(buffer.data());
+      return {buffer.data()};
     }
 
   } // namespace

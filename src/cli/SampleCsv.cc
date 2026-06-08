@@ -59,6 +59,8 @@ namespace fmgr::cli {
     return row;
   }
 
+  // Field order here is the CSV header contract, not accidental.
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   void write_export_header(std::ostream& out, int schema_version, std::string_view lab_id,
                            std::string_view exported_at, std::string_view signature) {
     out << "# freezermanager-export schema_version=" << schema_version << "\r\n";

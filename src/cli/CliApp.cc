@@ -60,6 +60,8 @@ namespace fmgr::cli {
 
   } // namespace
 
+  // out/err are conventional stream params (mirrors main()); order is unambiguous.
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   int run_cli(int argc, const char* const* argv, std::ostream& out, std::ostream& err) {
     CLI::App app{"freezerctl — FreezerManager command-line client"};
     app.require_subcommand(1);
