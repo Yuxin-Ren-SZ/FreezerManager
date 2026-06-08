@@ -395,18 +395,35 @@ namespace fmgr::storage {
         // If a container type is given, its size_class must be accepted at the position.
         // box_type_position_accepts uses composite key (box_type_id, position_label).
         if (sample.container_type_id.has_value()) {
-          Statement stmt(transaction.handle(),
-                         "SELECT 1 FROM box_type_position_accepts bpa "
-                         "JOIN boxes b ON b.box_type_id = bpa.box_type_id "
-                         "JOIN container_types ct ON ct.size_class = bpa.size_class "
-                         "WHERE b.id = ? AND bpa.position_label = ? AND ct.id = ? LIMIT 1");
+          Statement stmt(
+              transaction.handle(),
+              "SELECT 1 FROM box_type_position_accepts bpa "
+              "JOIN boxes b ON b.box_type_id = bpa.box_type_id "
+              "JOIN container_types ct ON ct.size_class = bpa.size_class "
+              "WHERE b.id = ? AND bpa.position_label = ? AND ct.id = ? AND ct.lab_id = ? "
+              "LIMIT 1");
           bind_text(stmt.get(), 1, sample.box_id->to_string());
           bind_text(stmt.get(), 2, position_label);
           bind_text(stmt.get(), 3, sample.container_type_id->to_string());
+          bind_text(stmt.get(), 4, sample.lab_id.to_string());
           if (!stmt.step_row()) {
             throw ConstraintViolation(
                 "container_type size_class is not accepted at this box position");
           }
+        }
+      }
+      // container_type_id (when set) must reference a live ContainerType in the
+      // same lab, even for an unplaced sample with no box — otherwise a Lab-B
+      // container type whose size_class token happens to match could slip in.
+      if (sample.container_type_id.has_value()) {
+        Statement stmt(transaction.handle(),
+                       "SELECT 1 FROM container_types "
+                       "WHERE id = ? AND lab_id = ? AND archived_at_micros IS NULL LIMIT 1");
+        bind_text(stmt.get(), 1, sample.container_type_id->to_string());
+        bind_text(stmt.get(), 2, sample.lab_id.to_string());
+        if (!stmt.step_row()) {
+          throw ConstraintViolation(
+              "container_type_id does not reference a live ContainerType in this lab");
         }
       }
       // item_type_id must reference a live ItemType in same lab.
@@ -534,6 +551,47 @@ namespace fmgr::storage {
               throw ForeignKeyViolation("parent_sample_id does not reference a sample in this lab");
             }
           }
+          ensure_no_lineage_cycle(entity);
+        }
+      }
+
+      // Resolves the parent of `sample_id`, consulting staged (same-transaction)
+      // rows before committed ones. Returns nullopt when the sample has no parent
+      // or is not found.
+      [[nodiscard]] std::optional<core::SampleId> parent_of(const core::SampleId& sample_id) const {
+        if (const auto pit = pending().find(sample_id); pit != pending().end()) {
+          return pit->second.entity.parent_sample_id;
+        }
+        Statement stmt(transaction().handle(),
+                       "SELECT parent_sample_id FROM samples WHERE id = ? LIMIT 1");
+        bind_text(stmt.get(), 1, sample_id.to_string());
+        if (!stmt.step_row() || sqlite3_column_type(stmt.get(), 0) == SQLITE_NULL) {
+          return std::nullopt;
+        }
+        return core::SampleId::parse(column_text(stmt.get(), 0));
+      }
+
+      // Walks the proposed parent's ancestry; reaching `entity.id` means the new
+      // edge would close a lineage cycle. The depth bound is a belt-and-suspenders
+      // guard against an unexpected pre-existing cycle in the data.
+      void ensure_no_lineage_cycle(const core::Sample& entity) const {
+        if (!entity.parent_sample_id.has_value()) {
+          return;
+        }
+        constexpr int k_max_lineage_depth = 10'000;
+        core::SampleId current = entity.parent_sample_id.value();
+        for (int hops = 0;; ++hops) {
+          if (current == entity.id) {
+            throw ConstraintViolation("parent_sample_id would create a lineage cycle");
+          }
+          if (hops > k_max_lineage_depth) {
+            throw ConstraintViolation("parent lineage chain is too deep");
+          }
+          const std::optional<core::SampleId> next = parent_of(current);
+          if (!next.has_value()) {
+            break;
+          }
+          current = next.value();
         }
       }
 

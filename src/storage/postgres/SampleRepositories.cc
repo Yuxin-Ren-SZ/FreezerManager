@@ -259,13 +259,29 @@ namespace fmgr::storage {
                     .exec("SELECT 1 FROM box_type_position_accepts bpa "
                           "JOIN boxes b ON b.box_type_id = bpa.box_type_id "
                           "JOIN container_types ct ON ct.size_class = bpa.size_class "
-                          "WHERE b.id = $1 AND bpa.position_label = $2 AND ct.id = $3 LIMIT 1",
+                          "WHERE b.id = $1 AND bpa.position_label = $2 AND ct.id = $3 "
+                          "AND ct.lab_id = $4 LIMIT 1",
                           pqxx::params{sample.box_id->to_string(), position_label,
-                                       sample.container_type_id->to_string()})
+                                       sample.container_type_id->to_string(),
+                                       sample.lab_id.to_string()})
                     .empty()) {
               throw ConstraintViolation(
                   "container_type size_class is not accepted at this box position");
             }
+          }
+        }
+        // container_type_id (when set) must reference a live ContainerType in the
+        // same lab, even for an unplaced sample — otherwise a Lab-B container type
+        // whose size_class token matches could slip in.
+        if (sample.container_type_id.has_value()) {
+          if (txn_.work()
+                  .exec("SELECT 1 FROM container_types WHERE id = $1 AND lab_id = $2 AND "
+                        "archived_at_micros IS NULL LIMIT 1",
+                        pqxx::params{sample.container_type_id->to_string(),
+                                     sample.lab_id.to_string()})
+                  .empty()) {
+            throw ConstraintViolation(
+                "container_type_id does not reference a live ContainerType in this lab");
           }
         }
         if (txn_.work()
@@ -286,6 +302,21 @@ namespace fmgr::storage {
                       pqxx::params{sample.parent_sample_id->to_string(), sample.lab_id.to_string()})
                   .empty()) {
             throw ForeignKeyViolation("parent_sample_id does not reference a sample in this lab");
+          }
+          // Reject a multi-hop lineage cycle: if this sample's id appears in the
+          // ancestry chain starting at the proposed parent, the edge closes a
+          // loop. The depth bound guards against an unexpected pre-existing cycle.
+          if (!txn_.work()
+                   .exec("WITH RECURSIVE anc(id, depth) AS ("
+                         "  SELECT $1::text, 1 "
+                         "  UNION ALL "
+                         "  SELECT s.parent_sample_id, anc.depth + 1 "
+                         "  FROM samples s JOIN anc ON s.id = anc.id "
+                         "  WHERE s.parent_sample_id IS NOT NULL AND anc.depth < 10000) "
+                         "SELECT 1 FROM anc WHERE id = $2 LIMIT 1",
+                         pqxx::params{sample.parent_sample_id->to_string(), sample.id.to_string()})
+                   .empty()) {
+            throw ConstraintViolation("parent_sample_id would create a lineage cycle");
           }
         }
       }
