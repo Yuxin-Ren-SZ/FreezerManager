@@ -5,6 +5,7 @@
 #include "core/role.h"
 #include "storage/RoleTraits.h"
 #include "storage/detail/RoleColumns.h"
+#include "storage/sqlite/SqliteAuthzVersion.h"
 
 #include <sqlite3.h>
 
@@ -458,6 +459,10 @@ namespace fmgr::storage {
           } else if (pending_entity.kind == PendingKind::Delete) {
             delete_pending(handle, pending_entity.entity);
           }
+          // Granting/revoking a permission on a role changes the effective
+          // permissions of every user holding that role; bump their authz epoch
+          // in this transaction so cached contexts rebuild on the next request.
+          detail::bump_authz_version_for_role(handle, pending_entity.entity.role_id);
         }
       }
 
