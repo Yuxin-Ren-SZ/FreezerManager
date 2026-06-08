@@ -122,7 +122,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ShareRequest>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::ShareRequest& entity, const MutationContext& context) override {
@@ -157,7 +157,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ShareRequest>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "soft_delete",
+                           detail::audit_after(entity));
       }
 
       PostgresTransaction& txn_;
@@ -251,7 +252,8 @@ namespace fmgr::storage {
         }
         const auto composite_key = entity.share_request_id.to_string() + ":" +
                                    std::string(core::to_string(entity.approver_role));
-        txn_.note_mutation("share_request_approval", composite_key, context);
+        txn_.note_mutation("share_request_approval", composite_key, context, "insert",
+                           detail::audit_after(entity));
       }
 
       void update(const core::ShareRequestApproval& /*entity*/,

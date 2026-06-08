@@ -13,9 +13,11 @@
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace fmgr::storage {
   namespace {
@@ -87,6 +89,49 @@ namespace fmgr::storage {
       EXPECT_EQ(events.front().entity_kind, "lab");
       EXPECT_EQ(events.front().entity_id, lab.id.to_string());
       EXPECT_FALSE(events.front().this_hash.empty());
+    }
+
+    // The repository (not the caller) derives before/after audit snapshots from
+    // authoritative entity state — MutationContext no longer carries them.
+    TEST_P(AuditRepositoryTest, RepositoryDerivesInsertAndUpdateSnapshots) {
+      auto lab = make_lab(1);
+      lab.name = "Original Lab";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Lab>().insert(lab, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        lab.name = "Renamed Lab";
+        txn->repo<core::Lab>().update(lab, mutation_context());
+        txn->commit();
+      }
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      const auto events = txn->repo<core::AuditEvent>().query(Query<core::AuditEvent>::where(
+          field<core::AuditEvent, std::string>(core::AuditEvent::Field::EntityId) ==
+          lab.id.to_string()));
+      txn->commit();
+      ASSERT_EQ(events.size(), 2U);
+
+      const auto find_action = [&events](std::string_view action) {
+        const auto iter =
+            std::find_if(events.begin(), events.end(),
+                         [&](const core::AuditEvent& e) { return e.action == action; });
+        return iter;
+      };
+      const auto insert_event = find_action("insert");
+      const auto update_event = find_action("update");
+      ASSERT_NE(insert_event, events.end());
+      ASSERT_NE(update_event, events.end());
+
+      EXPECT_EQ(insert_event->before_json, "{}"); // inserts have no before image
+      EXPECT_NE(insert_event->after_json.find("Original Lab"), std::string::npos);
+
+      // The before image is the authoritative pre-update row, not caller-supplied.
+      EXPECT_NE(update_event->before_json.find("Original Lab"), std::string::npos);
+      EXPECT_NE(update_event->after_json.find("Renamed Lab"), std::string::npos);
     }
 
     TEST_P(AuditRepositoryTest, QueryFiltersByEntityId) {

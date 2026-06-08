@@ -127,7 +127,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ContainerType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::ContainerType& entity, const MutationContext& context) override {
@@ -145,7 +145,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ContainerType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update", detail::audit_after(entity));
       }
 
       void soft_delete(const core::ContainerTypeId& entity_id,
@@ -212,7 +212,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::BoxType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::BoxType& entity, const MutationContext& context) override {
@@ -231,7 +231,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::BoxType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update", detail::audit_after(entity));
       }
 
       void soft_delete(const core::BoxTypeId& entity_id, const MutationContext& context) override {
@@ -449,7 +449,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Box>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Box& entity, const MutationContext& context) override {
@@ -467,7 +467,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Box>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update", detail::audit_after(entity));
       }
 
       void soft_delete(const core::BoxId& entity_id, const MutationContext& context) override {

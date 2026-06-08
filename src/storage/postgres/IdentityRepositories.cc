@@ -142,11 +142,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Lab>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Lab& entity, const MutationContext& context) override {
         detail::validate_lab(entity);
+        const auto before = find_by_id(entity.id);
         try {
           pqxx::params params;
           params.append(entity.id.to_string());
@@ -168,7 +169,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Lab>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::LabId& entity_id, const MutationContext& context) override {
@@ -250,11 +252,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::User>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::User& entity, const MutationContext& context) override {
         detail::validate_user(entity);
+        const auto before = find_by_id(entity.id);
         try {
           pqxx::params params;
           params.append(entity.id.to_string());
@@ -277,7 +280,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::User>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::UserId& entity_id, const MutationContext& context) override {
@@ -353,11 +357,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::LabMembership>::entity_name()),
-                           entity.id().to_string(), context);
+                           entity.id().to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::LabMembership& entity, const MutationContext& context) override {
         detail::validate_membership(entity);
+        const auto before = find_by_id(entity.id());
         try {
           const auto result = txn_.work().exec(
               "UPDATE lab_memberships SET role_id = $3, scope_filters_json = $4::jsonb, "
@@ -371,7 +376,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::LabMembership>::entity_name()),
-                           entity.id().to_string(), context);
+                           entity.id().to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::LabMembershipId& entity_id,

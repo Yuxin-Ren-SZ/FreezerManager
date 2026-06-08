@@ -107,7 +107,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Role>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Role& entity, const MutationContext& context) override {
@@ -125,7 +125,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Role>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update", detail::audit_after(entity));
       }
 
       void soft_delete(const core::RoleId& entity_id, const MutationContext& context) override {
@@ -223,7 +223,7 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::RolePermission>::entity_name()),
-                           entity.id().to_string(), context);
+                           entity.id().to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::RolePermission& /*entity*/,
@@ -246,8 +246,11 @@ namespace fmgr::storage {
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
+        const core::RolePermission removed{.role_id = entity_id.role_id,
+                                           .permission = entity_id.permission};
         txn_.note_mutation(std::string(EntityTraits<core::RolePermission>::entity_name()),
-                           entity_id.to_string(), context);
+                           entity_id.to_string(), context, "soft_delete",
+                           detail::audit_before(removed));
       }
 
     private:
