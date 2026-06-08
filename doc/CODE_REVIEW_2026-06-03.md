@@ -1,3 +1,9 @@
+> **RESOLVED (2026-06-07).** This audit is a historical artifact. Re-verification
+> against the live tree found Phase 1/2/4 already fixed; Phase 3 (`authz_version`),
+> Phase 5 (repository-derived snapshots), and the Phase 6 residuals were closed in
+> the security-remediation pass. Phase 7 (run sanitizers in CI) remains open. See
+> [`doc/HANDOFF_2026-06-07.md`](./HANDOFF_2026-06-07.md) for the current state.
+
 # FreezerManager — Security & Data-Integrity Remediation Audit
 
 **Date:** 2026-06-03
