@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1;
+
+import "fmgr/v1/common/types.proto";
+
+option optimize_for = SPEED;
+
+service AuditService {
+  rpc ListAuditEvents(ListAuditEventsRequest) returns (ListAuditEventsResponse);
+  rpc GetAuditEvent(GetAuditEventRequest) returns (GetAuditEventResponse);
+  rpc VerifyAuditChain(VerifyAuditChainRequest) returns (VerifyAuditChainResponse);
+  rpc ExportAuditLog(ExportAuditLogRequest) returns (ExportAuditLogResponse);
+}
+
+message AuditEvent {
+  string id = 1;
+  fmgr.v1.common.Timestamp at = 2;
+  string actor_user_id = 3;
+  string actor_session_id = 4;
+  optional string lab_id = 5;
+  string action = 6;
+  string entity_kind = 7;
+  optional string entity_id = 8;
+  // before_json and after_json are empty string for inserts/deletes respectively.
+  string before_json = 9;
+  string after_json = 10;
+  string request_id = 11;
+  string prev_hash = 12;
+  string this_hash = 13;
+}
+
+message ListAuditEventsRequest {
+  optional string lab_id = 1;
+  optional string entity_kind = 2;
+  optional string entity_id = 3;
+  fmgr.v1.common.PageRequest page = 4;
+  optional fmgr.v1.common.Timestamp since = 5;
+  optional fmgr.v1.common.Timestamp until = 6;
+}
+
+message ListAuditEventsResponse {
+  repeated AuditEvent events = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+
+message GetAuditEventRequest {
+  string audit_event_id = 1;
+}
+message GetAuditEventResponse {
+  AuditEvent event = 1;
+}
+
+message VerifyAuditChainRequest {
+  optional string lab_id = 1;
+}
+message VerifyAuditChainResponse {
+  bool chain_intact = 1;
+  // Human-readable description of any broken links found.
+  string detail = 2;
+  int64 events_verified = 3;
+}
+
+message ExportAuditLogRequest {
+  optional string lab_id = 1;
+  optional fmgr.v1.common.Timestamp since = 2;
+}
+message ExportAuditLogResponse {
+  string csv_content = 1;
+}

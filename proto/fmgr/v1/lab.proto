@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1;
+
+import "fmgr/v1/common/types.proto";
+
+option optimize_for = SPEED;
+
+service LabService {
+  rpc GetLab(GetLabRequest) returns (GetLabResponse);
+  rpc ListLabs(ListLabsRequest) returns (ListLabsResponse);
+  rpc CreateLab(CreateLabRequest) returns (CreateLabResponse);
+  rpc UpdateLab(UpdateLabRequest) returns (UpdateLabResponse);
+  rpc EnablePhi(EnablePhiRequest) returns (EnablePhiResponse);
+
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  rpc InviteMember(InviteMemberRequest) returns (InviteMemberResponse);
+  rpc RevokeMembership(RevokeMembershipRequest) returns (RevokeMembershipResponse);
+}
+
+message Lab {
+  string id = 1;
+  string name = 2;
+  string contact = 3;
+  fmgr.v1.common.Timestamp created_at = 4;
+  string settings_json = 5;
+  bool is_phi_enabled = 6;
+}
+
+message GetLabRequest {
+  string lab_id = 1;
+}
+message GetLabResponse {
+  Lab lab = 1;
+}
+
+message ListLabsRequest {
+  fmgr.v1.common.PageRequest page = 1;
+}
+message ListLabsResponse {
+  repeated Lab labs = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+
+message CreateLabRequest {
+  string name = 1;
+  string contact = 2;
+}
+message CreateLabResponse {
+  Lab lab = 1;
+}
+
+message UpdateLabRequest {
+  Lab lab = 1;
+}
+message UpdateLabResponse {
+  Lab lab = 1;
+}
+
+message EnablePhiRequest {
+  string lab_id = 1;
+}
+message EnablePhiResponse {}
+
+message LabMember {
+  string user_id = 1;
+  string lab_id = 2;
+  string role_id = 3;
+  string scope_filters_json = 4;
+  fmgr.v1.common.Timestamp joined_at = 5;
+  optional fmgr.v1.common.Timestamp revoked_at = 6;
+}
+
+message ListMembersRequest {
+  string lab_id = 1;
+  fmgr.v1.common.PageRequest page = 2;
+  bool include_revoked = 3;
+}
+message ListMembersResponse {
+  repeated LabMember members = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+
+message InviteMemberRequest {
+  string lab_id = 1;
+  string email = 2;
+  string role_id = 3;
+}
+message InviteMemberResponse {
+  LabMember member = 1;
+}
+
+message RevokeMembershipRequest {
+  string lab_id = 1;
+  string user_id = 2;
+}
+message RevokeMembershipResponse {}

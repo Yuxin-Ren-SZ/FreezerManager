@@ -1,0 +1,89 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1;
+
+import "fmgr/v1/common/types.proto";
+
+option optimize_for = SPEED;
+
+service ShareService {
+  rpc ListShareRequests(ListShareRequestsRequest) returns (ListShareRequestsResponse);
+  rpc GetShareRequest(GetShareRequestRequest) returns (GetShareRequestResponse);
+  rpc CreateShareRequest(CreateShareRequestRequest) returns (CreateShareRequestResponse);
+  rpc ApproveShareRequest(ApproveShareRequestRequest) returns (ApproveShareRequestResponse);
+  rpc RejectShareRequest(RejectShareRequestRequest) returns (RejectShareRequestResponse);
+  rpc RevokeShareRequest(RevokeShareRequestRequest) returns (RevokeShareRequestResponse);
+}
+
+enum ShareRequestStatus {
+  SHARE_REQUEST_STATUS_UNSPECIFIED = 0;
+  SHARE_REQUEST_STATUS_PENDING = 1;
+  SHARE_REQUEST_STATUS_APPROVED = 2;
+  SHARE_REQUEST_STATUS_REJECTED = 3;
+  SHARE_REQUEST_STATUS_REVOKED = 4;
+}
+
+enum ShareApprovalRole {
+  SHARE_APPROVAL_ROLE_UNSPECIFIED = 0;
+  SHARE_APPROVAL_ROLE_SOURCE_LAB = 1;
+  SHARE_APPROVAL_ROLE_TARGET_LAB = 2;
+  SHARE_APPROVAL_ROLE_SYSTEM_ADMIN = 3;
+}
+
+message ShareRequest {
+  string id = 1;
+  string source_lab_id = 2;
+  string target_lab_id = 3;
+  string requested_by = 4;
+  string scope_json = 5;
+  ShareRequestStatus status = 6;
+  fmgr.v1.common.Timestamp created_at = 7;
+  optional fmgr.v1.common.Timestamp decided_at = 8;
+}
+
+message ListShareRequestsRequest {
+  optional string source_lab_id = 1;
+  optional string target_lab_id = 2;
+  bool include_decided = 3;
+  fmgr.v1.common.PageRequest page = 4;
+}
+message ListShareRequestsResponse {
+  repeated ShareRequest requests = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+
+message GetShareRequestRequest {
+  string share_request_id = 1;
+}
+message GetShareRequestResponse {
+  ShareRequest request = 1;
+}
+
+message CreateShareRequestRequest {
+  string source_lab_id = 1;
+  string target_lab_id = 2;
+  string scope_json = 3;
+}
+message CreateShareRequestResponse {
+  ShareRequest request = 1;
+}
+
+message ApproveShareRequestRequest {
+  string share_request_id = 1;
+  ShareApprovalRole approver_role = 2;
+  optional string note = 3;
+}
+message ApproveShareRequestResponse {}
+
+message RejectShareRequestRequest {
+  string share_request_id = 1;
+  ShareApprovalRole approver_role = 2;
+  optional string note = 3;
+}
+message RejectShareRequestResponse {}
+
+message RevokeShareRequestRequest {
+  string share_request_id = 1;
+}
+message RevokeShareRequestResponse {}

@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1;
+
+import "fmgr/v1/common/types.proto";
+
+option optimize_for = SPEED;
+
+service SampleService {
+  rpc ListSamples(ListSamplesRequest) returns (ListSamplesResponse);
+  rpc GetSample(GetSampleRequest) returns (GetSampleResponse);
+  rpc CreateSample(CreateSampleRequest) returns (CreateSampleResponse);
+  rpc UpdateSample(UpdateSampleRequest) returns (UpdateSampleResponse);
+  rpc SoftDeleteSample(SoftDeleteSampleRequest) returns (SoftDeleteSampleResponse);
+  rpc MoveSample(MoveSampleRequest) returns (MoveSampleResponse);
+  rpc CheckoutSample(CheckoutSampleRequest) returns (CheckoutSampleResponse);
+  rpc ExportSamplesCsv(ExportSamplesCsvRequest) returns (ExportSamplesCsvResponse);
+}
+
+enum SampleStatus {
+  SAMPLE_STATUS_UNSPECIFIED = 0;
+  SAMPLE_STATUS_ACTIVE = 1;
+  SAMPLE_STATUS_ARCHIVED = 2;
+  SAMPLE_STATUS_DISCARDED = 3;
+}
+
+message Sample {
+  string id = 1;
+  string lab_id = 2;
+  string item_type_id = 3;
+  string name = 4;
+  optional string barcode = 5;
+  optional string container_type_id = 6;
+  optional string box_id = 7;
+  optional string position_label = 8;
+  optional double volume_value = 9;
+  optional string volume_unit = 10;
+  optional double mass_value = 11;
+  optional string mass_unit = 12;
+  SampleStatus status = 13;
+  optional string parent_sample_id = 14;
+  string created_by = 15;
+  fmgr.v1.common.Timestamp created_at = 16;
+  optional string last_modified_by = 17;
+  optional fmgr.v1.common.Timestamp last_modified_at = 18;
+  // JSON object of custom field values. PHI fields are excluded unless
+  // caller has phi.read permission.
+  string custom_fields_json = 19;
+}
+
+message ListSamplesRequest {
+  string lab_id = 1;
+  fmgr.v1.common.PageRequest page = 2;
+  bool include_archived = 3;
+  optional string box_id = 4;
+  optional string item_type_id = 5;
+  optional string barcode = 6;
+  optional SampleStatus status = 7;
+}
+
+message ListSamplesResponse {
+  repeated Sample samples = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+
+message GetSampleRequest {
+  string sample_id = 1;
+}
+message GetSampleResponse {
+  Sample sample = 1;
+}
+
+message CreateSampleRequest {
+  string lab_id = 1;
+  string item_type_id = 2;
+  string name = 3;
+  optional string barcode = 4;
+  optional string container_type_id = 5;
+  optional string box_id = 6;
+  optional string position_label = 7;
+  optional double volume_value = 8;
+  optional string volume_unit = 9;
+  optional double mass_value = 10;
+  optional string mass_unit = 11;
+  optional string parent_sample_id = 12;
+  string custom_fields_json = 13;
+}
+message CreateSampleResponse {
+  Sample sample = 1;
+}
+
+message UpdateSampleRequest {
+  Sample sample = 1;
+}
+message UpdateSampleResponse {
+  Sample sample = 1;
+}
+
+message SoftDeleteSampleRequest {
+  string sample_id = 1;
+}
+message SoftDeleteSampleResponse {}
+
+message MoveSampleRequest {
+  string sample_id = 1;
+  optional string dest_box_id = 2;
+  optional string dest_position = 3;
+}
+message MoveSampleResponse {
+  Sample sample = 1;
+}
+
+enum CheckoutAction {
+  CHECKOUT_ACTION_UNSPECIFIED = 0;
+  CHECKOUT_ACTION_CHECKOUT = 1;
+  CHECKOUT_ACTION_CHECKIN = 2;
+  CHECKOUT_ACTION_DISCARD = 3;
+}
+
+message CheckoutSampleRequest {
+  string sample_id = 1;
+  CheckoutAction action = 2;
+  optional double volume_used = 3;
+  optional string volume_unit = 4;
+  optional string reason = 5;
+}
+message CheckoutSampleResponse {
+  Sample sample = 1;
+}
+
+message ExportSamplesCsvRequest {
+  string lab_id = 1;
+  bool include_archived = 2;
+}
+message ExportSamplesCsvResponse {
+  // RFC 4180 CSV with chain-of-custody header (same schema as freezerctl export).
+  string csv_content = 1;
+}
