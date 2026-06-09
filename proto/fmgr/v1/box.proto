@@ -1,0 +1,260 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1;
+
+import "fmgr/v1/common/types.proto";
+
+option optimize_for = SPEED;
+
+service BoxService {
+  // ---- Freezer & StorageContainer (layout) ----
+  rpc ListFreezers(ListFreezersRequest) returns (ListFreezersResponse);
+  rpc GetFreezer(GetFreezerRequest) returns (GetFreezerResponse);
+  rpc CreateFreezer(CreateFreezerRequest) returns (CreateFreezerResponse);
+  rpc UpdateFreezer(UpdateFreezerRequest) returns (UpdateFreezerResponse);
+  rpc ArchiveFreezer(ArchiveFreezerRequest) returns (ArchiveFreezerResponse);
+
+  rpc ListStorageContainers(ListStorageContainersRequest) returns (ListStorageContainersResponse);
+  rpc CreateStorageContainer(CreateStorageContainerRequest)
+      returns (CreateStorageContainerResponse);
+  rpc UpdateStorageContainer(UpdateStorageContainerRequest)
+      returns (UpdateStorageContainerResponse);
+  rpc ArchiveStorageContainer(ArchiveStorageContainerRequest)
+      returns (ArchiveStorageContainerResponse);
+
+  // ---- ContainerType & BoxType ----
+  rpc ListContainerTypes(ListContainerTypesRequest) returns (ListContainerTypesResponse);
+  rpc CreateContainerType(CreateContainerTypeRequest) returns (CreateContainerTypeResponse);
+
+  rpc ListBoxTypes(ListBoxTypesRequest) returns (ListBoxTypesResponse);
+  rpc CreateBoxType(CreateBoxTypeRequest) returns (CreateBoxTypeResponse);
+
+  // ---- Box ----
+  rpc ListBoxes(ListBoxesRequest) returns (ListBoxesResponse);
+  rpc GetBox(GetBoxRequest) returns (GetBoxResponse);
+  rpc CreateBox(CreateBoxRequest) returns (CreateBoxResponse);
+  rpc UpdateBox(UpdateBoxRequest) returns (UpdateBoxResponse);
+  rpc ArchiveBox(ArchiveBoxRequest) returns (ArchiveBoxResponse);
+}
+
+message Freezer {
+  string id = 1;
+  string lab_id = 2;
+  string name = 3;
+  string location = 4;
+  string model = 5;
+  optional double temp_target_c = 6;
+  string layout_root_id = 7;
+  fmgr.v1.common.Timestamp created_at = 8;
+  optional fmgr.v1.common.Timestamp archived_at = 9;
+}
+
+enum ContainerKind {
+  CONTAINER_KIND_UNSPECIFIED = 0;
+  CONTAINER_KIND_RACK = 1;
+  CONTAINER_KIND_SHELF = 2;
+  CONTAINER_KIND_DRAWER = 3;
+  CONTAINER_KIND_TOWER = 4;
+  CONTAINER_KIND_GENERIC = 5;
+}
+
+message StorageContainer {
+  string id = 1;
+  string lab_id = 2;
+  optional string parent_id = 3;
+  ContainerKind kind = 4;
+  string name = 5;
+  string label = 6;
+  int32 ordering_index = 7;
+  string capacity_hint_json = 8;
+  fmgr.v1.common.Timestamp created_at = 9;
+  optional fmgr.v1.common.Timestamp archived_at = 10;
+}
+
+message ContainerType {
+  string id = 1;
+  string lab_id = 2;
+  string name = 3;
+  string size_class = 4;
+  string outer_dimensions_json = 5;
+  string material = 6;
+  string supplier_sku = 7;
+  fmgr.v1.common.Timestamp created_at = 8;
+  optional fmgr.v1.common.Timestamp archived_at = 9;
+}
+
+message BoxPosition {
+  string label = 1;
+  int32 row = 2;
+  int32 col = 3;
+  optional int32 z = 4;
+  repeated string accepts = 5;
+}
+
+message BoxType {
+  string id = 1;
+  string lab_id = 2;
+  string name = 3;
+  string manufacturer = 4;
+  string sku = 5;
+  repeated BoxPosition positions = 6;
+  fmgr.v1.common.Timestamp created_at = 7;
+  optional fmgr.v1.common.Timestamp archived_at = 8;
+}
+
+message Box {
+  string id = 1;
+  string lab_id = 2;
+  string box_type_id = 3;
+  string storage_container_id = 4;
+  string label = 5;
+  optional string serial = 6;
+  optional string barcode = 7;
+  fmgr.v1.common.Timestamp created_at = 8;
+  optional fmgr.v1.common.Timestamp archived_at = 9;
+}
+
+// Stub messages for each RPC (fields omitted for brevity; filled in F2).
+message ListFreezersRequest {
+  string lab_id = 1;
+  fmgr.v1.common.PageRequest page = 2;
+}
+message ListFreezersResponse {
+  repeated Freezer freezers = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+message GetFreezerRequest {
+  string freezer_id = 1;
+}
+message GetFreezerResponse {
+  Freezer freezer = 1;
+}
+message CreateFreezerRequest {
+  string lab_id = 1;
+  string name = 2;
+  string location = 3;
+  string model = 4;
+  optional double temp_target_c = 5;
+  string layout_root_id = 6;
+}
+message CreateFreezerResponse {
+  Freezer freezer = 1;
+}
+message UpdateFreezerRequest {
+  Freezer freezer = 1;
+}
+message UpdateFreezerResponse {
+  Freezer freezer = 1;
+}
+message ArchiveFreezerRequest {
+  string freezer_id = 1;
+}
+message ArchiveFreezerResponse {}
+
+message ListStorageContainersRequest {
+  string lab_id = 1;
+  optional string parent_id = 2;
+  fmgr.v1.common.PageRequest page = 3;
+}
+message ListStorageContainersResponse {
+  repeated StorageContainer containers = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+message CreateStorageContainerRequest {
+  string lab_id = 1;
+  optional string parent_id = 2;
+  ContainerKind kind = 3;
+  string name = 4;
+  string label = 5;
+  int32 ordering_index = 6;
+}
+message CreateStorageContainerResponse {
+  StorageContainer container = 1;
+}
+message UpdateStorageContainerRequest {
+  StorageContainer container = 1;
+}
+message UpdateStorageContainerResponse {
+  StorageContainer container = 1;
+}
+message ArchiveStorageContainerRequest {
+  string container_id = 1;
+}
+message ArchiveStorageContainerResponse {}
+
+message ListContainerTypesRequest {
+  string lab_id = 1;
+  fmgr.v1.common.PageRequest page = 2;
+}
+message ListContainerTypesResponse {
+  repeated ContainerType container_types = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+message CreateContainerTypeRequest {
+  string lab_id = 1;
+  string name = 2;
+  string size_class = 3;
+  string outer_dimensions_json = 4;
+  string material = 5;
+  string supplier_sku = 6;
+}
+message CreateContainerTypeResponse {
+  ContainerType container_type = 1;
+}
+
+message ListBoxTypesRequest {
+  string lab_id = 1;
+  fmgr.v1.common.PageRequest page = 2;
+}
+message ListBoxTypesResponse {
+  repeated BoxType box_types = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+message CreateBoxTypeRequest {
+  string lab_id = 1;
+  string name = 2;
+  string manufacturer = 3;
+  string sku = 4;
+  repeated BoxPosition positions = 5;
+}
+message CreateBoxTypeResponse {
+  BoxType box_type = 1;
+}
+
+message ListBoxesRequest {
+  string lab_id = 1;
+  optional string storage_container_id = 2;
+  fmgr.v1.common.PageRequest page = 3;
+}
+message ListBoxesResponse {
+  repeated Box boxes = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+message GetBoxRequest {
+  string box_id = 1;
+}
+message GetBoxResponse {
+  Box box = 1;
+}
+message CreateBoxRequest {
+  string lab_id = 1;
+  string box_type_id = 2;
+  string storage_container_id = 3;
+  string label = 4;
+  optional string serial = 5;
+  optional string barcode = 6;
+}
+message CreateBoxResponse {
+  Box box = 1;
+}
+message UpdateBoxRequest {
+  Box box = 1;
+}
+message UpdateBoxResponse {
+  Box box = 1;
+}
+message ArchiveBoxRequest {
+  string box_id = 1;
+}
+message ArchiveBoxResponse {}

@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1;
+
+import "fmgr/v1/common/types.proto";
+
+option optimize_for = SPEED;
+
+service SessionService {
+  // List sessions belonging to the caller (or any user for SystemAdmin).
+  // Requires SessionRevoke permission.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+
+  // Revoke a session by id. The session must belong to the caller unless
+  // the caller is a SystemAdmin.
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
+}
+
+message SessionSummary {
+  string id = 1;
+  string user_id = 2;
+  string token_prefix = 3;
+  fmgr.v1.common.Timestamp created_at = 4;
+  fmgr.v1.common.Timestamp last_seen_at = 5;
+  optional string ip = 6;
+  optional string user_agent = 7;
+  optional fmgr.v1.common.Timestamp revoked_at = 8;
+  bool mfa_complete = 9;
+}
+
+message ListSessionsRequest {
+  fmgr.v1.common.PageRequest page = 1;
+  bool include_revoked = 2;
+  // Filter to a specific user (SystemAdmin only).
+  optional string user_id = 3;
+}
+
+message ListSessionsResponse {
+  repeated SessionSummary sessions = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+
+message RevokeSessionRequest {
+  string session_id = 1;
+}
+
+message RevokeSessionResponse {}
