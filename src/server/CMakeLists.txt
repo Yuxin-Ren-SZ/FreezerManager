@@ -5,6 +5,7 @@ find_package(gRPC CONFIG REQUIRED)
 add_library(freezermanager_server_lib STATIC
   AuthServiceImpl.cc
   SessionServiceImpl.cc
+  LabServiceImpl.cc
   FreezerServer.cc
   UnimplementedStubs.cc
 )
