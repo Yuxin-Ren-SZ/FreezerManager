@@ -11,7 +11,6 @@
 #include <fmgr/v1/audit.grpc.pb.h>
 #include <fmgr/v1/box.grpc.pb.h>
 #include <fmgr/v1/item_type.grpc.pb.h>
-#include <fmgr/v1/lab.grpc.pb.h>
 #include <fmgr/v1/role.grpc.pb.h>
 #include <fmgr/v1/sample.grpc.pb.h>
 #include <fmgr/v1/share.grpc.pb.h>
@@ -27,55 +26,6 @@ namespace fmgr::server {
       return {grpc::StatusCode::UNIMPLEMENTED, "not yet implemented"};
     }
   } // namespace
-
-  // ---- LabService stub ----
-
-  class LabServiceStub final : public fmgr::v1::LabService::Service {
-  public:
-    LabServiceStub() {
-      using P = core::Permission;
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/GetLab", P::LabConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/ListLabs", P::LabConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/CreateLab", P::LabConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/UpdateLab", P::LabConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/EnablePhi", P::LabEnablePhi);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/ListMembers", P::UserInvite);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/InviteMember", P::UserInvite);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/RevokeMembership", P::UserInvite);
-    }
-    grpc::Status GetLab(grpc::ServerContext*, const fmgr::v1::GetLabRequest*,
-                        fmgr::v1::GetLabResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ListLabs(grpc::ServerContext*, const fmgr::v1::ListLabsRequest*,
-                          fmgr::v1::ListLabsResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateLab(grpc::ServerContext*, const fmgr::v1::CreateLabRequest*,
-                           fmgr::v1::CreateLabResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status UpdateLab(grpc::ServerContext*, const fmgr::v1::UpdateLabRequest*,
-                           fmgr::v1::UpdateLabResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status EnablePhi(grpc::ServerContext*, const fmgr::v1::EnablePhiRequest*,
-                           fmgr::v1::EnablePhiResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ListMembers(grpc::ServerContext*, const fmgr::v1::ListMembersRequest*,
-                             fmgr::v1::ListMembersResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status InviteMember(grpc::ServerContext*, const fmgr::v1::InviteMemberRequest*,
-                              fmgr::v1::InviteMemberResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status RevokeMembership(grpc::ServerContext*, const fmgr::v1::RevokeMembershipRequest*,
-                                  fmgr::v1::RevokeMembershipResponse*) override {
-      return unimplemented();
-    }
-  };
 
   // ---- SampleService stub ----
 
@@ -435,14 +385,12 @@ namespace fmgr::server {
   // The stub objects outlive the server (static storage).
 
   void register_stub_services(grpc::ServerBuilder& builder) {
-    static LabServiceStub lab;
     static SampleServiceStub sample;
     static BoxServiceStub box;
     static ItemTypeServiceStub item_type;
     static RoleServiceStub role;
     static AuditServiceStub audit;
     static ShareServiceStub share;
-    builder.RegisterService(&lab);
     builder.RegisterService(&sample);
     builder.RegisterService(&box);
     builder.RegisterService(&item_type);

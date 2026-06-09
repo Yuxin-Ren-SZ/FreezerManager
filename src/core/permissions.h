@@ -43,6 +43,7 @@ namespace fmgr::core {
     LabEnablePhi,
     KeyRotate,
     SessionRevoke,
+    LabProvision,
   };
 
   struct PermissionEntry {
@@ -51,7 +52,7 @@ namespace fmgr::core {
     std::string_view description;
   };
 
-  inline constexpr std::array<PermissionEntry, 21> k_permission_catalog{{
+  inline constexpr std::array<PermissionEntry, 22> k_permission_catalog{{
       {.value = Permission::SampleRead,
        .key = "sample.read",
        .description = "Read sample records."},
@@ -115,6 +116,9 @@ namespace fmgr::core {
       {.value = Permission::SessionRevoke,
        .key = "session.revoke",
        .description = "Revoke another user's sessions."},
+      {.value = Permission::LabProvision,
+       .key = "lab.provision",
+       .description = "Provision (create) new labs (SystemAdmin only)."},
   }};
 
   // Guard: catalog must be in enum value order for O(1) value lookups below.
@@ -184,6 +188,7 @@ namespace fmgr::core {
     case Permission::SampleDeleteHard:
     case Permission::BackupRun:
     case Permission::KeyRotate:
+    case Permission::LabProvision:
       return true;
     case Permission::SampleRead:
     case Permission::SampleWrite:
@@ -224,7 +229,7 @@ namespace fmgr::core {
           Permission::UserInvite,       Permission::UserManageRoles,   Permission::AuditRead,
           Permission::AuditExport,      Permission::BackupRun,         Permission::ShareRequest,
           Permission::ShareApprove,     Permission::LabConfigure,      Permission::LabEnablePhi,
-          Permission::KeyRotate,        Permission::SessionRevoke,
+          Permission::KeyRotate,        Permission::SessionRevoke,     Permission::LabProvision,
       };
     case RoleKind::LabAdmin:
       return {
