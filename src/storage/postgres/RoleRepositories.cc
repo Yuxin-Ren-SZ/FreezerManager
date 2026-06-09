@@ -107,11 +107,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Role>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Role& entity, const MutationContext& context) override {
         validate_role(entity);
+        const auto before = find_by_id(entity.id);
         try {
           const auto result =
               txn_.work().exec("UPDATE roles SET lab_id = $2, kind = $3, name = $4, "
@@ -125,7 +126,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Role>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::RoleId& entity_id, const MutationContext& context) override {
@@ -156,6 +158,17 @@ namespace fmgr::storage {
 
       PostgresTransaction& txn_;
     };
+
+    // Bump the authorization epoch of every user holding the given role in this
+    // transaction, so a permission grant/revoke on the role invalidates their
+    // cached SessionContext on the next request (mirrors SQLite
+    // detail::bump_authz_version_for_role).
+    void bump_authz_version_for_role(PostgresTransaction& txn, const core::RoleId& role_id) {
+      txn.work().exec("UPDATE users SET authz_version = authz_version + 1 WHERE id IN "
+                      "(SELECT user_id FROM lab_memberships "
+                      " WHERE role_id = $1 AND revoked_at_micros IS NULL)",
+                      pqxx::params{role_id.to_string()});
+    }
 
     class RolePermissionRepository final : public IRepository<core::RolePermission> {
     public:
@@ -222,8 +235,9 @@ namespace fmgr::storage {
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
+        bump_authz_version_for_role(txn_, entity.role_id);
         txn_.note_mutation(std::string(EntityTraits<core::RolePermission>::entity_name()),
-                           entity.id().to_string(), context);
+                           entity.id().to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::RolePermission& /*entity*/,
@@ -246,8 +260,12 @@ namespace fmgr::storage {
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
+        bump_authz_version_for_role(txn_, entity_id.role_id);
+        const core::RolePermission removed{.role_id = entity_id.role_id,
+                                           .permission = entity_id.permission};
         txn_.note_mutation(std::string(EntityTraits<core::RolePermission>::entity_name()),
-                           entity_id.to_string(), context);
+                           entity_id.to_string(), context, "soft_delete",
+                           detail::audit_before(removed));
       }
 
     private:

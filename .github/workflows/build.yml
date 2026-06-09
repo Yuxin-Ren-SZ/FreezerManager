@@ -117,10 +117,10 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Test
-        if: ${{ matrix.preset == 'dev' }}
+        if: ${{ matrix.preset == 'dev' || matrix.preset == 'asan' || matrix.preset == 'ubsan' || matrix.preset == 'tsan' }}
         env:
           FMGR_TEST_POSTGRES_URL: postgresql://postgres:test@localhost/fmgr_test
-        run: ctest --preset dev
+        run: ctest --preset ${{ matrix.preset }} --output-on-failure
 
       - name: Check SPDX headers
         run: tools/check-spdx-headers.sh
@@ -135,10 +135,10 @@ jobs:
       - name: Run clang-tidy
         if: ${{ matrix.preset == 'dev' }}
         run: |
-          files="$(git ls-files 'src/*.cc' 'src/*.cpp' 'src/**/*.cc' 'src/**/*.cpp' 'tests/*.cc' 'tests/*.cpp' 'tests/**/*.cc' 'tests/**/*.cpp')"
-          if [ -n "$files" ]; then
-            clang-tidy-17 -p out/build/dev $files
-          fi
+          # run-clang-tidy (ships with LLVM) lints every TU in compile_commands.json
+          # in parallel; only our sources are in the compile DB (Conan deps are
+          # prebuilt), so no extra file filter is needed.
+          run-clang-tidy-17 -p out/build/dev -j "$(nproc)" -quiet
 
       - name: Coverage tooling
         if: ${{ matrix.preset == 'dev' }}

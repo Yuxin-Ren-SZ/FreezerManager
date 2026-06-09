@@ -133,11 +133,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Freezer>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Freezer& entity, const MutationContext& context) override {
         validate_freezer(entity);
+        const auto before = find_by_id(entity.id);
         try {
           const auto result = txn_.work().exec(
               "UPDATE freezers SET lab_id = $2, name = $3, location = $4, model = $5, "
@@ -151,7 +152,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Freezer>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::FreezerId& entity_id, const MutationContext& context) override {
@@ -266,13 +268,14 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::StorageContainer>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::StorageContainer& entity, const MutationContext& context) override {
         validate_storage_container(entity);
         check_no_cycle(entity);
-        write_update(entity, context);
+        const auto before = find_by_id(entity.id);
+        write_update(entity, context, before);
       }
 
       void soft_delete(const core::StorageContainerId& entity_id,
@@ -281,15 +284,17 @@ namespace fmgr::storage {
         if (!entity.has_value()) {
           throw NotFound("storage container not found");
         }
+        const auto before = entity;
         entity->archived_at = now_timestamp();
         // soft_delete does not change parent_id, so the acyclic invariant cannot
         // be broken; skip the (round-trip-heavy) cycle walk.
         validate_storage_container(entity.value());
-        write_update(entity.value(), context);
+        write_update(entity.value(), context, before);
       }
 
     private:
-      void write_update(const core::StorageContainer& entity, const MutationContext& context) {
+      void write_update(const core::StorageContainer& entity, const MutationContext& context,
+                        const std::optional<core::StorageContainer>& before) {
         try {
           const auto result = txn_.work().exec(
               "UPDATE storage_containers SET lab_id = $2, parent_id = $3, kind = $4, name = $5, "
@@ -303,7 +308,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::StorageContainer>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "soft_delete",
+                           detail::audit_change(before, entity));
       }
 
       // Walk the prospective parent's ancestor chain; if it ever reaches the

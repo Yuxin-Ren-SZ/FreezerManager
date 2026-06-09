@@ -122,12 +122,13 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ShareRequest>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::ShareRequest& entity, const MutationContext& context) override {
         validate_share_request(entity);
-        write_update(entity, context);
+        const auto before = find_by_id(entity.id);
+        write_update(entity, context, before);
       }
 
       void soft_delete(const core::ShareRequestId& entity_id,
@@ -136,14 +137,16 @@ namespace fmgr::storage {
         if (!entity.has_value()) {
           throw NotFound("share_request not found");
         }
+        const auto before = entity;
         entity->status = core::ShareRequestStatus::Revoked;
         entity->decided_at = now_timestamp();
         // Revocation does not change structural fields; skip scope/lab validation.
-        write_update(entity.value(), context);
+        write_update(entity.value(), context, before);
       }
 
     private:
-      void write_update(const core::ShareRequest& entity, const MutationContext& context) {
+      void write_update(const core::ShareRequest& entity, const MutationContext& context,
+                        const std::optional<core::ShareRequest>& before) {
         try {
           const auto result = txn_.work().exec(
               "UPDATE share_requests SET source_lab_id = $2, target_lab_id = $3, "
@@ -157,7 +160,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ShareRequest>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "soft_delete",
+                           detail::audit_change(before, entity));
       }
 
       PostgresTransaction& txn_;
@@ -251,7 +255,8 @@ namespace fmgr::storage {
         }
         const auto composite_key = entity.share_request_id.to_string() + ":" +
                                    std::string(core::to_string(entity.approver_role));
-        txn_.note_mutation("share_request_approval", composite_key, context);
+        txn_.note_mutation("share_request_approval", composite_key, context, "insert",
+                           detail::audit_after(entity));
       }
 
       void update(const core::ShareRequestApproval& /*entity*/,

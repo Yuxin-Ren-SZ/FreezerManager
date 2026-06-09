@@ -9,6 +9,7 @@
 #include "storage/FreezerTraits.h"
 #include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
+#include "storage/SampleOps.h"
 #include "storage/SampleTraits.h"
 #include "storage/postgres/BoxGeometryRepositories.h"
 #include "storage/postgres/IdentityRepositories.h"
@@ -346,6 +347,87 @@ namespace fmgr::storage {
       txn->rollback();
     }
 
+    // ---- Cross-lab integrity (Phase 6 residuals) ----
+
+    TEST_P(SampleRepositoryTest, ContainerTypeFromAnotherLabIsRejected) {
+      const auto lab_a = seed_lab(1);
+      const auto user_a = seed_user(2, lab_a);
+      const auto it_a = seed_item_type(3, lab_a);
+
+      // A container type that lives in a different lab.
+      const auto lab_b = seed_lab(50);
+      const auto ct_b = make_container_type(51, lab_b, "cryovial_2ml");
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::ContainerType>().insert(ct_b, mutation_context());
+        txn->commit();
+      }
+
+      auto sample = make_sample(10, lab_a, it_a, user_a);
+      sample.container_type_id = ct_b.id; // unplaced sample, foreign container type
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()),
+                   ConstraintViolation);
+      txn->rollback();
+    }
+
+    TEST_P(SampleRepositoryTest, ContainerTypeFromSameLabIsAccepted) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto container_type = make_container_type(4, lab_id, "cryovial_2ml");
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::ContainerType>().insert(container_type, mutation_context());
+        txn->commit();
+      }
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.container_type_id = container_type.id; // same-lab, unplaced
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_NO_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()));
+      txn->commit();
+    }
+
+    TEST_P(SampleRepositoryTest, MultiHopParentLineageCycleIsRejected) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      // Build a lineage chain A <- B <- C (each committed).
+      const auto sample_a = make_sample(10, lab_id, it_id, user_id);
+      auto sample_b = make_sample(11, lab_id, it_id, user_id);
+      sample_b.parent_sample_id = sample_a.id;
+      auto sample_c = make_sample(12, lab_id, it_id, user_id);
+      sample_c.parent_sample_id = sample_b.id;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample_a, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample_b, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample_c, mutation_context());
+        txn->commit();
+      }
+
+      // Point A at C: A <- B <- C <- A would close a 3-hop cycle.
+      auto sample_a_updated = sample_a;
+      sample_a_updated.parent_sample_id = sample_c.id;
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Sample>().update(sample_a_updated, mutation_context()),
+                   ConstraintViolation);
+      txn->rollback();
+    }
+
     TEST_P(SampleRepositoryTest, SampleUpdateChangesFields) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
@@ -596,6 +678,164 @@ namespace fmgr::storage {
               txn->commit();
             },
             UniqueViolation);
+      }
+    }
+
+    // ---- Atomic sample move (storage::move_sample) ----
+
+    TEST_P(SampleRepositoryTest, MoveToFreePositionVacatesSource) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.box_id = box_id;
+      sample.position_label = "A1";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        move_sample(*txn, sample.id, box_id, "A2", mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto moved = txn->repo<core::Sample>().find_by_id(sample.id);
+        txn->commit();
+        ASSERT_TRUE(moved.has_value());
+        // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
+        EXPECT_EQ(moved->box_id, box_id);
+        EXPECT_EQ(moved->position_label, "A2");
+        // NOLINTEND(bugprone-unchecked-optional-access)
+      }
+      // A1 is now free: another sample can take it.
+      auto other = make_sample(11, lab_id, it_id, user_id);
+      other.box_id = box_id;
+      other.position_label = "A1";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_NO_THROW({
+          txn->repo<core::Sample>().insert(other, mutation_context());
+          txn->commit();
+        });
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, MoveToOccupiedPositionThrowsAndRollsBack) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.box_id = box_id;
+      s1.position_label = "A1";
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.box_id = box_id;
+      s2.position_label = "A2";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->commit();
+      }
+      {
+        // SQLite fails at commit (deferred index), Postgres on the update; either
+        // way the transaction rolls back as a unit.
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_THROW(
+            {
+              move_sample(*txn, s1.id, box_id, "A2", mutation_context());
+              txn->commit();
+            },
+            UniqueViolation);
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found1 = txn->repo<core::Sample>().find_by_id(s1.id);
+        const auto found2 = txn->repo<core::Sample>().find_by_id(s2.id);
+        txn->commit();
+        ASSERT_TRUE(found1.has_value());
+        ASSERT_TRUE(found2.has_value());
+        // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
+        EXPECT_EQ(found1->position_label, "A1"); // unchanged
+        EXPECT_EQ(found2->position_label, "A2"); // unchanged
+        // NOLINTEND(bugprone-unchecked-optional-access)
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, MoveToInvalidPositionThrows) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.box_id = box_id;
+      sample.position_label = "A1";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_THROW(
+            {
+              move_sample(*txn, sample.id, box_id, "Z9", mutation_context());
+              txn->commit();
+            },
+            ConstraintViolation);
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, MoveNonexistentThrowsNotFound) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)lab_id;
+      (void)user_id;
+      (void)it_id;
+      (void)ct_id;
+      (void)size_class;
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(
+          move_sample(*txn, id_from_low<core::SampleId>(999), box_id, "A1", mutation_context()),
+          NotFound);
+      txn->rollback();
+    }
+
+    TEST_P(SampleRepositoryTest, MoveUnplacesWhenDestinationNull) {
+      const auto& [lab_id, user_id, it_id, ct_id, size_class, bt_id, sc_id, box_id] =
+          seed_box_prereqs(100);
+      (void)ct_id;
+      (void)size_class;
+
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.box_id = box_id;
+      sample.position_label = "A1";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        move_sample(*txn, sample.id, std::nullopt, std::nullopt, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto unplaced = txn->repo<core::Sample>().find_by_id(sample.id);
+        txn->commit();
+        ASSERT_TRUE(unplaced.has_value());
+        // NOLINTBEGIN(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
+        EXPECT_FALSE(unplaced->box_id.has_value());
+        EXPECT_FALSE(unplaced->position_label.has_value());
+        // NOLINTEND(bugprone-unchecked-optional-access)
       }
     }
 

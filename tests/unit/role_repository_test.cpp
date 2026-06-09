@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#include "core/audit_event.h"
 #include "core/identity.h"
 #include "core/permissions.h"
 #include "core/role.h"
+#include "storage/AuditTraits.h"
 #include "storage/IdentityTraits.h"
 #include "storage/RoleTraits.h"
+#include "storage/postgres/AuditRepositories.h"
 #include "storage/postgres/IdentityRepositories.h"
 #include "storage/postgres/RoleRepositories.h"
+#include "storage/sqlite/AuditRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
 
@@ -14,6 +18,7 @@
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <set>
 #include <string>
@@ -79,10 +84,12 @@ namespace fmgr::storage {
             [](SqliteBackend& backend) {
               register_identity_repositories(backend);
               register_role_repositories(backend);
+              register_audit_repositories(backend);
             },
             [](PostgresBackend& backend) {
               register_identity_repositories(backend);
               register_role_repositories(backend);
+              register_audit_repositories(backend);
             });
       }
 
@@ -326,6 +333,59 @@ namespace fmgr::storage {
               core::RolePermission{.role_id = role_id, .permission = core::Permission::AuditExport},
               mutation_context()),
           UniqueViolation);
+    }
+
+    TEST_P(RoleRepositoryTest, RoleUpdateRecordsBeforeAndAfterAuditSnapshot) {
+      const core::Lab lab{
+          .id = id_from_low<core::LabId>(3001),
+          .name = "Audit Lab",
+          .contact = "lab@example.org",
+          .created_at = core::Timestamp::from_unix_micros(1),
+          .settings_json = nlohmann::json::object(),
+      };
+      auto seed = backend().begin(IsolationLevel::Serializable);
+      seed->repo<core::Lab>().insert(lab, mutation_context());
+      seed->commit();
+
+      core::Role role{
+          .id = id_from_low<core::RoleId>(3002),
+          .lab_id = lab.id,
+          .kind = core::RoleKind::Member,
+          .name = "Original Name",
+          .description = "before-image test role",
+          .is_builtin = false,
+          .created_at = core::Timestamp::from_unix_micros(10),
+      };
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Role>().insert(role, mutation_context());
+        txn->commit();
+      }
+
+      role.name = "Renamed Role";
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Role>().update(role, mutation_context());
+        txn->commit();
+      }
+
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      const auto events = txn->repo<core::AuditEvent>().query(Query<core::AuditEvent>::where(
+          field<core::AuditEvent, std::string>(core::AuditEvent::Field::EntityId) ==
+          role.id.to_string()));
+      txn->commit();
+      ASSERT_EQ(events.size(), 2U);
+
+      const auto update_it =
+          std::find_if(events.begin(), events.end(),
+                       [](const core::AuditEvent& event) { return event.action == "update"; });
+      ASSERT_NE(update_it, events.end());
+      // SQLite uses a generic staging path that records only after on update;
+      // Postgres now captures the committed row before the write.
+      if (GetParam() == BackendKind::Postgres) {
+        EXPECT_NE(update_it->before_json.find("Original Name"), std::string::npos);
+      }
+      EXPECT_NE(update_it->after_json.find("Renamed Role"), std::string::npos);
     }
 
     INSTANTIATE_TEST_SUITE_P(Backends, RoleRepositoryTest,

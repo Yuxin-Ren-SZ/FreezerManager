@@ -54,6 +54,8 @@ namespace fmgr::storage::detail {
       return "totp_secret_enc";
     case core::User::Field::DefaultLabId:
       return "default_lab_id";
+    case core::User::Field::AuthzVersion:
+      return "authz_version";
     }
     throw ConstraintViolation("unknown user field");
   }

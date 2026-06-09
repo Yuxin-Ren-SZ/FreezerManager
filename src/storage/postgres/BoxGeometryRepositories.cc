@@ -127,11 +127,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ContainerType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::ContainerType& entity, const MutationContext& context) override {
         validate_container_type(entity);
+        const auto before = find_by_id(entity.id);
         try {
           const auto result = txn_.work().exec(
               "UPDATE container_types SET lab_id = $2, name = $3, size_class = $4, "
@@ -145,7 +146,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ContainerType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::ContainerTypeId& entity_id,
@@ -212,11 +214,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::BoxType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::BoxType& entity, const MutationContext& context) override {
         validate(entity);
+        const auto before = find_by_id(entity.id);
         try {
           const auto result =
               txn_.work().exec("UPDATE box_types SET lab_id = $2, name = $3, manufacturer = $4, "
@@ -231,7 +234,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::BoxType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::BoxTypeId& entity_id, const MutationContext& context) override {
@@ -449,11 +453,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Box>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Box& entity, const MutationContext& context) override {
         validate_box(entity);
+        const auto before = find_by_id(entity.id);
         try {
           const auto result = txn_.work().exec(
               "UPDATE boxes SET lab_id = $2, box_type_id = $3, storage_container_id = $4, "
@@ -467,7 +472,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Box>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::BoxId& entity_id, const MutationContext& context) override {

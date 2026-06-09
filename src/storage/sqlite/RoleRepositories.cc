@@ -5,6 +5,7 @@
 #include "core/role.h"
 #include "storage/RoleTraits.h"
 #include "storage/detail/RoleColumns.h"
+#include "storage/sqlite/SqliteAuthzVersion.h"
 
 #include <sqlite3.h>
 
@@ -212,9 +213,23 @@ namespace fmgr::storage {
 
       void stage(typename EntityTraits<Entity>::Id entity_id, PendingEntity pending,
                  const MutationContext& context) {
+        // Derive the audit snapshot/action from the pending op before moving it in.
+        AuditSnapshot snapshot;
+        std::string action;
+        if (pending.kind == PendingKind::Insert) {
+          action = "insert";
+          snapshot.after = nlohmann::json(pending.entity);
+        } else if (pending.kind == PendingKind::Delete) {
+          action = "soft_delete";
+          snapshot.before = nlohmann::json(pending.entity);
+        } else {
+          action = "update";
+          snapshot.after = nlohmann::json(pending.entity);
+        }
         pending_.insert_or_assign(std::move(entity_id), std::move(pending));
         transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
-                                   id_string(pending_.rbegin()->first), context);
+                                   id_string(pending_.rbegin()->first), context, std::move(action),
+                                   std::move(snapshot));
       }
 
       [[nodiscard]] std::optional<Entity>
@@ -458,6 +473,10 @@ namespace fmgr::storage {
           } else if (pending_entity.kind == PendingKind::Delete) {
             delete_pending(handle, pending_entity.entity);
           }
+          // Granting/revoking a permission on a role changes the effective
+          // permissions of every user holding that role; bump their authz epoch
+          // in this transaction so cached contexts rebuild on the next request.
+          detail::bump_authz_version_for_role(handle, pending_entity.entity.role_id);
         }
       }
 

@@ -6,6 +6,7 @@
 #include "storage/IdentityTraits.h"
 #include "storage/detail/IdentityColumns.h"
 #include "storage/detail/QuerySqlBuilder.h"
+#include "storage/sqlite/SqliteAuthzVersion.h"
 
 #include <sqlite3.h>
 
@@ -209,6 +210,19 @@ namespace fmgr::storage {
         return pending_;
       }
 
+      // Snapshot of the latest persisted/staged state of `entity_id`, or nullopt
+      // if it does not exist yet. Used as the audit "before" image on updates.
+      [[nodiscard]] std::optional<nlohmann::json>
+      prior_snapshot(const typename EntityTraits<Entity>::Id& entity_id) const {
+        if (const auto staged = find_staged(entity_id); staged.has_value()) {
+          return nlohmann::json(staged.value());
+        }
+        if (const auto loaded = load(entity_id); loaded.has_value()) {
+          return nlohmann::json(loaded.value());
+        }
+        return std::nullopt;
+      }
+
       void stage_insert(const Entity& entity, const MutationContext& context) {
         const auto entity_id = id_of(entity);
         if (pending_.contains(entity_id) || load(entity_id).has_value()) {
@@ -218,7 +232,8 @@ namespace fmgr::storage {
         validate(entity);
         pending_.insert_or_assign(entity_id, PendingEntity{.entity = entity, .is_insert = true});
         transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
-                                   entity_id.to_string(), context);
+                                   entity_id.to_string(), context, "insert",
+                                   AuditSnapshot{.after = nlohmann::json(entity)});
       }
 
       void stage_update(const Entity& entity, const MutationContext& context) {
@@ -227,11 +242,13 @@ namespace fmgr::storage {
           throw NotFound(std::string(EntityTraits<Entity>::entity_name()) + " not found");
         }
         validate(entity);
+        auto before = prior_snapshot(entity_id);
         const auto is_insert = pending_.contains(entity_id) && pending_.at(entity_id).is_insert;
         pending_.insert_or_assign(entity_id,
                                   PendingEntity{.entity = entity, .is_insert = is_insert});
-        transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
-                                   entity_id.to_string(), context);
+        transaction_.note_mutation(
+            std::string(EntityTraits<Entity>::entity_name()), entity_id.to_string(), context,
+            "update", AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity)});
       }
 
       [[nodiscard]] std::optional<Entity>
@@ -306,6 +323,7 @@ namespace fmgr::storage {
           .auth_bindings = nlohmann::json::parse(column_text(statement, 5)),
           .totp_secret_enc = column_optional_text(statement, 6),
           .default_lab_id = column_optional_id<core::LabId>(statement, 7),
+          .authz_version = sqlite3_column_int64(statement, 8),
       };
     }
 
@@ -444,7 +462,8 @@ namespace fmgr::storage {
 
       [[nodiscard]] std::vector<core::User> query(const Query<core::User>& query_spec) override {
         std::string sql = "SELECT id, primary_email, display_name, status, created_at_micros, "
-                          "auth_bindings_json, totp_secret_enc, default_lab_id FROM users";
+                          "auth_bindings_json, totp_secret_enc, default_lab_id, authz_version "
+                          "FROM users";
         std::vector<nlohmann::json> parameters;
         const auto defaults = query_spec.includes_tombstoned()
                                   ? std::vector<std::string>{}
@@ -496,7 +515,7 @@ namespace fmgr::storage {
       [[nodiscard]] std::optional<core::User> load(const core::UserId& entity_id) const override {
         Statement statement(transaction().handle(),
                             "SELECT id, primary_email, display_name, status, created_at_micros, "
-                            "auth_bindings_json, totp_secret_enc, default_lab_id "
+                            "auth_bindings_json, totp_secret_enc, default_lab_id, authz_version "
                             "FROM users WHERE id = ?");
         bind_text(statement.get(), 1, entity_id.to_string());
         if (!statement.step_row()) {
@@ -522,13 +541,15 @@ namespace fmgr::storage {
         bind_text(statement, 6, entity.auth_bindings.dump());
         bind_optional_string(statement, 7, entity.totp_secret_enc);
         bind_optional_id(statement, 8, entity.default_lab_id);
+        bind_int64(statement, 9, entity.authz_version);
       }
 
       static void insert_pending(sqlite3* handle, const core::User& entity) {
         Statement statement(handle, "INSERT INTO users "
                                     "(id, primary_email, display_name, status, created_at_micros, "
-                                    "auth_bindings_json, totp_secret_enc, default_lab_id) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+                                    "auth_bindings_json, totp_secret_enc, default_lab_id, "
+                                    "authz_version) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
         bind_entity(statement.get(), entity);
         statement.step_done();
       }
@@ -537,9 +558,9 @@ namespace fmgr::storage {
         Statement statement(handle, "UPDATE users SET id = ?, primary_email = ?, "
                                     "display_name = ?, status = ?, created_at_micros = ?, "
                                     "auth_bindings_json = ?, totp_secret_enc = ?, "
-                                    "default_lab_id = ? WHERE id = ?");
+                                    "default_lab_id = ?, authz_version = ? WHERE id = ?");
         bind_entity(statement.get(), entity);
-        bind_text(statement.get(), 9, entity.id.to_string());
+        bind_text(statement.get(), 10, entity.id.to_string());
         statement.step_done();
       }
     };
@@ -607,6 +628,10 @@ namespace fmgr::storage {
           } else {
             update_pending(handle, pending.entity);
           }
+          // Any membership add/revoke/role-change alters the user's effective
+          // permissions; bump their authz epoch in this same transaction so
+          // cached permission contexts are rebuilt on the next request.
+          detail::bump_authz_version_for_user(handle, pending.entity.user_id);
         }
       }
 

@@ -573,6 +573,13 @@ CREATE INDEX IF NOT EXISTS api_tokens_lab_id_idx  ON api_tokens(lab_id);
           {.version = 12, .name = "0012_sessions_mfa", .up_sql = R"sql(
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFAULT TRUE;
 )sql"},
+          {.version = 13, .name = "0013_authz_version", .up_sql = R"sql(
+-- Authorization epoch for permission-cache invalidation. Bumped in-transaction
+-- whenever a user's effective permissions change (membership/role/grant). Auth
+-- providers key their resolved-permission cache on this value so a downgrade
+-- takes effect on the next request rather than waiting for the cache TTL.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS authz_version BIGINT NOT NULL DEFAULT 0;
+)sql"},
       };
     }
 
@@ -692,6 +699,7 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
       std::string entity_id;
       std::string action;
       MutationContext context;
+      AuditSnapshot snapshot; // repository-derived before/after state
     };
 
     std::shared_ptr<PostgresBackendState> state;
@@ -749,12 +757,14 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
   }
 
   void PostgresTransaction::note_mutation(std::string entity_kind, std::string entity_id,
-                                          const MutationContext& context, std::string action) {
+                                          const MutationContext& context, std::string action,
+                                          AuditSnapshot snapshot) {
     impl_->audit_mutations.push_back(Impl::AuditMutation{
         .entity_kind = std::move(entity_kind),
         .entity_id = std::move(entity_id),
         .action = std::move(action),
         .context = context,
+        .snapshot = std::move(snapshot),
     });
   }
 
@@ -782,9 +792,14 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         impl_->work->exec("SELECT pg_advisory_xact_lock(8675309)");
 
+        // The chain tail is the row whose this_hash no other row links from. Rows
+        // in one commit share at_micros and have random ids, so an ORDER BY on
+        // those cannot recover the true tail; the link structure can. The
+        // advisory lock above serialises appenders, so exactly one tail exists.
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         const auto last = impl_->work->exec(
-            "SELECT this_hash FROM audit_events ORDER BY at_micros DESC, id DESC LIMIT 1");
+            "SELECT e.this_hash FROM audit_events e "
+            "WHERE NOT EXISTS (SELECT 1 FROM audit_events p WHERE p.prev_hash = e.this_hash)");
         std::string prev_hash =
             last.empty() ? std::string(audit::zero_hash()) : last[0][0].as<std::string>();
 
@@ -795,11 +810,10 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS mfa_complete BOOLEAN NOT NULL DEFA
 
         for (const auto& mutation : impl_->audit_mutations) {
           const auto event_id = generate_random_uuid();
-          const std::string before_str = mutation.context.before_json.has_value()
-                                             ? mutation.context.before_json->dump()
-                                             : "{}";
+          const std::string before_str =
+              mutation.snapshot.before.has_value() ? mutation.snapshot.before->dump() : "{}";
           const std::string after_str =
-              mutation.context.after_json.has_value() ? mutation.context.after_json->dump() : "{}";
+              mutation.snapshot.after.has_value() ? mutation.snapshot.after->dump() : "{}";
           const nlohmann::json lab_id_val = mutation.context.lab_id.has_value()
                                                 ? nlohmann::json(*mutation.context.lab_id)
                                                 : nlohmann::json(nullptr);

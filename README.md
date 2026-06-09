@@ -4,7 +4,9 @@ Open-core, self-hostable freezer / biospecimen management system for academic
 and clinical research labs. Written in C++20, designed for data safety,
 security (PHI-aware), extensibility, and multi-user concurrency.
 
-> **Status:** Pre-alpha — active implementation (M0 + core foundations complete).
+> **Status:** Pre-alpha — active implementation. Core domain, both reference
+> backends (SQLite + PostgreSQL), auth foundation, and the audit chain are
+> complete; security-remediation pass done. Next: RPC layer (gRPC) + clients.
 > See [`doc/PRD.md`](./doc/PRD.md) for the full product requirements & design
 > document and the [Roadmap](#roadmap) below for current progress.
 
@@ -20,10 +22,11 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ Typed query DSL — equality, range, IN-list, JSON-path predicates, pagination, soft-delete-aware filters
 - ✅ Rich backend error hierarchy — `UniqueViolation`, `SerializationFailure`, `Unavailable`, etc.
 - ✅ SQLite reference backend (dev / small labs) — WAL mode, busy-timeout, json1 extension
-- ⚙️ PostgreSQL reference backend (production-recommended) — connection pool ✅, RLS policies ✅, migrations 0001–0012 ✅, JSONB ✅, domain repositories 🔲
-- 🔲 Atomic sample moves — single transaction, either both vacate + place succeed or neither does
-- 🔲 No-double-booking invariant — partial unique index on `(box_id, position_label)` for active samples
-- 🔲 Soft-delete only — end-user "delete" tombstones the row; hard delete is `SystemAdmin`-only and audited
+- ✅ PostgreSQL reference backend (production-recommended) — connection pool, RLS policies, migrations 0001–0013, JSONB, full domain repositories; conformance + repository suites green against a live `postgres:16`
+- ✅ Atomic sample moves — single transaction, either both vacate + place succeed or neither does (`storage::move_sample`)
+- ✅ No-double-booking invariant — partial unique index on `(box_id, position_label)` for active samples; property-tested
+- ✅ Cross-lab referential integrity — sample foreign keys (box, item-type, container-type, parent, project, checkout-event) pinned to the owning lab; parent-lineage cycles rejected
+- ✅ Soft-delete only — end-user "delete" tombstones the row; hard delete is `SystemAdmin`-only and audited
 
 ### Domain Model
 
@@ -56,18 +59,20 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - 🔲 `OidcAuthProvider` — OIDC discovery + PKCE; per-lab issuer config
 - 🔲 `LdapAuthProvider` — bind + search; configurable group → role mapping
 - 🔲 `MtlsAuthProvider` — client certs for machine/instrument clients
-- ✅ `AuthMiddleware` — 4-step RBAC gate (token → MFA → permission → lab); `inject_rls_vars()` sets Postgres session vars; static RPC permission registry; session expiry (12 h idle / 7 d absolute); permission-context cache (5 min TTL, invalidated on revoke)
+- ✅ `AuthMiddleware` — 4-step RBAC gate (token → MFA → permission → lab); per-lab permission resolution; `inject_rls_vars()` sets Postgres session vars; static RPC permission registry; session expiry (12 h idle / 7 d absolute); permission-context cache (5 min TTL, invalidated on revoke **and** on `users.authz_version` bump, so role/membership downgrades take effect next request)
+- ✅ API-token scope enforcement — fail-closed scope parsing (`["*"]` = unrestricted); token restricted to its `lab_id`; disabled-user check on every validation
 - 🔲 PHI field-level encryption — per-record DEK wrapped by master KEK; `IKmsProvider` pluggable
 - 🔲 `OsKeyringKms` / `VaultKms` / `EnvVarKms` — production, Vault, and dev/test key sources
 - 🔲 TLS 1.3 only — HSTS; modern cipher suites; self-signed cert for dev, required for production
 
 ### Audit
 
-- ✅ Append-only `audit_event` table — `prev_hash` + `this_hash = SHA-256(prev ‖ canonical_row)`; INSERT-only DB trigger; hash-chain verifier in `CanonicalJson.h`
+- ✅ Append-only `audit_event` table — `prev_hash` + `this_hash = SHA-256(prev ‖ canonical_row)`; INSERT-only DB trigger; chain tail found by link structure under an advisory lock (fork-safe)
 - ✅ Canonical-JSON serializer (RFC 8785 / JCS) — deterministic compact form for reproducible hashes
+- ✅ Repository-derived snapshots — `before_json`/`after_json` are produced from authoritative entity state inside the repository, never supplied by the caller; no forgeable audit channel
+- ✅ Hash-chain verifier — `freezerctl audit verify` walks the chain and reports first divergence
 - 🔲 PHI-read audit kind — distinct event logged on each PHI field access (key only, never value)
 - 🔲 Signed nightly checkpoints — HMAC-SHA-256 with KMS key; stored in `audit_checkpoint` table
-- 🔲 Hash-chain verifier — `freezerctl audit verify` walks the chain and reports first divergence
 - 🔲 Audit export is itself audited; rows are immutable; corrections are compensating events
 
 ### Interfaces & Clients
@@ -113,9 +118,10 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **D1–D9 — Domain entities** | Lab / User / Role / Freezer / Box / Sample / ShareRequest / Session entities, SQLite backend, 259 tests | ✅ Complete |
 | **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
 | **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3) | ✅ Complete |
-| **C5.1 — PostgreSQL backend core** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0012 + RLS policies + 13-test conformance suite (skipped without a live DB); **435 tests total** | ⚙️ Core landed, not yet run against a live Postgres — see [`doc/CODE_REVIEW_2026-06-02.md`](./doc/CODE_REVIEW_2026-06-02.md) |
-| **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories (🔲), CI Postgres service, CSV export, `freezerctl` CLI | ⚙️ In progress |
-| **M2 — Auth & Audit** | OIDC/LDAP, audit export, PostgreSQL RLS | 🔲 Planned |
+| **C5 — PostgreSQL backend** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0013 + RLS policies + full domain repositories; conformance + repository suites green against live `postgres:16` in CI | ✅ Complete |
+| **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, `freezerctl` skeleton + `audit verify` ✅; CSV import + remaining CLI nouns 🔲 | ⚙️ In progress |
+| **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots — see [`doc/HANDOFF_2026-06-07.md`](./doc/HANDOFF_2026-06-07.md) | ✅ Complete |
+| **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
 | **M3 — gRPC + Qt client** | Proto definitions, gRPC server, REST gateway, Qt 6 desktop client — first end-to-end usable build | 🔲 Planned |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
 | **M5 — PHI + KMS + Backups** | Field-level encryption, KMS adapters, backup/restore, weekly restore-drill | 🔲 Planned |

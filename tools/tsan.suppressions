@@ -1,0 +1,18 @@
+# ThreadSanitizer suppressions for FreezerManager.
+#
+# Scope every entry as narrowly as possible and document why it is safe. A
+# suppression hides a *report*, not the underlying access — the test still runs
+# and its assertions must still pass.
+
+# --- SQLite WAL-index (shared memory) ---
+# SQLite coordinates concurrent access to its WAL-index across connections in the
+# same process using fcntl byte-range locks and explicit memory barriers (see
+# walIndexTryHdr / walIndexWriteHdr in sqlite3.c). ThreadSanitizer cannot model
+# either primitive: the prebuilt SQLite from Conan is not tsan-instrumented, and
+# barrier-based / fcntl-based synchronization is invisible to the race detector.
+# These reports are therefore false positives, not races in FreezerManager code.
+# The concurrency invariant we actually care about (no double-booking of a box
+# position) is still asserted by the test that triggers these reports.
+race:sqlite3.c
+deadlock:sqlite3.c
+called_from_lib:libsqlite3

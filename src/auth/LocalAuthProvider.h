@@ -116,6 +116,10 @@ namespace fmgr::auth {
       std::map<core::LabId, std::set<core::Permission>> permissions_by_lab;
       std::set<core::Permission> global_permissions;
       std::chrono::steady_clock::time_point cached_at;
+      // User.authz_version captured when this entry was built. A later request
+      // whose freshly-read authz_version differs invalidates the entry even
+      // within the TTL, so permission downgrades take effect immediately.
+      std::int64_t authz_version{0};
     };
 
     mutable std::mutex cache_mutex_;
@@ -127,7 +131,8 @@ namespace fmgr::auth {
     // D9.3 session expiry helpers (called from validate_session_token).
     void check_session_expiry(const core::Session& session, core::Timestamp now) const;
     void update_last_seen_if_needed(const core::Session& session, core::Timestamp now);
-    [[nodiscard]] SessionContext lookup_or_build_context(const core::Session& session);
+    [[nodiscard]] SessionContext lookup_or_build_context(const core::Session& session,
+                                                         std::int64_t authz_version);
 
     // ---- internal helpers ----
 

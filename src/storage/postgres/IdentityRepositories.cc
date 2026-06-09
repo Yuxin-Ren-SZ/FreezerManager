@@ -60,6 +60,7 @@ namespace fmgr::storage {
           .auth_bindings = nlohmann::json::parse(row.at("auth_bindings_json").as<std::string>()),
           .totp_secret_enc = pg_optional_string(row, "totp_secret_enc"),
           .default_lab_id = pg_optional_id<core::LabId>(row, "default_lab_id"),
+          .authz_version = row.at("authz_version").as<std::int64_t>(),
       };
     }
 
@@ -142,11 +143,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Lab>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Lab& entity, const MutationContext& context) override {
         detail::validate_lab(entity);
+        const auto before = find_by_id(entity.id);
         try {
           pqxx::params params;
           params.append(entity.id.to_string());
@@ -168,7 +170,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Lab>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::LabId& entity_id, const MutationContext& context) override {
@@ -186,7 +189,7 @@ namespace fmgr::storage {
 
     constexpr const char* user_columns =
         "id, primary_email, display_name, status, created_at_micros, auth_bindings_json, "
-        "totp_secret_enc, default_lab_id";
+        "totp_secret_enc, default_lab_id, authz_version";
 
     class UserRepository final : public IRepository<core::User> {
     public:
@@ -241,20 +244,22 @@ namespace fmgr::storage {
           params.append(entity.auth_bindings.dump());
           params.append(entity.totp_secret_enc);
           params.append(id_or_null(entity.default_lab_id));
+          params.append(entity.authz_version);
           txn_.work().exec(
               "INSERT INTO users (id, primary_email, display_name, status, created_at_micros, "
-              "auth_bindings_json, totp_secret_enc, default_lab_id) "
-              "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)",
+              "auth_bindings_json, totp_secret_enc, default_lab_id, authz_version) "
+              "VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)",
               params);
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::User>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::User& entity, const MutationContext& context) override {
         detail::validate_user(entity);
+        const auto before = find_by_id(entity.id);
         try {
           pqxx::params params;
           params.append(entity.id.to_string());
@@ -265,10 +270,13 @@ namespace fmgr::storage {
           params.append(entity.auth_bindings.dump());
           params.append(entity.totp_secret_enc);
           params.append(id_or_null(entity.default_lab_id));
+          // Never let a stale in-memory snapshot lower the epoch below what an
+          // authz mutation already committed; GREATEST keeps it monotonic.
+          params.append(entity.authz_version);
           const auto result = txn_.work().exec(
               "UPDATE users SET primary_email = $2, display_name = $3, status = $4, "
               "created_at_micros = $5, auth_bindings_json = $6::jsonb, totp_secret_enc = $7, "
-              "default_lab_id = $8 WHERE id = $1",
+              "default_lab_id = $8, authz_version = GREATEST(authz_version, $9) WHERE id = $1",
               params);
           if (result.affected_rows() == 0) {
             throw NotFound("user not found");
@@ -277,7 +285,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::User>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::UserId& entity_id, const MutationContext& context) override {
@@ -292,6 +301,14 @@ namespace fmgr::storage {
     private:
       PostgresTransaction& txn_;
     };
+
+    // Bump a single user's authorization epoch in the current transaction so a
+    // membership add/revoke/role-change invalidates any cached SessionContext on
+    // the next request (mirrors the SQLite detail::bump_authz_version_for_user).
+    void bump_authz_version_for_user(PostgresTransaction& txn, const core::UserId& user_id) {
+      txn.work().exec("UPDATE users SET authz_version = authz_version + 1 WHERE id = $1",
+                      pqxx::params{user_id.to_string()});
+    }
 
     constexpr const char* membership_columns =
         "user_id, lab_id, role_id, scope_filters_json, invited_by, joined_at_micros, "
@@ -352,12 +369,14 @@ namespace fmgr::storage {
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
+        bump_authz_version_for_user(txn_, entity.user_id);
         txn_.note_mutation(std::string(EntityTraits<core::LabMembership>::entity_name()),
-                           entity.id().to_string(), context);
+                           entity.id().to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::LabMembership& entity, const MutationContext& context) override {
         detail::validate_membership(entity);
+        const auto before = find_by_id(entity.id());
         try {
           const auto result = txn_.work().exec(
               "UPDATE lab_memberships SET role_id = $3, scope_filters_json = $4::jsonb, "
@@ -370,8 +389,10 @@ namespace fmgr::storage {
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
+        bump_authz_version_for_user(txn_, entity.user_id);
         txn_.note_mutation(std::string(EntityTraits<core::LabMembership>::entity_name()),
-                           entity.id().to_string(), context);
+                           entity.id().to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::LabMembershipId& entity_id,

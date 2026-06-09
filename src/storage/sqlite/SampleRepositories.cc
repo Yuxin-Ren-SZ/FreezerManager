@@ -261,6 +261,19 @@ namespace fmgr::storage {
         return pending_;
       }
 
+      // Snapshot of the latest persisted/staged state of `entity_id`, or nullopt
+      // if it does not exist yet. Used as the audit "before" image on updates.
+      [[nodiscard]] std::optional<nlohmann::json>
+      prior_snapshot(const typename EntityTraits<Entity>::Id& entity_id) const {
+        if (const auto staged = find_staged(entity_id); staged.has_value()) {
+          return nlohmann::json(staged.value());
+        }
+        if (const auto loaded = load(entity_id); loaded.has_value()) {
+          return nlohmann::json(loaded.value());
+        }
+        return std::nullopt;
+      }
+
       void stage_insert(const Entity& entity, const MutationContext& context) {
         const auto entity_id = id_of(entity);
         if (pending_.contains(entity_id) || load(entity_id).has_value()) {
@@ -270,7 +283,8 @@ namespace fmgr::storage {
         validate(entity);
         pending_.insert_or_assign(entity_id, PendingEntity{.entity = entity, .is_insert = true});
         transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
-                                   entity_id.to_string(), context);
+                                   entity_id.to_string(), context, "insert",
+                                   AuditSnapshot{.after = nlohmann::json(entity)});
       }
 
       void stage_update(const Entity& entity, const MutationContext& context) {
@@ -279,11 +293,13 @@ namespace fmgr::storage {
           throw NotFound(std::string(EntityTraits<Entity>::entity_name()) + " not found");
         }
         validate(entity);
+        auto before = prior_snapshot(entity_id);
         const auto is_insert = pending_.contains(entity_id) && pending_.at(entity_id).is_insert;
         pending_.insert_or_assign(entity_id,
                                   PendingEntity{.entity = entity, .is_insert = is_insert});
-        transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
-                                   entity_id.to_string(), context);
+        transaction_.note_mutation(
+            std::string(EntityTraits<Entity>::entity_name()), entity_id.to_string(), context,
+            "update", AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity)});
       }
 
       [[nodiscard]] std::optional<Entity>
@@ -395,18 +411,35 @@ namespace fmgr::storage {
         // If a container type is given, its size_class must be accepted at the position.
         // box_type_position_accepts uses composite key (box_type_id, position_label).
         if (sample.container_type_id.has_value()) {
-          Statement stmt(transaction.handle(),
-                         "SELECT 1 FROM box_type_position_accepts bpa "
-                         "JOIN boxes b ON b.box_type_id = bpa.box_type_id "
-                         "JOIN container_types ct ON ct.size_class = bpa.size_class "
-                         "WHERE b.id = ? AND bpa.position_label = ? AND ct.id = ? LIMIT 1");
+          Statement stmt(
+              transaction.handle(),
+              "SELECT 1 FROM box_type_position_accepts bpa "
+              "JOIN boxes b ON b.box_type_id = bpa.box_type_id "
+              "JOIN container_types ct ON ct.size_class = bpa.size_class "
+              "WHERE b.id = ? AND bpa.position_label = ? AND ct.id = ? AND ct.lab_id = ? "
+              "LIMIT 1");
           bind_text(stmt.get(), 1, sample.box_id->to_string());
           bind_text(stmt.get(), 2, position_label);
           bind_text(stmt.get(), 3, sample.container_type_id->to_string());
+          bind_text(stmt.get(), 4, sample.lab_id.to_string());
           if (!stmt.step_row()) {
             throw ConstraintViolation(
                 "container_type size_class is not accepted at this box position");
           }
+        }
+      }
+      // container_type_id (when set) must reference a live ContainerType in the
+      // same lab, even for an unplaced sample with no box — otherwise a Lab-B
+      // container type whose size_class token happens to match could slip in.
+      if (sample.container_type_id.has_value()) {
+        Statement stmt(transaction.handle(),
+                       "SELECT 1 FROM container_types "
+                       "WHERE id = ? AND lab_id = ? AND archived_at_micros IS NULL LIMIT 1");
+        bind_text(stmt.get(), 1, sample.container_type_id->to_string());
+        bind_text(stmt.get(), 2, sample.lab_id.to_string());
+        if (!stmt.step_row()) {
+          throw ConstraintViolation(
+              "container_type_id does not reference a live ContainerType in this lab");
         }
       }
       // item_type_id must reference a live ItemType in same lab.
@@ -481,11 +514,14 @@ namespace fmgr::storage {
         entity->last_modified_at = now;
         // Bypass validate() since tombstone does not change structural fields.
         const auto entity_id2 = entity->id;
+        auto before = prior_snapshot(entity_id2);
         const auto is_insert = pending().contains(entity_id2) && pending().at(entity_id2).is_insert;
         pending().insert_or_assign(entity_id2,
                                    PendingEntity{.entity = entity.value(), .is_insert = is_insert});
-        transaction().note_mutation(std::string(EntityTraits<core::Sample>::entity_name()),
-                                    entity_id2.to_string(), context);
+        transaction().note_mutation(
+            std::string(EntityTraits<core::Sample>::entity_name()), entity_id2.to_string(), context,
+            "soft_delete",
+            AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity.value())});
       }
 
     private:
@@ -534,6 +570,47 @@ namespace fmgr::storage {
               throw ForeignKeyViolation("parent_sample_id does not reference a sample in this lab");
             }
           }
+          ensure_no_lineage_cycle(entity);
+        }
+      }
+
+      // Resolves the parent of `sample_id`, consulting staged (same-transaction)
+      // rows before committed ones. Returns nullopt when the sample has no parent
+      // or is not found.
+      [[nodiscard]] std::optional<core::SampleId> parent_of(const core::SampleId& sample_id) const {
+        if (const auto pit = pending().find(sample_id); pit != pending().end()) {
+          return pit->second.entity.parent_sample_id;
+        }
+        Statement stmt(transaction().handle(),
+                       "SELECT parent_sample_id FROM samples WHERE id = ? LIMIT 1");
+        bind_text(stmt.get(), 1, sample_id.to_string());
+        if (!stmt.step_row() || sqlite3_column_type(stmt.get(), 0) == SQLITE_NULL) {
+          return std::nullopt;
+        }
+        return core::SampleId::parse(column_text(stmt.get(), 0));
+      }
+
+      // Walks the proposed parent's ancestry; reaching `entity.id` means the new
+      // edge would close a lineage cycle. The depth bound is a belt-and-suspenders
+      // guard against an unexpected pre-existing cycle in the data.
+      void ensure_no_lineage_cycle(const core::Sample& entity) const {
+        if (!entity.parent_sample_id.has_value()) {
+          return;
+        }
+        constexpr int k_max_lineage_depth = 10'000;
+        core::SampleId current = entity.parent_sample_id.value();
+        for (int hops = 0;; ++hops) {
+          if (current == entity.id) {
+            throw ConstraintViolation("parent_sample_id would create a lineage cycle");
+          }
+          if (hops > k_max_lineage_depth) {
+            throw ConstraintViolation("parent lineage chain is too deep");
+          }
+          const std::optional<core::SampleId> next = parent_of(current);
+          if (!next.has_value()) {
+            break;
+          }
+          current = next.value();
         }
       }
 
@@ -811,7 +888,7 @@ namespace fmgr::storage {
         pending_inserts_.insert_or_assign(sp_id, entity);
         transaction_.note_mutation(
             "sample_project", entity.sample_id.to_string() + ":" + entity.project_id.to_string(),
-            context);
+            context, "insert", AuditSnapshot{.after = nlohmann::json(entity)});
       }
 
       void update(const core::SampleProject& /*entity*/,
@@ -832,9 +909,13 @@ namespace fmgr::storage {
         pending_inserts_.erase(entity_id);
         if (in_db) {
           pending_deletes_.insert(entity_id);
+          // The link's only state is its composite key; record it as the before image.
+          const core::SampleProject removed{.sample_id = entity_id.sample_id,
+                                            .project_id = entity_id.project_id};
           transaction_.note_mutation(
               "sample_project",
-              entity_id.sample_id.to_string() + ":" + entity_id.project_id.to_string(), context);
+              entity_id.sample_id.to_string() + ":" + entity_id.project_id.to_string(), context,
+              "soft_delete", AuditSnapshot{.before = nlohmann::json(removed)});
         }
       }
 
@@ -960,7 +1041,8 @@ namespace fmgr::storage {
           }
         }
         pending_.insert_or_assign(entity.id, entity);
-        transaction_.note_mutation("checkout_event", entity.id.to_string(), context);
+        transaction_.note_mutation("checkout_event", entity.id.to_string(), context, "insert",
+                                   AuditSnapshot{.after = nlohmann::json(entity)});
       }
 
       void update(const core::CheckoutEvent& /*entity*/,

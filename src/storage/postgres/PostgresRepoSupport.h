@@ -21,6 +21,29 @@
 // (std::vector<nlohmann::json>) into a pqxx::params, and small read helpers.
 namespace fmgr::storage::detail {
 
+  // Audit "after" snapshot for an insert/update: the post-write entity state.
+  template <typename Entity> [[nodiscard]] AuditSnapshot audit_after(const Entity& entity) {
+    return AuditSnapshot{.after = nlohmann::json(entity)};
+  }
+
+  // Audit "before"+"after" snapshot for an update/soft-delete. `before` is the
+  // authoritative prior row (nullopt → no before image, e.g. it did not exist).
+  template <typename Entity>
+  [[nodiscard]] AuditSnapshot audit_change(const std::optional<Entity>& before,
+                                           const Entity& after) {
+    AuditSnapshot snapshot;
+    if (before.has_value()) {
+      snapshot.before = nlohmann::json(before.value());
+    }
+    snapshot.after = nlohmann::json(after);
+    return snapshot;
+  }
+
+  // Audit "before"-only snapshot for a hard delete (no post-write state).
+  template <typename Entity> [[nodiscard]] AuditSnapshot audit_before(const Entity& before) {
+    return AuditSnapshot{.before = nlohmann::json(before)};
+  }
+
   // Map a libpqxx SQL error onto the portable BackendError hierarchy. Mirrors the
   // mapping used by PostgresBackend's audit/migration paths so callers see the
   // same error codes regardless of which layer raised them.

@@ -1041,5 +1041,87 @@ namespace fmgr::auth {
       EXPECT_THROW(prov.validate_token(token.plaintext_token), TokenExpired);
     }
 
+    // ---- authz_version cache invalidation (Phase 3) ----
+    //
+    // fast_config() leaves session_ctx_cache_ttl_seconds at its 300 s default, so
+    // these tests prove the cache is invalidated by the authz epoch bump, NOT by
+    // TTL expiry (no time is advanced).
+
+    [[nodiscard]] std::int64_t read_authz_version(storage::IStorageBackend& backend,
+                                                  const core::UserId& uid) {
+      auto txn = backend.begin(storage::IsolationLevel::ReadCommitted);
+      const auto user = txn->repo<core::User>().find_by_id(uid);
+      txn->commit();
+      EXPECT_TRUE(user.has_value());
+      return user.has_value() ? user->authz_version : -1;
+    }
+
+    TEST_F(LocalAuthProviderTest, RevokingMembershipInvalidatesCachedLabAccessBeforeTtl) {
+      const AuthToken token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      // First validation caches a context that can see the lab.
+      const SessionContext before = provider_->validate_token(token.plaintext_token);
+      ASSERT_TRUE(before.can_see_lab(kLabId));
+      ASSERT_TRUE(before.has_for_lab(kLabId, core::Permission::SampleRead));
+
+      // Revoke the membership in its own committed transaction (bumps authz_version).
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::LabMembership>().soft_delete(
+            core::LabMembershipId{.user_id = kUserNoTotpId, .lab_id = kLabId}, test_ctx());
+        txn->commit();
+      }
+
+      // Next validation must reflect the downgrade immediately, despite the warm
+      // cache and unexpired TTL.
+      const SessionContext after = provider_->validate_token(token.plaintext_token);
+      EXPECT_FALSE(after.can_see_lab(kLabId));
+      EXPECT_FALSE(after.has_for_lab(kLabId, core::Permission::SampleRead));
+    }
+
+    TEST_F(LocalAuthProviderTest, RemovingRolePermissionInvalidatesCacheBeforeTtl) {
+      const AuthToken token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+
+      const SessionContext before = provider_->validate_token(token.plaintext_token);
+      ASSERT_TRUE(before.has_for_lab(kLabId, core::Permission::SampleRead));
+
+      // Strip SampleRead from the built-in Member role (bumps every holder).
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::RolePermission>().soft_delete(
+            core::RolePermissionId{.role_id = core::builtin_role_id(core::RoleKind::Member),
+                                   .permission = core::Permission::SampleRead},
+            test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext after = provider_->validate_token(token.plaintext_token);
+      EXPECT_FALSE(after.has_for_lab(kLabId, core::Permission::SampleRead));
+    }
+
+    TEST_F(LocalAuthProviderTest, MembershipMutationIncrementsAuthzVersionTransactionally) {
+      const auto baseline = read_authz_version(*backend_, kUserNoTotpId);
+
+      // A rolled-back mutation must not advance the epoch.
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::LabMembership>().soft_delete(
+            core::LabMembershipId{.user_id = kUserNoTotpId, .lab_id = kLabId}, test_ctx());
+        // no commit() → transaction discarded on scope exit
+      }
+      EXPECT_EQ(read_authz_version(*backend_, kUserNoTotpId), baseline);
+
+      // A committed mutation advances it.
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::LabMembership>().soft_delete(
+            core::LabMembershipId{.user_id = kUserNoTotpId, .lab_id = kLabId}, test_ctx());
+        txn->commit();
+      }
+      EXPECT_GT(read_authz_version(*backend_, kUserNoTotpId), baseline);
+    }
+
   } // namespace
 } // namespace fmgr::auth

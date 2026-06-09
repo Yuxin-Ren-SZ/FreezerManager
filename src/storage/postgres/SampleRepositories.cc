@@ -186,18 +186,19 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Sample>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Sample& entity, const MutationContext& context) override {
         // Missing-row takes precedence over cross-entity validation so update of a
         // nonexistent sample reports NotFound (matching the SQLite backend and the
         // repository contract) rather than a ConstraintViolation about its refs.
-        if (!find_by_id(entity.id).has_value()) {
+        const auto before = find_by_id(entity.id);
+        if (!before.has_value()) {
           throw NotFound("sample not found");
         }
         validate_sample(entity);
-        write_update(entity, context);
+        write_update(entity, context, before, "update");
       }
 
       void soft_delete(const core::SampleId& entity_id, const MutationContext& context) override {
@@ -205,15 +206,17 @@ namespace fmgr::storage {
         if (!entity.has_value()) {
           throw NotFound("sample not found");
         }
+        const auto before = entity; // authoritative pre-tombstone state for the audit image
         entity->status = core::SampleStatus::Tombstoned;
         entity->last_modified_by = context.actor_user_id;
         entity->last_modified_at = now_timestamp();
         // Tombstone does not change structural fields; skip cross-entity validation.
-        write_update(entity.value(), context);
+        write_update(entity.value(), context, before, "soft_delete");
       }
 
     private:
-      void write_update(const core::Sample& entity, const MutationContext& context) {
+      void write_update(const core::Sample& entity, const MutationContext& context,
+                        const std::optional<core::Sample>& before, std::string action) {
         try {
           const auto result = txn_.work().exec(
               "UPDATE samples SET lab_id = $2, item_type_id = $3, name = $4, barcode = $5, "
@@ -230,7 +233,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Sample>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, std::move(action),
+                           detail::audit_change(before, entity));
       }
 
       void validate_sample(const core::Sample& sample) {
@@ -259,13 +263,29 @@ namespace fmgr::storage {
                     .exec("SELECT 1 FROM box_type_position_accepts bpa "
                           "JOIN boxes b ON b.box_type_id = bpa.box_type_id "
                           "JOIN container_types ct ON ct.size_class = bpa.size_class "
-                          "WHERE b.id = $1 AND bpa.position_label = $2 AND ct.id = $3 LIMIT 1",
+                          "WHERE b.id = $1 AND bpa.position_label = $2 AND ct.id = $3 "
+                          "AND ct.lab_id = $4 LIMIT 1",
                           pqxx::params{sample.box_id->to_string(), position_label,
-                                       sample.container_type_id->to_string()})
+                                       sample.container_type_id->to_string(),
+                                       sample.lab_id.to_string()})
                     .empty()) {
               throw ConstraintViolation(
                   "container_type size_class is not accepted at this box position");
             }
+          }
+        }
+        // container_type_id (when set) must reference a live ContainerType in the
+        // same lab, even for an unplaced sample — otherwise a Lab-B container type
+        // whose size_class token matches could slip in.
+        if (sample.container_type_id.has_value()) {
+          if (txn_.work()
+                  .exec("SELECT 1 FROM container_types WHERE id = $1 AND lab_id = $2 AND "
+                        "archived_at_micros IS NULL LIMIT 1",
+                        pqxx::params{sample.container_type_id->to_string(),
+                                     sample.lab_id.to_string()})
+                  .empty()) {
+            throw ConstraintViolation(
+                "container_type_id does not reference a live ContainerType in this lab");
           }
         }
         if (txn_.work()
@@ -286,6 +306,21 @@ namespace fmgr::storage {
                       pqxx::params{sample.parent_sample_id->to_string(), sample.lab_id.to_string()})
                   .empty()) {
             throw ForeignKeyViolation("parent_sample_id does not reference a sample in this lab");
+          }
+          // Reject a multi-hop lineage cycle: if this sample's id appears in the
+          // ancestry chain starting at the proposed parent, the edge closes a
+          // loop. The depth bound guards against an unexpected pre-existing cycle.
+          if (!txn_.work()
+                   .exec("WITH RECURSIVE anc(id, depth) AS ("
+                         "  SELECT $1::text, 1 "
+                         "  UNION ALL "
+                         "  SELECT s.parent_sample_id, anc.depth + 1 "
+                         "  FROM samples s JOIN anc ON s.id = anc.id "
+                         "  WHERE s.parent_sample_id IS NOT NULL AND anc.depth < 10000) "
+                         "SELECT 1 FROM anc WHERE id = $2 LIMIT 1",
+                         pqxx::params{sample.parent_sample_id->to_string(), sample.id.to_string()})
+                   .empty()) {
+            throw ConstraintViolation("parent_sample_id would create a lineage cycle");
           }
         }
       }
@@ -388,11 +423,12 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Project>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::Project& entity, const MutationContext& context) override {
         validate_project(entity);
+        const auto before = find_by_id(entity.id);
         try {
           const auto result =
               txn_.work().exec("UPDATE projects SET lab_id = $2, name = $3, owner_user_id = $4, "
@@ -405,7 +441,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Project>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::ProjectId& entity_id, const MutationContext& context) override {
@@ -488,7 +525,7 @@ namespace fmgr::storage {
         }
         txn_.note_mutation("sample_project",
                            entity.sample_id.to_string() + ":" + entity.project_id.to_string(),
-                           context);
+                           context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::SampleProject& /*entity*/,
@@ -508,9 +545,11 @@ namespace fmgr::storage {
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
+        const core::SampleProject removed{.sample_id = entity_id.sample_id,
+                                          .project_id = entity_id.project_id};
         txn_.note_mutation("sample_project",
                            entity_id.sample_id.to_string() + ":" + entity_id.project_id.to_string(),
-                           context);
+                           context, "soft_delete", detail::audit_before(removed));
       }
 
     private:
@@ -605,7 +644,8 @@ namespace fmgr::storage {
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
         }
-        txn_.note_mutation("checkout_event", entity.id.to_string(), context);
+        txn_.note_mutation("checkout_event", entity.id.to_string(), context, "insert",
+                           detail::audit_after(entity));
       }
 
       void update(const core::CheckoutEvent& /*entity*/,

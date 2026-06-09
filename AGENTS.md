@@ -29,6 +29,18 @@ Use `cmake --preset asan`, `ubsan`, or `tsan` when touching memory,
 concurrency, storage, or parser code. CI also runs formatting, clang-tidy,
 SPDX-header checks, and advisory coverage tooling.
 
+Run clang-tidy with the parallel runner that ships with LLVM rather than a bare
+`clang-tidy` loop — it is many times faster across the tree:
+
+```sh
+run-clang-tidy-17 -p out/build/dev -j "$(nproc)"        # whole compile DB
+run-clang-tidy-17 -p out/build/dev -j "$(nproc)" src/storage/sqlite/  # a subset
+```
+
+Only project sources are in `compile_commands.json` (Conan deps are prebuilt),
+so no file filter is needed for a full sweep. Fall back to
+`clang-tidy-17 -p out/build/dev <file>` only when the parallel runner is absent.
+
 ## Coding Style & Naming Conventions
 
 Use C++20 for core services. Add

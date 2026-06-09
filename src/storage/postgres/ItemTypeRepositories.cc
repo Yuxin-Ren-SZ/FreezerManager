@@ -108,13 +108,14 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ItemType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::ItemType& entity, const MutationContext& context) override {
         validate_item_type(entity);
         check_no_cycle(entity);
-        write_update(entity, context);
+        const auto before = find_by_id(entity.id);
+        write_update(entity, context, before);
       }
 
       void soft_delete(const core::ItemTypeId& entity_id, const MutationContext& context) override {
@@ -122,14 +123,16 @@ namespace fmgr::storage {
         if (!entity.has_value()) {
           throw NotFound("item type not found");
         }
+        const auto before = entity;
         entity->archived_at = now_timestamp();
         // soft_delete leaves parent_id unchanged; the acyclic invariant holds.
         validate_item_type(entity.value());
-        write_update(entity.value(), context);
+        write_update(entity.value(), context, before);
       }
 
     private:
-      void write_update(const core::ItemType& entity, const MutationContext& context) {
+      void write_update(const core::ItemType& entity, const MutationContext& context,
+                        const std::optional<core::ItemType>& before) {
         try {
           const auto result =
               txn_.work().exec("UPDATE item_types SET lab_id = $2, parent_id = $3, name = $4, "
@@ -142,7 +145,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::ItemType>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "soft_delete",
+                           detail::audit_change(before, entity));
       }
 
       void check_no_cycle(const core::ItemType& entity) {
@@ -274,12 +278,13 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::CustomFieldDefinition>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "insert", detail::audit_after(entity));
       }
 
       void update(const core::CustomFieldDefinition& entity,
                   const MutationContext& context) override {
         validate(entity);
+        const auto before = find_by_id(entity.id);
         try {
           const auto result = txn_.work().exec(
               "UPDATE custom_field_definitions SET lab_id = $2, scope_kind = $3, item_type_id = "
@@ -295,7 +300,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::CustomFieldDefinition>::entity_name()),
-                           entity.id.to_string(), context);
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::CustomFieldDefinitionId& entity_id,
