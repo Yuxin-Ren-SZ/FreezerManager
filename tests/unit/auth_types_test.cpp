@@ -237,6 +237,19 @@ namespace fmgr::auth {
 
       void revoke_all_sessions(const core::UserId& /*uid*/,
                                const storage::MutationContext& /*ctx*/) override {}
+
+      ApiTokenResult create_api_token(const core::UserId& /*uid*/, const std::string& /*name*/,
+                                      const std::string& /*scope*/, std::optional<core::LabId>,
+                                      std::optional<core::Timestamp>,
+                                      const storage::MutationContext& /*ctx*/) override {
+        return ApiTokenResult{.api_token_id = core::ApiTokenId::parse(
+                                  "00000000-0000-0000-0000-000000000001"),
+                              .plaintext_token = "fmgr_pat_mock",
+                              .token_prefix = "mock"};
+      }
+
+      void revoke_api_token(const core::ApiTokenId& /*id*/,
+                            const storage::MutationContext& /*ctx*/) override {}
     };
 
     TEST(AuthTypesTest, IAuthProviderMockCompiles) {
