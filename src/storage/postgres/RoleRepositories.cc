@@ -112,6 +112,7 @@ namespace fmgr::storage {
 
       void update(const core::Role& entity, const MutationContext& context) override {
         validate_role(entity);
+        const auto before = find_by_id(entity.id);
         try {
           const auto result =
               txn_.work().exec("UPDATE roles SET lab_id = $2, kind = $3, name = $4, "
@@ -125,7 +126,8 @@ namespace fmgr::storage {
           throw_pqxx_error(err);
         }
         txn_.note_mutation(std::string(EntityTraits<core::Role>::entity_name()),
-                           entity.id.to_string(), context, "update", detail::audit_after(entity));
+                           entity.id.to_string(), context, "update",
+                           detail::audit_change(before, entity));
       }
 
       void soft_delete(const core::RoleId& entity_id, const MutationContext& context) override {

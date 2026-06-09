@@ -134,7 +134,8 @@ namespace fmgr::storage {
 
       void update(const core::Session& entity, const MutationContext& context) override {
         validate_session(entity);
-        write_update(entity, context);
+        const auto before = find_by_id(entity.id);
+        write_update(entity, context, before);
       }
 
       void soft_delete(const core::SessionId& entity_id, const MutationContext& context) override {
@@ -142,12 +143,14 @@ namespace fmgr::storage {
         if (!entity.has_value()) {
           throw NotFound("session not found");
         }
+        const auto before = entity;
         entity->revoked_at = now_timestamp();
-        write_update(entity.value(), context);
+        write_update(entity.value(), context, before);
       }
 
     private:
-      void write_update(const core::Session& entity, const MutationContext& context) {
+      void write_update(const core::Session& entity, const MutationContext& context,
+                        const std::optional<core::Session>& before) {
         try {
           const auto result = txn_.work().exec(
               "UPDATE sessions SET user_id = $2, token_hash = $3, "
@@ -163,7 +166,7 @@ namespace fmgr::storage {
         }
         txn_.note_mutation(std::string(EntityTraits<core::Session>::entity_name()),
                            entity.id.to_string(), context, "soft_delete",
-                           detail::audit_after(entity));
+                           detail::audit_change(before, entity));
       }
 
       PostgresTransaction& txn_;
@@ -266,7 +269,8 @@ namespace fmgr::storage {
 
       void update(const core::ApiToken& entity, const MutationContext& context) override {
         validate_api_token(entity);
-        write_update(entity, context);
+        const auto before = find_by_id(entity.id);
+        write_update(entity, context, before);
       }
 
       void soft_delete(const core::ApiTokenId& entity_id, const MutationContext& context) override {
@@ -274,12 +278,14 @@ namespace fmgr::storage {
         if (!entity.has_value()) {
           throw NotFound("api_token not found");
         }
+        const auto before = entity;
         entity->revoked_at = now_timestamp();
-        write_update(entity.value(), context);
+        write_update(entity.value(), context, before);
       }
 
     private:
-      void write_update(const core::ApiToken& entity, const MutationContext& context) {
+      void write_update(const core::ApiToken& entity, const MutationContext& context,
+                        const std::optional<core::ApiToken>& before) {
         try {
           const auto result = txn_.work().exec(
               "UPDATE api_tokens SET user_id = $2, lab_id = $3, name = $4, scope_json = $5, "
@@ -294,7 +300,7 @@ namespace fmgr::storage {
         }
         txn_.note_mutation(std::string(EntityTraits<core::ApiToken>::entity_name()),
                            entity.id.to_string(), context, "soft_delete",
-                           detail::audit_after(entity));
+                           detail::audit_change(before, entity));
       }
 
       PostgresTransaction& txn_;
