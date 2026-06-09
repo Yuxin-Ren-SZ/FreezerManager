@@ -122,6 +122,9 @@
       "configurePreset": "tsan",
       "output": {
         "outputOnFailure": true
+      },
+      "environment": {
+        "TSAN_OPTIONS": "suppressions=${sourceDir}/tools/tsan.suppressions"
       }
     },
     {

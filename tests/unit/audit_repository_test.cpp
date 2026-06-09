@@ -118,7 +118,7 @@ namespace fmgr::storage {
       const auto find_action = [&events](std::string_view action) {
         const auto iter =
             std::find_if(events.begin(), events.end(),
-                         [&](const core::AuditEvent& e) { return e.action == action; });
+                         [&](const core::AuditEvent& event) { return event.action == action; });
         return iter;
       };
       const auto insert_event = find_action("insert");

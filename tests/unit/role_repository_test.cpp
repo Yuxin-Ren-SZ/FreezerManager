@@ -378,7 +378,7 @@ namespace fmgr::storage {
 
       const auto update_it =
           std::find_if(events.begin(), events.end(),
-                       [](const core::AuditEvent& e) { return e.action == "update"; });
+                       [](const core::AuditEvent& event) { return event.action == "update"; });
       ASSERT_NE(update_it, events.end());
       // SQLite uses a generic staging path that records only after on update;
       // Postgres now captures the committed row before the write.

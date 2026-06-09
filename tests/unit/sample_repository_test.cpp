@@ -376,15 +376,15 @@ namespace fmgr::storage {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);
       const auto it_id = seed_item_type(3, lab_id);
-      const auto ct = make_container_type(4, lab_id, "cryovial_2ml");
+      const auto container_type = make_container_type(4, lab_id, "cryovial_2ml");
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
-        txn->repo<core::ContainerType>().insert(ct, mutation_context());
+        txn->repo<core::ContainerType>().insert(container_type, mutation_context());
         txn->commit();
       }
 
       auto sample = make_sample(10, lab_id, it_id, user_id);
-      sample.container_type_id = ct.id; // same-lab, unplaced
+      sample.container_type_id = container_type.id; // same-lab, unplaced
 
       auto txn = backend().begin(IsolationLevel::Serializable);
       EXPECT_NO_THROW(txn->repo<core::Sample>().insert(sample, mutation_context()));

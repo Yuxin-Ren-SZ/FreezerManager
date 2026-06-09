@@ -36,7 +36,7 @@ namespace fmgr::storage {
   inline core::Sample move_sample(ITransaction& txn, const core::SampleId& sample_id,
                                   std::optional<core::BoxId> dest_box,
                                   std::optional<std::string> dest_position,
-                                  MutationContext context) {
+                                  const MutationContext& context) {
     auto& repo = txn.repo<core::Sample>();
     const auto current = repo.find_by_id(sample_id);
     if (!current.has_value()) {
