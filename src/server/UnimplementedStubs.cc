@@ -27,6 +27,10 @@ namespace fmgr::server {
     }
   } // namespace
 
+  // Stub overrides intentionally leave the (ctx, request, response) parameters
+  // unnamed — they are placeholders until each service is implemented.
+  // NOLINTBEGIN(readability-named-parameter)
+
   // ---- SampleService stub ----
 
   class SampleServiceStub final : public fmgr::v1::SampleService::Service {
@@ -378,6 +382,8 @@ namespace fmgr::server {
       return unimplemented();
     }
   };
+
+  // NOLINTEND(readability-named-parameter)
 
   // ---- Registration function ----
   //

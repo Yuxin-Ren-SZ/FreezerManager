@@ -28,7 +28,13 @@ endif()
 get_target_property(GRPC_CPP_PLUGIN gRPC::grpc_cpp_plugin LOCATION)
 
 set(PROTO_ROOT "${PROJECT_SOURCE_DIR}/proto")
-set(PROTO_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+# Generated under the top-level build dir (NOT under a path containing "/src/"),
+# so the root .clang-tidy HeaderFilterRegex '(^|.*/)(src|tests)/' does not match
+# the generated headers when they are included by our own translation units.
+# (The generated .pb.cc / .grpc.pb.cc translation units themselves are excluded
+# from clang-tidy by a "proto_generated" path filter in the CI workflow.)
+set(PROTO_GEN_DIR "${CMAKE_BINARY_DIR}/proto_generated")
+file(MAKE_DIRECTORY "${PROTO_GEN_DIR}")
 
 set(PROTO_FILES
   fmgr/v1/common/types.proto

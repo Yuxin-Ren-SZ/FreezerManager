@@ -12,40 +12,40 @@
 
 namespace fmgr::server {
 
-  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::InvalidCredentials& e) {
-    return {grpc::StatusCode::UNAUTHENTICATED, e.what()};
+  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::InvalidCredentials& error) {
+    return {grpc::StatusCode::UNAUTHENTICATED, error.what()};
   }
 
-  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::TokenExpired& e) {
-    return {grpc::StatusCode::UNAUTHENTICATED, e.what()};
+  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::TokenExpired& error) {
+    return {grpc::StatusCode::UNAUTHENTICATED, error.what()};
   }
 
-  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::TokenRevoked& e) {
-    return {grpc::StatusCode::UNAUTHENTICATED, e.what()};
+  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::TokenRevoked& error) {
+    return {grpc::StatusCode::UNAUTHENTICATED, error.what()};
   }
 
-  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::MfaRequired& e) {
-    return {grpc::StatusCode::UNAUTHENTICATED, std::string("mfa_required: ") + e.what()};
+  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::MfaRequired& error) {
+    return {grpc::StatusCode::UNAUTHENTICATED, std::string("mfa_required: ") + error.what()};
   }
 
-  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::AccountLocked& e) {
-    return {grpc::StatusCode::PERMISSION_DENIED, e.what()};
+  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::AccountLocked& error) {
+    return {grpc::StatusCode::PERMISSION_DENIED, error.what()};
   }
 
-  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::PermissionDenied& e) {
-    return {grpc::StatusCode::PERMISSION_DENIED, e.what()};
+  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::PermissionDenied& error) {
+    return {grpc::StatusCode::PERMISSION_DENIED, error.what()};
   }
 
-  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::NotFound& e) {
-    return {grpc::StatusCode::NOT_FOUND, e.what()};
+  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::NotFound& error) {
+    return {grpc::StatusCode::NOT_FOUND, error.what()};
   }
 
-  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::UniqueViolation& e) {
-    return {grpc::StatusCode::ALREADY_EXISTS, e.what()};
+  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::UniqueViolation& error) {
+    return {grpc::StatusCode::ALREADY_EXISTS, error.what()};
   }
 
-  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::ConstraintViolation& e) {
-    return {grpc::StatusCode::INVALID_ARGUMENT, e.what()};
+  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::ConstraintViolation& error) {
+    return {grpc::StatusCode::INVALID_ARGUMENT, error.what()};
   }
 
   // Translate any exception to a gRPC status. Must be called inside a catch block.

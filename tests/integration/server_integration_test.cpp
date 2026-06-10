@@ -95,6 +95,7 @@ namespace fmgr::test {
       }
 
       // Login and return the bearer token.
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       [[nodiscard]] std::string login(const std::string& email, const std::string& password) {
         grpc::ClientContext ctx;
         fmgr::v1::LoginRequest req;
@@ -127,11 +128,11 @@ namespace fmgr::test {
       std::unique_ptr<fmgr::v1::SessionService::Stub> session_stub_;
 
     private:
-      static void remove_sqlite_files(const std::filesystem::path& p) {
-        std::error_code ec;
-        std::filesystem::remove(p, ec);
-        std::filesystem::remove(std::filesystem::path(p.string() + "-wal"), ec);
-        std::filesystem::remove(std::filesystem::path(p.string() + "-shm"), ec);
+      static void remove_sqlite_files(const std::filesystem::path& path) {
+        std::error_code error;
+        std::filesystem::remove(path, error);
+        std::filesystem::remove(std::filesystem::path(path.string() + "-wal"), error);
+        std::filesystem::remove(std::filesystem::path(path.string() + "-shm"), error);
       }
 
       static void register_all_repositories(storage::SqliteBackend& b) {

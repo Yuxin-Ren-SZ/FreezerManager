@@ -16,10 +16,10 @@
 int main(int /*argc*/, char* /*argv*/[]) {
   try {
     const char* listen_env = std::getenv("FMGR_LISTEN");
-    const std::string listen = listen_env ? listen_env : "0.0.0.0:50051";
+    const std::string listen = listen_env != nullptr ? listen_env : "0.0.0.0:50051";
 
     const char* db_env = std::getenv("FMGR_DB_PATH");
-    const std::string db_path = db_env ? db_env : ":memory:";
+    const std::string db_path = db_env != nullptr ? db_env : ":memory:";
 
     auto backend = std::make_unique<fmgr::storage::SqliteBackend>(
         fmgr::storage::SqliteBackendOptions{.database_path = db_path});

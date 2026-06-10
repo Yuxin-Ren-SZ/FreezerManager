@@ -239,8 +239,9 @@ namespace fmgr::auth {
                                const storage::MutationContext& /*ctx*/) override {}
 
       ApiTokenResult create_api_token(const core::UserId& /*uid*/, const std::string& /*name*/,
-                                      const std::string& /*scope*/, std::optional<core::LabId>,
-                                      std::optional<core::Timestamp>,
+                                      const std::string& /*scope*/,
+                                      std::optional<core::LabId> /*lab_id*/,
+                                      std::optional<core::Timestamp> /*expires_at*/,
                                       const storage::MutationContext& /*ctx*/) override {
         return ApiTokenResult{.api_token_id =
                                   core::ApiTokenId::parse("00000000-0000-0000-0000-000000000001"),
