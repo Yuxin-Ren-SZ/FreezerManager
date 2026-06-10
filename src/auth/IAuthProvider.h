@@ -62,8 +62,7 @@ namespace fmgr::auth {
     // Create a new API token for user_id. Generates and hashes the token
     // internally; the plaintext is returned exactly once.
     // expires_at == nullopt → server default (30 days from now).
-    virtual ApiTokenResult create_api_token(const core::UserId& user_id,
-                                            const std::string& name,
+    virtual ApiTokenResult create_api_token(const core::UserId& user_id, const std::string& name,
                                             const std::string& scope_json,
                                             std::optional<core::LabId> lab_id,
                                             std::optional<core::Timestamp> expires_at,

@@ -753,11 +753,11 @@ namespace fmgr::auth {
   // ---- create_api_token / revoke_api_token ----
 
   ApiTokenResult LocalAuthProvider::create_api_token(const core::UserId& user_id,
-                                                      const std::string& name,
-                                                      const std::string& scope_json,
-                                                      std::optional<core::LabId> lab_id,
-                                                      std::optional<core::Timestamp> expires_at,
-                                                      const storage::MutationContext& ctx) {
+                                                     const std::string& name,
+                                                     const std::string& scope_json,
+                                                     std::optional<core::LabId> lab_id,
+                                                     std::optional<core::Timestamp> expires_at,
+                                                     const storage::MutationContext& ctx) {
     const auto hex = generate_token();
     const auto plaintext = "fmgr_pat_" + hex;
     const auto prefix = prefix_of(plaintext);
@@ -765,10 +765,9 @@ namespace fmgr::auth {
 
     const auto now = now_ts();
     const auto resolved_expires =
-        expires_at.has_value()
-            ? expires_at
-            : std::optional<core::Timestamp>{core::Timestamp::from_unix_micros(
-                  now.unix_micros() + 30LL * 24 * 3600 * 1000000)};
+        expires_at.has_value() ? expires_at
+                               : std::optional<core::Timestamp>{core::Timestamp::from_unix_micros(
+                                     now.unix_micros() + 30LL * 24 * 3600 * 1000000)};
 
     // Re-use make_session_id() UUID generation; same random UUID logic works for ApiTokenId.
     std::array<std::uint8_t, 16> bytes{};

@@ -242,8 +242,8 @@ namespace fmgr::auth {
                                       const std::string& /*scope*/, std::optional<core::LabId>,
                                       std::optional<core::Timestamp>,
                                       const storage::MutationContext& /*ctx*/) override {
-        return ApiTokenResult{.api_token_id = core::ApiTokenId::parse(
-                                  "00000000-0000-0000-0000-000000000001"),
+        return ApiTokenResult{.api_token_id =
+                                  core::ApiTokenId::parse("00000000-0000-0000-0000-000000000001"),
                               .plaintext_token = "fmgr_pat_mock",
                               .token_prefix = "mock"};
       }
