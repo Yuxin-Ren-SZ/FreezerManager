@@ -7,6 +7,7 @@ add_library(freezermanager_server_lib STATIC
   SessionServiceImpl.cc
   LabServiceImpl.cc
   BoxServiceImpl.cc
+  ItemTypeServiceImpl.cc
   FreezerServer.cc
   UnimplementedStubs.cc
 )

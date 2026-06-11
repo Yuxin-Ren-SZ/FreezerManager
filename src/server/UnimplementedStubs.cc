@@ -9,7 +9,6 @@
 #include "rpc/AuthMiddleware.h"
 
 #include <fmgr/v1/audit.grpc.pb.h>
-#include <fmgr/v1/item_type.grpc.pb.h>
 #include <fmgr/v1/role.grpc.pb.h>
 #include <fmgr/v1/sample.grpc.pb.h>
 #include <fmgr/v1/share.grpc.pb.h>
@@ -76,71 +75,6 @@ namespace fmgr::server {
     }
     grpc::Status ExportSamplesCsv(grpc::ServerContext*, const fmgr::v1::ExportSamplesCsvRequest*,
                                   fmgr::v1::ExportSamplesCsvResponse*) override {
-      return unimplemented();
-    }
-  };
-
-  // ---- ItemTypeService stub ----
-
-  class ItemTypeServiceStub final : public fmgr::v1::ItemTypeService::Service {
-  public:
-    ItemTypeServiceStub() {
-      using P = core::Permission;
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ListItemTypes",
-                                        P::ItemTypeDefine);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/GetItemType", P::ItemTypeDefine);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/CreateItemType",
-                                        P::ItemTypeDefine);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/UpdateItemType",
-                                        P::ItemTypeDefine);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ArchiveItemType",
-                                        P::ItemTypeDefine);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ListCustomFieldDefinitions",
-                                        P::CustomFieldDefine);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/CreateCustomFieldDefinition",
-                                        P::CustomFieldDefine);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/UpdateCustomFieldDefinition",
-                                        P::CustomFieldDefine);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ArchiveCustomFieldDefinition",
-                                        P::CustomFieldDefine);
-    }
-    grpc::Status ListItemTypes(grpc::ServerContext*, const fmgr::v1::ListItemTypesRequest*,
-                               fmgr::v1::ListItemTypesResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status GetItemType(grpc::ServerContext*, const fmgr::v1::GetItemTypeRequest*,
-                             fmgr::v1::GetItemTypeResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateItemType(grpc::ServerContext*, const fmgr::v1::CreateItemTypeRequest*,
-                                fmgr::v1::CreateItemTypeResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status UpdateItemType(grpc::ServerContext*, const fmgr::v1::UpdateItemTypeRequest*,
-                                fmgr::v1::UpdateItemTypeResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ArchiveItemType(grpc::ServerContext*, const fmgr::v1::ArchiveItemTypeRequest*,
-                                 fmgr::v1::ArchiveItemTypeResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ListCustomFieldDefinitions(grpc::ServerContext*, const fmgr::v1::ListCfdsRequest*,
-                                            fmgr::v1::ListCfdsResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateCustomFieldDefinition(grpc::ServerContext*,
-                                             const fmgr::v1::CreateCfdRequest*,
-                                             fmgr::v1::CreateCfdResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status UpdateCustomFieldDefinition(grpc::ServerContext*,
-                                             const fmgr::v1::UpdateCfdRequest*,
-                                             fmgr::v1::UpdateCfdResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ArchiveCustomFieldDefinition(grpc::ServerContext*,
-                                              const fmgr::v1::ArchiveCfdRequest*,
-                                              fmgr::v1::ArchiveCfdResponse*) override {
       return unimplemented();
     }
   };
@@ -282,12 +216,10 @@ namespace fmgr::server {
 
   void register_stub_services(grpc::ServerBuilder& builder) {
     static SampleServiceStub sample;
-    static ItemTypeServiceStub item_type;
     static RoleServiceStub role;
     static AuditServiceStub audit;
     static ShareServiceStub share;
     builder.RegisterService(&sample);
-    builder.RegisterService(&item_type);
     builder.RegisterService(&role);
     builder.RegisterService(&audit);
     builder.RegisterService(&share);

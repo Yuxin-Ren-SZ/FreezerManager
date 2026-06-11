@@ -29,19 +29,27 @@ message ItemType {
   optional fmgr.v1.common.Timestamp archived_at = 6;
 }
 
+// 1:1 with core::ScopeKind (src/core/item_type.h).
 enum ScopeKind {
   SCOPE_KIND_UNSPECIFIED = 0;
   SCOPE_KIND_SAMPLE = 1;
   SCOPE_KIND_BOX = 2;
+  SCOPE_KIND_FREEZER = 3;
+  SCOPE_KIND_CONTAINER = 4;
 }
 
+// 1:1 with core::FieldDataType (src/core/item_type.h); kept lossless so
+// Int/Float and Date/Datetime do not collapse on the wire.
 enum FieldDataType {
   FIELD_DATA_TYPE_UNSPECIFIED = 0;
-  FIELD_DATA_TYPE_TEXT = 1;
-  FIELD_DATA_TYPE_NUMBER = 2;
-  FIELD_DATA_TYPE_DATE = 3;
-  FIELD_DATA_TYPE_BOOLEAN = 4;
-  FIELD_DATA_TYPE_ENUM = 5;
+  FIELD_DATA_TYPE_TEXT = 1;      // core String
+  FIELD_DATA_TYPE_INT = 2;       // core Int
+  FIELD_DATA_TYPE_FLOAT = 3;     // core Float
+  FIELD_DATA_TYPE_BOOL = 4;      // core Bool
+  FIELD_DATA_TYPE_DATE = 5;      // core Date
+  FIELD_DATA_TYPE_DATETIME = 6;  // core Datetime
+  FIELD_DATA_TYPE_ENUM = 7;      // core Enum
+  FIELD_DATA_TYPE_REFERENCE = 8; // core Reference
 }
 
 message CustomFieldDefinition {
