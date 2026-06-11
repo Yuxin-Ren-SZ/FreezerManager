@@ -11,7 +11,9 @@ add_executable(freezermanager_qt
   models/SampleTableModel.h
   pages/SampleBrowserPage.h
   pages/DashboardPage.h
+  pages/FreezerExplorerPage.h
   pages/Freezer3DPage.h
+  pages/SampleDetailPage.h
   widgets/BoxGridView.h
   resources.qrc
 )
