@@ -120,7 +120,13 @@ jobs:
         if: ${{ matrix.preset == 'dev' || matrix.preset == 'asan' || matrix.preset == 'ubsan' || matrix.preset == 'tsan' }}
         env:
           FMGR_TEST_POSTGRES_URL: postgresql://postgres:test@localhost/fmgr_test
-        run: ctest --preset ${{ matrix.preset }} --output-on-failure
+        # The gRPC server integration tests are excluded under asan/tsan: Conan's
+        # gRPC/absl are built without sanitizers, so they emit library-internal
+        # false positives across the instrumentation boundary. Our own code stays
+        # covered under sanitizers by the unit tests.
+        run: >
+          ctest --preset ${{ matrix.preset }} --output-on-failure
+          ${{ (matrix.preset == 'asan' || matrix.preset == 'tsan') && '--label-exclude grpc_integration' || '' }}
 
       - name: Check SPDX headers
         run: tools/check-spdx-headers.sh
@@ -137,8 +143,10 @@ jobs:
         run: |
           # run-clang-tidy (ships with LLVM) lints every TU in compile_commands.json
           # in parallel; only our sources are in the compile DB (Conan deps are
-          # prebuilt), so no extra file filter is needed.
-          run-clang-tidy-17 -p out/build/dev -j "$(nproc)" -quiet
+          # prebuilt). The trailing regex (Python re.search, negative lookahead)
+          # excludes the protoc/grpc-generated .pb.cc / .grpc.pb.cc translation
+          # units, which are not ours to lint.
+          run-clang-tidy-17 -p out/build/dev -j "$(nproc)" -quiet '^(?!.*proto_generated).*$'
 
       - name: Coverage tooling
         if: ${{ matrix.preset == 'dev' }}

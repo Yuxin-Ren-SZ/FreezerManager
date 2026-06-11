@@ -95,6 +95,13 @@ namespace fmgr::auth {
     void revoke_session(const core::SessionId& session_id,
                         const storage::MutationContext& ctx) override;
     void revoke_all_sessions(const core::UserId& uid, const storage::MutationContext& ctx) override;
+    ApiTokenResult create_api_token(const core::UserId& user_id, const std::string& name,
+                                    const std::string& scope_json,
+                                    std::optional<core::LabId> lab_id,
+                                    std::optional<core::Timestamp> expires_at,
+                                    const storage::MutationContext& ctx) override;
+    void revoke_api_token(const core::ApiTokenId& api_token_id,
+                          const storage::MutationContext& ctx) override;
 
   private:
     storage::IStorageBackend& backend_;

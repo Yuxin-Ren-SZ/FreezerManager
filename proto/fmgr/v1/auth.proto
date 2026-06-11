@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1;
+
+import "fmgr/v1/common/types.proto";
+
+option optimize_for = SPEED;
+
+// Bearer tokens are passed as HTTP/2 metadata:
+//   authorization: Bearer <token>
+// Login and SubmitMfa are the only unauthenticated RPCs in this service.
+
+service AuthService {
+  // Authenticate with email + password. Returns a session bearer token.
+  // If the user requires TOTP, mfa_required is true and the caller must
+  // follow up with SubmitMfa before other RPCs will succeed.
+  rpc Login(LoginRequest) returns (LoginResponse);
+
+  // Submit a TOTP code to complete MFA. Requires the session bearer from Login.
+  rpc SubmitMfa(SubmitMfaRequest) returns (SubmitMfaResponse);
+
+  // Revoke the caller's current session. Requires auth (SessionRevoke permission).
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+  // Create a new API token for the caller. Returns the plaintext token once.
+  rpc CreateApiToken(CreateApiTokenRequest) returns (CreateApiTokenResponse);
+
+  // List the caller's API tokens (secret hashes are never returned).
+  rpc ListApiTokens(ListApiTokensRequest) returns (ListApiTokensResponse);
+
+  // Revoke an API token by id (must belong to the caller, or SystemAdmin).
+  rpc RevokeApiToken(RevokeApiTokenRequest) returns (RevokeApiTokenResponse);
+}
+
+// ---- Messages ----
+
+message LoginRequest {
+  string email = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  // Bearer token to use in subsequent requests.
+  string session_token = 1;
+  string session_id = 2;
+  string user_id = 3;
+  // True when TOTP is required; caller must call SubmitMfa before proceeding.
+  bool mfa_required = 4;
+}
+
+message SubmitMfaRequest {
+  // 6-digit TOTP code.
+  string totp_code = 1;
+}
+
+message SubmitMfaResponse {}
+
+message LogoutRequest {}
+message LogoutResponse {}
+
+message CreateApiTokenRequest {
+  string name = 1;
+  // JSON array of permission keys, e.g. ["sample.read"]. Empty = zero permissions.
+  // Use ["*"] for full user permissions.
+  string scope_json = 2;
+  // If set, restrict token to this lab.
+  optional string lab_id = 3;
+  // Expiry in days from now. 0 = server default (30 days).
+  int32 expires_in_days = 4;
+}
+
+message CreateApiTokenResponse {
+  // The raw token, shown exactly once. Store it; it cannot be retrieved again.
+  string token = 1;
+  string api_token_id = 2;
+  // Prefix for identification (safe to store and display).
+  string token_prefix = 3;
+}
+
+message ApiTokenSummary {
+  string id = 1;
+  string user_id = 2;
+  optional string lab_id = 3;
+  string name = 4;
+  string scope_json = 5;
+  string token_prefix = 6;
+  fmgr.v1.common.Timestamp created_at = 7;
+  optional fmgr.v1.common.Timestamp expires_at = 8;
+  optional fmgr.v1.common.Timestamp revoked_at = 9;
+}
+
+message ListApiTokensRequest {
+  fmgr.v1.common.PageRequest page = 1;
+  bool include_revoked = 2;
+}
+
+message ListApiTokensResponse {
+  repeated ApiTokenSummary tokens = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+
+message RevokeApiTokenRequest {
+  string api_token_id = 1;
+}
+
+message RevokeApiTokenResponse {}

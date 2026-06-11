@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1.common;
+
+option optimize_for = SPEED;
+
+// Microseconds since Unix epoch (UTC). Used everywhere instead of
+// google.protobuf.Timestamp to avoid the google.protobuf dependency.
+message Timestamp {
+  int64 unix_micros = 1;
+}
+
+// Opaque cursor-based pagination. page_size 0 → server default (100).
+message PageRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message PageResponse {
+  string next_page_token = 1;
+  int32 total_count = 2;
+}

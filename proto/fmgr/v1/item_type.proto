@@ -1,0 +1,121 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1;
+
+import "fmgr/v1/common/types.proto";
+
+option optimize_for = SPEED;
+
+service ItemTypeService {
+  rpc ListItemTypes(ListItemTypesRequest) returns (ListItemTypesResponse);
+  rpc GetItemType(GetItemTypeRequest) returns (GetItemTypeResponse);
+  rpc CreateItemType(CreateItemTypeRequest) returns (CreateItemTypeResponse);
+  rpc UpdateItemType(UpdateItemTypeRequest) returns (UpdateItemTypeResponse);
+  rpc ArchiveItemType(ArchiveItemTypeRequest) returns (ArchiveItemTypeResponse);
+
+  rpc ListCustomFieldDefinitions(ListCfdsRequest) returns (ListCfdsResponse);
+  rpc CreateCustomFieldDefinition(CreateCfdRequest) returns (CreateCfdResponse);
+  rpc UpdateCustomFieldDefinition(UpdateCfdRequest) returns (UpdateCfdResponse);
+  rpc ArchiveCustomFieldDefinition(ArchiveCfdRequest) returns (ArchiveCfdResponse);
+}
+
+message ItemType {
+  string id = 1;
+  string lab_id = 2;
+  optional string parent_id = 3;
+  string name = 4;
+  fmgr.v1.common.Timestamp created_at = 5;
+  optional fmgr.v1.common.Timestamp archived_at = 6;
+}
+
+enum ScopeKind {
+  SCOPE_KIND_UNSPECIFIED = 0;
+  SCOPE_KIND_SAMPLE = 1;
+  SCOPE_KIND_BOX = 2;
+}
+
+enum FieldDataType {
+  FIELD_DATA_TYPE_UNSPECIFIED = 0;
+  FIELD_DATA_TYPE_TEXT = 1;
+  FIELD_DATA_TYPE_NUMBER = 2;
+  FIELD_DATA_TYPE_DATE = 3;
+  FIELD_DATA_TYPE_BOOLEAN = 4;
+  FIELD_DATA_TYPE_ENUM = 5;
+}
+
+message CustomFieldDefinition {
+  string id = 1;
+  string lab_id = 2;
+  ScopeKind scope_kind = 3;
+  optional string item_type_id = 4;
+  string key = 5;
+  string label = 6;
+  FieldDataType data_type = 7;
+  bool required = 8;
+  string validation_json = 9;
+  bool indexed = 10;
+  bool is_phi = 11;
+  fmgr.v1.common.Timestamp created_at = 12;
+  optional fmgr.v1.common.Timestamp archived_at = 13;
+}
+
+message ListItemTypesRequest {
+  string lab_id = 1;
+  bool include_archived = 2;
+  fmgr.v1.common.PageRequest page = 3;
+}
+message ListItemTypesResponse {
+  repeated ItemType item_types = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+message GetItemTypeRequest {
+  string item_type_id = 1;
+}
+message GetItemTypeResponse {
+  ItemType item_type = 1;
+}
+message CreateItemTypeRequest {
+  string lab_id = 1;
+  optional string parent_id = 2;
+  string name = 3;
+}
+message CreateItemTypeResponse {
+  ItemType item_type = 1;
+}
+message UpdateItemTypeRequest {
+  ItemType item_type = 1;
+}
+message UpdateItemTypeResponse {
+  ItemType item_type = 1;
+}
+message ArchiveItemTypeRequest {
+  string item_type_id = 1;
+}
+message ArchiveItemTypeResponse {}
+
+message ListCfdsRequest {
+  string lab_id = 1;
+  optional string item_type_id = 2;
+  fmgr.v1.common.PageRequest page = 3;
+}
+message ListCfdsResponse {
+  repeated CustomFieldDefinition cfds = 1;
+  fmgr.v1.common.PageResponse page = 2;
+}
+message CreateCfdRequest {
+  CustomFieldDefinition cfd = 1;
+}
+message CreateCfdResponse {
+  CustomFieldDefinition cfd = 1;
+}
+message UpdateCfdRequest {
+  CustomFieldDefinition cfd = 1;
+}
+message UpdateCfdResponse {
+  CustomFieldDefinition cfd = 1;
+}
+message ArchiveCfdRequest {
+  string cfd_id = 1;
+}
+message ArchiveCfdResponse {}

@@ -750,4 +750,60 @@ namespace fmgr::auth {
     return until;
   }
 
+  // ---- create_api_token / revoke_api_token ----
+
+  ApiTokenResult LocalAuthProvider::create_api_token(const core::UserId& user_id,
+                                                     const std::string& name,
+                                                     const std::string& scope_json,
+                                                     std::optional<core::LabId> lab_id,
+                                                     std::optional<core::Timestamp> expires_at,
+                                                     const storage::MutationContext& ctx) {
+    const auto hex = generate_token();
+    const auto plaintext = "fmgr_pat_" + hex;
+    const auto prefix = prefix_of(plaintext);
+    const auto token_hash = hash_token(plaintext);
+
+    const auto now = now_ts();
+    const auto resolved_expires =
+        expires_at.has_value() ? expires_at
+                               : std::optional<core::Timestamp>{core::Timestamp::from_unix_micros(
+                                     now.unix_micros() + 30LL * 24 * 3600 * 1000000)};
+
+    // Re-use make_session_id() UUID generation; same random UUID logic works for ApiTokenId.
+    std::array<std::uint8_t, 16> bytes{};
+    randombytes_buf(bytes.data(), bytes.size());
+    bytes.at(6) = static_cast<std::uint8_t>((bytes.at(6) & 0x0FU) | 0x40U);
+    bytes.at(8) = static_cast<std::uint8_t>((bytes.at(8) & 0x3FU) | 0x80U);
+    const auto api_token_id = core::ApiTokenId(core::Uuid(bytes));
+
+    const core::ApiToken entity{
+        .id = api_token_id,
+        .user_id = user_id,
+        .lab_id = lab_id,
+        .name = name,
+        .scope_json = scope_json,
+        .token_hash = token_hash,
+        .token_prefix = prefix,
+        .created_at = now,
+        .expires_at = resolved_expires,
+    };
+
+    auto wtxn = backend_.begin(storage::IsolationLevel::Serializable);
+    wtxn->repo<core::ApiToken>().insert(entity, ctx);
+    wtxn->commit();
+
+    return ApiTokenResult{
+        .api_token_id = api_token_id,
+        .plaintext_token = plaintext,
+        .token_prefix = prefix,
+    };
+  }
+
+  void LocalAuthProvider::revoke_api_token(const core::ApiTokenId& api_token_id,
+                                           const storage::MutationContext& ctx) {
+    auto wtxn = backend_.begin(storage::IsolationLevel::Serializable);
+    wtxn->repo<core::ApiToken>().soft_delete(api_token_id, ctx);
+    wtxn->commit();
+  }
+
 } // namespace fmgr::auth

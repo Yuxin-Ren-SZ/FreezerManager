@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+syntax = "proto3";
+
+package fmgr.v1;
+
+import "fmgr/v1/common/types.proto";
+
+option optimize_for = SPEED;
+
+service RoleService {
+  rpc ListRoles(ListRolesRequest) returns (ListRolesResponse);
+  rpc GetRole(GetRoleRequest) returns (GetRoleResponse);
+  rpc CreateRole(CreateRoleRequest) returns (CreateRoleResponse);
+  rpc UpdateRole(UpdateRoleRequest) returns (UpdateRoleResponse);
+  rpc ArchiveRole(ArchiveRoleRequest) returns (ArchiveRoleResponse);
+
+  rpc ListRolePermissions(ListRolePermissionsRequest) returns (ListRolePermissionsResponse);
+  rpc GrantPermission(GrantPermissionRequest) returns (GrantPermissionResponse);
+  rpc RevokePermission(RevokePermissionRequest) returns (RevokePermissionResponse);
+}
+
+enum RoleKind {
+  ROLE_KIND_UNSPECIFIED = 0;
+  ROLE_KIND_SYSTEM_ADMIN = 1;
+  ROLE_KIND_LAB_ADMIN = 2;
+  ROLE_KIND_MEMBER = 3;
+  ROLE_KIND_READ_ONLY = 4;
+  ROLE_KIND_API_CLIENT = 5;
+}
+
+message Role {
+  string id = 1;
+  optional string lab_id = 2;
+  RoleKind kind = 3;
+  string name = 4;
+  string description = 5;
+  bool is_builtin = 6;
+  fmgr.v1.common.Timestamp created_at = 7;
+  optional fmgr.v1.common.Timestamp archived_at = 8;
+}
+
+message ListRolesRequest {
+  optional string lab_id = 1;
+  bool include_archived = 2;
+}
+message ListRolesResponse {
+  repeated Role roles = 1;
+}
+message GetRoleRequest {
+  string role_id = 1;
+}
+message GetRoleResponse {
+  Role role = 1;
+}
+message CreateRoleRequest {
+  string lab_id = 1;
+  RoleKind kind = 2;
+  string name = 3;
+  string description = 4;
+}
+message CreateRoleResponse {
+  Role role = 1;
+}
+message UpdateRoleRequest {
+  Role role = 1;
+}
+message UpdateRoleResponse {
+  Role role = 1;
+}
+message ArchiveRoleRequest {
+  string role_id = 1;
+}
+message ArchiveRoleResponse {}
+
+message ListRolePermissionsRequest {
+  string role_id = 1;
+}
+message ListRolePermissionsResponse {
+  repeated string permission_keys = 1;
+}
+message GrantPermissionRequest {
+  string role_id = 1;
+  string permission_key = 2;
+}
+message GrantPermissionResponse {}
+message RevokePermissionRequest {
+  string role_id = 1;
+  string permission_key = 2;
+}
+message RevokePermissionResponse {}
