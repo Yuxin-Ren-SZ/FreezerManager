@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/">
+    <file alias="qml/Freezer3DView.qml">qml/Freezer3DView.qml</file>
+  </qresource>
+</RCC>
