@@ -4,6 +4,7 @@
 
 #include "auth/IAuthProvider.h"
 #include "server/AuthServiceImpl.h"
+#include "server/BoxServiceImpl.h"
 #include "server/LabServiceImpl.h"
 #include "server/SessionServiceImpl.h"
 #include "storage/IStorageBackend.h"
@@ -56,6 +57,7 @@ namespace fmgr::server {
     AuthServiceImpl auth_svc_;
     SessionServiceImpl session_svc_;
     LabServiceImpl lab_svc_;
+    BoxServiceImpl box_svc_;
     std::unique_ptr<grpc::Server> grpc_server_;
     int bound_port_{0};
   };

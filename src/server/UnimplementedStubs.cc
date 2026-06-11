@@ -9,7 +9,6 @@
 #include "rpc/AuthMiddleware.h"
 
 #include <fmgr/v1/audit.grpc.pb.h>
-#include <fmgr/v1/box.grpc.pb.h>
 #include <fmgr/v1/item_type.grpc.pb.h>
 #include <fmgr/v1/role.grpc.pb.h>
 #include <fmgr/v1/sample.grpc.pb.h>
@@ -77,115 +76,6 @@ namespace fmgr::server {
     }
     grpc::Status ExportSamplesCsv(grpc::ServerContext*, const fmgr::v1::ExportSamplesCsvRequest*,
                                   fmgr::v1::ExportSamplesCsvResponse*) override {
-      return unimplemented();
-    }
-  };
-
-  // ---- BoxService stub ----
-
-  class BoxServiceStub final : public fmgr::v1::BoxService::Service {
-  public:
-    BoxServiceStub() {
-      using P = core::Permission;
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListFreezers", P::FreezerConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetFreezer", P::FreezerConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateFreezer", P::FreezerConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/UpdateFreezer", P::FreezerConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveFreezer", P::FreezerConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListStorageContainers",
-                                        P::FreezerConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateStorageContainer",
-                                        P::FreezerConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/UpdateStorageContainer",
-                                        P::FreezerConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveStorageContainer",
-                                        P::FreezerConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListContainerTypes", P::BoxConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateContainerType", P::BoxConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListBoxTypes", P::BoxConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateBoxType", P::BoxConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListBoxes", P::SampleRead);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetBox", P::SampleRead);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateBox", P::BoxConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/UpdateBox", P::BoxConfigure);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveBox", P::BoxConfigure);
-    }
-    grpc::Status ListFreezers(grpc::ServerContext*, const fmgr::v1::ListFreezersRequest*,
-                              fmgr::v1::ListFreezersResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status GetFreezer(grpc::ServerContext*, const fmgr::v1::GetFreezerRequest*,
-                            fmgr::v1::GetFreezerResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateFreezer(grpc::ServerContext*, const fmgr::v1::CreateFreezerRequest*,
-                               fmgr::v1::CreateFreezerResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status UpdateFreezer(grpc::ServerContext*, const fmgr::v1::UpdateFreezerRequest*,
-                               fmgr::v1::UpdateFreezerResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ArchiveFreezer(grpc::ServerContext*, const fmgr::v1::ArchiveFreezerRequest*,
-                                fmgr::v1::ArchiveFreezerResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ListStorageContainers(grpc::ServerContext*,
-                                       const fmgr::v1::ListStorageContainersRequest*,
-                                       fmgr::v1::ListStorageContainersResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateStorageContainer(grpc::ServerContext*,
-                                        const fmgr::v1::CreateStorageContainerRequest*,
-                                        fmgr::v1::CreateStorageContainerResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status UpdateStorageContainer(grpc::ServerContext*,
-                                        const fmgr::v1::UpdateStorageContainerRequest*,
-                                        fmgr::v1::UpdateStorageContainerResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ArchiveStorageContainer(grpc::ServerContext*,
-                                         const fmgr::v1::ArchiveStorageContainerRequest*,
-                                         fmgr::v1::ArchiveStorageContainerResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ListContainerTypes(grpc::ServerContext*,
-                                    const fmgr::v1::ListContainerTypesRequest*,
-                                    fmgr::v1::ListContainerTypesResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateContainerType(grpc::ServerContext*,
-                                     const fmgr::v1::CreateContainerTypeRequest*,
-                                     fmgr::v1::CreateContainerTypeResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ListBoxTypes(grpc::ServerContext*, const fmgr::v1::ListBoxTypesRequest*,
-                              fmgr::v1::ListBoxTypesResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateBoxType(grpc::ServerContext*, const fmgr::v1::CreateBoxTypeRequest*,
-                               fmgr::v1::CreateBoxTypeResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ListBoxes(grpc::ServerContext*, const fmgr::v1::ListBoxesRequest*,
-                           fmgr::v1::ListBoxesResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status GetBox(grpc::ServerContext*, const fmgr::v1::GetBoxRequest*,
-                        fmgr::v1::GetBoxResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateBox(grpc::ServerContext*, const fmgr::v1::CreateBoxRequest*,
-                           fmgr::v1::CreateBoxResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status UpdateBox(grpc::ServerContext*, const fmgr::v1::UpdateBoxRequest*,
-                           fmgr::v1::UpdateBoxResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ArchiveBox(grpc::ServerContext*, const fmgr::v1::ArchiveBoxRequest*,
-                            fmgr::v1::ArchiveBoxResponse*) override {
       return unimplemented();
     }
   };
@@ -392,13 +282,11 @@ namespace fmgr::server {
 
   void register_stub_services(grpc::ServerBuilder& builder) {
     static SampleServiceStub sample;
-    static BoxServiceStub box;
     static ItemTypeServiceStub item_type;
     static RoleServiceStub role;
     static AuditServiceStub audit;
     static ShareServiceStub share;
     builder.RegisterService(&sample);
-    builder.RegisterService(&box);
     builder.RegisterService(&item_type);
     builder.RegisterService(&role);
     builder.RegisterService(&audit);
