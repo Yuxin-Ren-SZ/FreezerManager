@@ -129,7 +129,12 @@ jobs:
         run: cmake --preset ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }}
+        # Cap parallelism to 2. The Debug presets statically link several
+        # gRPC-heavy integration-test executables; linking them all at the
+        # default width (~cores+2) peaks past the runner's 16 GB RAM and the
+        # OOM killer takes down the job (ninja "interrupted by user", exit 143).
+        # Conan deps are prebuilt/cached, so this only paces our own tree.
+        run: cmake --build --preset ${{ matrix.preset }} -j 2
 
       - name: Test
         if: ${{ matrix.preset == 'dev' || matrix.preset == 'asan' || matrix.preset == 'ubsan' || matrix.preset == 'tsan' }}
