@@ -59,6 +59,114 @@ namespace fmgr::storage {
     return moved;
   }
 
+  // ---- Check-out / check-in / discard ----
+
+  // A single sample lifecycle transition (PRD §4.4). The event id and timestamp
+  // are supplied by the caller rather than generated here so the operation is
+  // clock-free and deterministically unit-testable (the RPC layer passes a fresh
+  // UUID + wall-clock now; tests pass fixed values).
+  struct CheckoutCommand {
+    core::CheckoutAction action;
+    // Quantity consumed on this transition, expressed in any volume unit; it is
+    // converted to the sample's unit before subtraction. Ignored when the sample
+    // tracks no volume. Only meaningful for CheckedIn (CheckedOut consumes
+    // nothing; Destroyed consumes whatever remains).
+    std::optional<core::Volume> volume_used;
+    std::optional<std::string> reason;
+    core::CheckoutEventId event_id;
+    core::Timestamp at;
+  };
+
+  // Apply `command` to `sample_id` inside the caller's open transaction and append
+  // the corresponding immutable CheckoutEvent. Returns the updated sample.
+  //
+  // Status machine:
+  //   CheckedOut: requires Active            -> CheckedOut
+  //   CheckedIn:  requires CheckedOut        -> Active (or Depleted when volume
+  //               reaches zero); subtracts volume_used from the remaining volume.
+  //   Destroyed:  requires Active|CheckedOut -> Destroyed; consumes all remaining
+  //               volume.
+  //
+  // Throws NotFound if the sample does not exist and ConstraintViolation for an
+  // illegal transition (already tombstoned/destroyed, or a status that does not
+  // permit the requested action). On any throw the caller must roll back.
+  inline core::Sample apply_checkout(ITransaction& txn, const core::SampleId& sample_id,
+                                     const CheckoutCommand& command,
+                                     const MutationContext& context) {
+    auto& repo = txn.repo<core::Sample>();
+    const auto current = repo.find_by_id(sample_id);
+    if (!current.has_value()) {
+      throw NotFound("sample not found");
+    }
+
+    core::Sample sample = current.value();
+    if (sample.status == core::SampleStatus::Tombstoned ||
+        sample.status == core::SampleStatus::Destroyed) {
+      throw ConstraintViolation("sample is not in a checkout-eligible state");
+    }
+
+    // volume_delta records the signed quantity change (negative = consumed), in
+    // the sample's own unit, for the chain-of-custody event.
+    std::optional<std::int64_t> volume_delta;
+
+    switch (command.action) {
+    case core::CheckoutAction::CheckedOut:
+      if (sample.status != core::SampleStatus::Active) {
+        throw ConstraintViolation("only an active sample can be checked out");
+      }
+      sample.status = core::SampleStatus::CheckedOut;
+      break;
+
+    case core::CheckoutAction::CheckedIn:
+      if (sample.status != core::SampleStatus::CheckedOut) {
+        throw ConstraintViolation("only a checked-out sample can be checked in");
+      }
+      sample.status = core::SampleStatus::Active;
+      if (command.volume_used.has_value() && sample.volume_value.has_value() &&
+          sample.volume_unit.has_value()) {
+        const std::int64_t used = command.volume_used->to_unit(*sample.volume_unit).raw_value();
+        std::int64_t remaining = *sample.volume_value - used;
+        if (remaining < 0) {
+          remaining = 0;
+        }
+        volume_delta = remaining - *sample.volume_value; // negative
+        sample.volume_value = remaining;
+        if (remaining == 0) {
+          sample.status = core::SampleStatus::Depleted; // PRD §4.4 auto-depletion
+        }
+      }
+      break;
+
+    case core::CheckoutAction::Destroyed:
+      if (sample.volume_value.has_value()) {
+        volume_delta = -*sample.volume_value;
+        sample.volume_value = 0;
+      }
+      sample.status = core::SampleStatus::Destroyed;
+      break;
+    }
+
+    sample.last_modified_by = context.actor_user_id;
+    sample.last_modified_at = command.at;
+    repo.update(sample, context);
+
+    const core::CheckoutEvent event{
+        .id = command.event_id,
+        .sample_id = sample.id,
+        .lab_id = sample.lab_id,
+        .user_id = context.actor_user_id,
+        .action = command.action,
+        .reason = command.reason,
+        .at = command.at,
+        .volume_delta = volume_delta,
+        .volume_unit = volume_delta.has_value() ? sample.volume_unit : std::nullopt,
+        .location_after = sample.position_label,
+    };
+    txn.repo<core::CheckoutEvent>().insert(event, context);
+
+    return sample;
+  }
+
 } // namespace fmgr::storage
 
 #endif // FMGR_STORAGE_SAMPLEOPS_H

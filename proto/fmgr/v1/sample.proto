@@ -18,11 +18,17 @@ service SampleService {
   rpc ExportSamplesCsv(ExportSamplesCsvRequest) returns (ExportSamplesCsvResponse);
 }
 
+// Mirrors core::SampleStatus exactly so no lifecycle state collapses on the
+// wire. CHECKED_OUT and DEPLETED are distinct observable states; TOMBSTONED is
+// the soft-delete sentinel (rows hidden from default queries, retained for
+// audit). The UNSPECIFIED member has no core counterpart.
 enum SampleStatus {
   SAMPLE_STATUS_UNSPECIFIED = 0;
   SAMPLE_STATUS_ACTIVE = 1;
-  SAMPLE_STATUS_ARCHIVED = 2;
-  SAMPLE_STATUS_DISCARDED = 3;
+  SAMPLE_STATUS_CHECKED_OUT = 2;
+  SAMPLE_STATUS_DEPLETED = 3;
+  SAMPLE_STATUS_DESTROYED = 4;
+  SAMPLE_STATUS_TOMBSTONED = 5;
 }
 
 message Sample {

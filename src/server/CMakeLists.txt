@@ -8,8 +8,13 @@ add_library(freezermanager_server_lib STATIC
   LabServiceImpl.cc
   BoxServiceImpl.cc
   ItemTypeServiceImpl.cc
+  SampleServiceImpl.cc
   FreezerServer.cc
   UnimplementedStubs.cc
+  # CSV export reused from the CLI: ExportSamplesCsv shares the exact column model
+  # and chain-of-custody header as `freezerctl sample export`.
+  ${PROJECT_SOURCE_DIR}/src/cli/SampleCsv.cc
+  ${PROJECT_SOURCE_DIR}/src/cli/CsvWriter.cc
 )
 add_library(FreezerManager::server_lib ALIAS freezermanager_server_lib)
 

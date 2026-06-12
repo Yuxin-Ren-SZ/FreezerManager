@@ -10,7 +10,6 @@
 
 #include <fmgr/v1/audit.grpc.pb.h>
 #include <fmgr/v1/role.grpc.pb.h>
-#include <fmgr/v1/sample.grpc.pb.h>
 #include <fmgr/v1/share.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 
@@ -28,56 +27,6 @@ namespace fmgr::server {
   // Stub overrides intentionally leave the (ctx, request, response) parameters
   // unnamed — they are placeholders until each service is implemented.
   // NOLINTBEGIN(readability-named-parameter)
-
-  // ---- SampleService stub ----
-
-  class SampleServiceStub final : public fmgr::v1::SampleService::Service {
-  public:
-    SampleServiceStub() {
-      using P = core::Permission;
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ListSamples", P::SampleRead);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/GetSample", P::SampleRead);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/CreateSample", P::SampleWrite);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/UpdateSample", P::SampleWrite);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/SoftDeleteSample",
-                                        P::SampleDeleteSoft);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/MoveSample", P::SampleWrite);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/CheckoutSample", P::SampleCheckout);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ExportSamplesCsv", P::SampleRead);
-    }
-    grpc::Status ListSamples(grpc::ServerContext*, const fmgr::v1::ListSamplesRequest*,
-                             fmgr::v1::ListSamplesResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status GetSample(grpc::ServerContext*, const fmgr::v1::GetSampleRequest*,
-                           fmgr::v1::GetSampleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateSample(grpc::ServerContext*, const fmgr::v1::CreateSampleRequest*,
-                              fmgr::v1::CreateSampleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status UpdateSample(grpc::ServerContext*, const fmgr::v1::UpdateSampleRequest*,
-                              fmgr::v1::UpdateSampleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status SoftDeleteSample(grpc::ServerContext*, const fmgr::v1::SoftDeleteSampleRequest*,
-                                  fmgr::v1::SoftDeleteSampleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status MoveSample(grpc::ServerContext*, const fmgr::v1::MoveSampleRequest*,
-                            fmgr::v1::MoveSampleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CheckoutSample(grpc::ServerContext*, const fmgr::v1::CheckoutSampleRequest*,
-                                fmgr::v1::CheckoutSampleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ExportSamplesCsv(grpc::ServerContext*, const fmgr::v1::ExportSamplesCsvRequest*,
-                                  fmgr::v1::ExportSamplesCsvResponse*) override {
-      return unimplemented();
-    }
-  };
 
   // ---- RoleService stub ----
 
@@ -215,11 +164,9 @@ namespace fmgr::server {
   // The stub objects outlive the server (static storage).
 
   void register_stub_services(grpc::ServerBuilder& builder) {
-    static SampleServiceStub sample;
     static RoleServiceStub role;
     static AuditServiceStub audit;
     static ShareServiceStub share;
-    builder.RegisterService(&sample);
     builder.RegisterService(&role);
     builder.RegisterService(&audit);
     builder.RegisterService(&share);

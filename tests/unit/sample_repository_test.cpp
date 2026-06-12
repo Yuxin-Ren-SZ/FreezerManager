@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "core/box.h"
+#include "core/custom_field_validator.h"
 #include "core/freezer.h"
 #include "core/identity.h"
 #include "core/item_type.h"
 #include "core/sample.h"
 #include "storage/BoxGeometryTraits.h"
+#include "storage/CustomFieldResolver.h"
 #include "storage/FreezerTraits.h"
 #include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
@@ -31,8 +33,10 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fmgr::storage {
   namespace {
@@ -45,6 +49,15 @@ namespace fmgr::storage {
           .request_id = "sample-test-request",
           .reason = "sample repository test",
       };
+    }
+
+    // Mutation context whose actor is a real (seeded) user. CheckoutEvent.user_id
+    // is a foreign key to users, so apply_checkout — which stamps the actor as the
+    // event user — requires the actor to exist.
+    [[nodiscard]] MutationContext mutation_context_as(core::UserId actor) {
+      auto context = mutation_context();
+      context.actor_user_id = actor;
+      return context;
     }
 
     [[nodiscard]] core::Lab make_lab(std::uint64_t low_bits) {
@@ -184,6 +197,25 @@ namespace fmgr::storage {
           .volume_delta = std::nullopt,
           .volume_unit = std::nullopt,
           .location_after = std::nullopt,
+      };
+    }
+
+    [[nodiscard]] core::CustomFieldDefinition make_cfd(std::uint64_t low_bits, core::LabId lab_id,
+                                                       std::optional<core::ItemTypeId> item_type_id,
+                                                       std::string key, bool required = false) {
+      return core::CustomFieldDefinition{
+          .id = id_from_low<core::CustomFieldDefinitionId>(low_bits),
+          .lab_id = lab_id,
+          .scope_kind = core::ScopeKind::Sample,
+          .item_type_id = item_type_id,
+          .key = std::move(key),
+          .label = "Field " + std::to_string(low_bits),
+          .data_type = core::FieldDataType::String,
+          .required = required,
+          .validation_json = "{}",
+          .indexed = false,
+          .is_phi = false,
+          .created_at = ts(1100 + static_cast<std::int64_t>(low_bits)),
       };
     }
 
@@ -1811,6 +1843,238 @@ namespace fmgr::storage {
       auto sample = make_sample(9999, id_from_low<core::LabId>(1), id_from_low<core::ItemTypeId>(2),
                                 id_from_low<core::UserId>(3));
       EXPECT_THROW(txn->repo<core::Sample>().update(sample, mutation_context()), NotFound);
+    }
+
+    // ---- Check-out / check-in / discard (storage::apply_checkout) ----
+
+    TEST_P(SampleRepositoryTest, CheckoutTransitionsActiveToCheckedOutAndAppendsEvent) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+
+      core::Sample result;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        result = apply_checkout(*txn, sample.id,
+                                CheckoutCommand{.action = core::CheckoutAction::CheckedOut,
+                                                .event_id = id_from_low<core::CheckoutEventId>(50),
+                                                .at = ts(900)},
+                                mutation_context_as(user_id));
+        txn->commit();
+      }
+      EXPECT_EQ(result.status, core::SampleStatus::CheckedOut);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto events =
+            txn->repo<core::CheckoutEvent>().query(Query<core::CheckoutEvent>::where(
+                field<core::CheckoutEvent, std::string>(core::CheckoutEvent::Field::SampleId) ==
+                sample.id.to_string()));
+        txn->commit();
+        ASSERT_EQ(events.size(), 1U);
+        EXPECT_EQ(events.front().action, core::CheckoutAction::CheckedOut);
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, CheckinConsumingAllVolumeAutoDepletes) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.volume_value = 100;
+      sample.volume_unit = core::VolumeUnit::Microliter;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      // Check out, then check back in consuming the full 100 µL.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        apply_checkout(*txn, sample.id,
+                       CheckoutCommand{.action = core::CheckoutAction::CheckedOut,
+                                       .event_id = id_from_low<core::CheckoutEventId>(50),
+                                       .at = ts(900)},
+                       mutation_context_as(user_id));
+        txn->commit();
+      }
+      core::Sample result;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        result = apply_checkout(*txn, sample.id,
+                                CheckoutCommand{.action = core::CheckoutAction::CheckedIn,
+                                                .volume_used = core::Volume::from_raw(
+                                                    100, core::VolumeUnit::Microliter),
+                                                .event_id = id_from_low<core::CheckoutEventId>(51),
+                                                .at = ts(901)},
+                                mutation_context_as(user_id));
+        txn->commit();
+      }
+      EXPECT_EQ(result.status, core::SampleStatus::Depleted);
+      EXPECT_EQ(result.volume_value, 0);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto event =
+            txn->repo<core::CheckoutEvent>().find_by_id(id_from_low<core::CheckoutEventId>(51));
+        txn->commit();
+        ASSERT_TRUE(event.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(event->volume_delta, -100); // negative = consumed
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, DiscardConsumesRemainingVolumeAndDestroys) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.volume_value = 50;
+      sample.volume_unit = core::VolumeUnit::Microliter;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      core::Sample result;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        result = apply_checkout(*txn, sample.id,
+                                CheckoutCommand{.action = core::CheckoutAction::Destroyed,
+                                                .event_id = id_from_low<core::CheckoutEventId>(50),
+                                                .at = ts(900)},
+                                mutation_context_as(user_id));
+        txn->commit();
+      }
+      EXPECT_EQ(result.status, core::SampleStatus::Destroyed);
+      EXPECT_EQ(result.volume_value, 0);
+    }
+
+    TEST_P(SampleRepositoryTest, CheckoutOfAlreadyCheckedOutSampleThrows) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto sample = make_sample(10, lab_id, it_id, user_id);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        apply_checkout(*txn, sample.id,
+                       CheckoutCommand{.action = core::CheckoutAction::CheckedOut,
+                                       .event_id = id_from_low<core::CheckoutEventId>(50),
+                                       .at = ts(900)},
+                       mutation_context_as(user_id));
+        txn->commit();
+      }
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(
+          apply_checkout(*txn, sample.id,
+                         CheckoutCommand{.action = core::CheckoutAction::CheckedOut,
+                                         .event_id = id_from_low<core::CheckoutEventId>(51),
+                                         .at = ts(901)},
+                         mutation_context_as(user_id)),
+          ConstraintViolation);
+      txn->rollback();
+    }
+
+    // ---- Custom-field definition resolution (storage::resolve_custom_field_defs) ----
+
+    TEST_P(SampleRepositoryTest, ResolveCustomFieldDefsMergesGlobalAndAncestorChain) {
+      const auto lab_id = seed_lab(1);
+      auto root = make_item_type(3, lab_id, "liquid");
+      auto child = make_item_type(4, lab_id, "blood");
+      child.parent_id = root.id;
+      auto unrelated = make_item_type(5, lab_id, "solid");
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::ItemType>().insert(root, mutation_context());
+        txn->repo<core::ItemType>().insert(child, mutation_context());
+        txn->repo<core::ItemType>().insert(unrelated, mutation_context());
+        txn->commit();
+      }
+      const auto global = make_cfd(10, lab_id, std::nullopt, "g");
+      const auto on_root = make_cfd(11, lab_id, root.id, "a", /*required=*/true);
+      const auto on_child = make_cfd(12, lab_id, child.id, "b");
+      const auto on_unrelated = make_cfd(13, lab_id, unrelated.id, "x");
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CustomFieldDefinition>().insert(global, mutation_context());
+        txn->repo<core::CustomFieldDefinition>().insert(on_root, mutation_context());
+        txn->repo<core::CustomFieldDefinition>().insert(on_child, mutation_context());
+        txn->repo<core::CustomFieldDefinition>().insert(on_unrelated, mutation_context());
+        txn->commit();
+      }
+
+      std::vector<core::CustomFieldDefinition> resolved;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        resolved = resolve_custom_field_defs(*txn, lab_id, child.id);
+        txn->commit();
+      }
+      std::set<std::string> keys;
+      for (const auto& cfd : resolved) {
+        keys.insert(cfd.key);
+      }
+      EXPECT_EQ(keys, (std::set<std::string>{"a", "b", "g"})); // not "x"
+    }
+
+    TEST_P(SampleRepositoryTest, ResolveCustomFieldDefsChildOverridesAncestorOnDuplicateKey) {
+      const auto lab_id = seed_lab(1);
+      auto root = make_item_type(3, lab_id, "liquid");
+      auto child = make_item_type(4, lab_id, "blood");
+      child.parent_id = root.id;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::ItemType>().insert(root, mutation_context());
+        txn->repo<core::ItemType>().insert(child, mutation_context());
+        txn->commit();
+      }
+      // Same key "k" on ancestor (not required) and child (required): child wins.
+      const auto ancestor_def = make_cfd(10, lab_id, root.id, "k", /*required=*/false);
+      const auto child_def = make_cfd(11, lab_id, child.id, "k", /*required=*/true);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CustomFieldDefinition>().insert(ancestor_def, mutation_context());
+        txn->repo<core::CustomFieldDefinition>().insert(child_def, mutation_context());
+        txn->commit();
+      }
+
+      std::vector<core::CustomFieldDefinition> resolved;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        resolved = resolve_custom_field_defs(*txn, lab_id, child.id);
+        txn->commit();
+      }
+      ASSERT_EQ(resolved.size(), 1U);
+      EXPECT_EQ(resolved.front().key, "k");
+      EXPECT_TRUE(resolved.front().required); // the child's tightened definition
+    }
+
+    TEST_P(SampleRepositoryTest, ResolveThenValidateRejectsMissingRequiredField) {
+      const auto lab_id = seed_lab(1);
+      const auto it_id = seed_item_type(3, lab_id);
+      const auto required_def = make_cfd(10, lab_id, it_id, "patient_ref", /*required=*/true);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CustomFieldDefinition>().insert(required_def, mutation_context());
+        txn->commit();
+      }
+      std::vector<core::CustomFieldDefinition> resolved;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        resolved = resolve_custom_field_defs(*txn, lab_id, it_id);
+        txn->commit();
+      }
+      const auto errors =
+          core::validate_custom_fields(resolved, nlohmann::json::object()); // missing patient_ref
+      EXPECT_FALSE(errors.empty());
     }
 
     INSTANTIATE_TEST_SUITE_P(Backends, SampleRepositoryTest,
