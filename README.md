@@ -1,14 +1,70 @@
 # FreezerManager
 
-Open-core, self-hostable freezer / biospecimen management system for academic
-and clinical research labs. Written in C++20, designed for data safety,
-security (PHI-aware), extensibility, and multi-user concurrency.
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-blue?logo=c%2B%2B)](https://en.cppreference.com/w/cpp/20)
+[![License](https://img.shields.io/badge/license-AGPLv3-blue?logo=gnu)](./LICENSE)
+[![Status](https://img.shields.io/badge/status-pre--alpha-orange)](./doc/PRD.md)
+[![Platform](https://img.shields.io/badge/platform-Linux-blue?logo=linux)](https://kernel.org)
+[![Build](https://img.shields.io/badge/build-CMake%203.25%2B-blue?logo=cmake)](./README.md#building)
+[![CI](https://img.shields.io/badge/CI-GitHub%20Actions-%232088FF?logo=githubactions)](./.github/workflows)
+[![Tests](https://img.shields.io/badge/tests-817%2B%20passing-brightgreen)](./tests)
+[![Sanitizers](https://img.shields.io/badge/sanitizers-ASan%20%7C%20UBSan%20%7C%20TSan-red)](./README.md#building)
+[![SQL](https://img.shields.io/badge/backends-SQLite%20%7C%20PostgreSQL-blue?logo=postgresql)](./README.md#storage--data-safety)
+
+**Open-core, self-hostable freezer and biospecimen management for academic
+and clinical research labs — built for data safety, PHI security, extensibility,
+and multi-user concurrency from the ground up.**
+
+Research labs need reliable sample tracking, but existing solutions force a
+hard choice: expensive commercial LIMS with vendor lock-in, or fragile
+spreadsheets that can't handle concurrency, audit trails, or protected health
+information (PHI). FreezerManager fills that gap with an open-core, C++20
+server that is fast, correct, and safe to operate — even without a dedicated DBA.
+
+**Why FreezerManager?**
+
+- **Data safety by design.** Append-only hash-chained audit log. Every mutation
+  is atomic, traceable, and verifiable. Soft-delete only — no rows are ever
+  silently lost.
+- **PHI-aware.** Field-level encryption, PHI-read audit events, and
+  least-privilege RBAC ensure compliance without slowing down daily workflows.
+- **Pluggable storage.** Swap between SQLite (dev / small labs) and PostgreSQL
+  (production) without touching a line of domain code. Both pass the same
+  abstract backend conformance suite.
+- **Real freezer modeling.** Recursive container hierarchies (compartment →
+  shelf → rack → drawer), mixed-format box templates with per-position size
+  compatibility, and atomic sample moves.
+- **Multi-user, multi-lab.** Strict per-lab isolation enforced at both the
+  application layer and the database (Row-Level Security on PostgreSQL).
+  Five built-in roles; lab admins define custom roles with scoped permissions.
+- **Full chain of custody.** Aliquot lineage, check-out/check-in with volume
+  tracking, and cross-lab share requests with three-signature approval.
+- **Modern toolchain.** C++20, CMake 3.25+, Conan 2 lockfiles, clang-tidy,
+  sanitizer CI builds, and TDD throughout (817+ tests).
 
 > **Status:** Pre-alpha — active implementation. Core domain, both reference
 > backends (SQLite + PostgreSQL), auth foundation, and the audit chain are
 > complete; security-remediation pass done. Next: RPC layer (gRPC) + clients.
 > See [`doc/PRD.md`](./doc/PRD.md) for the full product requirements & design
 > document and the [Roadmap](#roadmap) below for current progress.
+
+---
+
+## Contents
+
+- [Features](#features)
+  - [Storage & Data Safety](#storage--data-safety)
+  - [Domain Model](#domain-model)
+  - [Security & Authentication](#security--authentication)
+  - [Audit](#audit)
+  - [Interfaces & Clients](#interfaces--clients)
+  - [Operations](#operations)
+  - [Developer Experience](#developer-experience)
+- [Roadmap](#roadmap)
+- [Building](#building)
+  - [Code Coverage](#code-coverage)
+  - [Performance Tests](#performance-tests)
+- [Documentation](#documentation)
+- [License](#license)
 
 ---
 
