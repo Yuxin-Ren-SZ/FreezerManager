@@ -70,6 +70,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The Conan build of gRPC/abseil/protobuf plus a full (Debug) build tree
+      # can exceed the ~14 GB free on a hosted runner, crashing the runner with
+      # "No space left on device". Reclaim ~20+ GB of preinstalled toolchains we
+      # never use before building. Best-effort: never fail the job on cleanup.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
+
       - name: Install system tools
         run: |
           sudo apt-get update
