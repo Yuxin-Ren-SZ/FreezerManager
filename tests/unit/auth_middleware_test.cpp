@@ -449,15 +449,18 @@ namespace fmgr::rpc {
     }
 
     TEST_F(AuthMiddlewareTest, RpcRegistryReturnsSnapshotForAllRegisteredRpcs) {
-      // Clear any previous registrations by checking what is not yet registered.
-      EXPECT_FALSE(AuthMiddleware::is_rpc_registered("e3_test.GetSample"));
-      AuthMiddleware::register_rpc("e3_test.GetSample", core::Permission::SampleRead);
-      AuthMiddleware::register_rpc("e3_test.CreateSample", core::Permission::SampleWrite);
+      // The registry is a process-global static shared by every test in this
+      // binary, so this test uses names unique to itself rather than assuming a
+      // clean slate.
+      EXPECT_FALSE(AuthMiddleware::is_rpc_registered("e3_test.SnapshotRead"));
+      EXPECT_FALSE(AuthMiddleware::is_rpc_registered("e3_test.SnapshotWrite"));
+      AuthMiddleware::register_rpc("e3_test.SnapshotRead", core::Permission::SampleRead);
+      AuthMiddleware::register_rpc("e3_test.SnapshotWrite", core::Permission::SampleWrite);
 
       const auto snapshot = AuthMiddleware::registered_rpcs();
       EXPECT_GE(snapshot.size(), 2U);
-      EXPECT_EQ(snapshot.at("e3_test.GetSample"), core::Permission::SampleRead);
-      EXPECT_EQ(snapshot.at("e3_test.CreateSample"), core::Permission::SampleWrite);
+      EXPECT_EQ(snapshot.at("e3_test.SnapshotRead"), core::Permission::SampleRead);
+      EXPECT_EQ(snapshot.at("e3_test.SnapshotWrite"), core::Permission::SampleWrite);
     }
 
     TEST_F(AuthMiddlewareTest, RpcRegistryDuplicateRegistrationOverwrites) {
