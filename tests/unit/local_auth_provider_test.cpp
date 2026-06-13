@@ -4,8 +4,8 @@
 //
 // Each test runs against a temporary in-file SQLite backend with all
 // migrations applied.  Two test users are seeded:
-//   • user_no_totp : password "hunter2"; Member role; no TOTP secret
-//   • user_with_totp: password "s3cret!"; LabAdmin role; totp_secret_enc set
+//   • user_no_totp : password "hunter22"; Member role; no TOTP secret
+//   • user_with_totp: password "s3cret!8"; LabAdmin role; totp_secret_enc set
 //
 // Argon2id parameters are set to minimum values to keep test runtime short.
 
@@ -149,8 +149,8 @@ namespace fmgr::auth {
     private:
       void seed_test_data() {
         // Hash passwords using the fast config.
-        const auto pw_no_totp = provider_->hash_password("hunter2");
-        const auto pw_with_totp = provider_->hash_password("s3cret!");
+        const auto pw_no_totp = provider_->hash_password("hunter22");
+        const auto pw_with_totp = provider_->hash_password("s3cret!8");
 
         auto txn = backend_->begin(storage::IsolationLevel::Serializable);
         const auto ctx = test_ctx();
@@ -212,9 +212,15 @@ namespace fmgr::auth {
 
     // ---- authenticate: password path ----
 
+    TEST_F(LocalAuthProviderTest, HashPasswordRejectsShortPassword) {
+      // Default policy floor is 8 characters (security-audit-2026-06-12 #7).
+      EXPECT_THROW((void)provider_->hash_password("short"), storage::ConstraintViolation);
+      EXPECT_NO_THROW((void)provider_->hash_password("longenough"));
+    }
+
     TEST_F(LocalAuthProviderTest, AuthenticateCorrectPassword) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       EXPECT_FALSE(token.plaintext_token.empty());
       EXPECT_TRUE(token.mfa_complete);
     }
@@ -222,7 +228,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, AuthenticateEmailCaseInsensitive) {
       // The provider normalizes email to lowercase before looking up.
       EXPECT_NO_THROW(provider_->authenticate(
-          PasswordCredentials{.email = "NOTOTP@EXAMPLE.COM", .password = "hunter2"}, ClientInfo{}));
+          PasswordCredentials{.email = "NOTOTP@EXAMPLE.COM", .password = "hunter22"}, ClientInfo{}));
     }
 
     TEST_F(LocalAuthProviderTest, AuthenticateWrongPassword) {
@@ -234,7 +240,7 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, AuthenticateUnknownEmail) {
       EXPECT_THROW(provider_->authenticate(
-                       PasswordCredentials{.email = "nobody@example.com", .password = "hunter2"},
+                       PasswordCredentials{.email = "nobody@example.com", .password = "hunter22"},
                        ClientInfo{}),
                    InvalidCredentials);
     }
@@ -247,7 +253,7 @@ namespace fmgr::auth {
         txn->commit();
       }
       EXPECT_THROW(provider_->authenticate(
-                       PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"},
+                       PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
                        ClientInfo{}),
                    InvalidCredentials);
     }
@@ -317,7 +323,7 @@ namespace fmgr::auth {
 
       // Correct password but still locked.
       EXPECT_THROW(local_provider.authenticate(
-                       PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"},
+                       PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
                        ClientInfo{}),
                    AccountLocked);
     }
@@ -342,7 +348,7 @@ namespace fmgr::auth {
 
       // Lockout expired instantly; correct password should succeed.
       EXPECT_NO_THROW(local_provider.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{}));
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{}));
     }
 
     TEST_F(LocalAuthProviderTest, AuthenticateSuccessResetsFailureCount) {
@@ -361,7 +367,7 @@ namespace fmgr::auth {
       }
       // ...then a success resets the counter.
       EXPECT_NO_THROW(local_provider.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{}));
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{}));
 
       // Two more failures after reset should not lock.
       for (int i = 0; i < 2; ++i) {
@@ -373,18 +379,18 @@ namespace fmgr::auth {
         }
       }
       EXPECT_NO_THROW(local_provider.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{}));
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{}));
     }
 
     TEST_F(LocalAuthProviderTest, AuthenticateTotpUserMfaIncomplete) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{});
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
       EXPECT_FALSE(token.mfa_complete);
     }
 
     TEST_F(LocalAuthProviderTest, AuthenticateMemberNoTotpMfaComplete) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       EXPECT_TRUE(token.mfa_complete);
     }
 
@@ -392,7 +398,7 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, ValidateTokenRoundTrip) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"},
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
           ClientInfo{.ip = "127.0.0.1"});
 
       const SessionContext ctx = provider_->validate_token(token.plaintext_token);
@@ -404,7 +410,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, ValidateTokenBuildsPermissions) {
       // The LabAdmin user's SessionContext should include audit.read (LabAdmin has it).
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{});
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
       const SessionContext ctx = provider_->validate_token(token.plaintext_token);
       EXPECT_EQ(ctx.user_id, kUserWithTotpId);
       // LabAdmin has sample.read at minimum.
@@ -419,7 +425,7 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, ValidateTokenRevokedSession) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       provider_->revoke_session(token.session_id, test_ctx());
 
@@ -431,7 +437,7 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, VerifyTotpSuccess) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{});
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
       ASSERT_FALSE(token.mfa_complete);
 
       // Generate the current TOTP code using the known secret.
@@ -449,14 +455,14 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, VerifyTotpWrongCode) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{});
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
       EXPECT_THROW(provider_->verify_totp(token.session_id, "000000"), InvalidCredentials);
     }
 
     TEST_F(LocalAuthProviderTest, VerifyTotpAlreadyComplete) {
       // A session that already has mfa_complete=true must reject verify_totp.
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       ASSERT_TRUE(token.mfa_complete);
       EXPECT_THROW(provider_->verify_totp(token.session_id, "123456"), InvalidCredentials);
     }
@@ -465,7 +471,7 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, RevokeSessionSetsRevokedAt) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       provider_->revoke_session(token.session_id, test_ctx());
 
@@ -488,9 +494,9 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, RevokeAllSessionsRevokesAll) {
       // Create two sessions for the same user.
       provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       provider_->revoke_all_sessions(kUserNoTotpId, test_ctx());
 
@@ -551,6 +557,23 @@ namespace fmgr::auth {
     }
 
     // ---- authenticate: API token path ----
+
+    TEST_F(LocalAuthProviderTest, CreateApiTokenRejectsUnknownScopeKey) {
+      // A typo'd scope key must be rejected at creation, not silently dropped to a
+      // zero-permission token (security-audit-2026-06-12 #5).
+      EXPECT_THROW(provider_->create_api_token(kUserNoTotpId, "bad scope",
+                                               R"(["sample.raed"])", std::nullopt, std::nullopt,
+                                               test_ctx()),
+                   storage::ConstraintViolation);
+      EXPECT_THROW(provider_->create_api_token(kUserNoTotpId, "not an array", R"({"a":1})",
+                                               std::nullopt, std::nullopt, test_ctx()),
+                   storage::ConstraintViolation);
+      EXPECT_NO_THROW((void)provider_->create_api_token(kUserNoTotpId, "good scope",
+                                                        R"(["sample.read"])", std::nullopt,
+                                                        std::nullopt, test_ctx()));
+      EXPECT_NO_THROW((void)provider_->create_api_token(kUserNoTotpId, "wildcard", R"(["*"])",
+                                                        std::nullopt, std::nullopt, test_ctx()));
+    }
 
     TEST_F(LocalAuthProviderTest, AuthenticateApiTokenRoundTrip) {
       const auto pat = prepare_api_token(kUserNoTotpId, 100);
@@ -787,7 +810,7 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, ValidateSessionTokenDisabledUserThrowsInvalidCredentials) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // Session works while user is active.
       EXPECT_NO_THROW(provider_->validate_token(token.plaintext_token));
@@ -807,7 +830,7 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, VerifyTotpRevokedSession) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{});
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
       ASSERT_FALSE(token.mfa_complete);
 
       provider_->revoke_session(token.session_id, test_ctx());
@@ -820,7 +843,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, VerifyTotpNoUserSecret) {
       // Authenticate as TOTP user → session created with mfa_complete=false.
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{});
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
       ASSERT_FALSE(token.mfa_complete);
 
       // Remove the user's TOTP secret (simulating a concurrent admin action).
@@ -844,7 +867,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, VerifyTotpDisabledUser) {
       // Authenticate as TOTP user → session created with mfa_complete=false.
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{});
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
       ASSERT_FALSE(token.mfa_complete);
 
       // Disable the user (simulating admin action while session is active).
@@ -878,13 +901,13 @@ namespace fmgr::auth {
       }
       // nototp is now locked.
       EXPECT_THROW(local_provider.authenticate(
-                       PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"},
+                       PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
                        ClientInfo{}),
                    AccountLocked);
 
       // totp@example.com should still be able to authenticate.
       EXPECT_NO_THROW(local_provider.authenticate(
-          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!"}, ClientInfo{}));
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{}));
     }
 
     // ---- D9.3: session expiry ----
@@ -892,7 +915,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, ValidateTokenThrowsTokenExpiredWhenIdleTimeoutExceeded) {
       auto prov = make_expiry_provider();
       const AuthToken token = prov.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // Set last_seen_at to 2 hours ago (exceeds 1 h idle limit).
       backdate_session(token.session_id, 0, -2LL * 3600 * 1'000'000);
@@ -908,7 +931,7 @@ namespace fmgr::auth {
       auto prov = LocalAuthProvider(*backend_, cfg);
 
       const AuthToken token = prov.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // Set created_at to 2 hours ago (exceeds 1 h absolute limit).
       // Set last_seen_at to now (so idle limit is not triggered).
@@ -920,7 +943,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, ValidateTokenSucceedsWithinBothLimits) {
       auto prov = make_expiry_provider();
       const AuthToken token = prov.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // Timestamps are current → both limits satisfied.
       EXPECT_NO_THROW(prov.validate_token(token.plaintext_token));
@@ -929,7 +952,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, ValidateTokenUpdatesLastSeenAfterInterval) {
       auto prov = make_expiry_provider();
       const AuthToken token = prov.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // Backdate last_seen_at by 2 minutes (> 60 s rate-limit interval).
       backdate_session(token.session_id, 0, -2LL * 60 * 1'000'000);
@@ -943,7 +966,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, ValidateTokenDoesNotUpdateLastSeenWithinInterval) {
       auto prov = make_expiry_provider();
       const AuthToken token = prov.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // last_seen_at is current (< 60 s ago); no update expected.
       const std::size_t before = backend_->audit_event_count_for_tests();
@@ -956,7 +979,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, RevokeSessionPreventsFutureValidateTokenDespiteCache) {
       // Populate the permission cache by calling validate_token once.
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       EXPECT_NO_THROW(provider_->validate_token(token.plaintext_token));
 
       // Revoke session — cache entry should be invalidated.
@@ -969,9 +992,9 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, RevokeAllSessionsPreventsFutureValidateTokenDespiteCache) {
       // Two sessions; populate both into the permission cache.
       const AuthToken tok1 = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       const AuthToken tok2 = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       EXPECT_NO_THROW(provider_->validate_token(tok1.plaintext_token));
       EXPECT_NO_THROW(provider_->validate_token(tok2.plaintext_token));
 
@@ -989,7 +1012,7 @@ namespace fmgr::auth {
       auto prov = LocalAuthProvider(*backend_, cfg);
 
       const AuthToken token = prov.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // No cache — but context builds from DB and works.
       const SessionContext ctx = prov.validate_token(token.plaintext_token);
@@ -1005,7 +1028,7 @@ namespace fmgr::auth {
       auto prov = LocalAuthProvider(*backend_, cfg);
 
       const AuthToken token = prov.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // First call: builds and caches context, then TTL=0 makes it stale.
       const SessionContext ctx1 = prov.validate_token(token.plaintext_token);
@@ -1022,7 +1045,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, ValidateTokenSucceedsOneSecondBeforeIdleLimit) {
       auto prov = make_expiry_provider();
       const AuthToken token = prov.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // One second before the 1 h idle limit — must succeed.
       backdate_session(token.session_id, 0, -(3600LL - 1) * 1'000'000);
@@ -1033,7 +1056,7 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, ValidateTokenThrowsOneSecondPastIdleLimit) {
       auto prov = make_expiry_provider();
       const AuthToken token = prov.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // One second past the 1 h idle limit — must expire.
       backdate_session(token.session_id, 0, -(3600LL + 1) * 1'000'000);
@@ -1058,7 +1081,7 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, RevokingMembershipInvalidatesCachedLabAccessBeforeTtl) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       // First validation caches a context that can see the lab.
       const SessionContext before = provider_->validate_token(token.plaintext_token);
@@ -1082,7 +1105,7 @@ namespace fmgr::auth {
 
     TEST_F(LocalAuthProviderTest, RemovingRolePermissionInvalidatesCacheBeforeTtl) {
       const AuthToken token = provider_->authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter2"}, ClientInfo{});
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
       const SessionContext before = provider_->validate_token(token.plaintext_token);
       ASSERT_TRUE(before.has_for_lab(kLabId, core::Permission::SampleRead));

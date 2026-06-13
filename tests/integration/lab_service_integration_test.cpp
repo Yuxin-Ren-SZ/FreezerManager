@@ -106,7 +106,7 @@ namespace fmgr::test {
 
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kMemberEmail{"member@example.com"};
-      const std::string kPassword{"hunter2"};
+      const std::string kPassword{"hunter22"};
       const std::string kLab1{"20000000-0000-0000-0000-000000000001"};
 
       std::filesystem::path db_path_;

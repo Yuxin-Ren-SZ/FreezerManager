@@ -146,7 +146,7 @@ namespace fmgr::test {
       const std::string kSysAdminEmail{"sys@example.com"};
       const std::string kMemberEmail{"member@example.com"};
       const std::string kStrangerEmail{"stranger@example.com"};
-      const std::string kPassword{"hunter2"};
+      const std::string kPassword{"hunter22"};
       const std::string kLab1{"20000000-0000-0000-0000-000000000001"};
       const std::string kLab2{"20000000-0000-0000-0000-000000000002"};
       const std::string kLab3{"20000000-0000-0000-0000-000000000003"};
@@ -304,6 +304,35 @@ namespace fmgr::test {
       EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
     }
 
+    TEST_F(ShareServiceTest, CreateRejectsSameSourceAndTarget) {
+      // A self-share is meaningless; source and target labs must differ (F-5).
+      const auto token = login(kSrcAdminEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::CreateShareRequestRequest req;
+      req.set_source_lab_id(kLab1);
+      req.set_target_lab_id(kLab1);
+      fmgr::v1::CreateShareRequestResponse resp;
+      const auto status = share_stub_->CreateShareRequest(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    }
+
+    TEST_F(ShareServiceTest, CreateRejectsNonObjectScopeJson) {
+      // scope_json must be a JSON object (security-audit-2026-06-12 #6).
+      const auto token = login(kSrcAdminEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::CreateShareRequestRequest req;
+      req.set_source_lab_id(kLab1);
+      req.set_target_lab_id(kLab2);
+      req.set_scope_json("[1,2,3]"); // valid JSON, but an array not an object
+      fmgr::v1::CreateShareRequestResponse resp;
+      const auto status = share_stub_->CreateShareRequest(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    }
+
     TEST_F(ShareServiceTest, CreateWithoutBearerIsUnauthenticated) {
       grpc::ClientContext ctx;
       fmgr::v1::CreateShareRequestRequest req;
@@ -416,12 +445,77 @@ namespace fmgr::test {
     }
 
     TEST_F(ShareServiceTest, DuplicateSignatureForSameRoleIsRejected) {
+      // Separation of duties catches a repeat signer before the composite-PK path,
+      // so a same-role duplicate now surfaces as FAILED_PRECONDITION (see F-2).
       const auto src = login(kSrcAdminEmail, kPassword);
       const auto id = create_request(src);
       ASSERT_TRUE(approve(src, id, fmgr::v1::SHARE_APPROVAL_ROLE_SOURCE_LAB).ok());
       const auto status = approve(src, id, fmgr::v1::SHARE_APPROVAL_ROLE_SOURCE_LAB);
       EXPECT_FALSE(status.ok());
-      EXPECT_EQ(status.error_code(), grpc::StatusCode::ALREADY_EXISTS);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+    }
+
+    TEST_F(ShareServiceTest, OneSignerCannotSignTwoRoles) {
+      // Separation of duties: a principal entitled to sign as more than one role
+      // (here a system admin who also holds source-lab approve) may still sign only
+      // once. Without this, one human could single-handedly approve a transfer.
+      const auto sys = login(kSysAdminEmail, kPassword);
+      const auto src = login(kSrcAdminEmail, kPassword);
+      const auto id = create_request(src);
+      ASSERT_TRUE(approve(sys, id, fmgr::v1::SHARE_APPROVAL_ROLE_SYSTEM_ADMIN).ok());
+      const auto status = approve(sys, id, fmgr::v1::SHARE_APPROVAL_ROLE_SOURCE_LAB);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+    }
+
+    // F-3: a decided (rejected) request is hidden from the default list and only
+    // surfaces with include_decided. Approved/Rejected are not tombstoned, so this
+    // requires an explicit pending-only default filter, not include_tombstoned.
+    TEST_F(ShareServiceTest, ListHidesDecidedUnlessRequested) {
+      const auto src = login(kSrcAdminEmail, kPassword);
+      const auto id = create_request(src);
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, src);
+        fmgr::v1::RejectShareRequestRequest req;
+        req.set_share_request_id(id);
+        req.set_approver_role(fmgr::v1::SHARE_APPROVAL_ROLE_SOURCE_LAB);
+        fmgr::v1::RejectShareRequestResponse resp;
+        ASSERT_TRUE(share_stub_->RejectShareRequest(&ctx, req, &resp).ok());
+      }
+
+      const auto contains_id = [&](bool include_decided) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, src);
+        fmgr::v1::ListShareRequestsRequest req;
+        req.set_source_lab_id(kLab1);
+        req.set_include_decided(include_decided);
+        fmgr::v1::ListShareRequestsResponse resp;
+        EXPECT_TRUE(share_stub_->ListShareRequests(&ctx, req, &resp).ok());
+        for (const auto& r : resp.requests()) {
+          if (r.id() == id) {
+            return true;
+          }
+        }
+        return false;
+      };
+
+      EXPECT_FALSE(contains_id(false)); // default: pending only
+      EXPECT_TRUE(contains_id(true));   // include_decided: surfaces the rejected row
+    }
+
+    // F-4: a malformed client page_token is a client error, not INTERNAL.
+    TEST_F(ShareServiceTest, ListRejectsMalformedPageToken) {
+      const auto src = login(kSrcAdminEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, src);
+      fmgr::v1::ListShareRequestsRequest req;
+      req.set_source_lab_id(kLab1);
+      req.mutable_page()->set_page_token("not-a-number");
+      fmgr::v1::ListShareRequestsResponse resp;
+      const auto status = share_stub_->ListShareRequests(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
     }
 
     // =====================================================================

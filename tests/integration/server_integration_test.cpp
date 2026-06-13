@@ -115,7 +115,7 @@ namespace fmgr::test {
       }
 
       const std::string kEmail{"admin@example.com"};
-      const std::string kPassword{"hunter2"};
+      const std::string kPassword{"hunter22"};
 
       std::filesystem::path db_path_;
       std::unique_ptr<storage::SqliteBackend> backend_;

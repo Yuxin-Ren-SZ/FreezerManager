@@ -13,6 +13,11 @@ compile_commands.json
 .conan/
 coverage/
 
+# gcov coverage artifacts
+*.gcno
+*.gcda
+*.gcov
+
 # Agent / tooling artifacts (not project source)
 .agents/
 package-lock.json

@@ -283,5 +283,57 @@ namespace fmgr::core {
       EXPECT_TRUE(errors.empty());
     }
 
+    TEST(CustomFieldValidatorTest, MalformedValidationJsonProducesNoCrash) {
+      // parse_constraints catches the json exception and returns empty object.
+      // Validation proceeds as if there were no constraints — the value itself
+      // must still be type-correct.
+      const auto def =
+          make_def("note", FieldDataType::String, false, "not valid json {{{");
+      const auto fields = nlohmann::json{{"note", "hello"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, StringFieldGivenNonStringProducesError) {
+      const auto def = make_def("name", FieldDataType::String);
+      const auto fields = nlohmann::json{{"name", 42}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "name");
+    }
+
+    TEST(CustomFieldValidatorTest, EnumFieldGivenNonStringProducesError) {
+      const auto def =
+          make_def("status", FieldDataType::Enum, false, R"({"values":["open","closed"]})");
+      const auto fields = nlohmann::json{{"status", 42}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "status");
+    }
+
+    TEST(CustomFieldValidatorTest, EnumFieldWithNoValuesArrayPassesValidation) {
+      // No "values" array in constraints → no enum check to perform.
+      const auto def = make_def("status", FieldDataType::Enum, false, "{}");
+      const auto fields = nlohmann::json{{"status", "anything"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, ReferenceFieldGivenNonStringProducesError) {
+      const auto def = make_def("parent_sample", FieldDataType::Reference);
+      const auto fields = nlohmann::json{{"parent_sample", 42}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "parent_sample");
+    }
+
+    TEST(CustomFieldValidatorTest, IntFieldExceedsMaxProducesError) {
+      const auto def = make_def("age", FieldDataType::Int, false, R"({"max":100})");
+      const auto fields = nlohmann::json{{"age", 150}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "age");
+    }
+
   } // namespace
 } // namespace fmgr::core

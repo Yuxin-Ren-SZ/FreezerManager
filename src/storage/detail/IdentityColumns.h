@@ -80,9 +80,20 @@ namespace fmgr::storage::detail {
     throw ConstraintViolation("unknown lab membership field");
   }
 
+  // Lightweight RFC 5321 subset: exactly one '@' with a non-empty local part and a
+  // dotted, non-empty domain. Rejects "@@", "a@b" (no domain dot), leading/trailing
+  // '@', and multiple '@'. Full validation belongs at the API layer.
   [[nodiscard]] inline bool looks_like_email(std::string_view email) {
-    const auto delimiter = email.find('@');
-    return delimiter != std::string_view::npos && delimiter != 0 && delimiter != email.size() - 1;
+    const auto at = email.find('@');
+    if (at == std::string_view::npos || at == 0 || at == email.size() - 1) {
+      return false;
+    }
+    if (email.find('@', at + 1) != std::string_view::npos) {
+      return false; // more than one '@'
+    }
+    const std::string_view domain = email.substr(at + 1);
+    const auto dot = domain.find('.');
+    return dot != std::string_view::npos && dot != 0 && dot != domain.size() - 1;
   }
 
   inline void validate_lab(const core::Lab& lab) {

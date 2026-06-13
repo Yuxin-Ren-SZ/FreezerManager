@@ -15,8 +15,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <exception>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -54,6 +56,8 @@ namespace fmgr::server {
     // Load every audit row in canonical chain order (at ASC, id ASC), the same
     // ordering the chain hash was computed over. Used by VerifyAuditChain and as
     // the basis for the (small-deployment) export path.
+    // TODO(F-6, doc/CODE_REVIEW_2026-06-12.md): stream/chunk for large audit logs;
+    // the whole table is materialized in memory here.
     [[nodiscard]] std::vector<core::AuditEvent> load_ordered_events(storage::ITransaction& txn) {
       return txn.repo<core::AuditEvent>().query(
           storage::Query<core::AuditEvent>::all()
@@ -62,6 +66,22 @@ namespace fmgr::server {
                   storage::SortDirection::Ascending)
               .order_by(storage::field<core::AuditEvent, std::string>(core::AuditEvent::Field::Id),
                         storage::SortDirection::Ascending));
+    }
+
+    // A page token is an opaque client-supplied integer offset. A malformed token
+    // is a client error, not an INTERNAL fault, so translate parse failures to
+    // ConstraintViolation -> INVALID_ARGUMENT (see doc/CODE_REVIEW_2026-06-12.md F-4).
+    [[nodiscard]] std::size_t parse_page_offset(const std::string& token) {
+      try {
+        std::size_t consumed = 0;
+        const unsigned long long value = std::stoull(token, &consumed);
+        if (consumed != token.size()) {
+          throw std::invalid_argument("trailing characters");
+        }
+        return static_cast<std::size_t>(value);
+      } catch (const std::exception&) {
+        throw storage::ConstraintViolation("invalid page_token");
+      }
     }
 
   } // namespace
@@ -132,7 +152,7 @@ namespace fmgr::server {
       // Page token is a plain integer offset; page size 0 means "no limit".
       std::size_t offset = 0;
       if (!req->page().page_token().empty()) {
-        offset = static_cast<std::size_t>(std::stoull(req->page().page_token()));
+        offset = parse_page_offset(req->page().page_token());
         query = query.offset(offset);
       }
       const auto page_size = req->page().page_size();

@@ -129,5 +129,14 @@ namespace fmgr::auth {
       EXPECT_FALSE(totp_verify(kRfc6238Secret, "1234567", 1234567890LL));
     }
 
+    TEST(TotpTest, CounterBelowZeroSkipInVerifyWindow) {
+      // When now_unix_seconds is small enough that base_counter == 0, negative
+      // deltas produce counter == -1. TOTP verify must skip negative counters
+      // (RFC 6238 §5.2: counter must be ≥ 0) and still accept the current step.
+      constexpr std::int64_t time_in_first_step = 15;
+      const auto code = totp_generate(kRfc6238Secret, time_in_first_step);
+      EXPECT_TRUE(totp_verify(kRfc6238Secret, code, time_in_first_step));
+    }
+
   } // namespace
 } // namespace fmgr::auth

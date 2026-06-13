@@ -126,7 +126,7 @@ namespace fmgr::test {
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kMemberEmail{"member@example.com"};
       const std::string kOutsiderEmail{"outsider@example.com"};
-      const std::string kPassword{"hunter2"};
+      const std::string kPassword{"hunter22"};
       const std::string kLab1{"20000000-0000-0000-0000-000000000001"};
       const std::string kLab2{"20000000-0000-0000-0000-000000000002"};
       // Built-in (global, lab_id NULL) Member role — see core::builtin_role_id.
@@ -610,6 +610,55 @@ namespace fmgr::test {
       const auto status = role_stub_->GrantPermission(&ctx, req, &resp);
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+    }
+
+    // F-1 escalation guard: a lab-owned custom role must never carry a global-only
+    // permission. resolve_permissions promotes such a grant into global_permissions
+    // for any SystemAdmin-kind role, so allowing it would be a path to deployment
+    // SystemAdmin. See doc/CODE_REVIEW_2026-06-12.md.
+    TEST_F(RoleServiceTest, GrantGlobalOnlyPermissionFailsPrecondition) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto role_id = create_role(token, kLab1, "Technician");
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::GrantPermissionRequest req;
+      req.set_role_id(role_id);
+      req.set_permission_key("lab.provision");
+      fmgr::v1::GrantPermissionResponse resp;
+      const auto status = role_stub_->GrantPermission(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+    }
+
+    // F-1 escalation guard: a lab admin may not mint a SystemAdmin-kind custom role.
+    TEST_F(RoleServiceTest, CreateRoleWithSystemAdminKindIsRejected) {
+      const auto token = login(kAdminEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::CreateRoleRequest req;
+      req.set_lab_id(kLab1);
+      req.set_kind(fmgr::v1::ROLE_KIND_SYSTEM_ADMIN);
+      req.set_name("Backdoor");
+      req.set_description("escalation attempt");
+      fmgr::v1::CreateRoleResponse resp;
+      const auto status = role_stub_->CreateRole(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    }
+
+    // #10: an unspecified role kind is rejected rather than silently defaulting.
+    TEST_F(RoleServiceTest, CreateRoleWithUnspecifiedKindIsRejected) {
+      const auto token = login(kAdminEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::CreateRoleRequest req;
+      req.set_lab_id(kLab1);
+      req.set_kind(fmgr::v1::ROLE_KIND_UNSPECIFIED);
+      req.set_name("Ambiguous");
+      fmgr::v1::CreateRoleResponse resp;
+      const auto status = role_stub_->CreateRole(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
     }
 
     TEST_F(RoleServiceTest, RevokePermissionRemovesIt) {

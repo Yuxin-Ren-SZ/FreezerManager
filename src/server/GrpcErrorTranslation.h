@@ -8,6 +8,7 @@
 #include <grpcpp/grpcpp.h>
 
 #include <exception>
+#include <iostream>
 #include <string>
 
 namespace fmgr::server {
@@ -48,6 +49,20 @@ namespace fmgr::server {
     return {grpc::StatusCode::INVALID_ARGUMENT, error.what()};
   }
 
+  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::ForeignKeyViolation& error) {
+    return {grpc::StatusCode::FAILED_PRECONDITION, error.what()};
+  }
+
+  // A serialization conflict (Postgres 40001) is transient — the client may retry
+  // the whole RPC. ABORTED is the gRPC-canonical signal for that.
+  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::SerializationFailure& /*error*/) {
+    return {grpc::StatusCode::ABORTED, "transaction conflict; retry the request"};
+  }
+
+  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::Unavailable& /*error*/) {
+    return {grpc::StatusCode::UNAVAILABLE, "storage backend unavailable"};
+  }
+
   // Translate any exception to a gRPC status. Must be called inside a catch block.
   [[nodiscard]] inline grpc::Status current_exception_to_grpc_status() {
     try {
@@ -70,10 +85,20 @@ namespace fmgr::server {
       return to_grpc_status(e);
     } catch (const storage::ConstraintViolation& e) {
       return to_grpc_status(e);
+    } catch (const storage::ForeignKeyViolation& e) {
+      return to_grpc_status(e);
+    } catch (const storage::SerializationFailure& e) {
+      return to_grpc_status(e);
+    } catch (const storage::Unavailable& e) {
+      return to_grpc_status(e);
     } catch (const std::exception& e) {
-      return {grpc::StatusCode::INTERNAL, e.what()};
+      // Do not leak internal detail (DB messages carry table/column names) to the
+      // client. Log the real error server-side; return a generic status.
+      std::cerr << "grpc: unhandled internal error: " << e.what() << '\n';
+      return {grpc::StatusCode::INTERNAL, "internal server error"};
     } catch (...) {
-      return {grpc::StatusCode::INTERNAL, "unknown internal error"};
+      std::cerr << "grpc: unhandled non-std exception\n";
+      return {grpc::StatusCode::INTERNAL, "internal server error"};
     }
   }
 

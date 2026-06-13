@@ -5,23 +5,25 @@
 #include "core/enums.h"
 #include "core/permissions.h"
 #include "core/share_request.h"
+#include "core/uuid.h"
 #include "server/GrpcErrorTranslation.h"
 #include "storage/IStorageBackend.h"
 #include "storage/ShareRequestTraits.h"
 
 #include <fmgr/v1/share.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
+#include <nlohmann/json.hpp>
 
-#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
+#include <exception>
 #include <optional>
-#include <random>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fmgr::server {
   namespace {
@@ -43,32 +45,23 @@ namespace fmgr::server {
       return core::Timestamp::from_unix_micros(static_cast<std::int64_t>(micros));
     }
 
-    // RFC 4122 version-4 UUID from a non-deterministic entropy source. IDs must be
-    // unguessable but need not be cryptographically secret (see RoleServiceImpl).
-    [[nodiscard]] std::string generate_uuid_v4() {
-      std::random_device rng;
-      std::array<std::uint8_t, 16> bytes{};
-      for (std::size_t i = 0; i < bytes.size(); i += 4) {
-        const std::uint32_t word = rng();
-        bytes[i] = static_cast<std::uint8_t>(word & 0xFFU);
-        bytes[i + 1] = static_cast<std::uint8_t>((word >> 8U) & 0xFFU);
-        bytes[i + 2] = static_cast<std::uint8_t>((word >> 16U) & 0xFFU);
-        bytes[i + 3] = static_cast<std::uint8_t>((word >> 24U) & 0xFFU);
-      }
-      bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U); // version 4
-      bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U); // variant
-      std::array<char, 37> buf{};
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
-      std::snprintf(buf.data(), buf.size(),
-                    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                    bytes[15]);
-      return {buf.data()};
-    }
-
     [[nodiscard]] bool is_system_admin(const auth::SessionContext& sctx) {
       return sctx.has_global(core::Permission::LabProvision);
+    }
+
+    // A page token is an opaque client-supplied integer offset; a malformed token
+    // is a client error -> INVALID_ARGUMENT (see doc/CODE_REVIEW_2026-06-12.md F-4).
+    [[nodiscard]] std::size_t parse_page_offset(const std::string& token) {
+      try {
+        std::size_t consumed = 0;
+        const unsigned long long value = std::stoull(token, &consumed);
+        if (consumed != token.size()) {
+          throw std::invalid_argument("trailing characters");
+        }
+        return static_cast<std::size_t>(value);
+      } catch (const std::exception&) {
+        throw storage::ConstraintViolation("invalid page_token");
+      }
     }
 
     [[nodiscard]] fmgr::v1::ShareRequestStatus to_proto_status(core::ShareRequestStatus status) {
@@ -161,19 +154,38 @@ namespace fmgr::server {
       txn.repo<core::ShareRequestApproval>().insert(approval, make_ctx(sctx, reason));
     }
 
+    [[nodiscard]] std::vector<core::ShareRequestApproval>
+    load_approvals(storage::ITransaction& txn, const core::ShareRequestId& request_id) {
+      return txn.repo<core::ShareRequestApproval>().query(
+          storage::Query<core::ShareRequestApproval>::where(
+              storage::field<core::ShareRequestApproval, std::string>(
+                  core::ShareRequestApproval::Field::ShareRequestId) == request_id.to_string()));
+    }
+
     // True once all three approver roles have signed (used to flip pending ->
     // approved). Counts committed rows plus any staged in this transaction.
     [[nodiscard]] bool all_roles_signed(storage::ITransaction& txn,
                                         const core::ShareRequestId& request_id) {
-      const auto approvals = txn.repo<core::ShareRequestApproval>().query(
-          storage::Query<core::ShareRequestApproval>::where(
-              storage::field<core::ShareRequestApproval, std::string>(
-                  core::ShareRequestApproval::Field::ShareRequestId) == request_id.to_string()));
       std::set<core::ShareApprovalRole> roles;
-      for (const auto& approval : approvals) {
+      for (const auto& approval : load_approvals(txn, request_id)) {
         roles.insert(approval.approver_role);
       }
       return roles.size() == 3;
+    }
+
+    // Separation of duties: each of the three approver roles must be signed by a
+    // distinct human. Without this, one principal holding ShareApprove on both
+    // labs (and system-admin) could sign all three roles and self-approve a
+    // cross-lab transfer (see doc/CODE_REVIEW_2026-06-12.md F-2).
+    [[nodiscard]] bool user_already_signed(storage::ITransaction& txn,
+                                           const core::ShareRequestId& request_id,
+                                           const core::UserId& user_id) {
+      for (const auto& approval : load_approvals(txn, request_id)) {
+        if (approval.approver_user_id == user_id) {
+          return true;
+        }
+      }
+      return false;
     }
 
   } // namespace
@@ -195,15 +207,28 @@ namespace fmgr::server {
     try {
       const auto source_lab = core::LabId::parse(req->source_lab_id());
       const auto target_lab = core::LabId::parse(req->target_lab_id());
+      if (source_lab == target_lab) {
+        return {grpc::StatusCode::INVALID_ARGUMENT,
+                "source_lab_id and target_lab_id must differ"};
+      }
       const auto sctx =
           middleware_.authorize(extract_bearer(*ctx), core::Permission::ShareRequest, source_lab);
 
+      // scope_json must be a JSON object describing what is shared. Reject malformed
+      // or non-object payloads up front (see security-audit-2026-06-12 #6).
+      const std::string scope_json =
+          req->scope_json().empty() ? std::string("{}") : req->scope_json();
+      if (const auto parsed = nlohmann::json::parse(scope_json, nullptr, false);
+          parsed.is_discarded() || !parsed.is_object()) {
+        return {grpc::StatusCode::INVALID_ARGUMENT, "scope_json must be a JSON object"};
+      }
+
       const core::ShareRequest request{
-          .id = core::ShareRequestId::parse(generate_uuid_v4()),
+          .id = core::ShareRequestId::parse(core::generate_uuid_v4()),
           .source_lab_id = source_lab,
           .target_lab_id = target_lab,
           .requested_by = sctx.user_id,
-          .scope_json = req->scope_json().empty() ? std::string("{}") : req->scope_json(),
+          .scope_json = scope_json,
           .status = core::ShareRequestStatus::Pending,
           .created_at = now_timestamp(),
       };
@@ -280,9 +305,18 @@ namespace fmgr::server {
         }
       }
 
+      // soft_delete() encodes "revoked" as the tombstone status, so the default
+      // query already hides revoked rows. Approved/Rejected are *not* tombstoned,
+      // so without an explicit status filter they would always be listed. Default
+      // to pending-only; include_decided surfaces every terminal status (approved,
+      // rejected, revoked). See doc/CODE_REVIEW_2026-06-12.md F-3.
       auto query = storage::Query<core::ShareRequest>::all();
       if (req->include_decided()) {
         query = query.include_tombstoned();
+      } else {
+        query = query.and_where(
+            storage::field<core::ShareRequest, std::string>(core::ShareRequest::Field::Status) ==
+            std::string(core::to_string(core::ShareRequestStatus::Pending)));
       }
       if (source_filter.has_value()) {
         query = query.and_where(storage::field<core::ShareRequest, std::string>(
@@ -300,7 +334,7 @@ namespace fmgr::server {
 
       std::size_t offset = 0;
       if (!req->page().page_token().empty()) {
-        offset = static_cast<std::size_t>(std::stoull(req->page().page_token()));
+        offset = parse_page_offset(req->page().page_token());
         query = query.offset(offset);
       }
       const auto page_size = req->page().page_size();
@@ -345,6 +379,14 @@ namespace fmgr::server {
       }
       if (request->status != core::ShareRequestStatus::Pending) {
         return {grpc::StatusCode::FAILED_PRECONDITION, "share request is no longer pending"};
+      }
+      // Separation of duties: one human may sign at most one approver role. Checked
+      // before the role gate so an already-signed principal is rejected even where
+      // they would otherwise be entitled to a second role. Also subsumes a same-role
+      // duplicate by the same signer (see doc/CODE_REVIEW_2026-06-12.md F-2).
+      if (user_already_signed(*txn, request_id, sctx.user_id)) {
+        return {grpc::StatusCode::FAILED_PRECONDITION,
+                "you have already signed this share request"};
       }
       gate_approver_role(sctx, *request, role);
 

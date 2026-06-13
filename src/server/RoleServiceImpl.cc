@@ -5,6 +5,7 @@
 #include "core/enums.h"
 #include "core/permissions.h"
 #include "core/role.h"
+#include "core/uuid.h"
 #include "server/GrpcErrorTranslation.h"
 #include "storage/IStorageBackend.h"
 #include "storage/RoleTraits.h"
@@ -12,13 +13,10 @@
 #include <fmgr/v1/role.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 
-#include <array>
 #include <chrono>
 #include <cstdint>
-#include <cstdio>
 #include <exception>
 #include <optional>
-#include <random>
 #include <string>
 #include <string_view>
 
@@ -42,36 +40,12 @@ namespace fmgr::server {
       return core::Timestamp::from_unix_micros(static_cast<std::int64_t>(micros));
     }
 
-    // RFC 4122 version-4 UUID from a non-deterministic entropy source. IDs must be
-    // unguessable but need not be cryptographically secret (see BoxServiceImpl).
-    [[nodiscard]] std::string generate_uuid_v4() {
-      std::random_device rng;
-      std::array<std::uint8_t, 16> bytes{};
-      for (std::size_t i = 0; i < bytes.size(); i += 4) {
-        const std::uint32_t word = rng();
-        bytes[i] = static_cast<std::uint8_t>(word & 0xFFU);
-        bytes[i + 1] = static_cast<std::uint8_t>((word >> 8U) & 0xFFU);
-        bytes[i + 2] = static_cast<std::uint8_t>((word >> 16U) & 0xFFU);
-        bytes[i + 3] = static_cast<std::uint8_t>((word >> 24U) & 0xFFU);
-      }
-      bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U); // version 4
-      bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U); // variant
-      std::array<char, 37> buf{};
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
-      std::snprintf(buf.data(), buf.size(),
-                    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                    bytes[15]);
-      return {buf.data()};
-    }
-
     // ---- RoleKind mapping ----
     //
     // The core enum (SystemAdmin/LabAdmin/Member/ReadOnly/ApiClient) and the wire
     // enum (UNSPECIFIED + the same five) share the five named members; UNSPECIFIED
-    // has no core counterpart and maps to Member, the least-privileged default
-    // appropriate for a newly created custom role.
+    // has no core counterpart and is rejected (the caller must name a concrete kind)
+    // rather than silently defaulting (see security-audit-2026-06-12 #10).
 
     [[nodiscard]] fmgr::v1::RoleKind to_proto_role_kind(core::RoleKind kind) {
       switch (kind) {
@@ -103,8 +77,21 @@ namespace fmgr::server {
         return core::RoleKind::ApiClient;
       case fmgr::v1::ROLE_KIND_UNSPECIFIED:
       default:
-        return core::RoleKind::Member;
+        throw storage::ConstraintViolation("role kind must be specified");
       }
+    }
+
+    // A custom (lab-owned) role must never carry SystemAdmin kind. resolve_permissions
+    // promotes global-only permissions (e.g. LabProvision) into a session's
+    // global_permissions whenever the owning role's kind is SystemAdmin — regardless
+    // of is_builtin. Allowing a lab admin to mint a SystemAdmin-kind custom role and
+    // grant it a global-only permission is a deployment-wide escalation path, so the
+    // kind is rejected at the door. (See doc/CODE_REVIEW_2026-06-12.md F-1.)
+    [[nodiscard]] core::RoleKind from_proto_custom_role_kind(fmgr::v1::RoleKind kind) {
+      if (kind == fmgr::v1::ROLE_KIND_SYSTEM_ADMIN) {
+        throw storage::ConstraintViolation("custom roles cannot be of kind system_admin");
+      }
+      return from_proto_role_kind(kind);
     }
 
     // parse_permission throws std::invalid_argument on an unknown key, which would
@@ -233,9 +220,9 @@ namespace fmgr::server {
           middleware_.authorize(extract_bearer(*ctx), core::Permission::UserManageRoles, lab_id);
 
       const core::Role role{
-          .id = core::RoleId::parse(generate_uuid_v4()),
+          .id = core::RoleId::parse(core::generate_uuid_v4()),
           .lab_id = lab_id,
-          .kind = from_proto_role_kind(req->kind()),
+          .kind = from_proto_custom_role_kind(req->kind()),
           .name = req->name(),
           .description = req->description(),
           .is_builtin = false,
@@ -279,8 +266,8 @@ namespace fmgr::server {
         return {grpc::StatusCode::FAILED_PRECONDITION, "built-in roles cannot be modified"};
       }
       // Mutable descriptive fields only; lab_id, is_builtin and timestamps are not
-      // caller-editable.
-      existing->kind = from_proto_role_kind(req->role().kind());
+      // caller-editable. SystemAdmin kind is rejected for custom roles (see F-1).
+      existing->kind = from_proto_custom_role_kind(req->role().kind());
       existing->name = req->role().name();
       existing->description = req->role().description();
       txn->repo<core::Role>().update(*existing, make_ctx(sctx, "update_role"));
@@ -384,8 +371,15 @@ namespace fmgr::server {
         throw auth::PermissionDenied("user.manage_roles required for this lab");
       }
 
-      const core::RolePermission grant{.role_id = role_id,
-                                       .permission = parse_permission_key(req->permission_key())};
+      const core::Permission permission = parse_permission_key(req->permission_key());
+      // A lab-owned custom role must never carry a deployment-global permission;
+      // such a grant is meaningless at lab scope and, paired with a SystemAdmin-kind
+      // role, an escalation path (see doc/CODE_REVIEW_2026-06-12.md F-1).
+      if (core::is_global_only_permission(permission)) {
+        return {grpc::StatusCode::FAILED_PRECONDITION,
+                "global-only permissions cannot be granted to a lab role"};
+      }
+      const core::RolePermission grant{.role_id = role_id, .permission = permission};
       // Idempotent: granting an already-held permission is a no-op success.
       if (!txn->repo<core::RolePermission>().find_by_id(grant.id()).has_value()) {
         txn->repo<core::RolePermission>().insert(grant, make_ctx(sctx, "grant_permission"));
