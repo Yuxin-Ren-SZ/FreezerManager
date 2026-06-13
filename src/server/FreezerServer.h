@@ -3,6 +3,7 @@
 #define FMGR_SERVER_FREEZERSERVER_H
 
 #include "auth/IAuthProvider.h"
+#include "server/AuditServiceImpl.h"
 #include "server/AuthServiceImpl.h"
 #include "server/BoxServiceImpl.h"
 #include "server/ItemTypeServiceImpl.h"
@@ -10,6 +11,7 @@
 #include "server/RoleServiceImpl.h"
 #include "server/SampleServiceImpl.h"
 #include "server/SessionServiceImpl.h"
+#include "server/ShareServiceImpl.h"
 #include "storage/IStorageBackend.h"
 
 #include <grpcpp/grpcpp.h>
@@ -64,6 +66,8 @@ namespace fmgr::server {
     ItemTypeServiceImpl item_type_svc_;
     SampleServiceImpl sample_svc_;
     RoleServiceImpl role_svc_;
+    AuditServiceImpl audit_svc_;
+    ShareServiceImpl share_svc_;
     std::unique_ptr<grpc::Server> grpc_server_;
     int bound_port_{0};
   };
