@@ -1,6 +1,9 @@
 # Freezer Manager — Product Requirements & Design Document
 
-**Status:** v0.1 draft (interactive design session, 2026-05-06)
+**Status:** Pre-alpha — active implementation (design baseline 2026-05-06; last synced 2026-06-12).
+Core domain, both reference backends (SQLite + PostgreSQL), auth foundation, audit
+chain, and the full gRPC service layer are implemented; security-remediation pass done.
+See the [README Roadmap](../README.md#roadmap) for live, milestone-by-milestone status.
 **Owner:** Yuxin Ren (yxren_CN@outlook.com)
 **Implementation language:** C++ (C++20)
 **Target OS:** Linux (Ubuntu LTS primary)
@@ -67,7 +70,7 @@ sensitive (potentially PHI) biospecimen data.
 | Backup/DR | Built-in encrypted scheduled backups + Postgres WAL/PITR; admin hooks |
 | License | **Dual: AGPLv3 + commercial**; CLA required from contributors |
 | i18n | UTF-8 everywhere; tr()/i18n() wrapped strings; English-only at v1 |
-| Build/dist | CMake + Conan/vcpkg; Debian/RPM packages + Docker image |
+| Build/dist | CMake ≥3.25 + Conan 2 (lockfile); Debian/RPM packages + Docker image |
 
 ---
 
@@ -192,6 +195,16 @@ AuditEvent
   id, at, actor_user_id, actor_session_id, lab_id (nullable),
   action, entity_kind, entity_id,
   before_json, after_json, request_id, prev_hash, this_hash
+
+Session
+  id, user_id, created_at, last_seen_at, expires_at, revoked_at (nullable)
+  mfa_complete (bool)          -- false until verify_totp() succeeds
+  token_hash                   -- BLAKE2b-256 of the opaque server-side token
+
+ApiToken
+  id, user_id, lab_id, scope_json, created_at, expires_at, revoked_at (nullable)
+  token_hash                   -- Argon2id hash; prefix stored plaintext for lookup
+  -- partial unique index prevents prefix collisions among active tokens
 ```
 
 ### 4.2 Box geometry & size compatibility
@@ -470,7 +483,8 @@ CI gates: all of the above + clang-tidy + ASan + UBSan + TSan builds.
 
 ## 16. Build, Packaging, Deployment
 
-- **Build:** CMake + Conan (or vcpkg) for dependency management.
+- **Build:** CMake ≥3.25 + Conan 2 with a committed lockfile for reproducible
+  dependency resolution.
 - **Compiler:** GCC 13+ / Clang 17+; C++20.
 - **Distribution:**
   - Debian/Ubuntu `.deb` and Fedora/RHEL `.rpm` packages with a
@@ -514,28 +528,37 @@ CI gates: all of the above + clang-tidy + ASan + UBSan + TSan builds.
 
 ## 19. Roadmap (rough)
 
-**M0 — Skeleton (weeks 1–2).** Repo, CI, CMake, license headers, CLA bot,
+> **Live status lives in the [README Roadmap](../README.md#roadmap)** — that table
+> is the single source of truth and is updated per merged PR. The week estimates
+> below are the original plan; status tags here are a coarse snapshot only.
+
+**M0 — Skeleton (weeks 1–2). ✅ Complete.** Repo, CI, CMake, license headers, CLA bot,
 abstract `IStorageBackend` + SQLite stub passing minimal conformance tests.
 
-**M1 — Core domain (weeks 3–6).** Lab/User/Membership/Role; Freezer/
+**M1 — Core domain (weeks 3–6). ⚙️ In progress.** Lab/User/Membership/Role; Freezer/
 StorageContainer/BoxType/Box/ContainerType/Position; Sample with placement
 rules. TDD throughout. CSV export of samples. Local CLI `freezerctl`.
+(Domain + sample CSV export + `freezerctl audit verify` done; CSV import +
+remaining CLI nouns outstanding.)
 
-**M2 — AuthN/Z & audit (weeks 7–9).** Local auth + TOTP; RBAC; audit chain;
-RLS in Postgres impl.
+**M2 — AuthN/Z & audit (weeks 7–9). ✅ Local auth + RBAC + audit chain complete.**
+Local auth + TOTP; RBAC; audit chain; RLS in Postgres impl. (OIDC/LDAP, audit
+export, PHI-read kind, signed checkpoints deferred to later milestones.)
 
-**M3 — gRPC server + Qt client (weeks 10–14).** First end-to-end usable
-product. Online-only desktop client.
+**M3 — gRPC server + Qt client (weeks 10–14). ⚙️ gRPC server complete; Qt client planned.**
+First end-to-end usable product. All 10 gRPC services (Auth, Session, Lab, Box,
+ItemType, Sample, Role, Audit, Share) implemented; REST gateway + online-only
+desktop client still to come.
 
-**M4 — Web UI (weeks 15–18).** REST gateway, React SPA covering core flows.
+**M4 — Web UI (weeks 15–18). 🔲 Planned.** REST gateway, React SPA covering core flows.
 
-**M5 — PHI mode + KMS + backups (weeks 19–22).** Field-level encryption,
+**M5 — PHI mode + KMS + backups (weeks 19–22). 🔲 Planned.** Field-level encryption,
 KMS adapters, backup/restore, restore drills.
 
-**M6 — Public Python API & sharing (weeks 23–26).** External API tokens,
+**M6 — Public Python API & sharing (weeks 23–26). 🔲 Planned.** External API tokens,
 `freezerctl-py`, cross-lab share-request workflow.
 
-**M7 — Polish & 1.0 (weeks 27–30).** OIDC + LDAP auth, packaging, docs,
+**M7 — Polish & 1.0 (weeks 27–30). 🔲 Planned.** OIDC + LDAP auth, packaging, docs,
 security review.
 
 ---
