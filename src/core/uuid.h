@@ -2,21 +2,21 @@
 
 // RFC 4122 UUID value type — parse and format. The `Uuid` class itself does no
 // generation; `generate_uuid_v4()` below mints a random v4 string for service-layer
-// entity IDs (unguessable but not required to be cryptographically secret; the
-// storage layer uses a libsodium-backed generator for tokens/session IDs).
+// entity IDs, drawing from the libsodium CSPRNG so IDs are unguessable on every
+// platform (no weak-PRNG fallback).
 // `to_string()` always emits lowercase hex; `parse()` accepts both cases.
 // Stored internally as 16 raw bytes to avoid repeated string allocation at rest.
 #ifndef FMGR_CORE_UUID_H
 #define FMGR_CORE_UUID_H
 
 #include <nlohmann/json.hpp>
+#include <sodium.h>
 
 #include <array>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
-#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -114,17 +114,14 @@ namespace fmgr::core {
     uuid = Uuid::parse(json.get<std::string>());
   }
 
-  // Mint a fresh RFC 4122 version-4 UUID string from a non-deterministic source.
+  // Mint a fresh RFC 4122 version-4 UUID string from a cryptographically secure
+  // source. libsodium's randombytes_buf() draws from the OS CSPRNG
+  // (getrandom/getentropy on Linux, RtlGenRandom on Windows) with no
+  // fallback-to-weak-PRNG path, unlike std::random_device which is permitted to
+  // degrade to a deterministic engine on some platforms (security audit C-1).
   [[nodiscard]] inline std::string generate_uuid_v4() {
-    std::random_device rng;
     std::array<std::uint8_t, 16> bytes{};
-    for (std::size_t i = 0; i < bytes.size(); i += 4) {
-      const std::uint32_t word = rng();
-      bytes[i] = static_cast<std::uint8_t>(word & 0xFFU);
-      bytes[i + 1] = static_cast<std::uint8_t>((word >> 8U) & 0xFFU);
-      bytes[i + 2] = static_cast<std::uint8_t>((word >> 16U) & 0xFFU);
-      bytes[i + 3] = static_cast<std::uint8_t>((word >> 24U) & 0xFFU);
-    }
+    randombytes_buf(bytes.data(), bytes.size());
     bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U); // version 4
     bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U); // variant
     std::array<char, 37> buf{};
