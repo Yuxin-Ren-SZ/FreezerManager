@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <exception>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <string>
 
@@ -81,6 +82,24 @@ namespace fmgr::cli {
     add_common_args(exporter, export_args);
     exporter->add_option("--out", export_out, "Write CSV to this file instead of stdout");
 
+    // import: transactional CSV import with a dry-run validation mode. Does not
+    // reuse add_common_args (the --limit / --include-tombstoned flags are
+    // meaningless for a write path); it takes its own --lab, --actor, and file.
+    std::string import_sqlite;
+    std::string import_postgres;
+    std::string import_lab;
+    std::string import_actor;
+    std::string import_file;
+    bool import_dry_run = false;
+    CLI::App* importer = sample->add_subcommand("import", "Import samples from a CSV file");
+    importer->add_option("--sqlite", import_sqlite, "Path to a SQLite database file");
+    importer->add_option("--postgres", import_postgres, "PostgreSQL connection URL");
+    importer->add_option("--lab", import_lab, "Lab UUID to import the samples into")->required();
+    importer->add_option("--actor", import_actor, "User UUID recorded as the importer")->required();
+    importer->add_flag("--dry-run", import_dry_run,
+                       "Validate every row and report, but do not write anything");
+    importer->add_option("file", import_file, "CSV file to import ('-' for stdin)")->required();
+
     CLI::App* audit = app.add_subcommand("audit", "Audit log commands");
     audit->require_subcommand(1);
     std::string audit_sqlite;
@@ -115,6 +134,28 @@ namespace fmgr::cli {
           run_sample_export(*backend, query_options, file);
         }
         return 0;
+      }
+      if (importer->parsed()) {
+        BackendOptions backend_opts;
+        if (!import_sqlite.empty()) {
+          backend_opts.sqlite_path = import_sqlite;
+        }
+        if (!import_postgres.empty()) {
+          backend_opts.postgres_url = import_postgres;
+        }
+        auto backend = open_backend(backend_opts);
+        const SampleImportOptions import_opts{.lab_id = core::LabId::parse(import_lab),
+                                              .actor = core::UserId::parse(import_actor),
+                                              .dry_run = import_dry_run};
+        if (import_file == "-") {
+          return run_sample_import(*backend, import_opts, std::cin, out);
+        }
+        std::ifstream file(import_file, std::ios::binary);
+        if (!file) {
+          err << "error: cannot open input file: " << import_file << '\n';
+          return 1;
+        }
+        return run_sample_import(*backend, import_opts, file, out);
       }
       if (verify->parsed()) {
         BackendOptions options;

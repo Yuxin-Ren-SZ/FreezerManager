@@ -3,9 +3,11 @@
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
 #include "cli/CliApp.h"
+#include "cli/CsvReader.h"
 #include "cli/CsvWriter.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleCsv.h"
+#include "cli/SampleImport.h"
 #include "cli/SampleQuery.h"
 
 #include "core/identity.h"
@@ -23,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -245,6 +248,150 @@ namespace fmgr::cli {
       EXPECT_NE(text.find("signature=UNSIGNED"), std::string::npos);
     }
 
+    // ---- CsvReader ----
+
+    std::vector<std::vector<std::string>> parse(const std::string& text) {
+      std::istringstream in(text);
+      return parse_csv(in);
+    }
+
+    TEST(CsvReaderTest, ParsesSimpleRows) {
+      const auto rows = parse("a,b,c\r\n1,2,3\r\n");
+      ASSERT_EQ(rows.size(), 2U);
+      EXPECT_EQ(rows.at(0), (std::vector<std::string>{"a", "b", "c"}));
+      EXPECT_EQ(rows.at(1), (std::vector<std::string>{"1", "2", "3"}));
+    }
+
+    TEST(CsvReaderTest, AcceptsBareLfAndNoTrailingNewline) {
+      const auto rows = parse("a,b\n1,2");
+      ASSERT_EQ(rows.size(), 2U);
+      EXPECT_EQ(rows.at(1), (std::vector<std::string>{"1", "2"}));
+    }
+
+    TEST(CsvReaderTest, SkipsCommentLines) {
+      // Mirrors the export header block that `sample export` prepends.
+      const auto rows = parse("# freezermanager-export schema_version=13\r\n"
+                              "# lab_id=abc\r\n"
+                              "name,item_type_id\r\n"
+                              "S1,uuid\r\n");
+      ASSERT_EQ(rows.size(), 2U);
+      EXPECT_EQ(rows.at(0), (std::vector<std::string>{"name", "item_type_id"}));
+    }
+
+    TEST(CsvReaderTest, HandlesQuotedFieldsWithCommaNewlineAndQuotes) {
+      const auto rows = parse("\"a,b\",\"line\r\nbreak\",\"say \"\"hi\"\"\"\r\n");
+      ASSERT_EQ(rows.size(), 1U);
+      EXPECT_EQ(rows.at(0), (std::vector<std::string>{"a,b", "line\r\nbreak", "say \"hi\""}));
+    }
+
+    TEST(CsvReaderTest, NoTrailingEmptyRecord) {
+      EXPECT_EQ(parse("a\r\n").size(), 1U);
+      EXPECT_EQ(parse("a\n").size(), 1U);
+    }
+
+    TEST(CsvReaderTest, ThrowsOnUnterminatedQuote) {
+      EXPECT_THROW(parse("\"unterminated"), CsvParseError);
+    }
+
+    // ---- SampleImport (pure mapping/validation) ----
+
+    ImportContext import_ctx() {
+      return ImportContext{.lab_id = id_from_low<core::LabId>(1),
+                           .actor = id_from_low<core::UserId>(10),
+                           .now = ts(900)};
+    }
+
+    std::string item_type_uuid() {
+      return id_from_low<core::ItemTypeId>(20).to_string();
+    }
+
+    TEST(SampleImportTest, BuildsValidRowWithServerControlledFields) {
+      const std::vector<std::vector<std::string>> records = {
+          {"name", "item_type_id"},
+          {"Imported S1", item_type_uuid()},
+      };
+      const auto report = build_import(records, import_ctx());
+      ASSERT_FALSE(report.has_errors()) << report.rows.at(0).error;
+      ASSERT_EQ(report.rows.size(), 1U);
+      const auto& sample = report.rows.at(0).sample.value();
+      EXPECT_EQ(sample.name, "Imported S1");
+      EXPECT_EQ(sample.lab_id, id_from_low<core::LabId>(1)); // from context, not file
+      EXPECT_EQ(sample.created_by, id_from_low<core::UserId>(10));
+      EXPECT_EQ(sample.status, core::SampleStatus::Active);
+      EXPECT_EQ(sample.created_at, ts(900));
+    }
+
+    TEST(SampleImportTest, IgnoresServerManagedColumns) {
+      // id/lab_id/status from the file must not override server-controlled values.
+      const std::vector<std::vector<std::string>> records = {
+          {"id", "lab_id", "status", "name", "item_type_id"},
+          {id_from_low<core::SampleId>(7).to_string(), id_from_low<core::LabId>(999).to_string(),
+           "tombstoned", "S1", item_type_uuid()},
+      };
+      const auto report = build_import(records, import_ctx());
+      ASSERT_FALSE(report.has_errors());
+      const auto& sample = report.rows.at(0).sample.value();
+      EXPECT_EQ(sample.lab_id, id_from_low<core::LabId>(1));
+      EXPECT_NE(sample.id, id_from_low<core::SampleId>(7)); // freshly minted
+      EXPECT_EQ(sample.status, core::SampleStatus::Active);
+    }
+
+    TEST(SampleImportTest, MissingNameIsRowError) {
+      const std::vector<std::vector<std::string>> records = {{"name", "item_type_id"},
+                                                             {"", item_type_uuid()}};
+      const auto report = build_import(records, import_ctx());
+      EXPECT_TRUE(report.has_errors());
+      EXPECT_FALSE(report.rows.at(0).ok);
+      EXPECT_NE(report.rows.at(0).error.find("name"), std::string::npos);
+    }
+
+    TEST(SampleImportTest, BadItemTypeUuidIsRowError) {
+      const std::vector<std::vector<std::string>> records = {{"name", "item_type_id"},
+                                                             {"S1", "not-a-uuid"}};
+      const auto report = build_import(records, import_ctx());
+      EXPECT_TRUE(report.rows.at(0).error.find("item_type_id") != std::string::npos);
+    }
+
+    TEST(SampleImportTest, BoxWithoutPositionIsRowError) {
+      const std::vector<std::vector<std::string>> records = {
+          {"name", "item_type_id", "box_id", "position_label"},
+          {"S1", item_type_uuid(), id_from_low<core::BoxId>(5).to_string(), ""}};
+      const auto report = build_import(records, import_ctx());
+      EXPECT_FALSE(report.rows.at(0).ok);
+      EXPECT_NE(report.rows.at(0).error.find("position_label"), std::string::npos);
+    }
+
+    TEST(SampleImportTest, IntraFileDuplicatePositionIsRowError) {
+      const std::string box = id_from_low<core::BoxId>(5).to_string();
+      const std::vector<std::vector<std::string>> records = {
+          {"name", "item_type_id", "box_id", "position_label"},
+          {"S1", item_type_uuid(), box, "A1"},
+          {"S2", item_type_uuid(), box, "A1"}};
+      const auto report = build_import(records, import_ctx());
+      EXPECT_TRUE(report.rows.at(0).ok);
+      EXPECT_FALSE(report.rows.at(1).ok);
+      EXPECT_NE(report.rows.at(1).error.find("duplicate position"), std::string::npos);
+    }
+
+    TEST(SampleImportTest, BadCustomFieldsJsonIsRowError) {
+      const std::vector<std::vector<std::string>> records = {
+          {"name", "item_type_id", "custom_fields_json"}, {"S1", item_type_uuid(), "not json"}};
+      const auto report = build_import(records, import_ctx());
+      EXPECT_NE(report.rows.at(0).error.find("custom_fields_json"), std::string::npos);
+    }
+
+    TEST(SampleImportTest, MissingRequiredHeaderColumnIsHeaderError) {
+      const std::vector<std::vector<std::string>> records = {{"name", "barcode"}, {"S1", "BC1"}};
+      const auto report = build_import(records, import_ctx());
+      EXPECT_FALSE(report.header_error.empty());
+      EXPECT_TRUE(report.rows.empty());
+    }
+
+    TEST(SampleImportTest, EmptyDocumentIsHeaderError) {
+      const auto report = build_import({}, import_ctx());
+      EXPECT_FALSE(report.header_error.empty());
+    }
+
     // ---- BackendFactory ----
 
     TEST(BackendFactoryTest, RejectsNeitherTarget) {
@@ -318,6 +465,59 @@ namespace fmgr::cli {
       EXPECT_NE(out.str().find("OK:"), std::string::npos);
     }
 
+    // The fixture seeds lab A with item-type id_from_low(20) and user
+    // id_from_low(10); imports reference those so repository validation passes.
+    SampleImportOptions import_options(core::LabId lab) {
+      return SampleImportOptions{.lab_id = lab, .actor = id_from_low<core::UserId>(10)};
+    }
+
+    std::string two_row_csv(core::ItemTypeId item_type) {
+      return "name,item_type_id\r\n"
+             "Imported A," +
+             item_type.to_string() + "\r\nImported B," + item_type.to_string() + "\r\n";
+    }
+
+    TEST_P(CliBackendTest, ImportPersistsRowsTransactionally) {
+      const auto lab = fixture_->lab_a();
+      const auto before = query_samples(fixture_->backend(), SampleQueryOptions{.lab_id = lab});
+      std::istringstream in(two_row_csv(id_from_low<core::ItemTypeId>(20)));
+      std::ostringstream out;
+      const int code = run_sample_import(fixture_->backend(), import_options(lab), in, out);
+      EXPECT_EQ(code, 0) << out.str();
+      EXPECT_NE(out.str().find("imported 2 sample(s)"), std::string::npos);
+      const auto after = query_samples(fixture_->backend(), SampleQueryOptions{.lab_id = lab});
+      EXPECT_EQ(after.size(), before.size() + 2U);
+    }
+
+    TEST_P(CliBackendTest, ImportDryRunWritesNothing) {
+      const auto lab = fixture_->lab_a();
+      const auto before = query_samples(fixture_->backend(), SampleQueryOptions{.lab_id = lab});
+      std::istringstream in(two_row_csv(id_from_low<core::ItemTypeId>(20)));
+      std::ostringstream out;
+      auto opts = import_options(lab);
+      opts.dry_run = true;
+      const int code = run_sample_import(fixture_->backend(), opts, in, out);
+      EXPECT_EQ(code, 0) << out.str();
+      EXPECT_NE(out.str().find("dry-run OK"), std::string::npos);
+      const auto after = query_samples(fixture_->backend(), SampleQueryOptions{.lab_id = lab});
+      EXPECT_EQ(after.size(), before.size());
+    }
+
+    TEST_P(CliBackendTest, ImportRejectsUnknownItemTypeAtDbLayer) {
+      const auto lab = fixture_->lab_a();
+      const auto before = query_samples(fixture_->backend(), SampleQueryOptions{.lab_id = lab});
+      // Structurally valid UUID, but not a live item type in this lab.
+      std::istringstream in("name,item_type_id\r\nBad," +
+                            id_from_low<core::ItemTypeId>(777).to_string() + "\r\n");
+      std::ostringstream out;
+      auto opts = import_options(lab);
+      opts.dry_run = true;
+      const int code = run_sample_import(fixture_->backend(), opts, in, out);
+      EXPECT_EQ(code, 1) << out.str();
+      const auto after = query_samples(fixture_->backend(), SampleQueryOptions{.lab_id = lab});
+      EXPECT_EQ(after.size(), before.size());
+    }
+
     INSTANTIATE_TEST_SUITE_P(Backends, CliBackendTest,
                              ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
                              [](const ::testing::TestParamInfo<BackendKind>& info) {
@@ -338,6 +538,30 @@ namespace fmgr::cli {
       const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
       EXPECT_EQ(code, 0) << err.str();
       EXPECT_NE(out.str().find("# freezermanager-export"), std::string::npos);
+    }
+
+    TEST(CliAppTest, SampleImportFromFile) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const auto item_type = id_from_low<core::ItemTypeId>(20).to_string();
+      const auto csv_path =
+          std::filesystem::temp_directory_path() / "freezermanager-import-test.csv";
+      {
+        std::ofstream csv(csv_path, std::ios::binary | std::ios::trunc);
+        csv << "name,item_type_id\r\nFromFile," << item_type << "\r\n";
+      }
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::string file = csv_path.string();
+      const std::vector<const char*> args = {
+          "freezerctl", "sample",    "import",  "--sqlite",    sqlite_db.c_str(),
+          "--lab",      lab.c_str(), "--actor", actor.c_str(), file.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      std::filesystem::remove(csv_path);
+      EXPECT_EQ(code, 0) << err.str() << out.str();
+      EXPECT_NE(out.str().find("imported 1 sample(s)"), std::string::npos);
     }
 
     TEST(CliAppTest, MissingLabIsUsageError) {

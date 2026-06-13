@@ -139,7 +139,8 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - 🔲 Qt 6 desktop client — sample browser, box drag-and-drop grid, barcode-scanner focus mode, CSV import wizard
 - 🔲 React / TypeScript SPA — feature parity with Qt client; live updates via SSE
 - 🔲 `freezerctl-py` Python client — thin REST wrapper; Jupyter quick-start notebook with example plots
-- 🔲 CSV import (transactional with dry-run validation report) and export for all entity tables
+- ⚙️ CSV import — `freezerctl sample import` (transactional, all-or-nothing; `--dry-run` per-row validation report; RFC 4180 reader skips the export header block). Samples done; remaining entity tables 🔲
+- ✅ CSV export — chain-of-custody `freezerctl sample export` for samples
 
 ### Operations
 
@@ -175,7 +176,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
 | **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3) | ✅ Complete |
 | **C5 — PostgreSQL backend** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0013 + RLS policies + full domain repositories; conformance + repository suites green against live `postgres:16` in CI | ✅ Complete |
-| **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, `freezerctl` skeleton + `audit verify` ✅; CSV import + remaining CLI nouns 🔲 | ⚙️ In progress |
+| **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅; remaining CLI nouns 🔲 | ⚙️ In progress |
 | **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots — see [`doc/HANDOFF_2026-06-07.md`](./doc/HANDOFF_2026-06-07.md) | ✅ Complete |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
 | **M3 — gRPC + Qt client** | Proto definitions, gRPC server, REST gateway, Qt 6 desktop client — first end-to-end usable build | 🔲 Planned |

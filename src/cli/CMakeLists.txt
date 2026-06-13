@@ -9,9 +9,11 @@ add_library(
   AuditCommands.cc
   BackendFactory.cc
   CliApp.cc
+  CsvReader.cc
   CsvWriter.cc
   SampleCommands.cc
   SampleCsv.cc
+  SampleImport.cc
   SampleQuery.cc
 )
 add_library(FreezerManager::cli ALIAS freezermanager_cli)
