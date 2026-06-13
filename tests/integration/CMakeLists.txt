@@ -108,6 +108,27 @@ target_link_libraries(
     GTest::gtest_main
 )
 
+add_executable(freezermanager_role_service_integration_tests
+  role_service_integration_test.cpp
+)
+
+target_include_directories(
+  freezermanager_role_service_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  freezermanager_role_service_integration_tests
+  PRIVATE
+    FreezerManager::server_lib
+    FreezerManager::storage_sqlite
+    FreezerManager::auth
+    gRPC::grpc++
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 # These spin up an in-process gRPC server. The Conan gRPC/absl libraries are
 # prebuilt WITHOUT sanitizer instrumentation, so under asan/tsan they produce
@@ -124,4 +145,6 @@ gtest_discover_tests(freezermanager_box_service_integration_tests
 gtest_discover_tests(freezermanager_item_type_service_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_sample_service_integration_tests
+  PROPERTIES LABELS "grpc_integration")
+gtest_discover_tests(freezermanager_role_service_integration_tests
   PROPERTIES LABELS "grpc_integration")

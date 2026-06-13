@@ -9,6 +9,7 @@ add_library(freezermanager_server_lib STATIC
   BoxServiceImpl.cc
   ItemTypeServiceImpl.cc
   SampleServiceImpl.cc
+  RoleServiceImpl.cc
   FreezerServer.cc
   UnimplementedStubs.cc
   # CSV export reused from the CLI: ExportSamplesCsv shares the exact column model

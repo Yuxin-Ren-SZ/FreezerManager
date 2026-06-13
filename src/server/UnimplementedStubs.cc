@@ -9,7 +9,6 @@
 #include "rpc/AuthMiddleware.h"
 
 #include <fmgr/v1/audit.grpc.pb.h>
-#include <fmgr/v1/role.grpc.pb.h>
 #include <fmgr/v1/share.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 
@@ -27,58 +26,6 @@ namespace fmgr::server {
   // Stub overrides intentionally leave the (ctx, request, response) parameters
   // unnamed — they are placeholders until each service is implemented.
   // NOLINTBEGIN(readability-named-parameter)
-
-  // ---- RoleService stub ----
-
-  class RoleServiceStub final : public fmgr::v1::RoleService::Service {
-  public:
-    RoleServiceStub() {
-      using P = core::Permission;
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/ListRoles", P::UserManageRoles);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/GetRole", P::UserManageRoles);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/CreateRole", P::UserManageRoles);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/UpdateRole", P::UserManageRoles);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/ArchiveRole", P::UserManageRoles);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/ListRolePermissions",
-                                        P::UserManageRoles);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/GrantPermission", P::UserManageRoles);
-      rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/RevokePermission",
-                                        P::UserManageRoles);
-    }
-    grpc::Status ListRoles(grpc::ServerContext*, const fmgr::v1::ListRolesRequest*,
-                           fmgr::v1::ListRolesResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status GetRole(grpc::ServerContext*, const fmgr::v1::GetRoleRequest*,
-                         fmgr::v1::GetRoleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status CreateRole(grpc::ServerContext*, const fmgr::v1::CreateRoleRequest*,
-                            fmgr::v1::CreateRoleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status UpdateRole(grpc::ServerContext*, const fmgr::v1::UpdateRoleRequest*,
-                            fmgr::v1::UpdateRoleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ArchiveRole(grpc::ServerContext*, const fmgr::v1::ArchiveRoleRequest*,
-                             fmgr::v1::ArchiveRoleResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status ListRolePermissions(grpc::ServerContext*,
-                                     const fmgr::v1::ListRolePermissionsRequest*,
-                                     fmgr::v1::ListRolePermissionsResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status GrantPermission(grpc::ServerContext*, const fmgr::v1::GrantPermissionRequest*,
-                                 fmgr::v1::GrantPermissionResponse*) override {
-      return unimplemented();
-    }
-    grpc::Status RevokePermission(grpc::ServerContext*, const fmgr::v1::RevokePermissionRequest*,
-                                  fmgr::v1::RevokePermissionResponse*) override {
-      return unimplemented();
-    }
-  };
 
   // ---- AuditService stub ----
 
@@ -164,10 +111,8 @@ namespace fmgr::server {
   // The stub objects outlive the server (static storage).
 
   void register_stub_services(grpc::ServerBuilder& builder) {
-    static RoleServiceStub role;
     static AuditServiceStub audit;
     static ShareServiceStub share;
-    builder.RegisterService(&role);
     builder.RegisterService(&audit);
     builder.RegisterService(&share);
   }
