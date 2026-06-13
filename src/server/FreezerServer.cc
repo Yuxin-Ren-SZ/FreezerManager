@@ -17,7 +17,8 @@ namespace fmgr::server {
   FreezerServer::FreezerServer(storage::IStorageBackend& backend, auth::IAuthProvider& auth,
                                FreezerServerOptions opts)
       : opts_(std::move(opts)), auth_svc_(auth, backend), session_svc_(auth, backend),
-        lab_svc_(auth, backend) {}
+        lab_svc_(auth, backend), box_svc_(auth, backend), item_type_svc_(auth, backend),
+        sample_svc_(auth, backend) {}
 
   FreezerServer::~FreezerServer() {
     if (grpc_server_) {
@@ -42,6 +43,9 @@ namespace fmgr::server {
     builder.RegisterService(&auth_svc_);
     builder.RegisterService(&session_svc_);
     builder.RegisterService(&lab_svc_);
+    builder.RegisterService(&box_svc_);
+    builder.RegisterService(&item_type_svc_);
+    builder.RegisterService(&sample_svc_);
     register_stub_services(builder);
 
     grpc_server_ = builder.BuildAndStart();
