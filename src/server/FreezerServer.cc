@@ -25,6 +25,14 @@ namespace fmgr::server {
   }
 
   void FreezerServer::build() {
+    // Production guard: never fall back to a plaintext listener when TLS is
+    // required. Checked before any port is bound so a misconfiguration aborts
+    // startup loudly instead of serving tokens/PHI in the clear.
+    if (opts_.require_tls && (opts_.tls_cert_path.empty() || opts_.tls_key_path.empty())) {
+      throw std::invalid_argument(
+          "TLS is required (require_tls) but tls_cert_path/tls_key_path are not configured");
+    }
+
     grpc::EnableDefaultHealthCheckService(true);
 
     grpc::ServerBuilder builder;
