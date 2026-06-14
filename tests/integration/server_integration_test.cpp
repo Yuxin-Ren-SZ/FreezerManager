@@ -344,6 +344,32 @@ namespace fmgr::test {
                                          "a new service may have been added without registering.";
     }
 
+    // Security audit H-1: a burst of Login attempts from one source is throttled
+    // with RESOURCE_EXHAUSTED once the per-IP token bucket drains, regardless of
+    // which account each attempt targets.
+    TEST_F(ServerIntegrationTest, LoginBurstFromOneSourceIsRateLimited) {
+      const int attempts = static_cast<int>(server::AuthServiceImpl::k_login_rate_capacity) + 20;
+      int unauthenticated = 0;
+      int resource_exhausted = 0;
+      for (int i = 0; i < attempts; ++i) {
+        grpc::ClientContext ctx;
+        fmgr::v1::LoginRequest req;
+        req.set_email("sprayed-" + std::to_string(i) + "@example.com");
+        req.set_password("wrong-password");
+        fmgr::v1::LoginResponse resp;
+        const auto status = auth_stub_->Login(&ctx, req, &resp);
+        if (status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED) {
+          ++resource_exhausted;
+        } else if (status.error_code() == grpc::StatusCode::UNAUTHENTICATED) {
+          ++unauthenticated;
+        }
+      }
+      // The first ~capacity attempts reach the auth layer (wrong creds ->
+      // UNAUTHENTICATED); the overflow is throttled before any work is done.
+      EXPECT_GT(unauthenticated, 0);
+      EXPECT_GT(resource_exhausted, 0);
+    }
+
     // Security audit H-2: a production deployment that requires TLS must refuse
     // to start a plaintext listener if the cert/key paths are missing.
     TEST(FreezerServerTlsGuard, RequireTlsWithoutCertThrowsBeforeBinding) {
