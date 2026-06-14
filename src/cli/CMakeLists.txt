@@ -9,6 +9,7 @@ add_library(
   AuditCommands.cc
   BackendFactory.cc
   CliApp.cc
+  CreateCommands.cc
   CsvReader.cc
   CsvWriter.cc
   LabCommands.cc
