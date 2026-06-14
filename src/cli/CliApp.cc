@@ -4,6 +4,7 @@
 
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
+#include "cli/LabCommands.h"
 #include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleQuery.h"
@@ -41,15 +42,22 @@ namespace fmgr::cli {
                     "Include soft-deleted (tombstoned) samples");
     }
 
-    [[nodiscard]] BackendOptions to_backend_options(const CommonArgs& args) {
+    // Build backend options from a raw --sqlite / --postgres pair. open_backend()
+    // enforces the exactly-one rule; an empty string means "flag absent".
+    [[nodiscard]] BackendOptions backend_options_from(const std::string& sqlite_path,
+                                                      const std::string& postgres_url) {
       BackendOptions options;
-      if (!args.sqlite_path.empty()) {
-        options.sqlite_path = args.sqlite_path;
+      if (!sqlite_path.empty()) {
+        options.sqlite_path = sqlite_path;
       }
-      if (!args.postgres_url.empty()) {
-        options.postgres_url = args.postgres_url;
+      if (!postgres_url.empty()) {
+        options.postgres_url = postgres_url;
       }
       return options;
+    }
+
+    [[nodiscard]] BackendOptions to_backend_options(const CommonArgs& args) {
+      return backend_options_from(args.sqlite_path, args.postgres_url);
     }
 
     [[nodiscard]] SampleQueryOptions to_query_options(const CommonArgs& args) {
@@ -202,6 +210,25 @@ namespace fmgr::cli {
     verify->add_option("--sqlite", audit_sqlite, "Path to a SQLite database file");
     verify->add_option("--postgres", audit_postgres, "PostgreSQL connection URL");
 
+    // lab create: first-run bootstrap. No --lab (it mints one); ids are
+    // server-generated. Takes its own backend selector + lab/admin descriptors.
+    std::string lab_sqlite;
+    std::string lab_postgres;
+    LabCreateOptions lab_create_opts;
+    CLI::App* lab = app.add_subcommand("lab", "Lab provisioning commands");
+    lab->require_subcommand(1);
+    CLI::App* lab_create =
+        lab->add_subcommand("create", "Provision a new lab and its first SystemAdmin user");
+    lab_create->add_option("--sqlite", lab_sqlite, "Path to a SQLite database file");
+    lab_create->add_option("--postgres", lab_postgres, "PostgreSQL connection URL");
+    lab_create->add_option("--name", lab_create_opts.name, "Lab name")->required();
+    lab_create->add_option("--contact", lab_create_opts.contact, "Lab contact (email or phone)");
+    lab_create->add_option("--admin-email", lab_create_opts.admin_email, "First SystemAdmin email")
+        ->required();
+    lab_create->add_option("--admin-name", lab_create_opts.admin_display_name,
+                           "First SystemAdmin display name");
+    lab_create->add_flag("--phi", lab_create_opts.phi_enabled, "Enable PHI mode for this lab");
+
     NounSubcommands freezer_noun;
     NounSubcommands box_noun;
     NounSubcommands item_type_noun;
@@ -237,14 +264,7 @@ namespace fmgr::cli {
         return 0;
       }
       if (importer->parsed()) {
-        BackendOptions backend_opts;
-        if (!import_sqlite.empty()) {
-          backend_opts.sqlite_path = import_sqlite;
-        }
-        if (!import_postgres.empty()) {
-          backend_opts.postgres_url = import_postgres;
-        }
-        auto backend = open_backend(backend_opts);
+        auto backend = open_backend(backend_options_from(import_sqlite, import_postgres));
         const SampleImportOptions import_opts{.lab_id = core::LabId::parse(import_lab),
                                               .actor = core::UserId::parse(import_actor),
                                               .dry_run = import_dry_run};
@@ -259,15 +279,13 @@ namespace fmgr::cli {
         return run_sample_import(*backend, import_opts, file, out);
       }
       if (verify->parsed()) {
-        BackendOptions options;
-        if (!audit_sqlite.empty()) {
-          options.sqlite_path = audit_sqlite;
-        }
-        if (!audit_postgres.empty()) {
-          options.postgres_url = audit_postgres;
-        }
-        auto backend = open_backend(options);
+        auto backend = open_backend(backend_options_from(audit_sqlite, audit_postgres));
         return run_audit_verify(*backend, AuditVerifyOptions{}, out);
+      }
+      if (lab_create->parsed()) {
+        auto backend = open_backend(backend_options_from(lab_sqlite, lab_postgres));
+        run_lab_create(*backend, lab_create_opts, out);
+        return 0;
       }
       if (const auto code = dispatch_read_nouns(freezer_noun, box_noun, item_type_noun, out)) {
         return *code;

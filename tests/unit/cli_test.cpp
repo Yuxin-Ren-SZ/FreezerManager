@@ -5,6 +5,7 @@
 #include "cli/CliApp.h"
 #include "cli/CsvReader.h"
 #include "cli/CsvWriter.h"
+#include "cli/LabCommands.h"
 #include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleCsv.h"
@@ -15,6 +16,7 @@
 #include "core/freezer.h"
 #include "core/identity.h"
 #include "core/item_type.h"
+#include "core/role.h"
 #include "core/sample.h"
 #include "storage/BoxGeometryTraits.h"
 #include "storage/FreezerTraits.h"
@@ -684,6 +686,42 @@ namespace fmgr::cli {
       EXPECT_NE(out.str().find("not found"), std::string::npos);
     }
 
+    // ---- lab create (first-run bootstrap) ----
+
+    TEST_P(CliBackendTest, LabCreatePersistsLabUserAndSystemAdminMembership) {
+      std::ostringstream out;
+      const LabCreateOptions opts{.name = "Genomics Core",
+                                  .contact = "core@example.edu",
+                                  .admin_email = "boss@example.edu",
+                                  .admin_display_name = "Dr. Boss"};
+      const auto result = run_lab_create(fixture_->backend(), opts, out);
+      EXPECT_NE(out.str().find("created lab " + result.lab_id.to_string()), std::string::npos);
+      EXPECT_NE(out.str().find("created system admin " + result.admin_user_id.to_string()),
+                std::string::npos);
+
+      auto txn = fixture_->backend().begin(storage::IsolationLevel::Serializable);
+      const auto lab = txn->repo<core::Lab>().find_by_id(result.lab_id);
+      ASSERT_TRUE(lab.has_value());
+      EXPECT_EQ(lab->name, "Genomics Core");
+
+      const auto user = txn->repo<core::User>().find_by_id(result.admin_user_id);
+      ASSERT_TRUE(user.has_value());
+      EXPECT_EQ(user->primary_email, "boss@example.edu");
+      EXPECT_EQ(user->default_lab_id, result.lab_id);
+
+      const auto membership = txn->repo<core::LabMembership>().find_by_id(
+          core::LabMembershipId{.user_id = result.admin_user_id, .lab_id = result.lab_id});
+      ASSERT_TRUE(membership.has_value());
+      EXPECT_EQ(membership->role_id, core::builtin_role_id(core::RoleKind::SystemAdmin));
+      txn->commit();
+    }
+
+    TEST_P(CliBackendTest, LabCreateRejectsEmptyName) {
+      std::ostringstream out;
+      const LabCreateOptions opts{.name = "", .admin_email = "boss@example.edu"};
+      EXPECT_THROW(run_lab_create(fixture_->backend(), opts, out), std::invalid_argument);
+    }
+
     INSTANTIATE_TEST_SUITE_P(Backends, CliBackendTest,
                              ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
                              [](const ::testing::TestParamInfo<BackendKind>& info) {
@@ -771,6 +809,20 @@ namespace fmgr::cli {
       const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
       EXPECT_EQ(code, 1);
       EXPECT_NE(out.str().find("not found"), std::string::npos);
+    }
+
+    TEST(CliAppTest, LabCreateFromArgv) {
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::vector<const char*> args = {
+          "freezerctl", "lab",      "create",        "--sqlite",         sqlite_db.c_str(),
+          "--name",     "Argv Lab", "--admin-email", "admin@example.edu"};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str() << out.str();
+      EXPECT_NE(out.str().find("created lab "), std::string::npos);
+      EXPECT_NE(out.str().find("created system admin "), std::string::npos);
     }
 
     TEST(CliAppTest, MissingLabIsUsageError) {
