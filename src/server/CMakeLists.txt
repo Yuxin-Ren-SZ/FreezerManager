@@ -1,6 +1,7 @@
 # Server entrypoint, dependency wiring, and configuration.
 
 find_package(gRPC CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
 
 add_library(freezermanager_server_lib STATIC
   AuthServiceImpl.cc
@@ -35,6 +36,7 @@ target_link_libraries(
     FreezerManager::auth
     FreezerManager::storage
     gRPC::grpc++
+    spdlog::spdlog
 )
 
 add_executable(freezerd main.cc)
