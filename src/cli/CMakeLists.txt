@@ -11,6 +11,7 @@ add_library(
   CliApp.cc
   CsvReader.cc
   CsvWriter.cc
+  NounCommands.cc
   SampleCommands.cc
   SampleCsv.cc
   SampleImport.cc
