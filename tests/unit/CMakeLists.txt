@@ -109,7 +109,7 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-add_executable(freezermanager_rpc_unit_tests auth_middleware_test.cpp)
+add_executable(freezermanager_rpc_unit_tests auth_middleware_test.cpp rate_limiter_test.cpp)
 target_link_libraries(
   freezermanager_rpc_unit_tests
   PRIVATE
