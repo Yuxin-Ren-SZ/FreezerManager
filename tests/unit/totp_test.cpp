@@ -74,8 +74,16 @@ namespace fmgr::auth {
       EXPECT_EQ(totp_generate(kRfc6238Secret, 1111111109LL), "081804");
     }
 
+    TEST(TotpTest, Rfc6238Vector_T1111111111) {
+      EXPECT_EQ(totp_generate(kRfc6238Secret, 1111111111LL), "050471");
+    }
+
     TEST(TotpTest, Rfc6238Vector_T1234567890) {
       EXPECT_EQ(totp_generate(kRfc6238Secret, 1234567890LL), "005924");
+    }
+
+    TEST(TotpTest, Rfc6238Vector_T2000000000) {
+      EXPECT_EQ(totp_generate(kRfc6238Secret, 2000000000LL), "279037");
     }
 
     // ---- Window tests ----

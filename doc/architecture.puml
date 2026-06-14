@@ -1,0 +1,237 @@
+' SPDX-License-Identifier: AGPL-3.0-or-later
+' FreezerManager — Component Interaction Diagram
+' Rendered with PlantUML: https://plantuml.com
+
+@startuml FreezerManager Component Interaction
+!theme plain
+skinparam componentStyle rectangle
+skinparam backgroundColor white
+skinparam packageStyle rectangle
+
+title FreezerManager — Component Interaction Diagram\n(pre-alpha, 2026-06-13)
+
+' ──────────────────────────────────────────────────────
+' CLIENTS (top)
+' ──────────────────────────────────────────────────────
+
+package "Clients" as Clients #LightYellow {
+  [freezerctl CLI\n(C++)] as Freezerctl
+  [Qt 6 Desktop\n(planned)] as QtClient
+  [React/TS SPA\n(planned)] as WebClient
+  [freezerctl-py\n(planned)] as PyClient
+  [gRPC / REST Client\n(external scripts)] as ExtRPC
+}
+
+' ──────────────────────────────────────────────────────
+' SERVER LAYER
+' ──────────────────────────────────────────────────────
+
+package "gRPC Server (freezerd)" as ServerPkg #LightBlue {
+  package "FreezerServer" as FSrv {
+    component "AuthServiceImpl" as AuthSvc
+    component "SessionServiceImpl" as SessSvc
+    component "LabServiceImpl" as LabSvc
+    component "BoxServiceImpl" as BoxSvc
+    component "ItemTypeServiceImpl" as ItemSvc
+    component "SampleServiceImpl" as SampleSvc
+    component "RoleServiceImpl" as RoleSvc
+    component "AuditServiceImpl" as AuditSvc
+    component "ShareServiceImpl" as ShareSvc
+  }
+}
+
+' ──────────────────────────────────────────────────────
+' RPC MIDDLEWARE LAYER
+' ──────────────────────────────────────────────────────
+
+package "RPC Middleware" as RpcMdw #LightCoral {
+  [AuthMiddleware\n4-step RBAC gate] as AuthMdw
+  [RpcRegistry\npermission→RPC map] as RpcReg
+  [RateLimiter] as RateLimit
+}
+
+' ──────────────────────────────────────────────────────
+' AUTH LAYER
+' ──────────────────────────────────────────────────────
+
+package "Auth" as AuthPkg #LightGreen {
+  interface "IAuthProvider" as IAuth
+  [LocalAuthProvider\nArgon2id + TOTP\n+ account lockout] as LocalAuth
+  [AuthTypes\nSessionContext\nAuthToken] as AuthTypes
+  [Totp Helper\nRFC 6238] as TotpHelper
+}
+
+' ──────────────────────────────────────────────────────
+' STORAGE ABSTRACTION LAYER
+' ──────────────────────────────────────────────────────
+
+package "Storage Abstraction" as StorageAbs #LightCyan {
+  interface "IStorageBackend" as IBackend
+  interface "ITransaction" as ITxn
+  interface "IRepository<T>" as IRepo
+  [Query DSL\nTyped predicates\nfilter/sort/paginate] as QueryDSL
+  [EntityTraits<T>\ncompile-time\nfield metadata] as Traits
+  [BackendError\nerror hierarchy] as BackendErrs
+  [CustomFieldResolver\ninherited field\nresolution] as CFResolver
+  [SampleOps\natomic move\nhelper] as SampleOpsHelper
+}
+
+' ──────────────────────────────────────────────────────
+' BACKEND IMPLEMENTATIONS
+' ──────────────────────────────────────────────────────
+
+package "Storage Backends" as Backends #LightSalmon {
+  package "SQLite Backend" as SQLitePkg {
+    [SqliteBackend\ndeferred FK, WAL] as SqliteBE
+    [SqliteTransaction\naudit commit hook] as SqliteTxn
+    node "9 typed repositories\n(per-entity SQLite)" as SqliteRepos
+    [Migrations\n0001–0012] as SqliteMigs
+  }
+  package "PostgreSQL Backend" as PostgresPkg {
+    [PostgresBackend\nconnection pool] as PgBE
+    [PostgresTransaction\nRLS session vars] as PgTxn
+    node "9 typed repositories\n(per-entity Postgres)" as PgRepos
+    [Migrations\n0001–0013 + RLS\npolicies] as PgMigs
+  }
+}
+
+' ──────────────────────────────────────────────────────
+' DOMAIN / CORE LAYER
+' ──────────────────────────────────────────────────────
+
+package "Domain Core (no I/O)" as CorePkg #Lavender {
+  [Value Types\nUuid, Timestamp,\nVolume, Mass] as ValTypes
+  [Strong IDs\nLabId, UserId,\nSampleId, BoxId, …] as StrongIds
+  [Domain Entities\nLab, User, Role, Freezer,\nBox, Sample, Session,\nShareRequest, …] as Entities
+  [Enums\nSampleStatus,\nRoleKind, …] as Enums
+  [Permission Catalog\npermissions.h] as PermCatalog
+  [custom_field_validator\nfield validator engine] as CFValidator
+}
+
+' ──────────────────────────────────────────────────────
+' AUDIT LAYER
+' ──────────────────────────────────────────────────────
+
+package "Audit" as AuditPkg #LightYellow {
+  [CanonicalJson\nRFC 8785 / JCS\nSHA-256 hashing] as CanonicalJson
+  [AuditChainVerifier\nhash-chain walker\nfreezerctl audit verify] as ChainVerifier
+  [audit_event table\nappend-only\nprev_hash → this_hash] as AuditTable
+}
+
+' ──────────────────────────────────────────────────────
+' KMS (planned)
+' ──────────────────────────────────────────────────────
+
+package "KMS (planned)" as KMSPkg #Gainsboro {
+  interface "IKmsProvider" as IKms
+  [OsKeyringKms\nsystemd-creds] as OsKms
+  [VaultKms\nHashiCorp Vault] as VaultKms
+  [EnvVarKms\ndev/test only] as EnvKms
+}
+
+' ────────────────────────────────────
+' CONNECTIONS
+' ────────────────────────────────────
+
+' CLIENTS → SERVER
+QtClient -[dashed]-> FSrv : gRPC\nto be built
+WebClient -[dashed]-> FSrv : REST/JSON\ngateway
+PyClient -[dashed]-> FSrv : REST
+ExtRPC --> FSrv : gRPC
+Freezerctl --> IBackend : direct backend access\n(bypasses gRPC)
+Freezerctl --> LocalAuth : direct auth\n(bypasses gRPC)
+
+' SERVER → MIDDLEWARE
+FSrv --> AuthMdw : authorize(bearer, perm, lab_id?)
+AuthSvc --> AuthMdw
+SessSvc --> AuthMdw
+LabSvc --> AuthMdw
+BoxSvc --> AuthMdw
+ItemSvc --> AuthMdw
+SampleSvc --> AuthMdw
+RoleSvc --> AuthMdw
+AuditSvc --> AuthMdw
+ShareSvc --> AuthMdw
+
+' MIDDLEWARE → AUTH
+AuthMdw --> IAuth : validate_token()\npermission resolution
+AuthMdw --> RpcReg : static registry\n(permission→RPC mapping)
+
+' SERVER → BACKEND (transaction lifecycle)
+FSrv --> IBackend : begin(IsolationLevel)
+AuthMdw --> ITxn : inject_rls_vars()
+
+' AUTH → BACKEND
+IAuth --> IBackend : reads/writes User,\nSession, ApiToken
+LocalAuth ..|> IAuth
+LocalAuth --> IBackend : via ITransaction repos
+
+' BACKEND ABSTRACTIONS
+IBackend --> ITxn : creates
+ITxn --> IRepo : repo<T>()
+IRepo --> QueryDSL : typed queries
+IRepo -.-> Traits : compile-time binding
+
+' IMPLEMENTATIONS
+SqliteBE ..|> IBackend
+SqliteTxn ..|> ITxn
+PgBE ..|> IBackend
+PgTxn ..|> ITxn
+
+SqliteRepos ..> SqliteTxn : registers into
+PgRepos ..> PgTxn : registers into
+
+' BACKEND → DOMAIN (reads/writes domain entities)
+IRepo --> Entities : operates on
+QueryDSL --> Traits : uses field enums
+BackendErrs --> Enums : error codes
+
+' CORE DEPENDENCIES (everything depends on core)
+Entities --> ValTypes
+Entities --> StrongIds
+Entities --> Enums
+CFValidator --> PermCatalog
+CFResolver --> Entities
+
+' AUDIT PIPELINE (inside every mutating transaction)
+IRepo --> CanonicalJson : canonical JSON of\nbefore/after snapshots
+ITxn --> AuditTable : INSERT audit_event\n(prev_hash → this_hash)\nwithin same transaction
+AuditTable --> CanonicalJson : hash computation
+ChainVerifier --> AuditTable : reads ordered\nAuditEvent rows
+ChainVerifier --> CanonicalJson : recomputes hash chain
+
+' AUDIT CLI USAGE
+Freezerctl -[dashed]-> ChainVerifier : freezerctl audit verify
+
+' BACKEND CONFORMANCE
+note right of Backends
+  Both backends pass the
+  same abstract conformance
+  test suite (C3):
+  CRUD, isolation, placement
+  uniqueness, audit atomicity,
+  migration up/down.
+end note
+
+' PLANNED COMPONENTS (grayed out)
+IKms -[dashed]-> Entities : encrypts/decrypts\nphi_fields_enc_json
+OsKms ..|> IKms
+VaultKms ..|> IKms
+EnvKms ..|> IKms
+
+' LEGEND
+legend bottom right
+  | Color | Meaning |
+  | <#LightGreen> | Implemented ✅ |
+  | <#LightBlue>  | Implemented ✅ |
+  | <#LightCyan>  | Implemented ✅ |
+  | <#LightSalmon>| Implemented ✅ |
+  | <#LightYellow>| Implemented ✅ |
+  | <#Lavender>   | Implemented ✅ |
+  | <#LightCoral> | Implemented ✅ |
+  | <#Gainsboro>  | Planned 🔲 |
+  solid line: implemented dependency
+  dashed line: planned / partial
+endlegend
+
+@enduml

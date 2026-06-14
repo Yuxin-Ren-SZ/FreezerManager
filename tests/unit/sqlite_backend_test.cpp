@@ -7,6 +7,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <string_view>
 
@@ -144,6 +145,51 @@ namespace fmgr::storage {
       // Calling downgrade_to_zero_for_tests again is a no-op; version stays at zero.
       backend.downgrade_to_zero_for_tests();
       EXPECT_EQ(backend.current_version(), SchemaVersion{0});
+    }
+
+    TEST(SqliteBackend, CorruptedDatabaseFileIsDetectedAtOpen) {
+      const auto path = sqlite_test_path("corrupt");
+      remove_sqlite_files(path);
+
+      // Write a file that looks like a corrupted SQLite database.
+      {
+        std::ofstream file(path, std::ios::binary);
+        file << "this is not a valid SQLite database file";
+      }
+
+      SqliteBackend backend(SqliteBackendOptions{.database_path = path.string()});
+
+      // The backend should detect the corruption when attempting to read schema
+      // version or run migrations — not silently succeed.
+      EXPECT_THROW(backend.migrate_to_latest(), BackendError);
+
+      remove_sqlite_files(path);
+    }
+
+    TEST(SqliteBackend, EmptyDatabaseFileIsDetectedAtOpen) {
+      const auto path = sqlite_test_path("empty-db");
+      remove_sqlite_files(path);
+
+      // Create an empty file that is definitely not a valid SQLite database.
+      {
+        std::ofstream file(path, std::ios::binary);
+        // Write nothing — zero-length file.
+      }
+
+      SqliteBackend backend(SqliteBackendOptions{.database_path = path.string()});
+      // A zero-byte file is not a valid SQLite database.  The backend should
+      // detect this when it tries to access the schema.
+      EXPECT_THROW(backend.migrate_to_latest(), BackendError);
+
+      remove_sqlite_files(path);
+    }
+
+    TEST(SqliteBackend, MissingFileDirectoryIsDetected) {
+      const std::string impossible_path =
+          "/nonexistent_directory_42f8a1b2/test.db";
+      SqliteBackend backend(SqliteBackendOptions{.database_path = impossible_path});
+      // Opening a database in a nonexistent directory must fail.
+      EXPECT_THROW(backend.migrate_to_latest(), BackendError);
     }
 
   } // namespace

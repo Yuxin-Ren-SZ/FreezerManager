@@ -4,8 +4,11 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace fmgr::rpc {
   namespace {
@@ -88,6 +91,108 @@ namespace fmgr::rpc {
       EXPECT_TRUE(limiter.try_acquire("ip", start));
       // An earlier timestamp must not be treated as elapsed time.
       EXPECT_FALSE(limiter.try_acquire("ip", start - 5s));
+    }
+
+    // ---- Concurrency / thread-safety tests ----
+
+    TEST(RateLimiter, IsSafeUnderConcurrentSingleKey) {
+      // Multiple threads hammering the same key must never allow more than
+      // the total capacity across all threads in a zero-time window.
+      RateLimiter limiter(RateLimiterConfig{.capacity = 100.0, .refill_per_sec = 0.0});
+      const auto now = base();
+      constexpr int kThreads = 8;
+      constexpr int kCallsPerThread = 200;
+
+      std::atomic<int> total_allowed{0};
+      std::vector<std::thread> threads;
+      threads.reserve(kThreads);
+
+      for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&limiter, now, &total_allowed] {
+          int local_allowed = 0;
+          for (int i = 0; i < kCallsPerThread; ++i) {
+            if (limiter.try_acquire("shared-key", now)) {
+              ++local_allowed;
+            }
+          }
+          total_allowed.fetch_add(local_allowed, std::memory_order_relaxed);
+        });
+      }
+
+      for (auto& thread : threads) {
+        thread.join();
+      }
+
+      // With zero refill, the total allowed across all threads must never
+      // exceed the initial capacity of the bucket.
+      EXPECT_LE(total_allowed.load(), 100);
+      EXPECT_GT(total_allowed.load(), 0);
+    }
+
+    TEST(RateLimiter, IsSafeUnderConcurrentDistinctKeys) {
+      // Each thread uses its own key — no inter-thread contention on buckets,
+      // but the mutex and tracked-key map must still be thread-safe.
+      RateLimiter limiter(
+          RateLimiterConfig{.capacity = 1.0, .refill_per_sec = 0.0, .max_tracked_keys = 1000});
+      const auto now = base();
+      constexpr int kThreads = 8;
+      constexpr int kKeysPerThread = 50;
+
+      std::atomic<int> total_allowed{0};
+      std::vector<std::thread> threads;
+      threads.reserve(kThreads);
+
+      for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&limiter, now, &total_allowed, t] {
+          int local_allowed = 0;
+          for (int k = 0; k < kKeysPerThread; ++k) {
+            const auto key = "thread-" + std::to_string(t) + "-key-" + std::to_string(k);
+            if (limiter.try_acquire(key, now)) {
+              ++local_allowed;
+            }
+          }
+          total_allowed.fetch_add(local_allowed, std::memory_order_relaxed);
+        });
+      }
+
+      for (auto& thread : threads) {
+        thread.join();
+      }
+
+      // Each distinct key gets its own fresh full bucket (capacity=1),
+      // so each call should be allowed exactly once.
+      EXPECT_EQ(total_allowed.load(), kThreads * kKeysPerThread);
+    }
+
+    TEST(RateLimiter, EvictionUnderConcurrencyPreservesMaxKeyBound) {
+      // Many threads inserting distinct keys must not cause the tracked-key
+      // map to exceed max_tracked_keys, even under concurrent insertion.
+      RateLimiter limiter(
+          RateLimiterConfig{.capacity = 1.0, .refill_per_sec = 1.0, .max_tracked_keys = 50});
+      auto clock = base();
+      constexpr int kThreads = 4;
+      constexpr int kOpsPerThread = 500;
+
+      std::vector<std::thread> threads;
+      threads.reserve(kThreads);
+
+      for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&limiter, &clock, t] {
+          for (int i = 0; i < kOpsPerThread; ++i) {
+            const auto key =
+                "t" + std::to_string(t) + "-k" + std::to_string(i % 200);
+            limiter.try_acquire(key, clock);
+            // We can't safely advance clock here (shared mutable) but the
+            // invariant is that tracked_keys never exceeds max.
+          }
+        });
+      }
+
+      for (auto& thread : threads) {
+        thread.join();
+      }
+
+      EXPECT_LE(limiter.tracked_keys(), 50U);
     }
 
   } // namespace
