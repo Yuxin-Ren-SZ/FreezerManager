@@ -4,6 +4,7 @@
 
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
+#include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleQuery.h"
 #include "core/ids.h"
@@ -60,6 +61,99 @@ namespace fmgr::cli {
       return options;
     }
 
+    [[nodiscard]] NounListOptions to_noun_list_options(const CommonArgs& args) {
+      NounListOptions options{.lab_id = core::LabId::parse(args.lab_id)};
+      if (args.limit > 0) {
+        options.limit = args.limit;
+      }
+      options.include_tombstoned = args.include_tombstoned;
+      return options;
+    }
+
+    // One read noun (freezer/box/item-type) and its `list` + `inspect`
+    // subcommands. The arg storage lives for the duration of run_cli so CLI11 can
+    // write into it during parse.
+    struct NounSubcommands {
+      CommonArgs list_args;
+      CommonArgs inspect_args; // only sqlite/postgres/lab are read for inspect
+      std::string inspect_id;
+      CLI::App* list{nullptr};
+      CLI::App* inspect{nullptr};
+    };
+
+    void add_read_noun(CLI::App& app, const std::string& name, NounSubcommands& noun) {
+      CLI::App* root = app.add_subcommand(name, name + " queries");
+      root->require_subcommand(1);
+
+      noun.list = root->add_subcommand("list", "List " + name + " rows in a lab as a table");
+      add_common_args(noun.list, noun.list_args);
+
+      noun.inspect = root->add_subcommand("inspect", "Show one " + name + " by --id");
+      noun.inspect->add_option("--sqlite", noun.inspect_args.sqlite_path,
+                               "Path to a SQLite database file");
+      noun.inspect->add_option("--postgres", noun.inspect_args.postgres_url,
+                               "PostgreSQL connection URL");
+      noun.inspect->add_option("--lab", noun.inspect_args.lab_id, "Lab UUID to scope the query to")
+          ->required();
+      noun.inspect->add_option("--id", noun.inspect_id, "Entity UUID to inspect")->required();
+    }
+
+    // Run a read noun's `list` or `inspect` if it was the parsed subcommand.
+    // Returns the exit code when handled, or std::nullopt when neither child of
+    // this noun was selected. `inspect_fn` receives the raw --id string so each
+    // noun can parse it into its own strong-id type. Keeps run_cli's dispatch
+    // ladder flat (one call per noun) rather than two if-blocks each.
+    template <typename ListFn, typename InspectFn>
+    [[nodiscard]] std::optional<int> dispatch_read_noun(const NounSubcommands& noun, ListFn list_fn,
+                                                        InspectFn inspect_fn, std::ostream& out) {
+      if (noun.list->parsed()) {
+        auto backend = open_backend(to_backend_options(noun.list_args));
+        list_fn(*backend, to_noun_list_options(noun.list_args), out);
+        return 0;
+      }
+      if (noun.inspect->parsed()) {
+        auto backend = open_backend(to_backend_options(noun.inspect_args));
+        return inspect_fn(*backend, core::LabId::parse(noun.inspect_args.lab_id), noun.inspect_id,
+                          out);
+      }
+      return std::nullopt;
+    }
+
+    // Dispatch any of the three read nouns. Returns the exit code when one of them
+    // was the parsed command, or std::nullopt otherwise. Keeps the per-noun
+    // wiring out of run_cli (cognitive-complexity budget).
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<int> dispatch_read_nouns(const NounSubcommands& freezer,
+                                                         const NounSubcommands& box,
+                                                         const NounSubcommands& item_type,
+                                                         std::ostream& out) {
+      if (const auto code = dispatch_read_noun(
+              freezer, run_freezer_list,
+              [](storage::IStorageBackend& backend, core::LabId lab, const std::string& id,
+                 std::ostream& sink) {
+                return run_freezer_inspect(backend, lab, core::FreezerId::parse(id), sink);
+              },
+              out)) {
+        return code;
+      }
+      if (const auto code = dispatch_read_noun(
+              box, run_box_list,
+              [](storage::IStorageBackend& backend, core::LabId lab, const std::string& id,
+                 std::ostream& sink) {
+                return run_box_inspect(backend, lab, core::BoxId::parse(id), sink);
+              },
+              out)) {
+        return code;
+      }
+      return dispatch_read_noun(
+          item_type, run_item_type_list,
+          [](storage::IStorageBackend& backend, core::LabId lab, const std::string& id,
+             std::ostream& sink) {
+            return run_item_type_inspect(backend, lab, core::ItemTypeId::parse(id), sink);
+          },
+          out);
+    }
+
   } // namespace
 
   // out/err are conventional stream params (mirrors main()); order is unambiguous.
@@ -107,6 +201,13 @@ namespace fmgr::cli {
     CLI::App* verify = audit->add_subcommand("verify", "Verify the audit hash chain (global)");
     verify->add_option("--sqlite", audit_sqlite, "Path to a SQLite database file");
     verify->add_option("--postgres", audit_postgres, "PostgreSQL connection URL");
+
+    NounSubcommands freezer_noun;
+    NounSubcommands box_noun;
+    NounSubcommands item_type_noun;
+    add_read_noun(app, "freezer", freezer_noun);
+    add_read_noun(app, "box", box_noun);
+    add_read_noun(app, "item-type", item_type_noun);
 
     try {
       app.parse(argc, argv);
@@ -167,6 +268,9 @@ namespace fmgr::cli {
         }
         auto backend = open_backend(options);
         return run_audit_verify(*backend, AuditVerifyOptions{}, out);
+      }
+      if (const auto code = dispatch_read_nouns(freezer_noun, box_noun, item_type_noun, out)) {
+        return *code;
       }
     } catch (const std::exception& error) {
       err << "error: " << error.what() << '\n';

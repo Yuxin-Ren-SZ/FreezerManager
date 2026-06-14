@@ -5,14 +5,19 @@
 #include "cli/CliApp.h"
 #include "cli/CsvReader.h"
 #include "cli/CsvWriter.h"
+#include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleCsv.h"
 #include "cli/SampleImport.h"
 #include "cli/SampleQuery.h"
 
+#include "core/box.h"
+#include "core/freezer.h"
 #include "core/identity.h"
 #include "core/item_type.h"
 #include "core/sample.h"
+#include "storage/BoxGeometryTraits.h"
+#include "storage/FreezerTraits.h"
 #include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
 #include "storage/SampleTraits.h"
@@ -77,6 +82,69 @@ namespace fmgr::cli {
       };
     }
 
+    core::StorageContainer make_container(std::uint64_t low, core::LabId lab_id) {
+      return core::StorageContainer{
+          .id = id_from_low<core::StorageContainerId>(low),
+          .lab_id = lab_id,
+          .parent_id = std::nullopt,
+          .kind = core::ContainerKind::Shelf,
+          .name = "Container " + std::to_string(low),
+          .ordering_index = static_cast<std::int32_t>(low),
+          .created_at = ts(300 + static_cast<std::int64_t>(low)),
+      };
+    }
+
+    core::Freezer make_freezer(std::uint64_t low, core::LabId lab_id,
+                               core::StorageContainerId layout_root_id) {
+      return core::Freezer{
+          .id = id_from_low<core::FreezerId>(low),
+          .lab_id = lab_id,
+          .name = "Freezer " + std::to_string(low),
+          .location = "Room 101",
+          .model = "ULT-80",
+          .temp_target_c = -80,
+          .layout_root_id = layout_root_id,
+          .created_at = ts(400 + static_cast<std::int64_t>(low)),
+      };
+    }
+
+    core::ContainerType make_container_type(std::uint64_t low, core::LabId lab_id) {
+      return core::ContainerType{
+          .id = id_from_low<core::ContainerTypeId>(low),
+          .lab_id = lab_id,
+          .name = "Container " + std::to_string(low),
+          .size_class = "cryovial_2ml",
+          .material = "polypropylene",
+          .supplier_sku = "SKU-" + std::to_string(low),
+          .created_at = ts(500 + static_cast<std::int64_t>(low)),
+      };
+    }
+
+    core::BoxType make_box_type(std::uint64_t low, core::LabId lab_id) {
+      return core::BoxType{
+          .id = id_from_low<core::BoxTypeId>(low),
+          .lab_id = lab_id,
+          .name = "BoxType " + std::to_string(low),
+          .manufacturer = "Generic",
+          .sku = "BT-" + std::to_string(low),
+          .positions = {core::Position{
+              .label = "A1", .row = 0, .col = 0, .accepts = {"cryovial_2ml"}}},
+          .created_at = ts(600 + static_cast<std::int64_t>(low)),
+      };
+    }
+
+    core::Box make_box(std::uint64_t low, core::LabId lab_id, core::BoxTypeId box_type_id,
+                       core::StorageContainerId storage_container_id) {
+      return core::Box{
+          .id = id_from_low<core::BoxId>(low),
+          .lab_id = lab_id,
+          .box_type_id = box_type_id,
+          .storage_container_id = storage_container_id,
+          .label = "Box " + std::to_string(low),
+          .created_at = ts(700 + static_cast<std::int64_t>(low)),
+      };
+    }
+
     core::Sample make_sample(std::uint64_t low, core::LabId lab_id, core::ItemTypeId item_type_id,
                              core::UserId user_id) {
       return core::Sample{
@@ -117,6 +185,14 @@ namespace fmgr::cli {
           txn->repo<core::User>().insert(user_b, mutation_context());
           txn->repo<core::ItemType>().insert(item_type, mutation_context());
           txn->repo<core::ItemType>().insert(item_type_b, mutation_context());
+          // Layout prerequisites: a container-type (for box-type size_class) and
+          // a root storage container per lab (referenced by freezers and boxes).
+          txn->repo<core::ContainerType>().insert(make_container_type(32, lab_a_),
+                                                  mutation_context());
+          txn->repo<core::StorageContainer>().insert(make_container(30, lab_a_),
+                                                     mutation_context());
+          txn->repo<core::StorageContainer>().insert(make_container(40, lab_b_),
+                                                     mutation_context());
           txn->commit();
         }
         {
@@ -127,6 +203,22 @@ namespace fmgr::cli {
                                            mutation_context());
           txn->repo<core::Sample>().insert(make_sample(200, lab_b_, item_type_b.id, user_b.id),
                                            mutation_context());
+          // Box-type (validates container-type) and one freezer per lab (each
+          // validates its committed root container). Lab A gets a box too.
+          txn->repo<core::BoxType>().insert(make_box_type(33, lab_a_), mutation_context());
+          txn->repo<core::Freezer>().insert(
+              make_freezer(31, lab_a_, id_from_low<core::StorageContainerId>(30)),
+              mutation_context());
+          txn->repo<core::Freezer>().insert(
+              make_freezer(41, lab_b_, id_from_low<core::StorageContainerId>(40)),
+              mutation_context());
+          txn->commit();
+        }
+        {
+          auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+          txn->repo<core::Box>().insert(make_box(34, lab_a_, id_from_low<core::BoxTypeId>(33),
+                                                 id_from_low<core::StorageContainerId>(30)),
+                                        mutation_context());
           txn->commit();
         }
       }
@@ -518,6 +610,80 @@ namespace fmgr::cli {
       EXPECT_EQ(after.size(), before.size());
     }
 
+    // ---- Read nouns: freezer / box / item-type list + inspect ----
+
+    TEST_P(CliBackendTest, FreezerListReturnsLabRowsOnly) {
+      std::ostringstream out;
+      run_freezer_list(fixture_->backend(), NounListOptions{.lab_id = fixture_->lab_a()}, out);
+      const std::string text = out.str();
+      EXPECT_NE(text.find(id_from_low<core::FreezerId>(31).to_string()), std::string::npos);
+      EXPECT_NE(text.find("1 freezer(s)"), std::string::npos);
+      // Lab B's freezer must not leak into lab A's listing.
+      EXPECT_EQ(text.find(id_from_low<core::FreezerId>(41).to_string()), std::string::npos);
+    }
+
+    TEST_P(CliBackendTest, BoxListReturnsLabRows) {
+      std::ostringstream out;
+      run_box_list(fixture_->backend(), NounListOptions{.lab_id = fixture_->lab_a()}, out);
+      const std::string text = out.str();
+      EXPECT_NE(text.find(id_from_low<core::BoxId>(34).to_string()), std::string::npos);
+      EXPECT_NE(text.find("1 box(es)"), std::string::npos);
+    }
+
+    TEST_P(CliBackendTest, ItemTypeListReturnsLabRows) {
+      std::ostringstream out;
+      run_item_type_list(fixture_->backend(), NounListOptions{.lab_id = fixture_->lab_a()}, out);
+      const std::string text = out.str();
+      EXPECT_NE(text.find(id_from_low<core::ItemTypeId>(20).to_string()), std::string::npos);
+      EXPECT_NE(text.find("1 item-type(s)"), std::string::npos);
+    }
+
+    TEST_P(CliBackendTest, BoxListExcludesTombstonedUnlessRequested) {
+      // Tombstone the seeded box, then confirm default listing hides it and the
+      // include-tombstoned flag surfaces it again.
+      {
+        auto txn = fixture_->backend().begin(storage::IsolationLevel::Serializable);
+        txn->set_session_var("current_lab_ids", fixture_->lab_a().to_string());
+        txn->repo<core::Box>().soft_delete(id_from_low<core::BoxId>(34), mutation_context());
+        txn->commit();
+      }
+      std::ostringstream hidden;
+      run_box_list(fixture_->backend(), NounListOptions{.lab_id = fixture_->lab_a()}, hidden);
+      EXPECT_NE(hidden.str().find("0 box(es)"), std::string::npos);
+
+      std::ostringstream shown;
+      run_box_list(fixture_->backend(),
+                   NounListOptions{.lab_id = fixture_->lab_a(), .include_tombstoned = true}, shown);
+      EXPECT_NE(shown.str().find("1 box(es)"), std::string::npos);
+    }
+
+    TEST_P(CliBackendTest, FreezerInspectPrintsDetail) {
+      std::ostringstream out;
+      const int code = run_freezer_inspect(fixture_->backend(), fixture_->lab_a(),
+                                           id_from_low<core::FreezerId>(31), out);
+      EXPECT_EQ(code, 0) << out.str();
+      EXPECT_NE(out.str().find("Freezer 31"), std::string::npos);
+      EXPECT_NE(out.str().find("ULT-80"), std::string::npos);
+    }
+
+    TEST_P(CliBackendTest, FreezerInspectUnknownIdIsNotFound) {
+      std::ostringstream out;
+      const int code = run_freezer_inspect(fixture_->backend(), fixture_->lab_a(),
+                                           id_from_low<core::FreezerId>(888), out);
+      EXPECT_EQ(code, 1);
+      EXPECT_NE(out.str().find("not found"), std::string::npos);
+    }
+
+    TEST_P(CliBackendTest, FreezerInspectCrossLabIsNotFound) {
+      // Freezer 41 belongs to lab B; inspecting it under lab A must report
+      // not-found rather than disclose another lab's row.
+      std::ostringstream out;
+      const int code = run_freezer_inspect(fixture_->backend(), fixture_->lab_a(),
+                                           id_from_low<core::FreezerId>(41), out);
+      EXPECT_EQ(code, 1);
+      EXPECT_NE(out.str().find("not found"), std::string::npos);
+    }
+
     INSTANTIATE_TEST_SUITE_P(Backends, CliBackendTest,
                              ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
                              [](const ::testing::TestParamInfo<BackendKind>& info) {
@@ -562,6 +728,49 @@ namespace fmgr::cli {
       std::filesystem::remove(csv_path);
       EXPECT_EQ(code, 0) << err.str() << out.str();
       EXPECT_NE(out.str().find("imported 1 sample(s)"), std::string::npos);
+    }
+
+    TEST(CliAppTest, FreezerListToStdout) {
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::vector<const char*> args = {"freezerctl",      "freezer", "list",     "--sqlite",
+                                             sqlite_db.c_str(), "--lab",   lab.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str();
+      EXPECT_NE(out.str().find(id_from_low<core::FreezerId>(31).to_string()), std::string::npos);
+    }
+
+    TEST(CliAppTest, BoxInspectByIdFromArgv) {
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::string box_id = id_from_low<core::BoxId>(34).to_string();
+      const std::vector<const char*> args = {"freezerctl",      "box",   "inspect",   "--sqlite",
+                                             sqlite_db.c_str(), "--lab", lab.c_str(), "--id",
+                                             box_id.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str() << out.str();
+      EXPECT_NE(out.str().find("Box 34"), std::string::npos);
+    }
+
+    TEST(CliAppTest, ItemTypeInspectUnknownReturnsOne) {
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::string absent = id_from_low<core::ItemTypeId>(909).to_string();
+      const std::vector<const char*> args = {
+          "freezerctl", "item-type", "inspect", "--sqlite",    sqlite_db.c_str(),
+          "--lab",      lab.c_str(), "--id",    absent.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 1);
+      EXPECT_NE(out.str().find("not found"), std::string::npos);
     }
 
     TEST(CliAppTest, MissingLabIsUsageError) {
