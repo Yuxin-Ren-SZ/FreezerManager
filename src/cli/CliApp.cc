@@ -4,13 +4,20 @@
 
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
+#include "cli/BoxImport.h"
 #include "cli/CreateCommands.h"
+#include "cli/CsvImport.h"
+#include "cli/ItemTypeImport.h"
 #include "cli/LabCommands.h"
 #include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleQuery.h"
+#include "core/box.h"
 #include "core/enums.h"
 #include "core/ids.h"
+#include "core/item_type.h"
+#include "storage/BoxGeometryTraits.h"
+#include "storage/ItemTypeTraits.h"
 
 #include <CLI/CLI.hpp>
 
@@ -20,6 +27,7 @@
 #include <fstream>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 namespace fmgr::cli {
@@ -414,6 +422,73 @@ namespace fmgr::cli {
       return dispatch_create_nouns_b(nouns, out);
     }
 
+    // ---- non-sample CSV import nouns (item-type / box) ----
+
+    // Parse-time storage for one `<noun> import` subcommand.
+    struct ImportArgs {
+      std::string sqlite;
+      std::string postgres;
+      std::string lab;
+      std::string actor;
+      std::string file;
+      bool dry_run{false};
+      CLI::App* cmd{nullptr};
+    };
+
+    void add_import_noun(CLI::App* root, const std::string& noun, ImportArgs& args) {
+      args.cmd = root->add_subcommand("import", "Import " + noun + "s from a CSV file");
+      args.cmd->add_option("--sqlite", args.sqlite, "Path to a SQLite database file");
+      args.cmd->add_option("--postgres", args.postgres, "PostgreSQL connection URL");
+      args.cmd->add_option("--lab", args.lab, "Lab UUID to import into")->required();
+      args.cmd->add_option("--actor", args.actor, "User UUID recorded as the importer")->required();
+      args.cmd->add_flag("--dry-run", args.dry_run,
+                         "Validate every row and report, but do not write anything");
+      args.cmd->add_option("file", args.file, "CSV file to import ('-' for stdin)")->required();
+    }
+
+    struct ImportNouns {
+      ImportArgs item_type;
+      ImportArgs box;
+    };
+
+    void add_import_nouns(const NounSubcommands& box, const NounSubcommands& item_type,
+                          ImportNouns& nouns) {
+      add_import_noun(item_type.root, "item-type", nouns.item_type);
+      add_import_noun(box.root, "box", nouns.box);
+    }
+
+    // Run one parsed import: open the backend, then stream the file (or stdin on
+    // '-') through the templated transactional runner with the entity's mapper. A
+    // missing file throws; run_cli's catch reports it on the error stream.
+    template <typename T, typename BuildFn>
+    [[nodiscard]] int run_import_arg(const ImportArgs& args, BuildFn build_fn,
+                                     const char* noun_plural, std::ostream& out) {
+      auto backend = open_backend(backend_options_from(args.sqlite, args.postgres));
+      const EntityImportOptions options{.lab_id = core::LabId::parse(args.lab),
+                                        .actor = core::UserId::parse(args.actor),
+                                        .dry_run = args.dry_run};
+      if (args.file == "-") {
+        return run_entity_import<T>(*backend, options, build_fn, std::cin, out, noun_plural);
+      }
+      std::ifstream file(args.file, std::ios::binary);
+      if (!file) {
+        throw std::runtime_error("cannot open input file: " + args.file);
+      }
+      return run_entity_import<T>(*backend, options, build_fn, file, out, noun_plural);
+    }
+
+    [[nodiscard]] std::optional<int> dispatch_import_nouns(const ImportNouns& nouns,
+                                                           std::ostream& out) {
+      if (nouns.item_type.cmd->parsed()) {
+        return run_import_arg<core::ItemType>(nouns.item_type, build_item_type_import,
+                                              "item-type(s)", out);
+      }
+      if (nouns.box.cmd->parsed()) {
+        return run_import_arg<core::Box>(nouns.box, build_box_import, "box(es)", out);
+      }
+      return std::nullopt;
+    }
+
   } // namespace
 
   // out/err are conventional stream params (mirrors main()); order is unambiguous.
@@ -491,6 +566,9 @@ namespace fmgr::cli {
     CreateNouns create_nouns;
     add_create_nouns(app, freezer_noun, box_noun, item_type_noun, create_nouns);
 
+    ImportNouns import_nouns;
+    add_import_nouns(box_noun, item_type_noun, import_nouns);
+
     try {
       app.parse(argc, argv);
     } catch (const CLI::ParseError& error) {
@@ -546,6 +624,9 @@ namespace fmgr::cli {
         return *code;
       }
       if (const auto code = dispatch_create_nouns(create_nouns, out)) {
+        return *code;
+      }
+      if (const auto code = dispatch_import_nouns(import_nouns, out)) {
         return *code;
       }
     } catch (const std::exception& error) {
