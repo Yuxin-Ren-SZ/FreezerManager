@@ -4,6 +4,7 @@
 #include "core/identity.h"
 #include "core/role.h"
 #include "server/FreezerServer.h"
+#include "server/GrpcErrorTranslation.h"
 #include "storage/IdentityTraits.h"
 #include "storage/RoleTraits.h"
 #include "storage/SessionTraits.h"
@@ -358,6 +359,21 @@ namespace fmgr::test {
       EXPECT_THROW(server.build(), std::invalid_argument);
       // bound_port() stays 0 — the guard fired before AddListeningPort.
       EXPECT_EQ(server.bound_port(), 0);
+    }
+
+    // Security audit H-3: the error funnel must log internal detail server-side
+    // (now via spdlog) but never leak it to the client-facing status message.
+    TEST(GrpcErrorTranslation, UnknownExceptionMapsToGenericInternalWithoutLeak) {
+      grpc::Status status;
+      try {
+        throw std::runtime_error("table=users column=ssn value=secret-detail");
+      } catch (...) {
+        status = server::current_exception_to_grpc_status();
+      }
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL);
+      EXPECT_EQ(status.error_message(), "internal server error");
+      EXPECT_EQ(status.error_message().find("ssn"), std::string::npos);
+      EXPECT_EQ(status.error_message().find("secret-detail"), std::string::npos);
     }
 
     TEST(FreezerServerTlsGuard, NoRequireTlsStartsPlaintextInDevMode) {

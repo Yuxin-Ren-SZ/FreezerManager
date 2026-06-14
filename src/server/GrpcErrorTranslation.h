@@ -6,9 +6,9 @@
 #include "storage/IStorageBackend.h"
 
 #include <grpcpp/grpcpp.h>
+#include <spdlog/spdlog.h>
 
 #include <exception>
-#include <iostream>
 #include <string>
 
 namespace fmgr::server {
@@ -93,11 +93,13 @@ namespace fmgr::server {
       return to_grpc_status(e);
     } catch (const std::exception& e) {
       // Do not leak internal detail (DB messages carry table/column names) to the
-      // client. Log the real error server-side; return a generic status.
-      std::cerr << "grpc: unhandled internal error: " << e.what() << '\n';
+      // client. Log the real error server-side; return a generic status. spdlog's
+      // async sink keeps this off the RPC thread's hot path, unlike unbuffered
+      // std::cerr which serializes a write() syscall per error (audit H-3).
+      spdlog::error("grpc: unhandled internal error: {}", e.what());
       return {grpc::StatusCode::INTERNAL, "internal server error"};
     } catch (...) {
-      std::cerr << "grpc: unhandled non-std exception\n";
+      spdlog::error("grpc: unhandled non-std exception");
       return {grpc::StatusCode::INTERNAL, "internal server error"};
     }
   }
