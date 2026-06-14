@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -340,6 +341,38 @@ namespace fmgr::test {
       // + 6 (ShareService) = 70 RPCs
       EXPECT_GE(registry.size(), 60U) << "RPC registry smaller than expected; "
                                          "a new service may have been added without registering.";
+    }
+
+    // Security audit H-2: a production deployment that requires TLS must refuse
+    // to start a plaintext listener if the cert/key paths are missing.
+    TEST(FreezerServerTlsGuard, RequireTlsWithoutCertThrowsBeforeBinding) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      backend.migrate_to_latest();
+      auth::LocalAuthProvider provider(backend, fast_config());
+
+      server::FreezerServerOptions opts;
+      opts.listen_address = "localhost:0";
+      opts.require_tls = true; // cert/key paths intentionally left empty
+
+      server::FreezerServer server(backend, provider, std::move(opts));
+      EXPECT_THROW(server.build(), std::invalid_argument);
+      // bound_port() stays 0 — the guard fired before AddListeningPort.
+      EXPECT_EQ(server.bound_port(), 0);
+    }
+
+    TEST(FreezerServerTlsGuard, NoRequireTlsStartsPlaintextInDevMode) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      backend.migrate_to_latest();
+      auth::LocalAuthProvider provider(backend, fast_config());
+
+      server::FreezerServerOptions opts;
+      opts.listen_address = "localhost:0";
+      opts.require_tls = false;
+
+      server::FreezerServer server(backend, provider, std::move(opts));
+      EXPECT_NO_THROW(server.build());
+      EXPECT_GT(server.bound_port(), 0);
+      server.shutdown();
     }
 
   } // namespace

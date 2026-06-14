@@ -30,6 +30,18 @@ int main(int /*argc*/, char* /*argv*/[]) {
     fmgr::server::FreezerServerOptions opts;
     opts.listen_address = listen;
 
+    const char* tls_cert_env = std::getenv("FMGR_TLS_CERT");
+    if (tls_cert_env != nullptr) {
+      opts.tls_cert_path = tls_cert_env;
+    }
+    const char* tls_key_env = std::getenv("FMGR_TLS_KEY");
+    if (tls_key_env != nullptr) {
+      opts.tls_key_path = tls_key_env;
+    }
+    const char* require_tls_env = std::getenv("FMGR_REQUIRE_TLS");
+    opts.require_tls = require_tls_env != nullptr && (std::string(require_tls_env) == "1" ||
+                                                      std::string(require_tls_env) == "true");
+
     std::cerr << "freezerd: listening on " << listen << " (SQLite: " << db_path << ")\n";
 
     fmgr::server::FreezerServer server(*backend, auth, std::move(opts));

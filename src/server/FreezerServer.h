@@ -27,6 +27,11 @@ namespace fmgr::server {
     // If empty, server starts without TLS (dev mode only).
     std::string tls_cert_path;
     std::string tls_key_path;
+    // Production safety guard: when true, build() refuses to start a plaintext
+    // server. A misconfiguration that drops TLS (missing cert/key paths) then
+    // fails loudly at startup instead of silently exposing bearer tokens and
+    // PHI on the wire. Set from FMGR_REQUIRE_TLS in production deployments.
+    bool require_tls{false};
   };
 
   // Owns the gRPC server, all service impls, and manages the lifecycle.
