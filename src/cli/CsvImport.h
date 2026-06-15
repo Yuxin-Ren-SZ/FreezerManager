@@ -81,6 +81,17 @@ namespace fmgr::cli {
     }
   }
 
+  // Parse a boolean cell. Accepts true/false/1/0; anything else is a RowError.
+  [[nodiscard]] inline bool parse_bool(const std::string& text, const std::string& column) {
+    if (text == "true" || text == "1") {
+      return true;
+    }
+    if (text == "false" || text == "0") {
+      return false;
+    }
+    throw RowError{column + ": expected true/false/1/0, got '" + text + "'"};
+  }
+
   // Outcome for one CSV data row (1-based, excluding header and comments).
   template <typename T> struct EntityImportRow {
     std::size_t row_number{0};

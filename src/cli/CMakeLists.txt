@@ -13,9 +13,11 @@ add_library(
   CreateCommands.cc
   CsvReader.cc
   CsvWriter.cc
+  CustomFieldDefImport.cc
   ItemTypeImport.cc
   LabCommands.cc
   NounCommands.cc
+  UserImport.cc
   SampleCommands.cc
   SampleCsv.cc
   SampleImport.cc

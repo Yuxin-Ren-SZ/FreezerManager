@@ -7,16 +7,20 @@
 #include "cli/BoxImport.h"
 #include "cli/CreateCommands.h"
 #include "cli/CsvImport.h"
+#include "cli/CustomFieldDefImport.h"
 #include "cli/ItemTypeImport.h"
 #include "cli/LabCommands.h"
 #include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleQuery.h"
+#include "cli/UserImport.h"
 #include "core/box.h"
 #include "core/enums.h"
+#include "core/identity.h"
 #include "core/ids.h"
 #include "core/item_type.h"
 #include "storage/BoxGeometryTraits.h"
+#include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
 
 #include <CLI/CLI.hpp>
@@ -449,12 +453,23 @@ namespace fmgr::cli {
     struct ImportNouns {
       ImportArgs item_type;
       ImportArgs box;
+      ImportArgs custom_field_def;
+      ImportArgs user;
     };
 
-    void add_import_nouns(const NounSubcommands& box, const NounSubcommands& item_type,
-                          ImportNouns& nouns) {
+    void add_import_nouns(CLI::App& app, const NounSubcommands& box,
+                          const NounSubcommands& item_type, ImportNouns& nouns) {
       add_import_noun(item_type.root, "item-type", nouns.item_type);
       add_import_noun(box.root, "box", nouns.box);
+
+      // custom-field-def and user have no read/create noun yet → own roots.
+      CLI::App* cfd_root = app.add_subcommand("custom-field-def", "custom-field-def commands");
+      cfd_root->require_subcommand(1);
+      add_import_noun(cfd_root, "custom-field-def", nouns.custom_field_def);
+
+      CLI::App* user_root = app.add_subcommand("user", "user commands");
+      user_root->require_subcommand(1);
+      add_import_noun(user_root, "user", nouns.user);
     }
 
     // Run one parsed import: open the backend, then stream the file (or stdin on
@@ -485,6 +500,13 @@ namespace fmgr::cli {
       }
       if (nouns.box.cmd->parsed()) {
         return run_import_arg<core::Box>(nouns.box, build_box_import, "box(es)", out);
+      }
+      if (nouns.custom_field_def.cmd->parsed()) {
+        return run_import_arg<core::CustomFieldDefinition>(
+            nouns.custom_field_def, build_custom_field_def_import, "custom-field-def(s)", out);
+      }
+      if (nouns.user.cmd->parsed()) {
+        return run_import_arg<core::User>(nouns.user, build_user_import, "user(s)", out);
       }
       return std::nullopt;
     }
@@ -567,7 +589,7 @@ namespace fmgr::cli {
     add_create_nouns(app, freezer_noun, box_noun, item_type_noun, create_nouns);
 
     ImportNouns import_nouns;
-    add_import_nouns(box_noun, item_type_noun, import_nouns);
+    add_import_nouns(app, box_noun, item_type_noun, import_nouns);
 
     try {
       app.parse(argc, argv);

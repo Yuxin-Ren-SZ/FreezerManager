@@ -8,6 +8,7 @@
 #include "cli/CsvImport.h"
 #include "cli/CsvReader.h"
 #include "cli/CsvWriter.h"
+#include "cli/CustomFieldDefImport.h"
 #include "cli/EntityRead.h"
 #include "cli/ItemTypeImport.h"
 #include "cli/LabCommands.h"
@@ -16,6 +17,7 @@
 #include "cli/SampleCsv.h"
 #include "cli/SampleImport.h"
 #include "cli/SampleQuery.h"
+#include "cli/UserImport.h"
 
 #include "core/box.h"
 #include "core/freezer.h"
@@ -555,6 +557,68 @@ namespace fmgr::cli {
       EXPECT_NE(report.rows.at(0).error.find("box_type_id"), std::string::npos);
     }
 
+    // ---- CustomFieldDefImport / UserImport (pure mappers) ----
+
+    TEST(CustomFieldDefImportTest, MapsValidRow) {
+      const auto report = build_custom_field_def_import(
+          parse("scope_kind,key,label,data_type\r\nsample,patient_id,Patient ID,string\r\n"),
+          id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      ASSERT_TRUE(report.rows.at(0).ok) << report.rows.at(0).error;
+      ASSERT_TRUE(report.rows.at(0).entity.has_value());
+      EXPECT_EQ(report.rows.at(0).entity->key, "patient_id");
+      EXPECT_EQ(report.rows.at(0).entity->data_type, core::FieldDataType::String);
+    }
+
+    TEST(CustomFieldDefImportTest, MissingDataTypeColumnIsHeaderError) {
+      const auto report = build_custom_field_def_import(
+          parse("scope_kind,key,label\r\nsample,k,L\r\n"), id_from_low<core::LabId>(1), ts(1));
+      EXPECT_FALSE(report.header_error.empty());
+    }
+
+    TEST(CustomFieldDefImportTest, BadDataTypeIsRowError) {
+      const auto report = build_custom_field_def_import(
+          parse("scope_kind,key,label,data_type\r\nsample,k,L,bogus\r\n"),
+          id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      EXPECT_FALSE(report.rows.at(0).ok);
+      EXPECT_NE(report.rows.at(0).error.find("data_type"), std::string::npos);
+    }
+
+    TEST(CustomFieldDefImportTest, PhiIndexedConflictIsRowError) {
+      const auto report =
+          build_custom_field_def_import(parse("scope_kind,key,label,data_type,is_phi,indexed\r\n"
+                                              "sample,k,L,string,true,true\r\n"),
+                                        id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      EXPECT_FALSE(report.rows.at(0).ok);
+      EXPECT_NE(report.rows.at(0).error.find("indexed"), std::string::npos);
+    }
+
+    TEST(UserImportTest, MapsValidRow) {
+      const auto report =
+          build_user_import(parse("primary_email,display_name\r\na@b.edu,Alice\r\n"),
+                            id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      ASSERT_TRUE(report.rows.at(0).ok);
+      ASSERT_TRUE(report.rows.at(0).entity.has_value());
+      EXPECT_EQ(report.rows.at(0).entity->primary_email, "a@b.edu");
+      EXPECT_EQ(report.rows.at(0).entity->status, core::UserStatus::Active);
+    }
+
+    TEST(UserImportTest, MissingDisplayNameColumnIsHeaderError) {
+      const auto report = build_user_import(parse("primary_email\r\na@b.edu\r\n"),
+                                            id_from_low<core::LabId>(1), ts(1));
+      EXPECT_FALSE(report.header_error.empty());
+    }
+
+    TEST(UserImportTest, EmptyEmailIsRowError) {
+      const auto report = build_user_import(parse("primary_email,display_name\r\n,Bob\r\n"),
+                                            id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      EXPECT_FALSE(report.rows.at(0).ok);
+    }
+
     TEST(BackendFactoryTest, RejectsNeitherTarget) {
       EXPECT_THROW(static_cast<void>(open_backend(BackendOptions{})), BackendOptionError);
     }
@@ -800,6 +864,37 @@ namespace fmgr::cli {
       EXPECT_EQ(code, 1) << out.str();
     }
 
+    TEST_P(CliBackendTest, CustomFieldDefImportPersists) {
+      const auto lab = fixture_->lab_a();
+      const auto before = query_in_lab<core::CustomFieldDefinition>(fixture_->backend(), lab);
+      std::istringstream in("scope_kind,key,label,data_type\r\nsample,donor_age,Donor Age,int\r\n");
+      std::ostringstream out;
+      const EntityImportOptions opts{.lab_id = lab, .actor = id_from_low<core::UserId>(10)};
+      const int code = run_entity_import<core::CustomFieldDefinition>(
+          fixture_->backend(), opts, build_custom_field_def_import, in, out, "custom-field-def(s)");
+      EXPECT_EQ(code, 0) << out.str();
+      const auto after = query_in_lab<core::CustomFieldDefinition>(fixture_->backend(), lab);
+      EXPECT_EQ(after.size(), before.size() + 1U);
+    }
+
+    TEST_P(CliBackendTest, UserImportPersists) {
+      const auto lab = fixture_->lab_a();
+      std::istringstream in("primary_email,display_name\r\nimported@example.edu,Imported\r\n");
+      std::ostringstream out;
+      const EntityImportOptions opts{.lab_id = lab, .actor = id_from_low<core::UserId>(10)};
+      const int code = run_entity_import<core::User>(fixture_->backend(), opts, build_user_import,
+                                                     in, out, "user(s)");
+      EXPECT_EQ(code, 0) << out.str();
+      EXPECT_NE(out.str().find("imported 1 user(s)"), std::string::npos);
+      // Users are global: verify by email lookup (no lab scope on the User row).
+      auto txn = fixture_->backend().begin(storage::IsolationLevel::Serializable);
+      const auto found = txn->repo<core::User>().query(storage::Query<core::User>::where(
+          storage::field<core::User, std::string>(core::User::Field::PrimaryEmail) ==
+          std::string("imported@example.edu")));
+      txn->commit();
+      EXPECT_EQ(found.size(), 1U);
+    }
+
     // ---- create nouns (write half of the M1 CLI nouns) ----
 
     CreateCommon create_common(core::LabId lab) {
@@ -997,6 +1092,29 @@ namespace fmgr::cli {
       std::filesystem::remove(csv_path);
       EXPECT_EQ(code, 0) << err.str() << out.str();
       EXPECT_NE(out.str().find("imported 2 item-type(s)"), std::string::npos);
+    }
+
+    TEST(CliAppTest, UserImportFromFile) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const auto csv_path =
+          std::filesystem::temp_directory_path() / "freezermanager-user-import-test.csv";
+      {
+        std::ofstream csv(csv_path, std::ios::binary | std::ios::trunc);
+        csv << "primary_email,display_name\r\nbulk1@example.edu,Bulk One\r\n";
+      }
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::string file = csv_path.string();
+      const std::vector<const char*> args = {
+          "freezerctl", "user",      "import",  "--sqlite",    sqlite_db.c_str(),
+          "--lab",      lab.c_str(), "--actor", actor.c_str(), file.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      std::filesystem::remove(csv_path);
+      EXPECT_EQ(code, 0) << err.str() << out.str();
+      EXPECT_NE(out.str().find("imported 1 user(s)"), std::string::npos);
     }
 
     TEST(CliAppTest, FreezerListToStdout) {
