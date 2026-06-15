@@ -4,6 +4,7 @@
 // These don't require libFuzzer — they run as normal GoogleTest tests with
 // randomized inputs and check invariants that must always hold.
 
+#include "audit/CanonicalJson.h"
 #include "core/custom_field_validator.h"
 #include "core/uuid.h"
 #include "rpc/RateLimiter.h"
@@ -45,9 +46,9 @@ namespace fmgr::fuzz {
       auto& gen = rng();
       constexpr int kCapacity = 5;
       constexpr int kRefillPerSec = 2;
-      RateLimiter limiter(RateLimiterConfig{.capacity = static_cast<double>(kCapacity),
+      rpc::RateLimiter limiter(rpc::RateLimiterConfig{.capacity = static_cast<double>(kCapacity),
                                             .refill_per_sec = static_cast<double>(kRefillPerSec)});
-      auto clock = RateLimiter::TimePoint{};
+      auto clock = rpc::RateLimiter::TimePoint{};
       constexpr int kOps = 2000;
 
       int consecutive_allowed = 0;
@@ -76,9 +77,9 @@ namespace fmgr::fuzz {
 
     TEST(FuzzRateLimiter, DistinctKeysDontInterfere) {
       auto& gen = rng();
-      RateLimiter limiter(
-          RateLimiterConfig{.capacity = 3.0, .refill_per_sec = 1.0, .max_tracked_keys = 1000});
-      auto clock = RateLimiter::TimePoint{};
+      rpc::RateLimiter limiter(
+          rpc::RateLimiterConfig{.capacity = 3.0, .refill_per_sec = 1.0, .max_tracked_keys = 1000});
+      auto clock = rpc::RateLimiter::TimePoint{};
       constexpr int kOps = 500;
 
       std::set<std::string> keys_that_ever_failed;
@@ -107,9 +108,9 @@ namespace fmgr::fuzz {
     TEST(FuzzRateLimiter, TrackedKeyCountNeverExceedsMax) {
       auto& gen = rng();
       constexpr std::size_t kMaxKeys = 20;
-      RateLimiter limiter(
-          RateLimiterConfig{.capacity = 1.0, .refill_per_sec = 100.0, .max_tracked_keys = kMaxKeys});
-      auto clock = RateLimiter::TimePoint{};
+      rpc::RateLimiter limiter(
+          rpc::RateLimiterConfig{.capacity = 1.0, .refill_per_sec = 100.0, .max_tracked_keys = kMaxKeys});
+      auto clock = rpc::RateLimiter::TimePoint{};
 
       for (int i = 0; i < 500; ++i) {
         const auto key = "ip-" + std::to_string(std::uniform_int_distribution<int>(0, 200)(gen));
@@ -239,6 +240,164 @@ namespace fmgr::fuzz {
           const auto errors = core::validate_custom_fields(defs, fields);
           (void)errors;
         });
+      }
+    }
+
+    // ---- Canonical JSON fuzz ----
+
+    TEST(FuzzCanonicalJson, DeterministicOutputForSameInput) {
+      auto& gen = rng();
+      constexpr int kIterations = 200;
+
+      for (int i = 0; i < kIterations; ++i) {
+        nlohmann::json value;
+        const int shape = std::uniform_int_distribution<int>(0, 6)(gen);
+        switch (shape) {
+        case 0: value = nullptr; break;
+        case 1: value = true; break;
+        case 2: value = std::uniform_int_distribution<int>(-1000, 1000)(gen); break;
+        case 3: value = std::uniform_real_distribution<double>(-100.0, 100.0)(gen); break;
+        case 4: {
+          const int len = std::uniform_int_distribution<int>(0, 256)(gen);
+          value = std::string(static_cast<std::size_t>(len), 'x');
+          break;
+        }
+        case 5: {
+          nlohmann::json arr = nlohmann::json::array();
+          const int count = std::uniform_int_distribution<int>(0, 8)(gen);
+          for (int j = 0; j < count; ++j) {
+            arr.push_back(std::uniform_int_distribution<int>(0, 99)(gen));
+          }
+          value = std::move(arr);
+          break;
+        }
+        case 6: {
+          nlohmann::json obj = nlohmann::json::object();
+          const int count = std::uniform_int_distribution<int>(0, 5)(gen);
+          for (int j = 0; j < count; ++j) {
+            obj["key" + std::to_string(j)] = std::uniform_int_distribution<int>(0, 99)(gen);
+          }
+          value = std::move(obj);
+          break;
+        }
+        }
+
+        const auto first = audit::canonical_json(value);
+        const auto second = audit::canonical_json(value);
+        // Determinism: same input must produce same output every time.
+        EXPECT_EQ(first, second) << "canonical_json not deterministic for shape " << shape;
+      }
+    }
+
+    TEST(FuzzCanonicalJson, IdempotentUnderRepeatedSerialization) {
+      auto& gen = rng();
+      constexpr int kIterations = 100;
+
+      for (int i = 0; i < kIterations; ++i) {
+        nlohmann::json obj = nlohmann::json::object();
+        const int count = std::uniform_int_distribution<int>(1, 8)(gen);
+        for (int j = 0; j < count; ++j) {
+          // Insert keys in random order to verify sorting.
+          const auto key = "field_" + std::to_string(std::uniform_int_distribution<int>(0, 20)(gen));
+          if (!obj.contains(key)) {
+            obj[key] = std::uniform_int_distribution<int>(0, 999)(gen);
+          }
+        }
+
+        const auto first = audit::canonical_json(obj);
+        // Round-trip: parse the canonical form back, then re-serialize.
+        const auto reparsed = nlohmann::json::parse(first);
+        const auto second = audit::canonical_json(reparsed);
+        EXPECT_EQ(first, second) << "canonical_json not idempotent";
+      }
+    }
+
+    TEST(FuzzCanonicalJson, NeverCrashesOnArbitraryJson) {
+      auto& gen = rng();
+      constexpr int kIterations = 500;
+
+      for (int i = 0; i < kIterations; ++i) {
+        nlohmann::json value;
+        const int shape = std::uniform_int_distribution<int>(0, 6)(gen);
+        switch (shape) {
+        case 0: value = nullptr; break;
+        case 1: value = true; break;
+        case 2: value = std::numeric_limits<double>::quiet_NaN(); break;
+        case 3: value = std::numeric_limits<double>::infinity(); break;
+        case 4: value = -std::numeric_limits<double>::infinity(); break;
+        case 5: {
+          nlohmann::json deep = nlohmann::json::object();
+          nlohmann::json* cursor = &deep;
+          const int depth = std::uniform_int_distribution<int>(1, 20)(gen);
+          for (int d = 0; d < depth; ++d) {
+            (*cursor)["nested"] = nlohmann::json::object();
+            cursor = &(*cursor)["nested"];
+          }
+          (*cursor)["leaf"] = std::uniform_int_distribution<int>(0, 99)(gen);
+          value = std::move(deep);
+          break;
+        }
+        case 6: {
+          // Large array with mixed types.
+          nlohmann::json arr = nlohmann::json::array();
+          const int count = std::uniform_int_distribution<int>(0, 200)(gen);
+          for (int j = 0; j < count; ++j) {
+            const int elem_type = std::uniform_int_distribution<int>(0, 2)(gen);
+            switch (elem_type) {
+            case 0: arr.push_back(nullptr); break;
+            case 1: arr.push_back(std::uniform_int_distribution<int>(0, 99)(gen)); break;
+            case 2: arr.push_back(true); break;
+            }
+          }
+          value = std::move(arr);
+          break;
+        }
+        }
+
+        // canonical_json must never throw on valid JSON inputs.
+        EXPECT_NO_THROW({
+          const auto result = audit::canonical_json(value);
+          (void)result;
+        }) << "canonical_json threw on shape " << shape << " iteration " << i;
+      }
+    }
+
+    TEST(FuzzAuditHash, SameInputProducesSameHash) {
+      auto& gen = rng();
+      constexpr int kIterations = 100;
+
+      for (int i = 0; i < kIterations; ++i) {
+        const auto prev =
+            std::string(static_cast<std::size_t>(std::uniform_int_distribution<int>(0, 64)(gen)),
+                        'a');
+        nlohmann::json content = {{"n", std::uniform_int_distribution<int>(0, 9999)(gen)}};
+        const auto json_str = audit::canonical_json(content);
+
+        const auto first = audit::compute_audit_hash(prev, json_str);
+        const auto second = audit::compute_audit_hash(prev, json_str);
+        EXPECT_EQ(first, second) << "compute_audit_hash not deterministic";
+        // Hashes should always be 64-character hex strings.
+        EXPECT_EQ(first.size(), 64U);
+        EXPECT_EQ(second.size(), 64U);
+      }
+    }
+
+    TEST(FuzzAuditHash, DifferentInputsProduceDifferentHashes) {
+      auto& gen = rng();
+      constexpr int kIterations = 100;
+
+      for (int i = 0; i < kIterations; ++i) {
+        nlohmann::json content_a = {{"n", std::uniform_int_distribution<int>(0, 9999)(gen)}};
+        nlohmann::json content_b = {{"n", std::uniform_int_distribution<int>(0, 9999)(gen)}};
+        const auto json_a = audit::canonical_json(content_a);
+        const auto json_b = audit::canonical_json(content_b);
+
+        const auto hash_a = audit::compute_audit_hash("", json_a);
+        const auto hash_b = audit::compute_audit_hash("", json_b);
+        if (json_a != json_b) {
+          EXPECT_NE(hash_a, hash_b)
+              << "SHA-256 collision or identical content produced different hashes";
+        }
       }
     }
 

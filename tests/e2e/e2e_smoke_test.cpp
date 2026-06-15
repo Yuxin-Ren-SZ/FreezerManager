@@ -7,10 +7,12 @@
 #include "auth/LocalAuthProvider.h"
 #include "core/box.h"
 #include "core/identity.h"
+#include "core/item_type.h"
 #include "core/role.h"
 #include "core/sample.h"
 #include "server/FreezerServer.h"
 #include "storage/IdentityTraits.h"
+#include "storage/ItemTypeTraits.h"
 #include "storage/RoleTraits.h"
 #include "storage/SessionTraits.h"
 #include "storage/sqlite/AuditRepositories.h"
@@ -67,6 +69,7 @@ namespace fmgr::test {
 
         provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_config());
         seed_admin_user();
+        seed_item_type();
 
         server_opts_.listen_address = "localhost:0";
         server_ = std::make_unique<server::FreezerServer>(*backend_, *provider_, server_opts_);
@@ -121,6 +124,7 @@ namespace fmgr::test {
       std::unique_ptr<fmgr::v1::AuthService::Stub> auth_stub_;
       std::unique_ptr<fmgr::v1::SessionService::Stub> session_stub_;
       std::unique_ptr<fmgr::v1::SampleService::Stub> sample_stub_;
+      core::ItemTypeId item_type_id_;
 
     private:
       static void remove_sqlite_files(const std::filesystem::path& path) {
@@ -183,6 +187,30 @@ namespace fmgr::test {
         txn->repo<core::LabMembership>().insert(membership, ctx);
         txn->commit();
       }
+
+      void seed_item_type() {
+        item_type_id_ =
+            core::ItemTypeId::parse("30000000-e2e0-4e2e-8e2e-000000000001");
+        const core::LabId lab_id =
+            core::LabId::parse("20000000-e2e0-4e2e-8e2e-000000000001");
+        const core::ItemType item_type{
+            .id = item_type_id_,
+            .lab_id = lab_id,
+            .parent_id = std::nullopt,
+            .name = "E2E Item Type",
+            .created_at = core::Timestamp::from_unix_micros(1),
+        };
+        const storage::MutationContext ctx{
+            .actor_user_id =
+                core::UserId::parse("10000000-e2e0-4e2e-8e2e-000000000001"),
+            .actor_session_id = "e2e-seed",
+            .request_id = "e2e-seed",
+            .reason = "e2e test setup",
+        };
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ItemType>().insert(item_type, ctx);
+        txn->commit();
+      }
     };
 
     // ---- E2E smoke tests ----
@@ -232,6 +260,50 @@ namespace fmgr::test {
       const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(E2ESmokeTest, SampleCreateAndListLifecycle) {
+      const auto token = login(kEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      // Create a sample via the gRPC API.
+      grpc::ClientContext create_ctx;
+      set_bearer(create_ctx, token);
+      fmgr::v1::CreateSampleRequest create_req;
+      create_req.set_lab_id("20000000-e2e0-4e2e-8e2e-000000000001");
+      create_req.set_item_type_id(item_type_id_.to_string());
+      create_req.set_name("E2E Created Sample");
+      fmgr::v1::CreateSampleResponse create_resp;
+      const auto create_status =
+          sample_stub_->CreateSample(&create_ctx, create_req, &create_resp);
+      ASSERT_TRUE(create_status.ok())
+          << "CreateSample failed: " << create_status.error_message();
+      EXPECT_FALSE(create_resp.sample().id().empty());
+      EXPECT_EQ(create_resp.sample().name(), "E2E Created Sample");
+      const std::string created_id = create_resp.sample().id();
+
+      // List samples — the newly created sample must appear.
+      grpc::ClientContext list_ctx;
+      set_bearer(list_ctx, token);
+      fmgr::v1::ListSamplesRequest list_req;
+      list_req.set_lab_id("20000000-e2e0-4e2e-8e2e-000000000001");
+      fmgr::v1::ListSamplesResponse list_resp;
+      const auto list_status =
+          sample_stub_->ListSamples(&list_ctx, list_req, &list_resp);
+      ASSERT_TRUE(list_status.ok())
+          << "ListSamples failed: " << list_status.error_message();
+      EXPECT_EQ(list_resp.samples_size(), 1);
+
+      bool found = false;
+      for (int i = 0; i < list_resp.samples_size(); ++i) {
+        if (list_resp.samples(i).id() == created_id) {
+          found = true;
+          EXPECT_EQ(list_resp.samples(i).name(), "E2E Created Sample");
+          EXPECT_EQ(list_resp.samples(i).status(),
+                    fmgr::v1::SAMPLE_STATUS_ACTIVE);
+        }
+      }
+      EXPECT_TRUE(found) << "created sample not found in list response";
     }
 
   } // namespace

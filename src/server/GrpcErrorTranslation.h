@@ -9,7 +9,9 @@
 #include <spdlog/spdlog.h>
 
 #include <exception>
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace fmgr::server {
 
@@ -104,20 +106,31 @@ namespace fmgr::server {
     }
   }
 
+  // Parse a "Bearer <token>" Authorization header value. `header` is nullopt when
+  // the header is absent. Throws auth::InvalidCredentials when the header is
+  // missing or not of the form "Bearer <token>". Factored out of extract_bearer
+  // so the parsing is unit-testable without a live grpc::ServerContext, whose
+  // server-side client_metadata() cannot be populated in-process.
+  [[nodiscard]] inline std::string parse_bearer(std::optional<std::string_view> header) {
+    if (!header.has_value()) {
+      throw auth::InvalidCredentials("missing Authorization header");
+    }
+    constexpr std::string_view prefix = "Bearer ";
+    if (!header->starts_with(prefix)) {
+      throw auth::InvalidCredentials("Authorization header must be 'Bearer <token>'");
+    }
+    return std::string(header->substr(prefix.size()));
+  }
+
   // Extract "Bearer <token>" from gRPC request metadata.
   // Throws auth::InvalidCredentials if header is missing or malformed.
   [[nodiscard]] inline std::string extract_bearer(const grpc::ServerContext& ctx) {
     const auto& metadata = ctx.client_metadata();
     const auto it = metadata.find("authorization");
     if (it == metadata.end()) {
-      throw auth::InvalidCredentials("missing Authorization header");
+      return parse_bearer(std::nullopt);
     }
-    const std::string_view value(it->second.data(), it->second.size());
-    constexpr std::string_view prefix = "Bearer ";
-    if (!value.starts_with(prefix)) {
-      throw auth::InvalidCredentials("Authorization header must be 'Bearer <token>'");
-    }
-    return std::string(value.substr(prefix.size()));
+    return parse_bearer(std::string_view(it->second.data(), it->second.size()));
   }
 
 } // namespace fmgr::server

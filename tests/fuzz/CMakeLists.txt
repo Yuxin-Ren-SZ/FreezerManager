@@ -13,6 +13,7 @@ target_link_libraries(
   freezermanager_fuzz_tests
   PRIVATE
     FreezerManager::core
+    FreezerManager::audit
     GTest::gtest_main
 )
 target_include_directories(

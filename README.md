@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-blue?logo=linux)](https://kernel.org)
 [![Build](https://img.shields.io/badge/build-CMake%203.25%2B-blue?logo=cmake)](./README.md#building)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-%232088FF?logo=githubactions)](./.github/workflows)
-[![Tests](https://img.shields.io/badge/tests-817%2B%20passing-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-839%2B%20passing-brightgreen)](./tests)
 [![Sanitizers](https://img.shields.io/badge/sanitizers-ASan%20%7C%20UBSan%20%7C%20TSan-red)](./README.md#building)
 [![SQL](https://img.shields.io/badge/backends-SQLite%20%7C%20PostgreSQL-blue?logo=postgresql)](./README.md#storage--data-safety)
 
@@ -39,7 +39,7 @@ server that is fast, correct, and safe to operate — even without a dedicated D
 - **Full chain of custody.** Aliquot lineage, check-out/check-in with volume
   tracking, and cross-lab share requests with three-signature approval.
 - **Modern toolchain.** C++20, CMake 3.25+, Conan 2 lockfiles, clang-tidy,
-  sanitizer CI builds, and TDD throughout (817+ tests).
+  sanitizer CI builds, and TDD throughout (839+ tests).
 
 > **Status:** Pre-alpha — active implementation. Core domain, both reference
 > backends (SQLite + PostgreSQL), auth foundation, and the audit chain are
@@ -160,8 +160,8 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ clang-format + clang-tidy enforced in CI; SPDX header checks on every source file
 - ✅ CLA Assistant Lite bot — required before any PR is merged
 - ✅ Abstract backend conformance suite — parameterized GoogleTest fixtures; new backend = pass the suite (SQLite + in-memory pass; Postgres suite skips without `FMGR_TEST_POSTGRES_URL`)
-- 🔲 Property tests (RapidCheck) — box geometry invariants, audit-chain integrity
-- 🔲 Fuzz harnesses (libFuzzer) — RPC parsers, custom-field validator, CSV importer, canonical-JSON serializer
+- ⚙️ Property tests (RapidCheck) — box geometry invariants (no-double-booking), audit-chain integrity (intact/tampered)
+- ⚙️ Fuzz harnesses — rate-limiter invariants, UUID generation, custom-field validator crash-safety; CSV importer, canonical-JSON serializer 🔲
 - ⚙️ Authorization tests — `AuthMiddleware` 4-step gate covered in `auth_middleware_test.cpp`; per-RPC positive/negative tests land with the gRPC server
 
 ---

@@ -10,6 +10,7 @@
 
 #include <gtest/gtest.h>
 
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -230,31 +231,35 @@ namespace fmgr::server {
       }
     }
 
-    // ---- extract_bearer ----
+    // ---- extract_bearer / parse_bearer ----
+    //
+    // The header-parsing rules are tested through parse_bearer: a real
+    // grpc::ServerContext's client_metadata() is populated from the wire and
+    // cannot be injected in-process, so the metadata-bearing cases use the
+    // testable seam. extract_bearer's own ctx->metadata path is covered by the
+    // missing-header case (an empty ServerContext has no authorization entry).
 
     TEST(ErrorTranslation, ExtractBearerMissingHeaderThrows) {
       grpc::ServerContext ctx;
       EXPECT_THROW((void)extract_bearer(ctx), auth::InvalidCredentials);
     }
 
-    TEST(ErrorTranslation, ExtractBearerMissingPrefixThrows) {
-      grpc::ServerContext ctx;
-      ctx.AddMetadata("authorization", "token-without-bearer-prefix");
-      EXPECT_THROW((void)extract_bearer(ctx), auth::InvalidCredentials);
+    TEST(ErrorTranslation, ParseBearerMissingHeaderThrows) {
+      EXPECT_THROW((void)parse_bearer(std::nullopt), auth::InvalidCredentials);
     }
 
-    TEST(ErrorTranslation, ExtractBearerValidTokenReturnsTrimmed) {
-      grpc::ServerContext ctx;
-      ctx.AddMetadata("authorization", "Bearer my-secret-session-token");
-      const auto token = extract_bearer(ctx);
-      EXPECT_EQ(token, "my-secret-session-token");
+    TEST(ErrorTranslation, ParseBearerMissingPrefixThrows) {
+      EXPECT_THROW((void)parse_bearer(std::string_view("token-without-bearer-prefix")),
+                   auth::InvalidCredentials);
     }
 
-    TEST(ErrorTranslation, ExtractBearerEmptyTokenAfterBearerReturnsEmpty) {
-      grpc::ServerContext ctx;
-      ctx.AddMetadata("authorization", "Bearer ");
-      const auto token = extract_bearer(ctx);
-      EXPECT_TRUE(token.empty());
+    TEST(ErrorTranslation, ParseBearerValidTokenReturnsTrimmed) {
+      EXPECT_EQ(parse_bearer(std::string_view("Bearer my-secret-session-token")),
+                "my-secret-session-token");
+    }
+
+    TEST(ErrorTranslation, ParseBearerEmptyTokenAfterBearerReturnsEmpty) {
+      EXPECT_TRUE(parse_bearer(std::string_view("Bearer ")).empty());
     }
 
   } // namespace
