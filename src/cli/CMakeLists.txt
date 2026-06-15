@@ -9,9 +9,15 @@ add_library(
   AuditCommands.cc
   BackendFactory.cc
   CliApp.cc
+  BoxImport.cc
+  CreateCommands.cc
   CsvReader.cc
   CsvWriter.cc
+  CustomFieldDefImport.cc
+  ItemTypeImport.cc
+  LabCommands.cc
   NounCommands.cc
+  UserImport.cc
   SampleCommands.cc
   SampleCsv.cc
   SampleImport.cc

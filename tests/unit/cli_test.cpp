@@ -2,19 +2,28 @@
 
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
+#include "cli/BoxImport.h"
 #include "cli/CliApp.h"
+#include "cli/CreateCommands.h"
+#include "cli/CsvImport.h"
 #include "cli/CsvReader.h"
 #include "cli/CsvWriter.h"
+#include "cli/CustomFieldDefImport.h"
+#include "cli/EntityRead.h"
+#include "cli/ItemTypeImport.h"
+#include "cli/LabCommands.h"
 #include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleCsv.h"
 #include "cli/SampleImport.h"
 #include "cli/SampleQuery.h"
+#include "cli/UserImport.h"
 
 #include "core/box.h"
 #include "core/freezer.h"
 #include "core/identity.h"
 #include "core/item_type.h"
+#include "core/role.h"
 #include "core/sample.h"
 #include "storage/BoxGeometryTraits.h"
 #include "storage/FreezerTraits.h"
@@ -486,6 +495,130 @@ namespace fmgr::cli {
 
     // ---- BackendFactory ----
 
+    // ---- ItemTypeImport / BoxImport (pure mappers) ----
+
+    TEST(ItemTypeImportTest, MapsValidRow) {
+      const auto records = parse("name\r\nblood\r\n");
+      const auto report = build_item_type_import(records, id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      ASSERT_TRUE(report.rows.at(0).ok);
+      ASSERT_TRUE(report.rows.at(0).entity.has_value());
+      EXPECT_EQ(report.rows.at(0).entity->name, "blood");
+      EXPECT_EQ(report.rows.at(0).entity->lab_id, id_from_low<core::LabId>(1));
+    }
+
+    TEST(ItemTypeImportTest, MissingNameColumnIsHeaderError) {
+      const auto report =
+          build_item_type_import(parse("foo\r\nbar\r\n"), id_from_low<core::LabId>(1), ts(1));
+      EXPECT_FALSE(report.header_error.empty());
+      EXPECT_TRUE(report.rows.empty());
+    }
+
+    TEST(ItemTypeImportTest, EmptyNameIsRowError) {
+      const auto report = build_item_type_import(parse("name,parent_id\r\n,\r\n"),
+                                                 id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      EXPECT_FALSE(report.rows.at(0).ok);
+    }
+
+    TEST(ItemTypeImportTest, BadParentUuidIsRowError) {
+      const auto report = build_item_type_import(parse("name,parent_id\r\nblood,not-a-uuid\r\n"),
+                                                 id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      EXPECT_FALSE(report.rows.at(0).ok);
+      EXPECT_NE(report.rows.at(0).error.find("parent_id"), std::string::npos);
+    }
+
+    TEST(BoxImportTest, MapsValidRow) {
+      const std::string box_type = id_from_low<core::BoxTypeId>(5).to_string();
+      const std::string container = id_from_low<core::StorageContainerId>(6).to_string();
+      const auto report = build_box_import(parse("label,box_type_id,storage_container_id\r\nB1," +
+                                                 box_type + "," + container + "\r\n"),
+                                           id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      ASSERT_TRUE(report.rows.at(0).ok);
+      ASSERT_TRUE(report.rows.at(0).entity.has_value());
+      EXPECT_EQ(report.rows.at(0).entity->label, "B1");
+    }
+
+    TEST(BoxImportTest, MissingRequiredColumnIsHeaderError) {
+      const auto report =
+          build_box_import(parse("label\r\nB1\r\n"), id_from_low<core::LabId>(1), ts(1));
+      EXPECT_FALSE(report.header_error.empty());
+    }
+
+    TEST(BoxImportTest, BadBoxTypeUuidIsRowError) {
+      const std::string container = id_from_low<core::StorageContainerId>(6).to_string();
+      const auto report = build_box_import(
+          parse("label,box_type_id,storage_container_id\r\nB1,not-a-uuid," + container + "\r\n"),
+          id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      EXPECT_FALSE(report.rows.at(0).ok);
+      EXPECT_NE(report.rows.at(0).error.find("box_type_id"), std::string::npos);
+    }
+
+    // ---- CustomFieldDefImport / UserImport (pure mappers) ----
+
+    TEST(CustomFieldDefImportTest, MapsValidRow) {
+      const auto report = build_custom_field_def_import(
+          parse("scope_kind,key,label,data_type\r\nsample,patient_id,Patient ID,string\r\n"),
+          id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      ASSERT_TRUE(report.rows.at(0).ok) << report.rows.at(0).error;
+      ASSERT_TRUE(report.rows.at(0).entity.has_value());
+      EXPECT_EQ(report.rows.at(0).entity->key, "patient_id");
+      EXPECT_EQ(report.rows.at(0).entity->data_type, core::FieldDataType::String);
+    }
+
+    TEST(CustomFieldDefImportTest, MissingDataTypeColumnIsHeaderError) {
+      const auto report = build_custom_field_def_import(
+          parse("scope_kind,key,label\r\nsample,k,L\r\n"), id_from_low<core::LabId>(1), ts(1));
+      EXPECT_FALSE(report.header_error.empty());
+    }
+
+    TEST(CustomFieldDefImportTest, BadDataTypeIsRowError) {
+      const auto report = build_custom_field_def_import(
+          parse("scope_kind,key,label,data_type\r\nsample,k,L,bogus\r\n"),
+          id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      EXPECT_FALSE(report.rows.at(0).ok);
+      EXPECT_NE(report.rows.at(0).error.find("data_type"), std::string::npos);
+    }
+
+    TEST(CustomFieldDefImportTest, PhiIndexedConflictIsRowError) {
+      const auto report =
+          build_custom_field_def_import(parse("scope_kind,key,label,data_type,is_phi,indexed\r\n"
+                                              "sample,k,L,string,true,true\r\n"),
+                                        id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      EXPECT_FALSE(report.rows.at(0).ok);
+      EXPECT_NE(report.rows.at(0).error.find("indexed"), std::string::npos);
+    }
+
+    TEST(UserImportTest, MapsValidRow) {
+      const auto report =
+          build_user_import(parse("primary_email,display_name\r\na@b.edu,Alice\r\n"),
+                            id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      ASSERT_TRUE(report.rows.at(0).ok);
+      ASSERT_TRUE(report.rows.at(0).entity.has_value());
+      EXPECT_EQ(report.rows.at(0).entity->primary_email, "a@b.edu");
+      EXPECT_EQ(report.rows.at(0).entity->status, core::UserStatus::Active);
+    }
+
+    TEST(UserImportTest, MissingDisplayNameColumnIsHeaderError) {
+      const auto report = build_user_import(parse("primary_email\r\na@b.edu\r\n"),
+                                            id_from_low<core::LabId>(1), ts(1));
+      EXPECT_FALSE(report.header_error.empty());
+    }
+
+    TEST(UserImportTest, EmptyEmailIsRowError) {
+      const auto report = build_user_import(parse("primary_email,display_name\r\n,Bob\r\n"),
+                                            id_from_low<core::LabId>(1), ts(1));
+      ASSERT_EQ(report.rows.size(), 1U);
+      EXPECT_FALSE(report.rows.at(0).ok);
+    }
+
     TEST(BackendFactoryTest, RejectsNeitherTarget) {
       EXPECT_THROW(static_cast<void>(open_backend(BackendOptions{})), BackendOptionError);
     }
@@ -684,6 +817,214 @@ namespace fmgr::cli {
       EXPECT_NE(out.str().find("not found"), std::string::npos);
     }
 
+    // ---- non-sample CSV import (item-type / box) ----
+
+    TEST_P(CliBackendTest, ItemTypeImportPersistsTransactionally) {
+      const auto lab = fixture_->lab_a();
+      const auto before = query_in_lab<core::ItemType>(fixture_->backend(), lab);
+      std::istringstream in("name\r\nblood\r\ncsf\r\n");
+      std::ostringstream out;
+      const EntityImportOptions opts{.lab_id = lab, .actor = id_from_low<core::UserId>(10)};
+      const int code = run_entity_import<core::ItemType>(
+          fixture_->backend(), opts, build_item_type_import, in, out, "item-type(s)");
+      EXPECT_EQ(code, 0) << out.str();
+      EXPECT_NE(out.str().find("imported 2 item-type(s)"), std::string::npos);
+      const auto after = query_in_lab<core::ItemType>(fixture_->backend(), lab);
+      EXPECT_EQ(after.size(), before.size() + 2U);
+    }
+
+    TEST_P(CliBackendTest, BoxImportPersistsWithSeededRefs) {
+      const auto lab = fixture_->lab_a();
+      const auto before = query_in_lab<core::Box>(fixture_->backend(), lab);
+      const std::string box_type = id_from_low<core::BoxTypeId>(33).to_string();
+      const std::string container = id_from_low<core::StorageContainerId>(30).to_string();
+      std::istringstream in("label,box_type_id,storage_container_id\r\nB-imp," + box_type + "," +
+                            container + "\r\n");
+      std::ostringstream out;
+      const EntityImportOptions opts{.lab_id = lab, .actor = id_from_low<core::UserId>(10)};
+      const int code = run_entity_import<core::Box>(fixture_->backend(), opts, build_box_import, in,
+                                                    out, "box(es)");
+      EXPECT_EQ(code, 0) << out.str();
+      EXPECT_NE(out.str().find("imported 1 box(es)"), std::string::npos);
+      const auto after = query_in_lab<core::Box>(fixture_->backend(), lab);
+      EXPECT_EQ(after.size(), before.size() + 1U);
+    }
+
+    TEST_P(CliBackendTest, BoxImportRejectsUnknownBoxTypeAtDbLayer) {
+      const auto lab = fixture_->lab_a();
+      const std::string bad_box_type = id_from_low<core::BoxTypeId>(777).to_string();
+      const std::string container = id_from_low<core::StorageContainerId>(30).to_string();
+      std::istringstream in("label,box_type_id,storage_container_id\r\nBad," + bad_box_type + "," +
+                            container + "\r\n");
+      std::ostringstream out;
+      const EntityImportOptions opts{
+          .lab_id = lab, .actor = id_from_low<core::UserId>(10), .dry_run = true};
+      const int code = run_entity_import<core::Box>(fixture_->backend(), opts, build_box_import, in,
+                                                    out, "box(es)");
+      EXPECT_EQ(code, 1) << out.str();
+    }
+
+    TEST_P(CliBackendTest, CustomFieldDefImportPersists) {
+      const auto lab = fixture_->lab_a();
+      const auto before = query_in_lab<core::CustomFieldDefinition>(fixture_->backend(), lab);
+      std::istringstream in("scope_kind,key,label,data_type\r\nsample,donor_age,Donor Age,int\r\n");
+      std::ostringstream out;
+      const EntityImportOptions opts{.lab_id = lab, .actor = id_from_low<core::UserId>(10)};
+      const int code = run_entity_import<core::CustomFieldDefinition>(
+          fixture_->backend(), opts, build_custom_field_def_import, in, out, "custom-field-def(s)");
+      EXPECT_EQ(code, 0) << out.str();
+      const auto after = query_in_lab<core::CustomFieldDefinition>(fixture_->backend(), lab);
+      EXPECT_EQ(after.size(), before.size() + 1U);
+    }
+
+    TEST_P(CliBackendTest, UserImportPersists) {
+      const auto lab = fixture_->lab_a();
+      std::istringstream in("primary_email,display_name\r\nimported@example.edu,Imported\r\n");
+      std::ostringstream out;
+      const EntityImportOptions opts{.lab_id = lab, .actor = id_from_low<core::UserId>(10)};
+      const int code = run_entity_import<core::User>(fixture_->backend(), opts, build_user_import,
+                                                     in, out, "user(s)");
+      EXPECT_EQ(code, 0) << out.str();
+      EXPECT_NE(out.str().find("imported 1 user(s)"), std::string::npos);
+      // Users are global: verify by email lookup (no lab scope on the User row).
+      auto txn = fixture_->backend().begin(storage::IsolationLevel::Serializable);
+      const auto found = txn->repo<core::User>().query(storage::Query<core::User>::where(
+          storage::field<core::User, std::string>(core::User::Field::PrimaryEmail) ==
+          std::string("imported@example.edu")));
+      txn->commit();
+      EXPECT_EQ(found.size(), 1U);
+    }
+
+    // ---- create nouns (write half of the M1 CLI nouns) ----
+
+    CreateCommon create_common(core::LabId lab) {
+      return CreateCommon{.lab_id = lab, .actor = id_from_low<core::UserId>(10)};
+    }
+
+    TEST_P(CliBackendTest, ItemTypeCreatePersistsRootNode) {
+      std::ostringstream out;
+      const ItemTypeCreateOptions opts{.common = create_common(fixture_->lab_a()),
+                                       .name = "tissue"};
+      const auto id = run_item_type_create(fixture_->backend(), opts, out);
+      EXPECT_NE(out.str().find("created item-type " + id.to_string()), std::string::npos);
+      const auto found = find_in_lab<core::ItemType>(fixture_->backend(), fixture_->lab_a(), id);
+      ASSERT_TRUE(found.has_value());
+      EXPECT_EQ(found->name, "tissue");
+      EXPECT_FALSE(found->parent_id.has_value());
+    }
+
+    TEST_P(CliBackendTest, ContainerTypeCreatePersists) {
+      std::ostringstream out;
+      const ContainerTypeCreateOptions opts{.common = create_common(fixture_->lab_a()),
+                                            .name = "15mL Falcon",
+                                            .size_class = "tube_15ml"};
+      const auto id = run_container_type_create(fixture_->backend(), opts, out);
+      const auto found =
+          find_in_lab<core::ContainerType>(fixture_->backend(), fixture_->lab_a(), id);
+      ASSERT_TRUE(found.has_value());
+      EXPECT_EQ(found->size_class, "tube_15ml");
+    }
+
+    TEST_P(CliBackendTest, StorageContainerCreatePersists) {
+      std::ostringstream out;
+      const StorageContainerCreateOptions opts{.common = create_common(fixture_->lab_a()),
+                                               .name = "Shelf 2",
+                                               .kind = core::ContainerKind::Shelf};
+      const auto id = run_storage_container_create(fixture_->backend(), opts, out);
+      const auto found =
+          find_in_lab<core::StorageContainer>(fixture_->backend(), fixture_->lab_a(), id);
+      ASSERT_TRUE(found.has_value());
+      EXPECT_EQ(found->kind, core::ContainerKind::Shelf);
+    }
+
+    TEST_P(CliBackendTest, FreezerCreatePersistsWithSeededLayoutRoot) {
+      std::ostringstream out;
+      // Container 30 is the seeded root storage container in lab A.
+      const FreezerCreateOptions opts{.common = create_common(fixture_->lab_a()),
+                                      .name = "Cryo-1",
+                                      .model = "ULT-86",
+                                      .layout_root_id = id_from_low<core::StorageContainerId>(30)};
+      const auto id = run_freezer_create(fixture_->backend(), opts, out);
+      const auto found = find_in_lab<core::Freezer>(fixture_->backend(), fixture_->lab_a(), id);
+      ASSERT_TRUE(found.has_value());
+      EXPECT_EQ(found->name, "Cryo-1");
+    }
+
+    TEST_P(CliBackendTest, BoxTypeCreateGeneratesUniformGrid) {
+      std::ostringstream out;
+      const BoxTypeCreateOptions opts{.common = create_common(fixture_->lab_a()),
+                                      .name = "2x3 rack",
+                                      .rows = 2,
+                                      .cols = 3,
+                                      .accepts_size_class = "cryovial_2ml"};
+      const auto id = run_box_type_create(fixture_->backend(), opts, out);
+      const auto found = find_in_lab<core::BoxType>(fixture_->backend(), fixture_->lab_a(), id);
+      ASSERT_TRUE(found.has_value());
+      EXPECT_EQ(found->positions.size(), 6U);
+      EXPECT_EQ(found->positions.front().label, "A1");
+      EXPECT_EQ(found->positions.back().label, "B3");
+    }
+
+    TEST_P(CliBackendTest, BoxTypeCreateRejectsZeroRows) {
+      std::ostringstream out;
+      const BoxTypeCreateOptions opts{.common = create_common(fixture_->lab_a()),
+                                      .name = "bad",
+                                      .rows = 0,
+                                      .cols = 3,
+                                      .accepts_size_class = "cryovial_2ml"};
+      EXPECT_THROW(run_box_type_create(fixture_->backend(), opts, out), std::invalid_argument);
+    }
+
+    TEST_P(CliBackendTest, BoxCreatePersistsWithSeededRefs) {
+      std::ostringstream out;
+      // BoxType 33 and storage container 30 are both seeded in lab A.
+      const BoxCreateOptions opts{.common = create_common(fixture_->lab_a()),
+                                  .label = "Box-new",
+                                  .box_type_id = id_from_low<core::BoxTypeId>(33),
+                                  .storage_container_id =
+                                      id_from_low<core::StorageContainerId>(30)};
+      const auto id = run_box_create(fixture_->backend(), opts, out);
+      const auto found = find_in_lab<core::Box>(fixture_->backend(), fixture_->lab_a(), id);
+      ASSERT_TRUE(found.has_value());
+      EXPECT_EQ(found->label, "Box-new");
+    }
+
+    // ---- lab create (first-run bootstrap) ----
+
+    TEST_P(CliBackendTest, LabCreatePersistsLabUserAndSystemAdminMembership) {
+      std::ostringstream out;
+      const LabCreateOptions opts{.name = "Genomics Core",
+                                  .contact = "core@example.edu",
+                                  .admin_email = "boss@example.edu",
+                                  .admin_display_name = "Dr. Boss"};
+      const auto result = run_lab_create(fixture_->backend(), opts, out);
+      EXPECT_NE(out.str().find("created lab " + result.lab_id.to_string()), std::string::npos);
+      EXPECT_NE(out.str().find("created system admin " + result.admin_user_id.to_string()),
+                std::string::npos);
+
+      auto txn = fixture_->backend().begin(storage::IsolationLevel::Serializable);
+      const auto lab = txn->repo<core::Lab>().find_by_id(result.lab_id);
+      ASSERT_TRUE(lab.has_value());
+      EXPECT_EQ(lab->name, "Genomics Core");
+
+      const auto user = txn->repo<core::User>().find_by_id(result.admin_user_id);
+      ASSERT_TRUE(user.has_value());
+      EXPECT_EQ(user->primary_email, "boss@example.edu");
+      EXPECT_EQ(user->default_lab_id, result.lab_id);
+
+      const auto membership = txn->repo<core::LabMembership>().find_by_id(
+          core::LabMembershipId{.user_id = result.admin_user_id, .lab_id = result.lab_id});
+      ASSERT_TRUE(membership.has_value());
+      EXPECT_EQ(membership->role_id, core::builtin_role_id(core::RoleKind::SystemAdmin));
+      txn->commit();
+    }
+
+    TEST_P(CliBackendTest, LabCreateRejectsEmptyName) {
+      std::ostringstream out;
+      const LabCreateOptions opts{.name = "", .admin_email = "boss@example.edu"};
+      EXPECT_THROW(run_lab_create(fixture_->backend(), opts, out), std::invalid_argument);
+    }
+
     INSTANTIATE_TEST_SUITE_P(Backends, CliBackendTest,
                              ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
                              [](const ::testing::TestParamInfo<BackendKind>& info) {
@@ -730,6 +1071,52 @@ namespace fmgr::cli {
       EXPECT_NE(out.str().find("imported 1 sample(s)"), std::string::npos);
     }
 
+    TEST(CliAppTest, ItemTypeImportFromFile) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const auto csv_path =
+          std::filesystem::temp_directory_path() / "freezermanager-itemtype-import-test.csv";
+      {
+        std::ofstream csv(csv_path, std::ios::binary | std::ios::trunc);
+        csv << "name\r\nblood\r\ncsf\r\n";
+      }
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::string file = csv_path.string();
+      const std::vector<const char*> args = {
+          "freezerctl", "item-type", "import",  "--sqlite",    sqlite_db.c_str(),
+          "--lab",      lab.c_str(), "--actor", actor.c_str(), file.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      std::filesystem::remove(csv_path);
+      EXPECT_EQ(code, 0) << err.str() << out.str();
+      EXPECT_NE(out.str().find("imported 2 item-type(s)"), std::string::npos);
+    }
+
+    TEST(CliAppTest, UserImportFromFile) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const auto csv_path =
+          std::filesystem::temp_directory_path() / "freezermanager-user-import-test.csv";
+      {
+        std::ofstream csv(csv_path, std::ios::binary | std::ios::trunc);
+        csv << "primary_email,display_name\r\nbulk1@example.edu,Bulk One\r\n";
+      }
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::string file = csv_path.string();
+      const std::vector<const char*> args = {
+          "freezerctl", "user",      "import",  "--sqlite",    sqlite_db.c_str(),
+          "--lab",      lab.c_str(), "--actor", actor.c_str(), file.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      std::filesystem::remove(csv_path);
+      EXPECT_EQ(code, 0) << err.str() << out.str();
+      EXPECT_NE(out.str().find("imported 1 user(s)"), std::string::npos);
+    }
+
     TEST(CliAppTest, FreezerListToStdout) {
       CliFixture fixture(BackendKind::Sqlite);
       std::ostringstream out;
@@ -771,6 +1158,53 @@ namespace fmgr::cli {
       const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
       EXPECT_EQ(code, 1);
       EXPECT_NE(out.str().find("not found"), std::string::npos);
+    }
+
+    TEST(CliAppTest, LabCreateFromArgv) {
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::vector<const char*> args = {
+          "freezerctl", "lab",      "create",        "--sqlite",         sqlite_db.c_str(),
+          "--name",     "Argv Lab", "--admin-email", "admin@example.edu"};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str() << out.str();
+      EXPECT_NE(out.str().find("created lab "), std::string::npos);
+      EXPECT_NE(out.str().find("created system admin "), std::string::npos);
+    }
+
+    TEST(CliAppTest, ItemTypeCreateFromArgv) {
+      // `create` attaches to the same root as the read-noun list/inspect.
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::vector<const char*> args = {
+          "freezerctl", "item-type", "create",      "--sqlite", sqlite_db.c_str(), "--lab",
+          lab.c_str(),  "--actor",   actor.c_str(), "--name",   "plasmid"};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str() << out.str();
+      EXPECT_NE(out.str().find("created item-type "), std::string::npos);
+    }
+
+    TEST(CliAppTest, BoxTypeCreateFromArgv) {
+      // box-type lives on its own root (no read noun yet); --rows/--cols build a grid.
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::vector<const char*> args = {
+          "freezerctl", "box-type", "create",      "--sqlite",  sqlite_db.c_str(), "--lab",
+          lab.c_str(),  "--actor",  actor.c_str(), "--name",    "9x9 cryobox",     "--rows",
+          "9",          "--cols",   "9",           "--accepts", "cryovial_2ml"};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str() << out.str();
+      EXPECT_NE(out.str().find("created box-type "), std::string::npos);
     }
 
     TEST(CliAppTest, MissingLabIsUsageError) {
