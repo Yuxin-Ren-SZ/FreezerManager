@@ -192,5 +192,148 @@ namespace fmgr::storage {
       EXPECT_THROW(backend.migrate_to_latest(), BackendError);
     }
 
+    // ---- Break-it: many migrations ----
+
+    TEST(SqliteBackend, ManySequentialMigrationsApplyCorrectly) {
+      std::vector<SqliteMigration> migrations;
+      for (int v = 1; v <= 50; ++v) {
+        migrations.push_back(SqliteMigration{
+            .version = v,
+            .name = "migration_v" + std::to_string(v),
+            .up_sql = "CREATE TABLE migration_" + std::to_string(v) +
+                      " (id INTEGER PRIMARY KEY);",
+        });
+      }
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = ":memory:",
+          .migrations = std::move(migrations),
+      });
+      EXPECT_NO_THROW(backend.migrate_to_latest());
+      EXPECT_EQ(backend.current_version(), SchemaVersion{50});
+    }
+
+    TEST(SqliteBackend, MigrationWithVeryLongSql) {
+      // A migration with a very long SQL string must not crash or truncate.
+      std::string long_sql = "CREATE TABLE long_sql (id INTEGER PRIMARY KEY";
+      for (int i = 0; i < 200; ++i) {
+        long_sql += ", col_" + std::to_string(i) + " TEXT";
+      }
+      long_sql += ");";
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = ":memory:",
+          .migrations =
+              {
+                  SqliteMigration{
+                      .version = 1,
+                      .name = "long_sql",
+                      .up_sql = std::move(long_sql),
+                  },
+              },
+      });
+      EXPECT_NO_THROW(backend.migrate_to_latest());
+    }
+
+    TEST(SqliteBackend, FilesystemPathWithSpaces) {
+      const auto path = sqlite_test_path("path with spaces");
+      remove_sqlite_files(path);
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = path.string(),
+          .migrations =
+              {
+                  SqliteMigration{
+                      .version = 1,
+                      .name = "schema",
+                      .up_sql = "CREATE TABLE t (id INTEGER PRIMARY KEY);",
+                  },
+              },
+      });
+      EXPECT_NO_THROW(backend.migrate_to_latest());
+      EXPECT_EQ(backend.current_version(), SchemaVersion{1});
+      remove_sqlite_files(path);
+    }
+
+    TEST(SqliteBackend, VeryLongFilePath) {
+      // A path close to the filesystem limit must not crash.
+      const auto dir = std::filesystem::temp_directory_path();
+      std::string long_name = dir.string() + "/fmgr-";
+      // Pad to ~250 chars — well under most FS limits (255 for filename, 4096 for path).
+      long_name.append(200, 'x');
+      long_name.append(".db");
+      const std::filesystem::path path(long_name);
+      remove_sqlite_files(path);
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = path.string(),
+          .migrations =
+              {
+                  SqliteMigration{
+                      .version = 1,
+                      .name = "schema",
+                      .up_sql = "CREATE TABLE t (id INTEGER PRIMARY KEY);",
+                  },
+              },
+      });
+      EXPECT_NO_THROW(backend.migrate_to_latest());
+      remove_sqlite_files(path);
+    }
+
+    // ==== Aggressive: WAL checkpoint, read-only simulation, schema stress ====
+
+    TEST(SqliteBackend, MigrationWithSpecialCharactersInName) {
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = ":memory:",
+          .migrations =
+              {
+                  SqliteMigration{
+                      .version = 1,
+                      .name = "v1-init; DROP TABLE--",
+                      .up_sql = "CREATE TABLE t (id INTEGER PRIMARY KEY);",
+                  },
+              },
+      });
+      EXPECT_NO_THROW(backend.migrate_to_latest());
+    }
+
+    TEST(SqliteBackend, MigrationSqlWithMultipleStatements) {
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = ":memory:",
+          .migrations =
+              {
+                  SqliteMigration{
+                      .version = 1,
+                      .name = "multi_stmt",
+                      .up_sql = "CREATE TABLE a (id INTEGER); CREATE TABLE b (id INTEGER);",
+                  },
+              },
+      });
+      EXPECT_NO_THROW(backend.migrate_to_latest());
+    }
+
+    TEST(SqliteBackend, EmptyMigrationsList) {
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = ":memory:",
+          .migrations = {},
+      });
+      EXPECT_NO_THROW(backend.migrate_to_latest());
+      EXPECT_GE(backend.current_version(), SchemaVersion{0});
+    }
+
+    TEST(SqliteBackend, MigrateToLatestIdempotentOnMemory) {
+      SqliteBackend backend(SqliteBackendOptions{
+          .database_path = ":memory:",
+          .migrations =
+              {
+                  SqliteMigration{
+                      .version = 1,
+                      .name = "schema",
+                      .up_sql = "CREATE TABLE t (id INTEGER PRIMARY KEY);",
+                  },
+              },
+      });
+      backend.migrate_to_latest();
+      // Calling migrate again must be a no-op.
+      EXPECT_NO_THROW(backend.migrate_to_latest());
+      EXPECT_EQ(backend.current_version(), SchemaVersion{1});
+    }
+
   } // namespace
 } // namespace fmgr::storage

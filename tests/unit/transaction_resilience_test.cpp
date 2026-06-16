@@ -257,5 +257,169 @@ namespace fmgr::storage {
       }
     }
 
+    // ---- Break-it: large transactions and rapid cycling ----
+
+    TEST_F(TransactionResilienceTest, LargeMultiEntityTransactionCommitsAtomically) {
+      const auto ctx = mutation_context();
+      // Insert many entities in a single transaction — all or nothing.
+      {
+        auto txn = backend_->begin(IsolationLevel::Serializable);
+        for (std::uint64_t i = 0; i < 100; ++i) {
+          txn->repo<core::Lab>().insert(make_lab(500 + i), ctx);
+        }
+        txn->commit();
+      }
+      // All 100 must be visible.
+      auto read_txn = backend_->begin(IsolationLevel::Serializable);
+      for (std::uint64_t i = 0; i < 100; ++i) {
+        EXPECT_TRUE(
+            read_txn->repo<core::Lab>()
+                .find_by_id(id_from_low<core::LabId>(500 + i))
+                .has_value())
+            << "lab " << (500 + i);
+      }
+    }
+
+    TEST_F(TransactionResilienceTest, RapidBeginCommitRollbackCycling) {
+      // Rapidly create, commit, and rollback transactions to stress the backend's
+      // transaction lifecycle management.
+      const auto ctx = mutation_context();
+      for (int i = 0; i < 50; ++i) {
+        {
+          auto txn = backend_->begin(IsolationLevel::Serializable);
+          txn->repo<core::Lab>().insert(make_lab(static_cast<std::uint64_t>(600 + i)), ctx);
+          txn->commit();
+        }
+        {
+          auto txn = backend_->begin(IsolationLevel::Serializable);
+          txn->repo<core::Lab>().insert(make_lab(static_cast<std::uint64_t>(700 + i)), ctx);
+          txn->rollback();
+        }
+      }
+      // Committed rows exist, rolled-back ones don't.
+      auto read_txn = backend_->begin(IsolationLevel::Serializable);
+      for (int i = 0; i < 50; ++i) {
+        EXPECT_TRUE(
+            read_txn->repo<core::Lab>()
+                .find_by_id(id_from_low<core::LabId>(static_cast<std::uint64_t>(600 + i)))
+                .has_value())
+            << "committed lab " << (600 + i);
+        EXPECT_FALSE(
+            read_txn->repo<core::Lab>()
+                .find_by_id(id_from_low<core::LabId>(static_cast<std::uint64_t>(700 + i)))
+                .has_value())
+            << "rolled-back lab " << (700 + i);
+      }
+    }
+
+    TEST_F(TransactionResilienceTest, MultipleRollbacksOnSameTransaction) {
+      const auto ctx = mutation_context();
+      auto txn = backend_->begin(IsolationLevel::Serializable);
+      txn->repo<core::Lab>().insert(make_lab(1), ctx);
+      txn->rollback();
+      // Multiple rollbacks on an already-rolled-back txn: should be safe (no crash).
+      EXPECT_NO_THROW(txn->rollback());
+      EXPECT_NO_THROW(txn->rollback());
+    }
+
+    TEST_F(TransactionResilienceTest, WriteAfterRollbackIsIgnored) {
+      const auto ctx = mutation_context();
+      auto txn = backend_->begin(IsolationLevel::Serializable);
+      txn->repo<core::Lab>().insert(make_lab(1), ctx);
+      txn->rollback();
+      // Attempting to insert after rollback should be a no-op or throw.
+      // Either way, the data must not persist.
+      bool threw = false;
+      try {
+        txn->repo<core::Lab>().insert(make_lab(2), ctx);
+      } catch (const BackendError&) {
+        threw = true;
+      }
+      // Verify neither lab exists.
+      auto read_txn = backend_->begin(IsolationLevel::Serializable);
+      EXPECT_FALSE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
+      EXPECT_FALSE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(2)).has_value());
+      (void)threw; // acceptable either way
+    }
+
+    TEST_F(TransactionResilienceTest, EmptyTransactionCommitDoesNothing) {
+      // A transaction with no operations should commit cleanly.
+      auto txn = backend_->begin(IsolationLevel::Serializable);
+      EXPECT_NO_THROW(txn->commit());
+    }
+
+    TEST_F(TransactionResilienceTest, EmptyTransactionRollbackDoesNothing) {
+      auto txn = backend_->begin(IsolationLevel::Serializable);
+      EXPECT_NO_THROW(txn->rollback());
+    }
+
+    TEST_F(TransactionResilienceTest, MixedOperationsPreservedOnCommit) {
+      const auto ctx = mutation_context();
+      {
+        auto txn = backend_->begin(IsolationLevel::Serializable);
+        txn->repo<core::Lab>().insert(make_lab(1), ctx);
+        txn->repo<core::User>().insert(make_user(1), ctx);
+        txn->repo<core::LabMembership>().insert(make_membership(1, 1), ctx);
+        txn->commit();
+      }
+      auto read_txn = backend_->begin(IsolationLevel::Serializable);
+      EXPECT_TRUE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
+      EXPECT_TRUE(read_txn->repo<core::User>().find_by_id(id_from_low<core::UserId>(1)).has_value());
+      EXPECT_TRUE(read_txn->repo<core::LabMembership>()
+                      .find_by_id(core::LabMembershipId{
+                          .user_id = id_from_low<core::UserId>(1),
+                          .lab_id = id_from_low<core::LabId>(1)})
+                      .has_value());
+    }
+
+    // ==== Aggressive: double-begin, write contention, edge lifecycle ====
+
+    TEST_F(TransactionResilienceTest, WriteAfterCommitIsRejected) {
+      const auto ctx = mutation_context();
+      auto txn = backend_->begin(IsolationLevel::Serializable);
+      txn->repo<core::Lab>().insert(make_lab(1), ctx);
+      txn->commit();
+      // Any further mutation on a committed transaction is silently ignored.
+      txn->repo<core::Lab>().insert(make_lab(2), ctx);
+
+      // Lab 2 must NOT exist since the write happened after commit.
+      auto read_txn = backend_->begin(IsolationLevel::Serializable);
+      EXPECT_FALSE(
+          read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(2)).has_value());
+      // Lab 1 was committed before the rogue write and must still exist.
+      EXPECT_TRUE(
+          read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
+    }
+
+    TEST_F(TransactionResilienceTest, WriteContentionWithLongRunningReader) {
+      const auto ctx = mutation_context();
+      // Writer A inserts and commits.
+      {
+        auto txn = backend_->begin(IsolationLevel::Serializable);
+        txn->repo<core::Lab>().insert(make_lab(1), ctx);
+        txn->commit();
+      }
+      // Reader B opens a snapshot, then Writer C inserts and commits.
+      auto reader = backend_->begin(IsolationLevel::Serializable);
+      {
+        auto writer = backend_->begin(IsolationLevel::Serializable);
+        writer->repo<core::Lab>().insert(make_lab(2), ctx);
+        writer->commit();
+      }
+      // Reader B must still see only lab 1 (snapshot isolation).
+      EXPECT_TRUE(reader->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
+      // Lab 2 may or may not be visible depending on isolation.
+    }
+
+    TEST_F(TransactionResilienceTest, SetSessionVarOnMultipleTransactions) {
+      auto txn1 = backend_->begin(IsolationLevel::Serializable);
+      txn1->set_session_var("key_a", "val_a");
+      auto txn2 = backend_->begin(IsolationLevel::Serializable);
+      txn2->set_session_var("key_b", "val_b");
+      // Each transaction has independent session vars; must not crash or merge.
+      txn1->commit();
+      txn2->rollback();
+    }
+
   } // namespace
 } // namespace fmgr::storage

@@ -1146,5 +1146,167 @@ namespace fmgr::auth {
       EXPECT_GT(read_authz_version(*backend_, kUserNoTotpId), baseline);
     }
 
+    // ---- Break-it: special characters and long inputs ----
+
+    TEST_F(LocalAuthProviderTest, AuthenticateWithSpecialCharPassword) {
+      const auto pw = provider_->hash_password("p@ss!with<>&\"'");
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto user = txn->repo<core::User>().find_by_id(kUserNoTotpId);
+        ASSERT_TRUE(user.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        auto& bindings = user->auth_bindings;
+        bindings[0]["hash"] = pw;
+        txn->repo<core::User>().update(*user, test_ctx());
+        txn->commit();
+      }
+      // Must re-create provider so the password hash is re-read from the DB.
+      auto new_provider = LocalAuthProvider(*backend_, fast_config());
+      EXPECT_NO_THROW(new_provider.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "p@ss!with<>&\"'"},
+          ClientInfo{}));
+    }
+
+    TEST_F(LocalAuthProviderTest, AuthenticateWithVeryLongEmail) {
+      // Very long email (near column limit) — must not crash.
+      const std::string long_email(200, 'a');
+      const std::string full_email = long_email + "@example.com";
+      const auto pw = provider_->hash_password("hunter22");
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::User>().insert(
+            core::User{
+                .id = id_from_low<core::UserId>(50),
+                .primary_email = full_email,
+                .display_name = "Long Email User",
+                .status = core::UserStatus::Active,
+                .created_at = ts(3'000),
+                .auth_bindings = nlohmann::json::array({{{"provider", "local"}, {"hash", pw}}}),
+            },
+            test_ctx());
+        txn->repo<core::LabMembership>().insert(
+            core::LabMembership{
+                .user_id = id_from_low<core::UserId>(50),
+                .lab_id = kLabId,
+                .role_id = core::builtin_role_id(core::RoleKind::Member),
+                .joined_at = ts(3'001),
+            },
+            test_ctx());
+        txn->commit();
+      }
+      EXPECT_NO_THROW(provider_->authenticate(
+          PasswordCredentials{.email = full_email, .password = "hunter22"}, ClientInfo{}));
+    }
+
+    TEST_F(LocalAuthProviderTest, LockoutAtExactBoundaryThreshold) {
+      LocalAuthProviderConfig cfg = fast_config();
+      cfg.max_failures_before_lockout = 3;
+      auto local_provider = LocalAuthProvider(*backend_, cfg);
+
+      // N-1 failures should NOT lock (2 failures < 3 threshold).
+      for (int i = 0; i < 2; ++i) {
+        try {
+          local_provider.authenticate(
+              PasswordCredentials{.email = "nototp@example.com", .password = "bad"}, ClientInfo{});
+        } catch (...) {
+        }
+      }
+      // Should still be able to log in with correct password.
+      EXPECT_NO_THROW(local_provider.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{}));
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenWithEmptyToken) {
+      EXPECT_THROW(provider_->validate_token(""), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenWithGarbageLongString) {
+      const std::string garbage(1'000, 'z');
+      EXPECT_THROW(provider_->validate_token(garbage), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, CreateApiTokenWithEmptyName) {
+      // Empty name should be handled — either accepted or rejected gracefully.
+      try {
+        (void)provider_->create_api_token(kUserNoTotpId, "", R"(["sample.read"])", std::nullopt,
+                                        std::nullopt, test_ctx());
+      } catch (const storage::ConstraintViolation&) {
+        // Acceptable: DB constraint rejects empty name.
+      }
+    }
+
+    TEST_F(LocalAuthProviderTest, CreateApiTokenWithVeryLongName) {
+      const std::string long_name(500, 'n');
+      // Must not crash; may be accepted or rejected based on column constraints.
+      try {
+        (void)provider_->create_api_token(kUserNoTotpId, long_name, R"(["sample.read"])",
+                                        std::nullopt, std::nullopt, test_ctx());
+      } catch (const storage::ConstraintViolation&) {
+        // Acceptable.
+      }
+    }
+
+    // ==== Aggressive: null bytes, concurrent auth, password edge ====
+
+    TEST_F(LocalAuthProviderTest, AuthenticateEmailWithNullBytes) {
+      // Email containing null bytes must not crash or bypass lookup.
+      const std::string bad_email("nototp@example.com\0hidden", 25);
+      EXPECT_THROW(
+          provider_->authenticate(
+              PasswordCredentials{.email = bad_email, .password = "hunter22"}, ClientInfo{}),
+          InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, HashPasswordWithNullBytes) {
+      // Null bytes inside a password are legitimate binary data.
+      const std::string pw("pass\0word", 9);
+      EXPECT_NO_THROW((void)provider_->hash_password(pw));
+    }
+
+    TEST_F(LocalAuthProviderTest, ConcurrentAuthSameUser) {
+      // Multiple threads authenticating the same user simultaneously must not
+      // corrupt session state or produce duplicate session tokens.
+      constexpr int kThreads = 8;
+      std::vector<std::thread> threads;
+      std::vector<AuthToken> tokens(kThreads);
+      std::atomic<int> ok{0};
+      for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+          try {
+            tokens[t] = provider_->authenticate(
+                PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
+                ClientInfo{});
+            ++ok;
+          } catch (...) {
+          }
+        });
+      }
+      for (auto& th : threads) th.join();
+      // All must succeed — each gets a distinct session.
+      EXPECT_EQ(ok.load(), kThreads);
+
+      // All tokens must be distinct and validatable.
+      std::set<std::string> seen;
+      for (int t = 0; t < kThreads; ++t) {
+        ASSERT_FALSE(tokens[t].plaintext_token.empty());
+        EXPECT_TRUE(seen.insert(tokens[t].plaintext_token).second)
+            << "duplicate token from thread " << t;
+        EXPECT_NO_THROW(provider_->validate_token(tokens[t].plaintext_token));
+      }
+    }
+
+    TEST_F(LocalAuthProviderTest, ValidateTokenNeverSeenSessionId) {
+      // A syntactically valid but never-issued bearer must be rejected.
+      const std::string fake = "0123456789abcdef0123456789abcdef"
+                               "0123456789abcdef0123456789abcdef";
+      EXPECT_THROW(provider_->validate_token(fake), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, PasswordLengthBoundaryEightChars) {
+      // Policy floor is 8 — testing exactly at the boundary.
+      EXPECT_NO_THROW((void)provider_->hash_password("12345678"));
+      EXPECT_THROW((void)provider_->hash_password("1234567"), storage::ConstraintViolation);
+    }
+
   } // namespace
 } // namespace fmgr::auth

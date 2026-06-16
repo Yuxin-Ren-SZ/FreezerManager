@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <typeindex>
 #include <typeinfo>
 #include <unordered_map>
@@ -294,7 +295,7 @@ namespace fmgr::storage {
 
   template <typename Entity, typename Value>
   [[nodiscard]] Predicate<Entity> operator==(FieldRef<Entity, Value> field_ref,
-                                             const Value& value) {
+                                             const std::type_identity_t<Value>& value) {
     return Predicate<Entity>{
         .field = field_ref.field(),
         .op = PredicateOperator::Equal,

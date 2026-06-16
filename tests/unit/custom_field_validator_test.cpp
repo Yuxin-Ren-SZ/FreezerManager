@@ -335,5 +335,203 @@ namespace fmgr::core {
       EXPECT_EQ(errors.front().key, "age");
     }
 
+    // ---- Break-it: null and boundary values ----
+
+    TEST(CustomFieldValidatorTest, NullValueForRequiredFieldProducesError) {
+      const auto def = make_def("name", FieldDataType::String, /*required=*/true);
+      const auto fields = nlohmann::json{{"name", nullptr}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "name");
+    }
+
+    TEST(CustomFieldValidatorTest, EmptyStringForRequiredFieldPasses) {
+      // An empty string is a present value — required-ness only checks key existence.
+      const auto def = make_def("name", FieldDataType::String, /*required=*/true);
+      const auto fields = nlohmann::json{{"name", ""}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, IntFieldAtMinBoundaryPasses) {
+      const auto def = make_def("age", FieldDataType::Int, false, R"({"min":0})");
+      const auto fields = nlohmann::json{{"age", 0}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, IntFieldAtMaxBoundaryPasses) {
+      const auto def = make_def("age", FieldDataType::Int, false, R"({"max":100})");
+      const auto fields = nlohmann::json{{"age", 100}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, IntFieldBelowMinProducesError) {
+      const auto def = make_def("age", FieldDataType::Int, false, R"({"min":0})");
+      const auto fields = nlohmann::json{{"age", -1}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "age");
+    }
+
+    // ---- Break-it: extremely long / large values ----
+
+    TEST(CustomFieldValidatorTest, VeryLongStringFieldDoesNotCrash) {
+      const auto def = make_def("note", FieldDataType::String);
+      const auto fields = nlohmann::json{{"note", std::string(100'000, 'x')}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, StringAtMaxLengthBoundaryPasses) {
+      const auto def = make_def("note", FieldDataType::String, false, R"({"max_length":5})");
+      const auto fields = nlohmann::json{{"note", "12345"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, StringLengthZeroWithMaxLengthPasses) {
+      const auto def = make_def("note", FieldDataType::String, false, R"({"max_length":5})");
+      const auto fields = nlohmann::json{{"note", ""}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    // ---- Break-it: Unicode and special characters ----
+
+    TEST(CustomFieldValidatorTest, UnicodeStringFieldPasses) {
+      const auto def = make_def("note", FieldDataType::String);
+      const auto fields = nlohmann::json{{"note", "你好世界🌍"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, UnicodeLengthMeasuredInUtf8Bytes) {
+      // max_length=5 in bytes: "é" is 2 bytes in UTF-8, "ééé" is 6 bytes → too long.
+      const auto def = make_def("note", FieldDataType::String, false, R"({"max_length":5})");
+      const auto fields = nlohmann::json{{"note", "ééé"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "note");
+    }
+
+    // ---- Break-it: extreme numeric values ----
+
+    TEST(CustomFieldValidatorTest, IntFieldVeryLargeValue) {
+      const auto def = make_def("count", FieldDataType::Int);
+      const auto fields = nlohmann::json{{"count", 9'223'372'036'854'775'807LL}}; // INT64_MAX-ish
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, FloatFieldVeryLargeValue) {
+      const auto def = make_def("score", FieldDataType::Float);
+      const auto fields = nlohmann::json{{"score", 1e308}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, FloatFieldZeroBoundary) {
+      const auto def = make_def("score", FieldDataType::Float, false, R"({"min":0.0})");
+      const auto fields = nlohmann::json{{"score", 0.0}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    // ---- Break-it: empty / zero-def edge cases ----
+
+    TEST(CustomFieldValidatorTest, EmptyDefinitionsSpanNoCrash) {
+      const std::span<const CustomFieldDefinition> empty_defs;
+      const auto errors = validate_custom_fields(empty_defs, nlohmann::json::object());
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, NullJsonFieldsNoCrash) {
+      const auto def = make_def("name", FieldDataType::String, /*required=*/true);
+      const auto errors = validate_custom_fields(std::span{&def, 1}, nullptr);
+      ASSERT_EQ(errors.size(), 1U);
+    }
+
+    TEST(CustomFieldValidatorTest, FieldsWithNestedObjectProducesTypeError) {
+      const auto def = make_def("name", FieldDataType::String);
+      const auto fields = nlohmann::json{{"name", nlohmann::json::object()}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "name");
+    }
+
+    TEST(CustomFieldValidatorTest, FieldsWithArrayProducesTypeError) {
+      const auto def = make_def("name", FieldDataType::String);
+      const auto fields = nlohmann::json{{"name", nlohmann::json::array()}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "name");
+    }
+
+    // ==== Aggressive: injection payloads, deep nesting, contradictory configs ====
+
+    TEST(CustomFieldValidatorTest, InjectionPayloadSqlLikeString) {
+      const auto def = make_def("note", FieldDataType::String);
+      const auto fields = nlohmann::json{{"note", "'; DROP TABLE samples; --"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, InjectionPayloadNullByteInString) {
+      const auto def = make_def("note", FieldDataType::String);
+      const auto fields = nlohmann::json{{"note", std::string("before\0after", 12)}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, InjectionPayloadCsvFormula) {
+      const auto def = make_def("note", FieldDataType::String);
+      const auto fields = nlohmann::json{{"note", "=CMD|calc.exe!A0"}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_TRUE(errors.empty());
+    }
+
+    TEST(CustomFieldValidatorTest, DeeplyNestedJsonObjectInField) {
+      auto nested = nlohmann::json::object();
+      auto* current = &nested;
+      for (int i = 0; i < 20; ++i) {
+        (*current)["level_" + std::to_string(i)] = nlohmann::json::object();
+        current = &(*current)["level_" + std::to_string(i)];
+      }
+      (*current)["leaf"] = "deep";
+      const auto def = make_def("data", FieldDataType::String);
+      const auto fields = nlohmann::json{{"data", nested}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+    }
+
+    TEST(CustomFieldValidatorTest, IntFieldGivenFloatingPointProducesError) {
+      const auto def = make_def("count", FieldDataType::Int);
+      const auto fields = nlohmann::json{{"count", 3.14}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_EQ(errors.front().key, "count");
+    }
+
+    TEST(CustomFieldValidatorTest, ContradictoryConstraintsMinGreaterThanMax) {
+      const auto def = make_def("age", FieldDataType::Int, false, R"({"min":100,"max":0})");
+      const auto fields = nlohmann::json{{"age", 50}};
+      const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
+      EXPECT_LE(errors.size(), 2U);  // both min and max independently fail
+    }
+
+    TEST(CustomFieldValidatorTest, MaxLengthZeroEnforcesEmptyOnly) {
+      const auto def = make_def("code", FieldDataType::String, false, R"({"max_length":0})");
+      EXPECT_TRUE(validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"code", ""}}).empty());
+      EXPECT_FALSE(validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"code", "x"}}).empty());
+    }
+
+    TEST(CustomFieldValidatorTest, FloatFieldWithExtremeBounds) {
+      const auto def = make_def("ratio", FieldDataType::Float, false,
+                                R"({"min":-1e308,"max":1e308})");
+      EXPECT_TRUE(validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"ratio", 1e307}}).empty());
+    }
+
   } // namespace
 } // namespace fmgr::core

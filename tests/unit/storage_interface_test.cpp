@@ -261,5 +261,119 @@ namespace fmgr::storage {
       EXPECT_TRUE(backend.caps().listen_notify);
     }
 
+    // ---- Break-it: query builder edge cases ----
+
+    TEST(StorageInterface, QueryWithContradictoryPredicatesAcceptedByBuilder) {
+      // The Query builder is a passive data structure — stored backends resolve
+      // contradictions. The builder must accept them without crash.
+      const auto query =
+          Query<TestSample>::where(
+              field<TestSample, std::string>(TestSample::Field::Name) == "alpha")
+              .and_where(
+                  field<TestSample, std::string>(TestSample::Field::Name) == "beta");
+      EXPECT_EQ(query.predicates().size(), 2U);
+    }
+
+    TEST(StorageInterface, QueryWithZeroLimit) {
+      const auto query = Query<TestSample>::all().limit(0);
+      EXPECT_EQ(query.limit_count(), 0U);
+    }
+
+    TEST(StorageInterface, QueryWithLargeLimit) {
+      const auto query = Query<TestSample>::all().limit(1'000'000);
+      EXPECT_EQ(query.limit_count(), 1'000'000U);
+    }
+
+    TEST(StorageInterface, QueryOffsetWithoutLimit) {
+      const auto query = Query<TestSample>::all().offset(50);
+      EXPECT_EQ(query.offset_count(), 50U);
+      EXPECT_FALSE(query.limit_count().has_value());
+    }
+
+    TEST(StorageInterface, QueryTombstonedThenNotIsIdempotent) {
+      // include_tombstoned() is a flag, not a toggle — calling it multiple times
+      // should still result in true.
+      auto query = Query<TestSample>::all().include_tombstoned().include_tombstoned();
+      EXPECT_TRUE(query.includes_tombstoned());
+    }
+
+    TEST(StorageInterface, QueryWithInOperatorEmptyList) {
+      const auto query = Query<TestSample>::where(
+          field<TestSample, std::string>(TestSample::Field::Name)
+              .in(std::vector<std::string>{}));
+      ASSERT_EQ(query.predicates().size(), 1U);
+      EXPECT_EQ(query.predicates().at(0).op, PredicateOperator::In);
+      EXPECT_TRUE(query.predicates().at(0).values.empty());
+    }
+
+    TEST(StorageInterface, QueryChainingMultipleSorts) {
+      const auto query =
+          Query<TestSample>::all()
+              .order_by(field<TestSample, std::string>(TestSample::Field::Name),
+                        SortDirection::Ascending)
+              .order_by(field<TestSample, core::Timestamp>(TestSample::Field::CreatedAt),
+                        SortDirection::Descending);
+      EXPECT_EQ(query.sorts().size(), 2U);
+      EXPECT_EQ(query.sorts().at(0).direction, SortDirection::Ascending);
+      EXPECT_EQ(query.sorts().at(1).direction, SortDirection::Descending);
+    }
+
+    TEST(StorageInterface, QueryDefaultsExcludeTombstoned) {
+      const auto query = Query<TestSample>::all();
+      EXPECT_FALSE(query.includes_tombstoned());
+      EXPECT_EQ(query.predicates().size(), 0U);
+      EXPECT_EQ(query.sorts().size(), 0U);
+    }
+
+    TEST(StorageInterface, MutationContextDefaultIsEmpty) {
+      const MutationContext ctx{};
+      EXPECT_TRUE(ctx.actor_session_id.empty());
+      EXPECT_TRUE(ctx.request_id.empty());
+      EXPECT_TRUE(ctx.reason.empty());
+    }
+
+    // ==== Aggressive: edge-of-representation query constructs ====
+
+    TEST(StorageInterface, BetweenPredicateWithEqualBounds) {
+      const auto t = core::Timestamp::from_unix_micros(100);
+      const auto query = Query<TestSample>::where(
+          field<TestSample, core::Timestamp>(TestSample::Field::CreatedAt).between(t, t));
+      ASSERT_EQ(query.predicates().size(), 1U);
+      EXPECT_EQ(query.predicates().at(0).op, PredicateOperator::Between);
+      EXPECT_EQ(query.predicates().at(0).lower.get<core::Timestamp>(), t);
+      EXPECT_EQ(query.predicates().at(0).upper.get<core::Timestamp>(), t);
+    }
+
+    TEST(StorageInterface, BetweenPredicateWithReversedBounds) {
+      const auto early = core::Timestamp::from_unix_micros(100);
+      const auto late = core::Timestamp::from_unix_micros(200);
+      const auto query = Query<TestSample>::where(
+          field<TestSample, core::Timestamp>(TestSample::Field::CreatedAt).between(late, early));
+      ASSERT_EQ(query.predicates().size(), 1U);
+    }
+
+    TEST(StorageInterface, JsonPathWithEmptySegmentList) {
+      const auto query = Query<TestSample>::where(
+          json_path<TestSample>(TestSample::Field::CustomFields, {}) == "value");
+      ASSERT_EQ(query.predicates().size(), 1U);
+      EXPECT_EQ(query.predicates().at(0).op, PredicateOperator::JsonPathEqual);
+      EXPECT_TRUE(query.predicates().at(0).json_path.empty());
+    }
+
+    TEST(StorageInterface, QueryWithOnlySortsNoPredicates) {
+      const auto query =
+          Query<TestSample>::all()
+              .order_by(field<TestSample, std::string>(TestSample::Field::Name));
+      EXPECT_EQ(query.predicates().size(), 0U);
+      EXPECT_EQ(query.sorts().size(), 1U);
+    }
+
+    TEST(StorageInterface, BetweenPredicateOnStringField) {
+      const auto query = Query<TestSample>::where(
+          field<TestSample, std::string>(TestSample::Field::Name).between("a", "z"));
+      ASSERT_EQ(query.predicates().size(), 1U);
+      EXPECT_EQ(query.predicates().at(0).op, PredicateOperator::Between);
+    }
+
   } // namespace
 } // namespace fmgr::storage

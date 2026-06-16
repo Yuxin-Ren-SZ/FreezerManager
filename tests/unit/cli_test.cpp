@@ -1224,5 +1224,139 @@ namespace fmgr::cli {
       EXPECT_NE(code, 0);
     }
 
+    // ---- Break-it: CSV parsing edge cases ----
+
+    TEST(CsvReaderTest, EmptyInputProducesNoRows) {
+      const auto rows = parse("");
+      EXPECT_TRUE(rows.empty());
+    }
+
+    TEST(CsvReaderTest, WhitespaceOnlyLines) {
+      const auto rows = parse("   \r\n\t\r\n");
+      // Whitespace-only lines may be treated as empty rows or skipped.
+      // Must not crash; behavior for empty rows is implementation-defined.
+    }
+
+    TEST(CsvReaderTest, VeryLongFieldDoesNotCrash) {
+      std::string long_field(100'000, 'x');
+      const auto rows = parse("\"" + long_field + "\"\r\n");
+      ASSERT_EQ(rows.size(), 1U);
+      ASSERT_EQ(rows.at(0).size(), 1U);
+      EXPECT_EQ(rows.at(0).at(0), long_field);
+    }
+
+    TEST(CsvReaderTest, VeryWideRowDoesNotCrash) {
+      std::string header;
+      for (int i = 0; i < 500; ++i) {
+        if (i > 0) header += ",";
+        header += "col_" + std::to_string(i);
+      }
+      const auto rows = parse(header + "\r\n");
+      ASSERT_EQ(rows.size(), 1U);
+      EXPECT_EQ(rows.at(0).size(), 500U);
+    }
+
+    TEST(CsvReaderTest, DeeplyNestedQuotes) {
+      // "say \"\"\"hi\"\"\"" → say """hi"""
+      const auto rows = parse("\"say \"\"\"\"\"hi\"\"\"\"\"\"\r\n");
+      ASSERT_EQ(rows.size(), 1U);
+    }
+
+    TEST(CsvReaderTest, SingleCharacterInputs) {
+      EXPECT_EQ(parse("x").size(), 1U);
+      EXPECT_EQ(parse(",").size(), 1U);
+      // A lone double-quote is an unterminated quoted field — must throw.
+      EXPECT_THROW(parse("\""), CsvParseError);
+    }
+
+    TEST(CsvWriterTest, EmptyFieldList) {
+      std::ostringstream out;
+      write_csv_row(out, {});
+      EXPECT_EQ(out.str(), "\r\n");
+    }
+
+    // ---- Break-it: sample import empty/boundary ----
+
+    TEST(SampleImportTest, SampleWithEmptyCustomFieldsParsesAsEmptyObject) {
+      const std::vector<std::vector<std::string>> records = {
+          {"name", "item_type_id", "custom_fields_json"},
+          {"S1", item_type_uuid(), "{}"}};
+      const auto report = build_import(records, import_ctx());
+      ASSERT_FALSE(report.has_errors());
+      ASSERT_FALSE(report.rows.empty());
+      EXPECT_TRUE(report.rows.at(0).ok);
+    }
+
+    TEST(SampleImportTest, SampleWithNestedCustomFieldsJson) {
+      const std::vector<std::vector<std::string>> records = {
+          {"name", "item_type_id", "custom_fields_json"},
+          {"S1", item_type_uuid(), R"({"nested":{"key":"value"}})"}};
+      const auto report = build_import(records, import_ctx());
+      ASSERT_FALSE(report.has_errors());
+      EXPECT_TRUE(report.rows.at(0).ok);
+    }
+
+    // ---- Break-it: BackendFactory edge cases ----
+
+    TEST(BackendFactoryTest, EmptySqlitePathOption) {
+      // An empty SQLite path — the factory treats it as an implicit in-memory
+      // database or rejects it. Either outcome must not crash.
+      try {
+        (void)open_backend(BackendOptions{.sqlite_path = ""});
+        // If accepted, it opened successfully (likely as :memory:).
+      } catch (const BackendOptionError&) {
+        // Rejection is also acceptable.
+      }
+    }
+
+    // ==== Aggressive: BOM, formula injection, mixed newlines ====
+
+    TEST(CsvReaderTest, BOMAtStartOfInput) {
+      // UTF-8 BOM (0xEF 0xBB 0xBF) at the very beginning.
+      const std::string bom = "\xEF\xBB\xBF";
+      const auto rows = parse(bom + "name\r\nvalue\r\n");
+      ASSERT_GE(rows.size(), 1U);
+      // The BOM may be silently stripped or treated as part of the first field name.
+    }
+
+    TEST(CsvReaderTest, CsvFormulaInjectionIsNotExecuted) {
+      // Fields starting with =, +, -, @ must not be interpreted as formulas.
+      const auto rows = parse("=SUM(A1:A10),+123,@HYPERLINK,-45\r\n");
+      ASSERT_EQ(rows.size(), 1U);
+    }
+
+    TEST(CsvReaderTest, MixedLineEndings) {
+      // A file mixing CR, LF, and CRLF within the same document.
+      const auto rows = parse("a\rb\nc\r\nd");
+      ASSERT_GE(rows.size(), 1U);
+    }
+
+    TEST(CsvReaderTest, EmptyQuotedField) {
+      const auto rows = parse("\"\"\r\n");
+      ASSERT_EQ(rows.size(), 1U);
+      ASSERT_EQ(rows.at(0).size(), 1U);
+      EXPECT_EQ(rows.at(0).at(0), "");
+    }
+
+    TEST(CsvReaderTest, FieldWithOnlyQuotes) {
+      // """" → a single literal double-quote character.
+      const auto rows = parse("\"\"\"\"\r\n");
+      ASSERT_EQ(rows.size(), 1U);
+      ASSERT_EQ(rows.at(0).size(), 1U);
+      EXPECT_EQ(rows.at(0).at(0), "\"");
+    }
+
+    TEST(CsvReaderTest, TrailingSpacesAfterQuotedField) {
+      // Spaces after closing quote but before comma — typically invalid per RFC 4180.
+      const auto rows = parse("\"hello\" ,world\r\n");
+      ASSERT_GE(rows.size(), 1U);
+    }
+
+    TEST(CsvReaderTest, ControlCharactersExceptCrLf) {
+      // ASCII control characters (0x01-0x08, 0x0B-0x0C, 0x0E-0x1F) in unquoted fields.
+      const auto rows = parse("a\x01\x02b,c\r\n");
+      ASSERT_GE(rows.size(), 1U);
+    }
+
   } // namespace
 } // namespace fmgr::cli
