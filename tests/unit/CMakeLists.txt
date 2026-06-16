@@ -1,4 +1,5 @@
 find_package(GTest CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable(
   freezermanager_core_unit_tests
@@ -190,8 +191,26 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
+add_executable(freezermanager_rest_unit_tests
+  json_proto_mapping_test.cpp
+  rest_error_translation_test.cpp
+)
+target_link_libraries(
+  freezermanager_rest_unit_tests
+  PRIVATE
+    FreezerManager::rest
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_rest_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
+gtest_discover_tests(freezermanager_rest_unit_tests)
 gtest_discover_tests(freezermanager_storage_unit_tests)
 gtest_discover_tests(freezermanager_sqlite_storage_unit_tests)
 gtest_discover_tests(freezermanager_auth_unit_tests)

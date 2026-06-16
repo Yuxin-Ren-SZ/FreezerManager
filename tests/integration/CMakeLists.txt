@@ -2,6 +2,7 @@
 
 find_package(gRPC CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable(freezermanager_server_integration_tests
   server_integration_test.cpp
@@ -171,6 +172,29 @@ target_link_libraries(
     GTest::gtest_main
 )
 
+add_executable(freezermanager_rest_gateway_integration_tests
+  rest_gateway_integration_test.cpp
+)
+
+target_include_directories(
+  freezermanager_rest_gateway_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  freezermanager_rest_gateway_integration_tests
+  PRIVATE
+    FreezerManager::rest
+    FreezerManager::server_lib
+    FreezerManager::storage_sqlite
+    FreezerManager::auth
+    gRPC::grpc++
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 # These spin up an in-process gRPC server. The Conan gRPC/absl libraries are
 # prebuilt WITHOUT sanitizer instrumentation, so under asan/tsan they produce
@@ -193,4 +217,6 @@ gtest_discover_tests(freezermanager_role_service_integration_tests
 gtest_discover_tests(freezermanager_audit_service_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_share_service_integration_tests
+  PROPERTIES LABELS "grpc_integration")
+gtest_discover_tests(freezermanager_rest_gateway_integration_tests
   PROPERTIES LABELS "grpc_integration")

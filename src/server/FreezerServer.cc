@@ -83,4 +83,11 @@ namespace fmgr::server {
     return bound_port_;
   }
 
+  std::shared_ptr<grpc::Channel> FreezerServer::in_process_channel() {
+    if (!grpc_server_) {
+      throw std::runtime_error("in_process_channel() called before build()");
+    }
+    return grpc_server_->InProcessChannel(grpc::ChannelArguments{});
+  }
+
 } // namespace fmgr::server

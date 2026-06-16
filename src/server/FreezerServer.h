@@ -62,6 +62,12 @@ namespace fmgr::server {
     // Only valid after build() returns.
     [[nodiscard]] int bound_port() const;
 
+    // In-memory channel to this server's services — no socket, no TLS hop. The
+    // REST gateway dials its gRPC stubs over this so a REST request reuses the
+    // same handlers (RBAC gate, audit append, transactions) as a native client.
+    // Only valid after build() returns.
+    [[nodiscard]] std::shared_ptr<grpc::Channel> in_process_channel();
+
   private:
     FreezerServerOptions opts_;
     AuthServiceImpl auth_svc_;

@@ -1319,22 +1319,31 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 
 ## Section F — RPC layer & client transports (M3)
 
-- [ ] **F1. `.proto` definitions** under `proto/`. One file per service
-      (`auth.proto`, `lab.proto`, `freezer.proto`, `sample.proto`,
-      `audit.proto`, etc.). Versioned `package fmgr.v1;`. **Source of
-      truth — never edit generated code.**
+- [x] **F1. `.proto` definitions** under `proto/fmgr/v1/`. One file per service
+      (`auth.proto`, `lab.proto`, `sample.proto`, `audit.proto`, etc.; 10 files).
+      Versioned `package fmgr.v1;`. **Source of truth — never edit generated
+      code.**
 
-- [ ] **F2. gRPC server** in `src/rpc/`. Each RPC handler:
+- [x] **F2. gRPC server** in `src/server/`. All 9 services implemented. Each RPC
+      handler:
   1. Goes through E3 middleware.
   2. Opens a transaction via `IStorageBackend`.
   3. Performs work via the typed repos.
   4. Writes audit row in the same transaction.
   5. Commits.
 
-- [ ] **F3. REST/JSON gateway**. For each gRPC method, expose
-      `/api/v1/<resource>/<verb>` with documented JSON shape. Streaming
-      RPCs are bridged to Server-Sent Events (or WebSocket for
-      bidirectional like bulk-import progress).
+- [~] **F3. REST/JSON gateway** (`src/rest/`). Drogon HTTP listener inside
+      `freezerd`, forwarding to the gRPC services over `Server::InProcessChannel`
+      — reuses the RBAC gate + audit + transactions with no logic duplicated.
+      JSON↔proto via proto3 JSON mapping (`JsonProtoMapping`); gRPC status →
+      HTTP via `RestErrorTranslation`. Verb-style routes `/api/v1/<service>/<verb>`.
+  - [x] Auth + Session + Lab + Sample wired end-to-end (login → bearer → RBAC →
+        unary CRUD → JSON), positive/negative authz + missing-bearer + REST e2e
+        tests green.
+  - [ ] Fan out the remaining 5 services (Box, ItemType, Role, Audit, Share) —
+        mechanical copies of the route pattern.
+  - [ ] Streaming RPCs bridged to SSE / WebSocket (live sample-list, audit feed,
+        bulk-import progress).
   - **⚠ Watch:** the REST gateway is what the React SPA and Python
     client speak. Any breaking change to a `.proto` must increment the
     `v1` package label.

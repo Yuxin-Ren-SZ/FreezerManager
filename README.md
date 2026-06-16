@@ -42,8 +42,10 @@ server that is fast, correct, and safe to operate — even without a dedicated D
   sanitizer CI builds, and TDD throughout (839+ tests).
 
 > **Status:** Pre-alpha — active implementation. Core domain, both reference
-> backends (SQLite + PostgreSQL), auth foundation, and the audit chain are
-> complete; security-remediation pass done. Next: RPC layer (gRPC) + clients.
+> backends (SQLite + PostgreSQL), auth foundation, the audit chain, the full
+> gRPC service layer (9 services), and the M1 CLI/CSV surface are complete;
+> security-remediation pass done. Next: REST/JSON gateway (in progress — Drogon
+> front door over the gRPC in-process channel) + desktop/web/Python clients.
 > See [`doc/PRD.md`](./doc/PRD.md) for the full product requirements & design
 > document and the [Roadmap](#roadmap) below for current progress.
 
@@ -133,9 +135,9 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 
 ### Interfaces & Clients
 
-- 🔲 `.proto` definitions under `proto/` — source of truth; never edit generated code
-- 🔲 gRPC server — every RPC handler opens a transaction, does work, appends audit row, commits
-- 🔲 REST / JSON gateway — `/api/v1/*`; streaming RPCs bridged to SSE / WebSocket
+- ✅ `.proto` definitions under `proto/` — source of truth; never edit generated code; 10 service files
+- ✅ gRPC server — all 9 services; every RPC handler opens a transaction, does work, appends audit row, commits
+- ⚙️ REST / JSON gateway — Drogon HTTP front door at `/api/v1/*`; forwards to the gRPC services over the in-process channel (reuses the RBAC gate + audit + transactions, no logic duplicated); JSON↔proto via proto3 JSON mapping. Auth/Session/Lab/Sample wired with positive/negative authz tests; remaining 5 services + SSE/WebSocket streaming 🔲
 - 🔲 Qt 6 desktop client — sample browser, box drag-and-drop grid, barcode-scanner focus mode, CSV import wizard
 - 🔲 React / TypeScript SPA — feature parity with Qt client; live updates via SSE
 - 🔲 `freezerctl-py` Python client — thin REST wrapper; Jupyter quick-start notebook with example plots
@@ -176,10 +178,10 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
 | **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3) | ✅ Complete |
 | **C5 — PostgreSQL backend** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0013 + RLS policies + full domain repositories; conformance + repository suites green against live `postgres:16` in CI | ✅ Complete |
-| **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅, freezer/box/item-type `list` + `inspect` ✅; CLI `create` nouns + non-sample CSV import 🔲 | ⚙️ In progress |
+| **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅, freezer/box/item-type `list` + `inspect` ✅, CLI `create` nouns (6 entities) ✅, non-sample CSV import (item-type/box/custom-field-def/user) ✅ | ✅ Complete |
 | **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots | ✅ Complete |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
-| **M3 — gRPC + Qt client** | Proto definitions, gRPC server, REST gateway, Qt 6 desktop client — first end-to-end usable build | 🔲 Planned |
+| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway (Auth/Session/Lab/Sample slice over Drogon ⚙️), Qt 6 desktop client 🔲, REST fan-out + SSE streaming 🔲 | ⚙️ In progress |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
 | **M5 — PHI + KMS + Backups** | Field-level encryption, KMS adapters, backup/restore, weekly restore-drill | 🔲 Planned |
 | **M6 — Public API & Sharing** | API tokens, `freezerctl-py`, cross-lab share-request workflow | 🔲 Planned |

@@ -105,7 +105,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.conan2
-          key: conan-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ hashFiles('conanfile.txt', 'conan.lock') }}
+          key: conan-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ hashFiles('conanfile.py', 'conan.lock') }}
           restore-keys: |
             conan-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-
             conan-${{ runner.os }}-

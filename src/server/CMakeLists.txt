@@ -40,4 +40,8 @@ target_link_libraries(
 )
 
 add_executable(freezerd main.cc)
-target_link_libraries(freezerd PRIVATE FreezerManager::server_lib FreezerManager::storage_sqlite)
+target_link_libraries(freezerd
+  PRIVATE
+    FreezerManager::server_lib
+    FreezerManager::rest
+    FreezerManager::storage_sqlite)
