@@ -36,6 +36,9 @@ namespace fmgr::server {
     grpc::Status ExportAuditLog(grpc::ServerContext* ctx,
                                 const fmgr::v1::ExportAuditLogRequest* req,
                                 fmgr::v1::ExportAuditLogResponse* resp) override;
+    grpc::Status WatchAuditFeed(grpc::ServerContext* ctx,
+                                const fmgr::v1::WatchAuditFeedRequest* req,
+                                grpc::ServerWriter<fmgr::v1::AuditEvent>* writer) override;
 
   private:
     auth::IAuthProvider& auth_;

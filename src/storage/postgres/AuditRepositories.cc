@@ -73,8 +73,25 @@ namespace fmgr::storage {
         for (std::size_t index = 0; index < query_spec.predicates().size(); ++index) {
           const auto& predicate = query_spec.predicates().at(index);
           sql += index == 0 ? " WHERE " : " AND ";
-          sql +=
-              detail::audit_event_column_name(predicate.field) + " = $" + std::to_string(++ordinal);
+          sql += detail::audit_event_column_name(predicate.field);
+          switch (predicate.op) {
+          case PredicateOperator::Equal:
+            sql += " = $";
+            break;
+          case PredicateOperator::GreaterThanOrEqual:
+            sql += " >= $";
+            break;
+          case PredicateOperator::LessThanOrEqual:
+            sql += " <= $";
+            break;
+          case PredicateOperator::Between:
+          case PredicateOperator::In:
+          case PredicateOperator::JsonPathEqual:
+            // Only equality and since/until range predicates are built against
+            // the audit repository; fail loudly rather than silently mis-render.
+            throw ConstraintViolation("unsupported audit query operator");
+          }
+          sql += std::to_string(++ordinal);
           if (predicate.value.is_string()) {
             params.append(predicate.value.get<std::string>());
           } else {
