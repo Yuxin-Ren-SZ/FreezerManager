@@ -2,208 +2,424 @@
 #include "MainWindow.h"
 
 #include "mock/MockData.h"
+#include "mock/MockData_ext.h"
 #include "pages/DashboardPage.h"
 #include "pages/FreezerExplorerPage.h"
-#include "pages/Freezer3DPage.h"
 #include "pages/SampleBrowserPage.h"
 #include "pages/SampleDetailPage.h"
+#include "theme/Theme.h"
 #include "widgets/BoxGridView.h"
+#include "pages/checkinout/CheckInOutPage.h"
+#include "pages/csvimport/CsvImportPage.h"
+#include "pages/audit/AuditLogPage.h"
+#include "pages/admin/AdminPage.h"
+#include "pages/GovernanceStubs.h"
 
-#include <QAction>
 #include <QApplication>
+#include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
-#include <QLabel>
+#include <QLineEdit>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
-#include <QStackedWidget>
+#include <QScrollArea>
 #include <QStatusBar>
 #include <QStyleFactory>
 #include <QVBoxLayout>
-#include <QWidget>
 
 namespace fmgr::qt {
 
-static const char* kStyleSheet = R"(
-  QMainWindow,QWidget{background:#0d1117;color:#c9d1d9;font-family:"Segoe UI","Ubuntu",sans-serif;font-size:13px;}
-  QMenuBar{background:#161b22;color:#c9d1d9;border-bottom:1px solid #30363d;padding:2px 8px;}
-  QMenuBar::item:selected{background:#21262d;border-radius:4px;}
-  QMenu{background:#161b22;border:1px solid #30363d;border-radius:6px;padding:4px;}
-  QMenu::item{padding:6px 32px 6px 16px;border-radius:4px;}
-  QMenu::item:selected{background:#1f6feb;}
-  QMenu::separator{height:1px;background:#30363d;margin:4px 8px;}
-  QStatusBar{background:#161b22;color:#8b949e;border-top:1px solid #30363d;padding:2px 12px;font-size:12px;}
-  QSplitter::handle{background:#30363d;width:1px;}
-  QTableView{background:#0d1117;alternate-background-color:#161b22;color:#c9d1d9;gridline-color:#21262d;border:1px solid #30363d;border-radius:8px;selection-background-color:#1f6feb;selection-color:#fff;}
-  QTableView::item{padding:6px 12px;border-bottom:1px solid #21262d;}
-  QTableView::item:hover{background:#1a2332;}
-  QHeaderView::section{background:#161b22;color:#8b949e;border:none;border-bottom:2px solid #30363d;padding:8px 12px;font-weight:600;font-size:12px;}
-  QScrollBar:vertical{background:#0d1117;width:8px;border-radius:4px;}
-  QScrollBar::handle:vertical{background:#30363d;border-radius:4px;min-height:30px;}
-  QScrollBar::handle:vertical:hover{background:#484f58;}
-  QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}
-  QLineEdit{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:7px 12px;selection-background-color:#1f6feb;}
-  QLineEdit:focus{border-color:#1f6feb;background:#161b22;}
-  QComboBox{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:6px;padding:6px 12px;min-width:120px;}
-  QComboBox:hover{border-color:#58a6ff;}
-  QComboBox QAbstractItemView{background:#161b22;border:1px solid #30363d;border-radius:6px;selection-background-color:#1f6feb;}
-  QTextEdit{background:#0d1117;color:#c9d1d9;border:1px solid #30363d;border-radius:8px;padding:12px;}
-  QGraphicsView{background:#0d1117;border:1px solid #30363d;border-radius:8px;}
-  QScrollArea{background:transparent;border:none;}
-)";
+using namespace theme;
 
+// ── Nav item descriptor ─────────────────────────────────────────────
+struct NavItem {
+    const char* icon;
+    const char* label;
+    PageIndex page;
+    bool adminOnly;
+    const char* groupLabel;  // nullptr = same group; non-null = new group header
+};
+
+static const NavItem kNavItems[] = {
+    // Workspace
+    {"\xF0\x9F\x8F\xA0", "Dashboard",           PageIndex::Dashboard,  false, nullptr},
+    {"\xF0\x9F\x94\x8D", "Samples",             PageIndex::Samples,    false, nullptr},
+    {"\xE2\x9D\x84\xEF\xB8\x8F", "Freezers & Boxes", PageIndex::Freezers,  false, nullptr},
+    {"\xF0\x9F\x93\x8B", "Check-in / out",      PageIndex::CheckInOut, false, nullptr},
+    {"\xF0\x9F\x93\xA5", "CSV Import",          PageIndex::CsvImport,  false, nullptr},
+    // Governance
+    {"\xF0\x9F\x94\x92", "Audit Log",           PageIndex::AuditLog,   false, "Governance"},
+    {"\xE2\x9A\x99\xEF\xB8\x8F", "Administration",  PageIndex::Admin,  true,  nullptr},
+    {"\xF0\x9F\x93\x8A", "Reports & Analytics", PageIndex::Reports,    false, nullptr},
+    {"\xF0\x9F\x91\xA4", "Donors / Subjects",   PageIndex::Donors,     false, nullptr},
+    {"\xF0\x9F\x93\x84", "Studies / Protocols", PageIndex::Studies,    false, nullptr},
+    {"\xF0\x9F\x8C\xA1\xEF\xB8\x8F", "Temperature & Alarms", PageIndex::Monitoring, false, nullptr},
+    {"\xF0\x9F\x93\x8B", "Pick Lists",           PageIndex::PickLists,  false, nullptr},
+    {"\xF0\x9F\x94\x84", "Requests & Transfers",  PageIndex::Requests,  false, nullptr},
+};
+static constexpr int kNavCount = sizeof(kNavItems) / sizeof(kNavItems[0]);
+
+// ── Constructor ─────────────────────────────────────────────────────
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-  setWindowTitle("FreezerManager");
-  resize(1320, 860);
-  setMinimumSize(1000, 640);
-  qApp->setStyleSheet(kStyleSheet);
-  QApplication::setStyle(QStyleFactory::create("Fusion"));
-  setupMenuBar();
-  setupStatusBar();
-  setupCentralWidget();
+    setWindowTitle("FreezerManager");
+    resize(1320, 860);
+    setMinimumSize(1000, 640);
+    QApplication::setStyle(QStyleFactory::create("Fusion"));
+    qApp->setStyleSheet(Theme::instance().globalStyleSheet());
+
+    setupStatusBar();
+    setupCentralWidget();
+    showPage(0);
 }
 
+// ── Menu bar (File, View, Help) ─────────────────────────────────────
 void MainWindow::setupMenuBar() {
-  QMenu* fileMenu = menuBar()->addMenu("&File");
-  QAction* quit = fileMenu->addAction("&Quit");
-  quit->setShortcut(QKeySequence::Quit);
-  connect(quit, &QAction::triggered, qApp, &QApplication::quit);
+    QMenu* fileMenu = menuBar()->addMenu("&File");
+    QAction* quit = fileMenu->addAction("&Quit");
+    quit->setShortcut(QKeySequence::Quit);
+    connect(quit, &QAction::triggered, qApp, &QApplication::quit);
 
-  QMenu* viewMenu = menuBar()->addMenu("&View");
-  auto addV = [&](const QString& t, QKeySequence k, auto s) {
-    auto* a = viewMenu->addAction(t); a->setShortcut(k);
-    connect(a, &QAction::triggered, this, s);
-  };
-  addV("&Dashboard", Qt::CTRL|Qt::Key_1, &MainWindow::showDashboard);
-  addV("&Samples",   Qt::CTRL|Qt::Key_2, &MainWindow::showSamplesPage);
-  addV("&Freezers",  Qt::CTRL|Qt::Key_3, &MainWindow::showFreezersPage);
-  addV("&Box Grid",  Qt::CTRL|Qt::Key_4, &MainWindow::showBoxGridPage);
-  addV("Freezer &3D",Qt::CTRL|Qt::Key_5, &MainWindow::showFreezer3DPage);
-  viewMenu->addSeparator();
-  QAction* fs = viewMenu->addAction("Toggle &Full Screen");
-  fs->setShortcut(Qt::Key_F11);
-  connect(fs, &QAction::triggered, this, [this](){
-    isFullScreen() ? showNormal() : showFullScreen(); });
+    QMenu* viewMenu = menuBar()->addMenu("&View");
+    viewMenu->addAction("Dashboard")->setShortcut(Qt::CTRL | Qt::Key_1);
+    viewMenu->addAction("Samples")->setShortcut(Qt::CTRL | Qt::Key_2);
+    viewMenu->addAction("Freezers")->setShortcut(Qt::CTRL | Qt::Key_3);
+    viewMenu->addSeparator();
+    QAction* fs = viewMenu->addAction("Toggle &Full Screen");
+    fs->setShortcut(Qt::Key_F11);
+    connect(fs, &QAction::triggered, this, [this]() {
+        isFullScreen() ? showNormal() : showFullScreen();
+    });
 
-  QMenu* helpMenu = menuBar()->addMenu("&Help");
-  connect(helpMenu->addAction("&About"), &QAction::triggered, this, &MainWindow::showAboutDialog);
+    QMenu* helpMenu = menuBar()->addMenu("&Help");
+    connect(helpMenu->addAction("&About"), &QAction::triggered, this, [this]() {
+        QMessageBox::about(this, "About",
+            "<h3 style='color:#2563c9'>FreezerManager 0.1.0</h3>"
+            "<p>Self-hosted freezer & biospecimen management.</p>");
+    });
 }
 
+// ── Status bar ──────────────────────────────────────────────────────
 void MainWindow::setupStatusBar() {
-  connectionLabel_ = new QLabel("  Offline — Mock Data Mode");
-  connectionLabel_->setStyleSheet("color:#d2991d; font-weight:500;");
-  statusBar()->addPermanentWidget(connectionLabel_);
+    connectionLabel_ = new QLabel("  \xF0\x9F\x9F\xA2 Connected · grpc://freezerd:8443");
+    connectionLabel_->setStyleSheet("color:#1f9d57; font-weight:500;");
+    statusBar()->addPermanentWidget(connectionLabel_);
+
+    auto* auditLabel = new QLabel("\xF0\x9F\x94\x92 Audit chain verified");
+    auditLabel->setStyleSheet(
+        QString("color:%1; font-size:11px;").arg(Theme::instance().text3().name()));
+    statusBar()->addPermanentWidget(auditLabel);
 }
 
-void MainWindow::setupSidebar(QWidget* sidebarParent) {
-  auto* sidebar = new QVBoxLayout(sidebarParent);
-  sidebar->setContentsMargins(0,0,0,0); sidebar->setSpacing(0);
+// ── Top bar (brand, search, lab switcher, gear, user menu) ──────────
+void MainWindow::setupTopbar(QVBoxLayout* topLayout) {
+    auto& t = Theme::instance();
+    auto* bar = new QWidget(centralWidget_);
+    bar->setFixedHeight(52);
+    bar->setStyleSheet(QString(
+        "background:%1; border-bottom:1px solid %2;")
+        .arg(t.surface().name(), t.border().name()));
+    auto* hl = new QHBoxLayout(bar);
+    hl->setContentsMargins(14, 0, 14, 0);
+    hl->setSpacing(12);
 
-  auto* brand = new QLabel("FM");
-  brand->setAlignment(Qt::AlignCenter);
-  brand->setStyleSheet("font-size:18px;font-weight:800;color:#58a6ff;background:transparent;padding:16px 8px 6px;");
-  sidebar->addWidget(brand);
+    // Brand
+    auto* brand = new QLabel("\xF0\x9F\xA7\x8A <b>FreezerManager</b>");
+    brand->setStyleSheet(QString(
+        "font-size:14px; font-weight:600; color:%1; background:transparent; "
+        "letter-spacing:-0.01em;")
+        .arg(t.text().name()));
+    hl->addWidget(brand);
 
-  auto* sep = new QFrame(); sep->setFrameShape(QFrame::HLine);
-  sep->setStyleSheet("background:#30363d;max-height:1px;margin:6px 12px;");
-  sidebar->addWidget(sep); sidebar->addSpacing(6);
+    auto* ver = new QLabel("v0.1 · pre-α");
+    ver->setStyleSheet(QString(
+        "font-family:\"IBM Plex Mono\",monospace; font-size:10px; color:%1; "
+        "border:1px solid %2; padding:1px 5px; border-radius:20px; background:transparent;")
+        .arg(t.text3().name(), t.border().name()));
+    hl->addWidget(ver);
 
-  auto makeBtn = [&](const QString& s) -> QAction* {
-    auto* b = new QAction(s, sidebarParent); b->setCheckable(true);
-    sidebarParent->addAction(b); return b;
-  };
+    hl->addSpacing(10);
 
-  dashboardAction_ = makeBtn("\xF0\x9F\x8F\xA0  Home");
-  samplesAction_   = makeBtn("\xF0\x9F\x94\x8D  Samples");
-  freezersAction_  = makeBtn("\xE2\x9D\x84\xEF\xB8\x8F  Freezers");
-  boxAction_       = makeBtn("\xF0\x9F\x93\xA6  Boxes");
-  freezer3DAction_ = makeBtn("\xF0\x9F\xA7\x8A  3D View");
+    // Global search
+    globalSearch_ = new QLineEdit();
+    globalSearch_->setPlaceholderText("Search samples, boxes, donors, barcodes…");
+    globalSearch_->setClearButtonEnabled(true);
+    globalSearch_->setMaximumWidth(460);
+    globalSearch_->setStyleSheet(QString(
+        "QLineEdit{font-size:13px; padding:0px 12px 0px 32px; "
+        "background:%1; border:1px solid %2; border-radius:7px; color:%3;}")
+        .arg(t.surface2().name(), t.borderStrong().name(), t.text().name()));
+    hl->addWidget(globalSearch_, 1);
 
-  connect(dashboardAction_,&QAction::triggered,this,&MainWindow::showDashboard);
-  connect(samplesAction_,  &QAction::triggered,this,&MainWindow::showSamplesPage);
-  connect(freezersAction_, &QAction::triggered,this,&MainWindow::showFreezersPage);
-  connect(boxAction_,      &QAction::triggered,this,&MainWindow::showBoxGridPage);
-  connect(freezer3DAction_,&QAction::triggered,this,&MainWindow::showFreezer3DPage);
+    hl->addStretch();
 
-  sidebar->addStretch();
+    // Lab switcher
+    auto* labBtn = new QPushButton("  \xF0\x9F\x94\xB5 Chen Lab  ▾");
+    labBtn->setStyleSheet(QString(
+        "QPushButton{background:%1; border:1px solid %2; border-radius:7px; "
+        "color:%3; font-size:13px; padding:6px 11px;}")
+        .arg(t.surface2().name(), t.border().name(), t.text().name()));
+    hl->addWidget(labBtn);
 
-  sidebarParent->setStyleSheet(R"(
-    QWidget#sidebar{background:#161b22;border-right:1px solid #30363d;}
-    QWidget#sidebar QAction{color:#8b949e;background:transparent;border:none;border-radius:8px;padding:10px 14px;margin:1px 8px;font-size:13px;font-weight:500;text-align:left;border-left:3px solid transparent;}
-    QWidget#sidebar QAction:hover{background:#21262d;color:#c9d1d9;}
-    QWidget#sidebar QAction:checked{background:#1a2332;color:#58a6ff;border-left:3px solid #1f6feb;}
-  )");
-  sidebarParent->setObjectName("sidebar");
+    // Tweaks / gear
+    auto* gearBtn = new QPushButton("\xE2\x9A\x99");
+    gearBtn->setToolTip("Tweaks: theme, layout, density");
+    gearBtn->setFixedSize(34, 34);
+    gearBtn->setStyleSheet(QString(
+        "QPushButton{background:%1; border:1px solid %2; border-radius:7px; "
+        "color:%3; font-size:16px;}")
+        .arg(t.surface().name(), t.borderStrong().name(), t.text2().name()));
+    connect(gearBtn, &QPushButton::clicked, this, &MainWindow::openTweaks);
+    hl->addWidget(gearBtn);
+
+    // User menu
+    auto* userBtn = new QPushButton();
+    userBtn->setStyleSheet(QString(
+        "QPushButton{background:transparent; border:1px solid transparent; "
+        "border-radius:30px; padding:3px 8px 3px 3px; color:%1; font-size:12.5px;}")
+        .arg(t.text().name()));
+    hl->addWidget(userBtn);
+
+    topLayout->addWidget(bar);
+    setupMenuBar(); // menu bar is separate from topbar in QMainWindow
 }
 
+// ── Sidebar ─────────────────────────────────────────────────────────
+void MainWindow::setupSidebar(QWidget* sidebar) {
+    sidebar->setObjectName("sidebar");
+    sidebar->setFixedWidth(Theme::instance().sidebarW());
+    sidebar->setStyleSheet(Theme::instance().sidebarStyleSheet());
+
+    sidebarLayout_ = new QVBoxLayout(sidebar);
+    sidebarLayout_->setContentsMargins(0, 0, 0, 0);
+    sidebarLayout_->setSpacing(0);
+
+    // Brand at top of sidebar
+    auto* brand = new QLabel("\xF0\x9F\xA7\x8A  FreezerManager");
+    brand->setStyleSheet(QString(
+        "font-size:14px; font-weight:600; color:%1; background:transparent; "
+        "padding:14px 14px 10px;")
+        .arg(Theme::instance().text().name()));
+    sidebarLayout_->addWidget(brand);
+
+    sidebarLayout_->addSpacing(8);
+
+    // Nav items
+    rebuildNav();
+
+    sidebarLayout_->addStretch();
+
+    // Footer
+    auto* foot = new QWidget(sidebar);
+    foot->setStyleSheet("background:transparent; border-top:1px solid " +
+                        Theme::instance().border().name() +
+                        "; padding:10px 14px; font-size:11px; color:" +
+                        Theme::instance().text3().name() + ";");
+    auto* fl = new QVBoxLayout(foot);
+    fl->setSpacing(4);
+    fl->addWidget(new QLabel("\xF0\x9F\x9F\xA2 Connected · grpc://freezerd:8443"));
+    fl->addWidget(new QLabel("\xF0\x9F\x94\x92 Audit chain verified"));
+    sidebarLayout_->addWidget(foot);
+}
+
+// ── Nav buttons ─────────────────────────────────────────────────────
+QPushButton* MainWindow::makeNavButton(const QString& icon,
+                                        const QString& label,
+                                        int pageIndex, bool adminOnly) {
+    auto* btn = new QPushButton(icon + "  " + label);
+    btn->setCheckable(true);
+    btn->setCursor(Qt::PointingHandCursor);
+    if (adminOnly) btn->setVisible(role_ == "LabAdmin");
+    connect(btn, &QPushButton::clicked, this, [this, pageIndex]() {
+        showPage(pageIndex);
+    });
+    return btn;
+}
+
+void MainWindow::rebuildNav() {
+    // Clear old buttons
+    sidebarButtons_.clear();
+    topTabButtons_.clear();
+
+    // Remove old nav buttons from sidebar layout
+    if (sidebarLayout_) {
+        // Remove everything except the first 2 widgets (brand + spacer)
+        while (sidebarLayout_->count() > 3) {
+            auto* item = sidebarLayout_->takeAt(2);
+            if (item->widget()) {
+                item->widget()->deleteLater();
+            }
+            delete item;
+        }
+    }
+
+    // Remove old top tabs (keep the layout — it is reused below)
+    if (topTabsLayout_) {
+        while (QLayoutItem* item = topTabsLayout_->takeAt(0)) {
+            if (item->widget()) item->widget()->deleteLater();
+            delete item;
+        }
+    }
+
+    QString currentGroup;
+    for (int i = 0; i < kNavCount; ++i) {
+        const auto& ni = kNavItems[i];
+        bool visible = !ni.adminOnly || role_ == "LabAdmin";
+
+        // Group header (sidebar only)
+        if (ni.groupLabel && sidebarLayout_) {
+            auto* header = new QLabel(ni.groupLabel);
+            header->setProperty("role", "nav-group");
+            header->setStyleSheet(QString(
+                "font-size:10.5px; text-transform:uppercase; letter-spacing:0.07em; "
+                "color:%1; font-weight:600; padding:14px 10px 5px; background:transparent;")
+                .arg(Theme::instance().text3().name()));
+            sidebarLayout_->addWidget(header);
+        }
+
+        // Sidebar button — add to layout BEFORE setVisible (same reason as
+        // the top-tab button: parent first, then show).
+        auto* sb = makeNavButton(ni.icon, ni.label, static_cast<int>(ni.page), ni.adminOnly);
+        if (sidebarLayout_) sidebarLayout_->addWidget(sb);
+        sb->setVisible(visible);
+        sidebarButtons_.append(sb);
+
+        // Top-tab button — parent into the tabs layout BEFORE setVisible,
+        // else a parentless visible widget shows as its own top-level window.
+        auto* tb = makeNavButton(ni.icon, ni.label, static_cast<int>(ni.page), ni.adminOnly);
+        if (topTabsLayout_) topTabsLayout_->addWidget(tb);
+        tb->setVisible(visible);
+        topTabButtons_.append(tb);
+    }
+}
+
+// ── Central widget setup ────────────────────────────────────────────
 void MainWindow::setupCentralWidget() {
-  auto* central = new QWidget();
-  auto* hl = new QHBoxLayout(central);
-  hl->setContentsMargins(0,0,0,0); hl->setSpacing(0);
+    centralWidget_ = new QWidget(this);
+    auto* rootLayout = new QVBoxLayout(centralWidget_);
+    rootLayout->setContentsMargins(0, 0, 0, 0);
+    rootLayout->setSpacing(0);
 
-  auto* sidebarW = new QWidget(); sidebarW->setFixedWidth(180);
-  setupSidebar(sidebarW);
-  hl->addWidget(sidebarW);
+    setupTopbar(rootLayout);
 
-  centralStack_ = new QStackedWidget();
+    auto* body = new QWidget(centralWidget_);
+    auto* bodyLayout = new QHBoxLayout(body);
+    bodyLayout->setContentsMargins(0, 0, 0, 0);
+    bodyLayout->setSpacing(0);
 
-  dashboardPage_ = new pages::DashboardPage();
-  centralStack_->addWidget(dashboardPage_);
+    // Top-tabs (hidden by default) — created BEFORE the sidebar so that
+    // rebuildNav() can parent the top-tab buttons into its layout. Otherwise
+    // makeNavButton()'s parentless QPushButtons get setVisible(true) and pop
+    // up as stray top-level windows.
+    topTabsWidget_ = new QWidget(body);
+    topTabsWidget_->setStyleSheet(QString(
+        "background:%1; border-bottom:1px solid %2;")
+        .arg(Theme::instance().surface().name(),
+             Theme::instance().border().name()));
+    topTabsLayout_ = new QHBoxLayout(topTabsWidget_);
+    topTabsLayout_->setContentsMargins(10, 0, 10, 0);
+    topTabsLayout_->setSpacing(2);
+    topTabsWidget_->setFixedHeight(40);
+    topTabsWidget_->setVisible(false);
 
-  sampleBrowserPage_ = new pages::SampleBrowserPage();
-  centralStack_->addWidget(sampleBrowserPage_);
+    // Sidebar (calls rebuildNav, which now sees a valid topTabsWidget_)
+    sidebarWidget_ = new QWidget(body);
+    setupSidebar(sidebarWidget_);
+    bodyLayout->addWidget(sidebarWidget_);
 
-  freezerExplorerPage_ = new pages::FreezerExplorerPage();
-  centralStack_->addWidget(freezerExplorerPage_);
+    // Stacked pages
+    pageStack_ = new QStackedWidget(this);
+    pageStack_->setStyleSheet("background:transparent;");
 
-  {
-    boxGridPage_ = new widgets::BoxGridView();
-    auto boxTypes = mock::makeBoxTypes();
-    auto samples = mock::makeSamples();
-    std::vector<core::Sample> filtered;
-    for (auto& s : samples)
-      if (s.box_id.has_value() && s.box_id->to_string().find("f1000000-0000-4000-d000-000000000000") == 0)
-        filtered.push_back(s);
-    boxGridPage_->loadBox(boxTypes[0], filtered, "Box-1 (9x9 Cryobox)");
-    centralStack_->addWidget(boxGridPage_);
-  }
+    // Create all page placeholders
+    pages_.resize(static_cast<int>(PageIndex::Count));
 
-  freezer3DPage_ = new pages::Freezer3DPage();
-  centralStack_->addWidget(freezer3DPage_);
+    // Existing pages
+    pages_[0] = new pages::DashboardPage(pageStack_);
+    pages_[1] = new pages::SampleBrowserPage(pageStack_);
+    pages_[2] = new pages::FreezerExplorerPage(pageStack_);
 
-  sampleDetailPage_ = new pages::SampleDetailPage();
-  centralStack_->addWidget(sampleDetailPage_);
+    pages_[3] = new pages::CheckInOutPage(pageStack_);
+    pages_[4] = new pages::CsvImportPage(pageStack_);
+    pages_[5] = new pages::AuditLogPage(pageStack_);
+    pages_[6] = new pages::AdminPage(pageStack_);
+    pages_[7] = new pages::ReportsPage(pageStack_);
+    pages_[8] = new pages::DonorsPage(pageStack_);
+    pages_[9] = new pages::StudiesPage(pageStack_);
+    pages_[10] = new pages::MonitoringPage(pageStack_);
+    pages_[11] = new pages::PickListsPage(pageStack_);
+    pages_[12] = new pages::RequestsPage(pageStack_);
 
-  hl->addWidget(centralStack_, 1);
-  setCentralWidget(central);
-  centralStack_->setCurrentIndex(0);
-  setActiveNav(0);
+    for (auto* page : pages_) {
+        pageStack_->addWidget(page);
+    }
+
+    auto* rightPanel = new QWidget(body);
+    auto* rightLayout = new QVBoxLayout(rightPanel);
+    rightLayout->setContentsMargins(0, 0, 0, 0);
+    rightLayout->setSpacing(0);
+    rightLayout->addWidget(topTabsWidget_);
+    rightLayout->addWidget(pageStack_, 1);
+
+    bodyLayout->addWidget(rightPanel, 1);
+    rootLayout->addWidget(body, 1);
+
+    setCentralWidget(centralWidget_);
 }
 
-void MainWindow::setActiveNav(int idx) {
-  dashboardAction_->setChecked(idx==0);
-  samplesAction_->setChecked(idx==1);
-  freezersAction_->setChecked(idx==2);
-  boxAction_->setChecked(idx==3);
-  freezer3DAction_->setChecked(idx==4);
+// ── Page navigation ─────────────────────────────────────────────────
+void MainWindow::showPage(int index) {
+    pageStack_->setCurrentIndex(index);
+
+    // Update sidebar highlights
+    for (int i = 0; i < sidebarButtons_.size(); ++i) {
+        sidebarButtons_[i]->setChecked(i == index);
+    }
+    for (int i = 0; i < topTabButtons_.size(); ++i) {
+        topTabButtons_[i]->setChecked(i == index);
+    }
 }
 
-void MainWindow::showDashboard()    { centralStack_->setCurrentIndex(0); setActiveNav(0); }
-void MainWindow::showSamplesPage()  { centralStack_->setCurrentIndex(1); setActiveNav(1); }
-void MainWindow::showFreezersPage() { centralStack_->setCurrentIndex(2); setActiveNav(2); }
-void MainWindow::showBoxGridPage()  { centralStack_->setCurrentIndex(3); setActiveNav(3); }
-void MainWindow::showFreezer3DPage(){ centralStack_->setCurrentIndex(4); setActiveNav(4); }
-void MainWindow::showSampleDetailPage() { centralStack_->setCurrentIndex(5); }
-void MainWindow::showSampleDetail(const core::Sample& s) {
-  sampleDetailPage_->showSample(s);
-  showSampleDetailPage();
+void MainWindow::showSampleDetail(const core::Sample& /*sample*/) {
+    // Future: open a detail drawer/overlay
 }
 
-void MainWindow::showAboutDialog() {
-  QMessageBox::about(this, "About",
-    "<h3 style='color:#58a6ff'>FreezerManager 0.1.0</h3>"
-    "<p>Self-hosted freezer & biospecimen management.</p>");
+void MainWindow::navigateToFreezerBox(const QString& /*boxId*/) {
+    showPage(static_cast<int>(PageIndex::Freezers));
+}
+
+// ── Theme tweaks ────────────────────────────────────────────────────
+void MainWindow::setRole(const QString& role) {
+    role_ = role;
+    rebuildNav();
+}
+
+void MainWindow::setNavLayout(const QString& layout) {
+    navLayout_ = layout;
+    bool useSidebar = (layout == "sidebar");
+    sidebarWidget_->setVisible(useSidebar);
+    topTabsWidget_->setVisible(!useSidebar);
+}
+
+void MainWindow::setDarkMode(bool dark) {
+    Theme::instance().setMode(dark ? Mode::Dark : Mode::Light);
+}
+
+void MainWindow::setAccent(const QString& hex) {
+    Theme::instance().setAccent(hex);
+}
+
+void MainWindow::setDensity(const QString& d) {
+    Theme::instance().setDensity(
+        d == "compact" ? Density::Compact : Density::Comfortable);
+}
+
+void MainWindow::openTweaks() {
+    // Future: open tweaks panel
+}
+
+void MainWindow::onSearchTextChanged(const QString& /*text*/) {
+    // Global search — will be wired to SampleBrowser
 }
 
 }  // namespace fmgr::qt

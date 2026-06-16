@@ -142,12 +142,12 @@ public:
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
 
-    auto* scroll = new QScrollArea();
+    auto* scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setStyleSheet("QScrollArea{background:transparent;border:none;}");
 
-    auto* content = new QWidget();
+    auto* content = new QWidget(scroll);
     auto* layout = new QVBoxLayout(content);
     layout->setContentsMargins(28, 24, 28, 24);
     layout->setSpacing(16);

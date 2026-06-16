@@ -4,9 +4,14 @@
 
 #include <QMainWindow>
 #include <QLabel>
+#include <QPushButton>
 #include <QStackedWidget>
+#include <QVector>
 
 class QAction;
+class QLineEdit;
+class QVBoxLayout;
+class QHBoxLayout;
 
 namespace fmgr::core { struct Sample; }
 
@@ -16,60 +21,99 @@ namespace pages {
 class DashboardPage;
 class SampleBrowserPage;
 class FreezerExplorerPage;
+class CheckInOutPage;
+class CsvImportPage;
+class AuditLogPage;
+class AdminPage;
+class ReportsPage;
+class DonorsPage;
+class StudiesPage;
+class MonitoringPage;
+class PickListsPage;
+class RequestsPage;
 class SampleDetailPage;
-}
+}  // namespace pages
+
 namespace widgets { class BoxGridView; }
 
+/// All application pages in navigation order.
 enum class PageIndex {
-  Dashboard = 0,
-  Samples,
-  Freezers,
-  BoxGrid,
-  Freezer3D,
-  SampleDetail,
-  Count
+    Dashboard = 0,
+    Samples,
+    Freezers,
+    CheckInOut,
+    CsvImport,
+    AuditLog,
+    Admin,
+    Reports,
+    Donors,
+    Studies,
+    Monitoring,
+    PickLists,
+    Requests,
+    Count
 };
 
+/// App shell: sidebar or top-tab nav, topbar with global search,
+/// lab switcher, user/role menu, and tweaks drawer trigger.
+///
+/// Navigation groups:
+///   Workspace: Dashboard, Samples, Freezers & Boxes, Check-in/out, CSV Import
+///   Governance: Audit Log, Administration, Reports, Donors, Studies,
+///               Temperature & Alarms, Pick Lists, Requests & Transfers
 class MainWindow : public QMainWindow {
-  Q_OBJECT
+    Q_OBJECT
 
 public:
-  explicit MainWindow(QWidget* parent = nullptr);
-  ~MainWindow() override = default;
+    explicit MainWindow(QWidget* parent = nullptr);
+    ~MainWindow() override = default;
 
-  void showSampleDetail(const core::Sample& sample);
+    void showSampleDetail(const core::Sample& sample);
+    void navigateToFreezerBox(const QString& boxId);
+
+public slots:
+    void setRole(const QString& role);       // "Member" | "LabAdmin"
+    void setNavLayout(const QString& layout); // "sidebar" | "tabs"
+    void setDarkMode(bool dark);
+    void setAccent(const QString& hex);
+    void setDensity(const QString& d);       // "comfortable" | "compact"
+    void openTweaks();
 
 private slots:
-  void showDashboard();
-  void showSamplesPage();
-  void showFreezersPage();
-  void showBoxGridPage();
-  void showFreezer3DPage();
-  void showSampleDetailPage();
+    void showPage(int index);
+    void onSearchTextChanged(const QString& text);
 
 private:
-  void setupMenuBar();
-  void setupSidebar(QWidget* parent);
-  void setupStatusBar();
-  void setupCentralWidget();
-  void setActiveNav(int index);
-  void showAboutDialog();
+    void setupMenuBar();
+    void setupStatusBar();
+    void setupCentralWidget();
+    void setupSidebar(QWidget* sidebarWidget);
+    void setupTopbar(QVBoxLayout* topbarLayout);
+    void rebuildNav();
 
-  QStackedWidget* centralStack_ = nullptr;
-  QLabel* connectionLabel_ = nullptr;
+    /// Helper: create a nav button in sidebar or top-tab style.
+    QPushButton* makeNavButton(const QString& icon, const QString& label,
+                               int pageIndex, bool adminOnly);
 
-  QAction* dashboardAction_ = nullptr;
-  QAction* samplesAction_ = nullptr;
-  QAction* freezersAction_ = nullptr;
-  QAction* boxAction_ = nullptr;
-  QAction* freezer3DAction_ = nullptr;
+    QWidget* centralWidget_ = nullptr;
+    QStackedWidget* pageStack_ = nullptr;
+    QLabel* connectionLabel_ = nullptr;
+    QLineEdit* globalSearch_ = nullptr;
 
-  pages::DashboardPage* dashboardPage_ = nullptr;
-  pages::SampleBrowserPage* sampleBrowserPage_ = nullptr;
-  pages::FreezerExplorerPage* freezerExplorerPage_ = nullptr;
-  widgets::BoxGridView* boxGridPage_ = nullptr;
-  QWidget* freezer3DPage_ = nullptr;
-  pages::SampleDetailPage* sampleDetailPage_ = nullptr;
+    // Nav containers
+    QWidget* sidebarWidget_ = nullptr;
+    QWidget* topTabsWidget_ = nullptr;
+    QVBoxLayout* sidebarLayout_ = nullptr;
+    QHBoxLayout* topTabsLayout_ = nullptr;
+    QVector<QPushButton*> sidebarButtons_;
+    QVector<QPushButton*> topTabButtons_;
+
+    // Pages — one per PageIndex
+    QVector<QWidget*> pages_;
+
+    // Current state
+    QString role_{"Member"};
+    QString navLayout_{"sidebar"};
 };
 
 }  // namespace fmgr::qt

@@ -17,3 +17,6 @@ coverage/
 .agents/
 package-lock.json
 skills-lock.json
+
+# Design handoff bundle (claude.ai/design mockups — reference, not source)
+freezermanager/

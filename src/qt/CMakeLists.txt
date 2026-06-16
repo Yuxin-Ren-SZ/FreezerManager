@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Qt 6 desktop client — experimental exploration.
+# Qt 6 desktop client — FreezerManager Desktop design implementation.
 
 find_package(Qt6 REQUIRED COMPONENTS Widgets Quick QuickWidgets Quick3D Svg OpenGL)
 
@@ -7,13 +7,21 @@ add_executable(freezermanager_qt
   main.cc
   MainWindow.h
   MainWindow.cc
+  theme/Theme.h
+  theme/Theme.cc
   mock/MockData.h
+  mock/MockData_ext.h
   models/SampleTableModel.h
-  pages/SampleBrowserPage.h
   pages/DashboardPage.h
+  pages/SampleBrowserPage.h
   pages/FreezerExplorerPage.h
   pages/Freezer3DPage.h
   pages/SampleDetailPage.h
+  pages/GovernanceStubs.h
+  pages/checkinout/CheckInOutPage.h
+  pages/csvimport/CsvImportPage.h
+  pages/audit/AuditLogPage.h
+  pages/admin/AdminPage.h
   widgets/BoxGridView.h
   resources.qrc
 )
