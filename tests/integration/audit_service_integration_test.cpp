@@ -24,8 +24,12 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -37,6 +41,12 @@ namespace fmgr::test {
       cfg.pwhash_memlimit = 8192;
       cfg.pwhash_opslimit = 1;
       return cfg;
+    }
+
+    [[nodiscard]] std::int64_t now_micros() {
+      return std::chrono::duration_cast<std::chrono::microseconds>(
+                 std::chrono::system_clock::now().time_since_epoch())
+          .count();
     }
 
     [[nodiscard]] std::filesystem::path unique_db_path() {
@@ -105,6 +115,34 @@ namespace fmgr::test {
 
       static void set_bearer(grpc::ClientContext& ctx, const std::string& token) {
         ctx.AddMetadata("authorization", "Bearer " + token);
+      }
+
+      // Append one audit row attributed to lab1 by inserting a throwaway Lab with
+      // the mutation context's lab_id pinned to lab1 (audit lab_id is taken from
+      // MutationContext.lab_id, not the entity). `marker` lands in the row's
+      // request_id so a test can identify exactly which event it expects.
+      void append_lab1_event(const std::string& marker) {
+        static std::atomic<int> counter{100};
+        const int idx = counter.fetch_add(1);
+        std::ostringstream oss;
+        oss << "30000000-0000-0000-0000-" << std::setw(12) << std::setfill('0') << idx;
+        const core::Lab lab{
+            .id = core::LabId::parse(oss.str()),
+            .name = marker,
+            .contact = "watch@example.com",
+            .created_at = core::Timestamp::from_unix_micros(1),
+            .settings_json = nlohmann::json::object(),
+        };
+        const storage::MutationContext ctx{
+            .actor_user_id = core::UserId::parse("00000000-0000-0000-0000-000000000000"),
+            .actor_session_id = "watch-test",
+            .request_id = marker,
+            .reason = "watch feed test mutation",
+            .lab_id = kLab1,
+        };
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::Lab>().insert(lab, ctx);
+        txn->commit();
       }
 
       const std::string kAdminEmail{"admin@example.com"};
@@ -395,6 +433,122 @@ namespace fmgr::test {
       const auto status = audit_stub_->ExportAuditLog(&ctx, req, &resp);
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    // Regression: the `since` filter is a >= range predicate, not equality. The
+    // audit repositories formerly rendered every predicate as `column = ?`, so
+    // `since` silently matched nothing. A row appended after `before` must be
+    // returned when since=before and excluded when since is past its timestamp.
+    TEST_F(AuditServiceTest, ListSinceFiltersByTimestampRange) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      const std::int64_t before = now_micros();
+      append_lab1_event("since-marker");
+      const std::int64_t after = now_micros();
+
+      const auto list_since = [&](std::int64_t since) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListAuditEventsRequest req;
+        req.set_lab_id(kLab1);
+        req.mutable_since()->set_unix_micros(since);
+        fmgr::v1::ListAuditEventsResponse resp;
+        EXPECT_TRUE(audit_stub_->ListAuditEvents(&ctx, req, &resp).ok());
+        return resp;
+      };
+
+      const auto included = list_since(before);
+      ASSERT_EQ(included.events_size(), 1);
+      EXPECT_EQ(included.events(0).request_id(), "since-marker");
+
+      const auto excluded = list_since(after + 1);
+      EXPECT_EQ(excluded.events_size(), 0);
+    }
+
+    // =====================================================================
+    // WatchAuditFeed (server-streaming live feed)
+    // =====================================================================
+
+    // The lab-scoped feed tails newly-appended rows. Open the stream from "now",
+    // append a lab1-scoped audit row, and the reader must receive exactly that
+    // event (poll cadence is ~1s, so a generous client deadline covers it).
+    TEST_F(AuditServiceTest, WatchAuditFeedStreamsNewLabScopedEvent) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      const std::int64_t since = now_micros();
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+      fmgr::v1::WatchAuditFeedRequest req;
+      req.set_lab_id(kLab1);
+      req.mutable_since()->set_unix_micros(since);
+      auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+
+      std::thread appender([this] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        append_lab1_event("watch-marker");
+      });
+
+      fmgr::v1::AuditEvent event;
+      const bool got = reader->Read(&event);
+      appender.join();
+
+      ASSERT_TRUE(got) << "no event streamed within deadline";
+      EXPECT_EQ(event.lab_id(), kLab1);
+      EXPECT_EQ(event.request_id(), "watch-marker");
+
+      ctx.TryCancel(); // end the open stream
+      reader->Finish();
+    }
+
+    // A Member of lab1 holds no audit.read; the feed must be denied at open.
+    TEST_F(AuditServiceTest, WatchAuditFeedRejectsMember) {
+      const auto token = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+      fmgr::v1::WatchAuditFeedRequest req;
+      req.set_lab_id(kLab1);
+      auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+
+      fmgr::v1::AuditEvent event;
+      EXPECT_FALSE(reader->Read(&event));
+      const auto status = reader->Finish();
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    // A SystemAdmin of lab2 holds nothing for lab1; cross-lab feed is denied.
+    TEST_F(AuditServiceTest, WatchAuditFeedLabScopedRejectsOutsider) {
+      const auto token = login(kOutsiderEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+      fmgr::v1::WatchAuditFeedRequest req;
+      req.set_lab_id(kLab1);
+      auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+
+      fmgr::v1::AuditEvent event;
+      EXPECT_FALSE(reader->Read(&event));
+      const auto status = reader->Finish();
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    // No bearer → unauthenticated, even before any event would stream.
+    TEST_F(AuditServiceTest, WatchAuditFeedWithoutBearerIsUnauthenticated) {
+      grpc::ClientContext ctx;
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+      fmgr::v1::WatchAuditFeedRequest req;
+      req.set_lab_id(kLab1);
+      auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+
+      fmgr::v1::AuditEvent event;
+      EXPECT_FALSE(reader->Read(&event));
+      const auto status = reader->Finish();
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
     }
 
   } // namespace

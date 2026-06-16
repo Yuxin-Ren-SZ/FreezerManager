@@ -12,6 +12,12 @@ service AuditService {
   rpc GetAuditEvent(GetAuditEventRequest) returns (GetAuditEventResponse);
   rpc VerifyAuditChain(VerifyAuditChainRequest) returns (VerifyAuditChainResponse);
   rpc ExportAuditLog(ExportAuditLogRequest) returns (ExportAuditLogResponse);
+  // Server-streaming live audit feed. Emits each new AuditEvent after `since`
+  // (default: events appended after the stream opens) in (at, id) order, then
+  // keeps the stream open and tails newly-appended rows until the client
+  // disconnects. Requires audit.read for the scoped lab; an unscoped feed
+  // (lab_id unset) requires SystemAdmin, mirroring ListAuditEvents.
+  rpc WatchAuditFeed(WatchAuditFeedRequest) returns (stream AuditEvent);
 }
 
 message AuditEvent {
@@ -60,6 +66,15 @@ message VerifyAuditChainResponse {
   // Human-readable description of any broken links found.
   string detail = 2;
   int64 events_verified = 3;
+}
+
+message WatchAuditFeedRequest {
+  optional string lab_id = 1;
+  optional string entity_kind = 2;
+  optional string entity_id = 3;
+  // Resume cursor: emit events strictly after this timestamp. When unset the
+  // feed starts from "now" and only streams events appended after it opens.
+  optional fmgr.v1.common.Timestamp since = 4;
 }
 
 message ExportAuditLogRequest {

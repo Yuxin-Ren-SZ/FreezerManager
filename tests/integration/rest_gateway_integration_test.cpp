@@ -33,13 +33,17 @@
 
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -83,6 +87,10 @@ namespace fmgr::test {
 
       [[nodiscard]] std::string base_url() const {
         return "http://127.0.0.1:" + std::to_string(port_);
+      }
+
+      [[nodiscard]] std::uint16_t port() const {
+        return port_;
       }
 
       void SetUp() override {
@@ -526,6 +534,97 @@ namespace fmgr::test {
       const nlohmann::json req{{"source_lab_id", env->kLabId}};
       const auto res = post("/api/v1/share/list", req.dump());
       EXPECT_EQ(res.status, 401) << res.raw;
+    }
+
+    // ---- SSE helper ----
+    //
+    // drogon::HttpClient waits for a complete response, which never arrives on an
+    // open SSE stream. So drive the feed over a raw socket: send the GET, fire a
+    // trigger (a mutation that appends an audit row) once the stream is up, and
+    // accumulate bytes until `needle` appears or the deadline passes.
+    [[nodiscard]] std::string sse_read_until(const std::string& path, const std::string& bearer,
+                                             const std::string& needle,
+                                             const std::function<void()>& trigger,
+                                             double timeout_s) {
+      auto* env = RestGatewayEnv::instance;
+      const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+      if (fd < 0) {
+        return {};
+      }
+      sockaddr_in addr{};
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(env->port());
+      addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        ::close(fd);
+        return {};
+      }
+      std::string request = "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+      if (!bearer.empty()) {
+        request += "Authorization: Bearer " + bearer + "\r\n";
+      }
+      request += "Accept: text/event-stream\r\nConnection: keep-alive\r\n\r\n";
+      (void)::send(fd, request.data(), request.size(), 0);
+
+      timeval recv_timeout{.tv_sec = 0, .tv_usec = 500000};
+      (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout));
+
+      std::thread trig([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        if (trigger) {
+          trigger();
+        }
+      });
+
+      std::string acc;
+      std::array<char, 4096> buf{};
+      const auto deadline =
+          std::chrono::steady_clock::now() + std::chrono::duration<double>(timeout_s);
+      while (std::chrono::steady_clock::now() < deadline) {
+        const ssize_t n = ::recv(fd, buf.data(), buf.size(), 0);
+        if (n > 0) {
+          acc.append(buf.data(), static_cast<std::size_t>(n));
+          if (acc.find(needle) != std::string::npos) {
+            break;
+          }
+        } else if (n == 0) {
+          break; // peer closed
+        }
+        // n < 0 → recv timeout; keep polling until the overall deadline.
+      }
+      trig.join();
+      ::close(fd);
+      return acc;
+    }
+
+    // Positive: an unscoped feed (SystemAdmin) streams a freshly-appended audit
+    // row. The created lab's name lands in the event's after_json, so it appears
+    // in the SSE `data:` frame.
+    TEST(RestGatewaySse, AuditWatchStreamsNewEvent) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+
+      const std::string lab_name = "SSE Watch Lab Alpha";
+      const auto trigger = [&] {
+        const nlohmann::json req{{"name", lab_name}, {"contact", "s@s"}};
+        (void)post("/api/v1/lab/create", req.dump(), token);
+      };
+
+      const std::string out = sse_read_until("/api/v1/audit/watch", token, lab_name, trigger, 12.0);
+      EXPECT_NE(out.find("text/event-stream"), std::string::npos) << out.substr(0, 200);
+      EXPECT_NE(out.find("data:"), std::string::npos) << out.substr(0, 400);
+      EXPECT_NE(out.find(lab_name), std::string::npos);
+    }
+
+    // Negative: without a bearer the gRPC gate rejects at stream-open. Because the
+    // SSE response status is already committed, the failure surfaces as an
+    // `event: error` frame carrying the gRPC code rather than an HTTP 401.
+    TEST(RestGatewaySse, AuditWatchWithoutBearerStreamsErrorEvent) {
+      const std::string out =
+          sse_read_until("/api/v1/audit/watch", "", "event: error", nullptr, 8.0);
+      EXPECT_NE(out.find("event: error"), std::string::npos) << out.substr(0, 400);
+      EXPECT_NE(out.find("UNAUTHENTICATED"), std::string::npos);
     }
 
   } // namespace

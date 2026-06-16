@@ -39,6 +39,26 @@ namespace fmgr::storage {
       }
     }
 
+    // SQL comparison operator for an audit-query predicate. The audit
+    // list/feed/export paths build only equality and since/until range
+    // predicates; anything else is a programming error, so fail loudly rather
+    // than silently mis-render (a bug that once made `since` match nothing).
+    [[nodiscard]] std::string audit_comparison_sql(PredicateOperator comparison) {
+      switch (comparison) {
+      case PredicateOperator::Equal:
+        return " = ";
+      case PredicateOperator::GreaterThanOrEqual:
+        return " >= ";
+      case PredicateOperator::LessThanOrEqual:
+        return " <= ";
+      case PredicateOperator::Between:
+      case PredicateOperator::In:
+      case PredicateOperator::JsonPathEqual:
+        break;
+      }
+      throw ConstraintViolation("unsupported audit query operator");
+    }
+
     class Statement {
     public:
       Statement(sqlite3* handle, const std::string& sql) : handle_(handle) {
@@ -150,7 +170,8 @@ namespace fmgr::storage {
               sql += " AND ";
             }
             const auto& pred = query_spec.predicates().at(i);
-            sql += detail::audit_event_column_name(pred.field) + " = ?";
+            sql +=
+                detail::audit_event_column_name(pred.field) + audit_comparison_sql(pred.op) + "?";
           }
         }
         // Sort / limit / offset

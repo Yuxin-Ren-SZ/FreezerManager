@@ -4,13 +4,17 @@
 
 #include "rest/JsonProtoMapping.h"
 #include "rest/RestErrorTranslation.h"
+#include "rest/SseBridge.h"
 
 #include <drogon/drogon.h>
 #include <grpcpp/grpcpp.h>
 #include <nlohmann/json.hpp>
 
+#include <charconv>
+#include <cstdint>
 #include <functional>
 #include <string>
+#include <system_error>
 #include <utility>
 
 namespace fmgr::rest {
@@ -205,6 +209,48 @@ namespace fmgr::rest {
                VerifyAuditChainResponse);
     FMGR_ROUTE("/api/v1/audit/export", audit, ExportAuditLog, ExportAuditLogRequest,
                ExportAuditLogResponse);
+
+    // Live audit feed (server-streaming → SSE). GET so browser EventSource can
+    // consume it; filters arrive as query params. Resume is by the `since`
+    // cursor, carried in `Last-Event-ID` on reconnect (each frame's `id:` is the
+    // event's at-micros) or an explicit `?since=<micros>`.
+    app.registerHandler("/api/v1/audit/watch",
+                        [&s](const drogon::HttpRequestPtr& req, Callback&& callback) {
+                          fmgr::v1::WatchAuditFeedRequest rpc_req;
+                          if (const auto v = req->getParameter("lab_id"); !v.empty()) {
+                            rpc_req.set_lab_id(v);
+                          }
+                          if (const auto v = req->getParameter("entity_kind"); !v.empty()) {
+                            rpc_req.set_entity_kind(v);
+                          }
+                          if (const auto v = req->getParameter("entity_id"); !v.empty()) {
+                            rpc_req.set_entity_id(v);
+                          }
+                          std::string since = req->getHeader("last-event-id");
+                          if (since.empty()) {
+                            since = req->getParameter("since");
+                          }
+                          // Parse without exceptions: an unparseable cursor just
+                          // starts the feed from "now".
+                          std::int64_t since_micros = 0;
+                          const char* begin = since.data();
+                          const char* end = begin + since.size();
+                          if (const auto [ptr, ec] = std::from_chars(begin, end, since_micros);
+                              ec == std::errc() && ptr == end && !since.empty()) {
+                            rpc_req.mutable_since()->set_unix_micros(since_micros);
+                          }
+                          auto* audit = s.audit.get();
+                          stream_sse<fmgr::v1::AuditEvent>(
+                              req, std::move(callback),
+                              [audit, rpc_req](grpc::ClientContext& client_ctx) {
+                                return audit->WatchAuditFeed(&client_ctx, rpc_req);
+                              },
+                              [](const fmgr::v1::AuditEvent& event) {
+                                return "id: " + std::to_string(event.at().unix_micros()) +
+                                       "\ndata: " + message_to_json(event) + "\n\n";
+                              });
+                        },
+                        {drogon::Get});
 
     // ---- ShareService (cross-lab share-request workflow) ----
     FMGR_ROUTE("/api/v1/share/list", share, ListShareRequests, ListShareRequestsRequest,

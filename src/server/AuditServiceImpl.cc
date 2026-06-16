@@ -13,6 +13,8 @@
 #include <fmgr/v1/audit.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <exception>
@@ -20,6 +22,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace fmgr::server {
@@ -32,6 +36,19 @@ namespace fmgr::server {
     [[nodiscard]] bool is_system_admin(const auth::SessionContext& sctx) {
       return sctx.has_global(core::Permission::LabProvision);
     }
+
+    // Wall-clock micros, matching how repositories stamp audit rows (see e.g.
+    // src/storage/SampleOps.h). Used as the default WatchAuditFeed cursor ("now").
+    [[nodiscard]] std::int64_t now_unix_micros() {
+      return std::chrono::duration_cast<std::chrono::microseconds>(
+                 std::chrono::system_clock::now().time_since_epoch())
+          .count();
+    }
+
+    // WatchAuditFeed poll cadence. The tail loop sleeps one interval between
+    // backend polls but wakes every slice to stay responsive to cancellation.
+    constexpr std::chrono::milliseconds k_watch_poll_slice{100};
+    constexpr int k_watch_poll_slices = 10; // 100ms * 10 = ~1s between polls
 
     void fill_event(fmgr::v1::AuditEvent* out, const core::AuditEvent& event) {
       out->set_id(event.id.to_string());
@@ -51,6 +68,70 @@ namespace fmgr::server {
       out->set_request_id(event.request_id);
       out->set_prev_hash(event.prev_hash);
       out->set_this_hash(event.this_hash);
+    }
+
+    // Tail query for WatchAuditFeed: the same filters as ListAuditEvents plus a
+    // `at >= cursor` lower bound, ordered (at, id) so the cursor advances
+    // monotonically.
+    [[nodiscard]] storage::Query<core::AuditEvent>
+    build_watch_query(const fmgr::v1::WatchAuditFeedRequest& req,
+                      const std::optional<core::LabId>& lab_filter, std::int64_t cursor_micros) {
+      auto query = storage::Query<core::AuditEvent>::all();
+      if (lab_filter.has_value()) {
+        query = query.and_where(storage::field<core::AuditEvent, std::string>(
+                                    core::AuditEvent::Field::LabId) == lab_filter->to_string());
+      }
+      if (req.has_entity_kind()) {
+        query = query.and_where(storage::field<core::AuditEvent, std::string>(
+                                    core::AuditEvent::Field::EntityKind) == req.entity_kind());
+      }
+      if (req.has_entity_id()) {
+        query = query.and_where(storage::field<core::AuditEvent, std::string>(
+                                    core::AuditEvent::Field::EntityId) == req.entity_id());
+      }
+      return query
+          .and_where(storage::greater_or_equal(
+              storage::field<core::AuditEvent, core::Timestamp>(core::AuditEvent::Field::At),
+              core::Timestamp::from_unix_micros(cursor_micros)))
+          .order_by(storage::field<core::AuditEvent, core::Timestamp>(core::AuditEvent::Field::At),
+                    storage::SortDirection::Ascending)
+          .order_by(storage::field<core::AuditEvent, std::string>(core::AuditEvent::Field::Id),
+                    storage::SortDirection::Ascending);
+    }
+
+    // Write the rows newer than the cursor, suppressing ids already delivered at
+    // the exact cursor microsecond (the query lower bound is `>=`, so a same-micro
+    // row can reappear). Advances the cursor and rebuilds the dedup set. Returns
+    // false when the client has hung up (Write failed), signalling the caller to
+    // end the stream.
+    [[nodiscard]] bool emit_new_events(grpc::ServerWriter<fmgr::v1::AuditEvent>& writer,
+                                       const std::vector<core::AuditEvent>& events,
+                                       std::int64_t& cursor_micros,
+                                       std::unordered_set<std::string>& sent_at_cursor) {
+      std::int64_t max_at = cursor_micros;
+      for (const auto& event : events) {
+        const std::int64_t event_at = event.at.unix_micros();
+        const std::string id = event.id.to_string();
+        if (event_at == cursor_micros && sent_at_cursor.contains(id)) {
+          continue;
+        }
+        fmgr::v1::AuditEvent out;
+        fill_event(&out, event);
+        if (!writer.Write(out)) {
+          return false;
+        }
+        max_at = std::max(max_at, event_at);
+      }
+      if (max_at > cursor_micros) {
+        cursor_micros = max_at;
+        sent_at_cursor.clear();
+      }
+      for (const auto& event : events) {
+        if (event.at.unix_micros() == cursor_micros) {
+          sent_at_cursor.insert(event.id.to_string());
+        }
+      }
+      return true;
     }
 
     // Load every audit row in canonical chain order (at ASC, id ASC), the same
@@ -93,6 +174,7 @@ namespace fmgr::server {
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/GetAuditEvent", P::AuditRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/VerifyAuditChain", P::AuditRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/ExportAuditLog", P::AuditExport);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/WatchAuditFeed", P::AuditRead);
   }
 
   grpc::Status AuditServiceImpl::ListAuditEvents(grpc::ServerContext* ctx,
@@ -304,6 +386,59 @@ namespace fmgr::server {
                   event.request_id, event.prev_hash, event.this_hash});
       }
       resp->set_csv_content(out.str());
+      return grpc::Status::OK;
+    } catch (...) {
+      return current_exception_to_grpc_status();
+    }
+  }
+
+  grpc::Status AuditServiceImpl::WatchAuditFeed(grpc::ServerContext* ctx,
+                                                const fmgr::v1::WatchAuditFeedRequest* req,
+                                                grpc::ServerWriter<fmgr::v1::AuditEvent>* writer) {
+    try {
+      // Authorize once, at stream-open, with the same gating as ListAuditEvents:
+      // a lab-scoped feed needs AuditRead for that lab; an unscoped feed spans
+      // every lab and is system-admin only.
+      std::optional<core::LabId> lab_filter;
+      auth::SessionContext sctx;
+      if (req->has_lab_id()) {
+        lab_filter = core::LabId::parse(req->lab_id());
+        sctx =
+            middleware_.authorize(extract_bearer(*ctx), core::Permission::AuditRead, *lab_filter);
+      } else {
+        sctx = auth_.validate_token(extract_bearer(*ctx));
+        if (!sctx.mfa_complete) {
+          throw auth::MfaRequired("MFA required before this operation");
+        }
+        if (!is_system_admin(sctx)) {
+          throw auth::PermissionDenied(
+              "deployment-wide audit feed requires a system administrator");
+        }
+      }
+
+      // Poll-tail cursor. We re-query rows with at >= cursor each cycle (>= not >
+      // so newly-appended rows sharing the cursor microsecond are not missed) and
+      // suppress ids already emitted at that exact microsecond via `sent_at_cursor`.
+      // No LISTEN/NOTIFY yet — this stays portable across SQLite and Postgres.
+      std::int64_t cursor_micros =
+          req->has_since() ? req->since().unix_micros() : now_unix_micros();
+      std::unordered_set<std::string> sent_at_cursor;
+
+      while (!ctx->IsCancelled()) {
+        auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
+        rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+        const auto events =
+            txn->repo<core::AuditEvent>().query(build_watch_query(*req, lab_filter, cursor_micros));
+        txn->commit();
+
+        if (!emit_new_events(*writer, events, cursor_micros, sent_at_cursor)) {
+          return grpc::Status::OK; // client/gateway hung up
+        }
+
+        for (int i = 0; i < k_watch_poll_slices && !ctx->IsCancelled(); ++i) {
+          std::this_thread::sleep_for(k_watch_poll_slice);
+        }
+      }
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();
