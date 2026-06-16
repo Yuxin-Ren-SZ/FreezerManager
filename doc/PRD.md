@@ -1,6 +1,6 @@
 # Freezer Manager — Product Requirements & Design Document
 
-**Status:** Pre-alpha — active implementation (design baseline 2026-05-06; last synced 2026-06-12).
+**Status:** Pre-alpha — active implementation (design baseline 2026-05-06; last synced 2026-06-15).
 Core domain, both reference backends (SQLite + PostgreSQL), auth foundation, audit
 chain, and the full gRPC service layer are implemented; security-remediation pass done.
 See the [README Roadmap](../README.md#roadmap) for live, milestone-by-milestone status.
@@ -545,11 +545,12 @@ remaining CLI nouns outstanding.)
 Local auth + TOTP; RBAC; audit chain; RLS in Postgres impl. (OIDC/LDAP, audit
 export, PHI-read kind, signed checkpoints deferred to later milestones.)
 
-**M3 — gRPC server + Qt client (weeks 10–14). ⚙️ gRPC server complete; REST gateway in progress; Qt client planned.**
+**M3 — gRPC server + Qt client (weeks 10–14). ⚙️ gRPC server + REST gateway complete; Qt client planned.**
 First end-to-end usable product. All gRPC services (Auth, Session, Lab, Box,
 ItemType, Sample, Role, Audit, Share) implemented. REST/JSON gateway (`src/rest/`,
-Drogon over the gRPC in-process channel) wired for Auth/Session/Lab/Sample; remaining
-services + SSE streaming, plus the online-only desktop client, still to come.
+Drogon over the gRPC in-process channel) fans out to **all 9 services** with
+positive/negative authz tests. SSE streaming and the online-only desktop client
+still to come.
 
 **M4 — Web UI (weeks 15–18). 🔲 Planned.** REST gateway, React SPA covering core flows.
 

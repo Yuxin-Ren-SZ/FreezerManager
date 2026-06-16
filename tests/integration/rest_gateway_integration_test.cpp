@@ -370,5 +370,163 @@ namespace fmgr::test {
       EXPECT_EQ(got.body["lab"].value("name", std::string{}), "E2E Lab");
     }
 
+    // ---- Fan-out services: Box / ItemType / Role / Audit / Share ----
+    //
+    // Each fan-out service gets a positive (caller who holds the permission),
+    // a negative (caller who does not -> 403), and a missing-bearer (401) check,
+    // per PRD §15. The seeded admin is a SystemAdmin (holds every built-in
+    // permission); the seeded member holds only sample.* + share.request.
+
+    // -- BoxService --
+    TEST(RestGatewayTest, ListFreezersForAdminReturns200) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/freezer/list", req.dump(), token);
+      EXPECT_EQ(res.status, 200) << res.raw;
+    }
+
+    TEST(RestGatewayTest, CreateFreezerAsMemberReturns403) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kMemberEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}, {"name", "F1"}};
+      const auto res = post("/api/v1/freezer/create", req.dump(), token);
+      EXPECT_EQ(res.status, 403) << res.raw;
+      EXPECT_EQ(res.body.value("code", std::string{}), "PERMISSION_DENIED");
+    }
+
+    TEST(RestGatewayTest, ListFreezersWithoutBearerReturns401) {
+      auto* env = RestGatewayEnv::instance;
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/freezer/list", req.dump());
+      EXPECT_EQ(res.status, 401) << res.raw;
+    }
+
+    // -- ItemTypeService --
+    TEST(RestGatewayTest, ListItemTypesForAdminReturns200) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/item-type/list", req.dump(), token);
+      EXPECT_EQ(res.status, 200) << res.raw;
+    }
+
+    // E2E create through a fan-out service: proves JSON -> proto -> handler ->
+    // repo + audit append -> commit -> JSON round-trips for a write RPC.
+    TEST(RestGatewayTest, CreateItemTypeAsAdminSucceeds) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}, {"name", "liquid"}};
+      const auto res = post("/api/v1/item-type/create", req.dump(), token);
+      EXPECT_EQ(res.status, 200) << res.raw;
+      ASSERT_TRUE(res.body.is_object());
+      EXPECT_FALSE(res.body["item_type"].value("id", std::string{}).empty());
+      EXPECT_EQ(res.body["item_type"].value("name", std::string{}), "liquid");
+    }
+
+    TEST(RestGatewayTest, ListItemTypesAsMemberReturns403) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kMemberEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/item-type/list", req.dump(), token);
+      EXPECT_EQ(res.status, 403) << res.raw;
+    }
+
+    // List has lenient request validation, so the missing-bearer path reaches
+    // the token check (write RPCs validate the body first and would 400 instead).
+    TEST(RestGatewayTest, ItemTypeListWithoutBearerReturns401) {
+      auto* env = RestGatewayEnv::instance;
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/item-type/list", req.dump());
+      EXPECT_EQ(res.status, 401) << res.raw;
+    }
+
+    // -- RoleService --
+    TEST(RestGatewayTest, ListRolesForAdminReturns200) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/role/list", req.dump(), token);
+      EXPECT_EQ(res.status, 200) << res.raw;
+    }
+
+    TEST(RestGatewayTest, ListRolesAsMemberReturns403) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kMemberEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/role/list", req.dump(), token);
+      EXPECT_EQ(res.status, 403) << res.raw;
+    }
+
+    TEST(RestGatewayTest, RoleListWithoutBearerReturns401) {
+      auto* env = RestGatewayEnv::instance;
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/role/list", req.dump());
+      EXPECT_EQ(res.status, 401) << res.raw;
+    }
+
+    // -- AuditService --
+    TEST(RestGatewayTest, ListAuditEventsForAdminReturns200) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/audit/list", req.dump(), token);
+      EXPECT_EQ(res.status, 200) << res.raw;
+    }
+
+    TEST(RestGatewayTest, ListAuditEventsAsMemberReturns403) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kMemberEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/audit/list", req.dump(), token);
+      EXPECT_EQ(res.status, 403) << res.raw;
+    }
+
+    TEST(RestGatewayTest, ExportAuditLogWithoutBearerReturns401) {
+      const auto res = post("/api/v1/audit/export", "{}");
+      EXPECT_EQ(res.status, 401) << res.raw;
+    }
+
+    // -- ShareService --
+    TEST(RestGatewayTest, ListShareRequestsForAdminReturns200) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"source_lab_id", env->kLabId}};
+      const auto res = post("/api/v1/share/list", req.dump(), token);
+      EXPECT_EQ(res.status, 200) << res.raw;
+    }
+
+    // ShareService share.approve authz is exercised at the gRPC layer in
+    // share_service_integration_test.cpp (ApproveShareRequest validates the
+    // approver_role and resolves the request before the role gate, so a clean
+    // REST permission-denied negative would need a full pending-request fixture).
+    // Here the REST surface is covered by the admin-200 and missing-bearer-401
+    // checks plus the create authz path below.
+    TEST(RestGatewayTest, CreateShareRequestWithoutBearerReturns401) {
+      auto* env = RestGatewayEnv::instance;
+      const nlohmann::json req{{"source_lab_id", env->kLabId},
+                               {"target_lab_id", "20000000-0000-0000-0000-000000000002"},
+                               {"scope_json", "{}"}};
+      const auto res = post("/api/v1/share/create", req.dump());
+      EXPECT_EQ(res.status, 401) << res.raw;
+    }
+
+    TEST(RestGatewayTest, ListShareRequestsWithoutBearerReturns401) {
+      auto* env = RestGatewayEnv::instance;
+      const nlohmann::json req{{"source_lab_id", env->kLabId}};
+      const auto res = post("/api/v1/share/list", req.dump());
+      EXPECT_EQ(res.status, 401) << res.raw;
+    }
+
   } // namespace
 } // namespace fmgr::test

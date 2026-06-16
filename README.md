@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-blue?logo=linux)](https://kernel.org)
 [![Build](https://img.shields.io/badge/build-CMake%203.25%2B-blue?logo=cmake)](./README.md#building)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-%232088FF?logo=githubactions)](./.github/workflows)
-[![Tests](https://img.shields.io/badge/tests-839%2B%20passing-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-1080%2B%20passing-brightgreen)](./tests)
 [![Sanitizers](https://img.shields.io/badge/sanitizers-ASan%20%7C%20UBSan%20%7C%20TSan-red)](./README.md#building)
 [![SQL](https://img.shields.io/badge/backends-SQLite%20%7C%20PostgreSQL-blue?logo=postgresql)](./README.md#storage--data-safety)
 
@@ -39,13 +39,14 @@ server that is fast, correct, and safe to operate — even without a dedicated D
 - **Full chain of custody.** Aliquot lineage, check-out/check-in with volume
   tracking, and cross-lab share requests with three-signature approval.
 - **Modern toolchain.** C++20, CMake 3.25+, Conan 2 lockfiles, clang-tidy,
-  sanitizer CI builds, and TDD throughout (839+ tests).
+  sanitizer CI builds, and TDD throughout (1080+ tests).
 
 > **Status:** Pre-alpha — active implementation. Core domain, both reference
 > backends (SQLite + PostgreSQL), auth foundation, the audit chain, the full
-> gRPC service layer (9 services), and the M1 CLI/CSV surface are complete;
-> security-remediation pass done. Next: REST/JSON gateway (in progress — Drogon
-> front door over the gRPC in-process channel) + desktop/web/Python clients.
+> gRPC service layer (9 services), the M1 CLI/CSV surface, and the REST/JSON
+> gateway (Drogon front door over the gRPC in-process channel, all 9 services)
+> are complete; security-remediation pass done. Next: SSE streaming +
+> desktop/web/Python clients.
 > See [`doc/PRD.md`](./doc/PRD.md) for the full product requirements & design
 > document and the [Roadmap](#roadmap) below for current progress.
 
@@ -137,7 +138,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 
 - ✅ `.proto` definitions under `proto/` — source of truth; never edit generated code; 10 service files
 - ✅ gRPC server — all 9 services; every RPC handler opens a transaction, does work, appends audit row, commits
-- ⚙️ REST / JSON gateway — Drogon HTTP front door at `/api/v1/*`; forwards to the gRPC services over the in-process channel (reuses the RBAC gate + audit + transactions, no logic duplicated); JSON↔proto via proto3 JSON mapping. Auth/Session/Lab/Sample wired with positive/negative authz tests; remaining 5 services + SSE/WebSocket streaming 🔲
+- ✅ REST / JSON gateway — Drogon HTTP front door at `/api/v1/*`; forwards to the gRPC services over the in-process channel (reuses the RBAC gate + audit + transactions, no logic duplicated); JSON↔proto via proto3 JSON mapping. **All 9 services wired** (Auth/Session/Lab/Sample/Box/ItemType/Role/Audit/Share) with positive/negative authz integration tests; SSE/WebSocket streaming 🔲
 - 🔲 Qt 6 desktop client — sample browser, box drag-and-drop grid, barcode-scanner focus mode, CSV import wizard
 - 🔲 React / TypeScript SPA — feature parity with Qt client; live updates via SSE
 - 🔲 `freezerctl-py` Python client — thin REST wrapper; Jupyter quick-start notebook with example plots
@@ -181,7 +182,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅, freezer/box/item-type `list` + `inspect` ✅, CLI `create` nouns (6 entities) ✅, non-sample CSV import (item-type/box/custom-field-def/user) ✅ | ✅ Complete |
 | **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots | ✅ Complete |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
-| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway (Auth/Session/Lab/Sample slice over Drogon ⚙️), Qt 6 desktop client 🔲, REST fan-out + SSE streaming 🔲 | ⚙️ In progress |
+| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, SSE streaming 🔲, Qt 6 desktop client 🔲 | ⚙️ In progress |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
 | **M5 — PHI + KMS + Backups** | Field-level encryption, KMS adapters, backup/restore, weekly restore-drill | 🔲 Planned |
 | **M6 — Public API & Sharing** | API tokens, `freezerctl-py`, cross-lab share-request workflow | 🔲 Planned |

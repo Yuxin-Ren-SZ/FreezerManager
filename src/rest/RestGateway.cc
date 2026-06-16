@@ -131,6 +131,95 @@ namespace fmgr::rest {
     FMGR_ROUTE("/api/v1/sample/export", sample, ExportSamplesCsv, ExportSamplesCsvRequest,
                ExportSamplesCsvResponse);
 
+    // ---- BoxService (layout: freezers, containers, container/box types, boxes) ----
+    FMGR_ROUTE("/api/v1/freezer/list", box, ListFreezers, ListFreezersRequest,
+               ListFreezersResponse);
+    FMGR_ROUTE("/api/v1/freezer/get", box, GetFreezer, GetFreezerRequest, GetFreezerResponse);
+    FMGR_ROUTE("/api/v1/freezer/create", box, CreateFreezer, CreateFreezerRequest,
+               CreateFreezerResponse);
+    FMGR_ROUTE("/api/v1/freezer/update", box, UpdateFreezer, UpdateFreezerRequest,
+               UpdateFreezerResponse);
+    FMGR_ROUTE("/api/v1/freezer/archive", box, ArchiveFreezer, ArchiveFreezerRequest,
+               ArchiveFreezerResponse);
+    FMGR_ROUTE("/api/v1/storage-container/list", box, ListStorageContainers,
+               ListStorageContainersRequest, ListStorageContainersResponse);
+    FMGR_ROUTE("/api/v1/storage-container/create", box, CreateStorageContainer,
+               CreateStorageContainerRequest, CreateStorageContainerResponse);
+    FMGR_ROUTE("/api/v1/storage-container/update", box, UpdateStorageContainer,
+               UpdateStorageContainerRequest, UpdateStorageContainerResponse);
+    FMGR_ROUTE("/api/v1/storage-container/archive", box, ArchiveStorageContainer,
+               ArchiveStorageContainerRequest, ArchiveStorageContainerResponse);
+    FMGR_ROUTE("/api/v1/container-type/list", box, ListContainerTypes, ListContainerTypesRequest,
+               ListContainerTypesResponse);
+    FMGR_ROUTE("/api/v1/container-type/create", box, CreateContainerType,
+               CreateContainerTypeRequest, CreateContainerTypeResponse);
+    FMGR_ROUTE("/api/v1/box-type/list", box, ListBoxTypes, ListBoxTypesRequest,
+               ListBoxTypesResponse);
+    FMGR_ROUTE("/api/v1/box-type/create", box, CreateBoxType, CreateBoxTypeRequest,
+               CreateBoxTypeResponse);
+    FMGR_ROUTE("/api/v1/box/list", box, ListBoxes, ListBoxesRequest, ListBoxesResponse);
+    FMGR_ROUTE("/api/v1/box/get", box, GetBox, GetBoxRequest, GetBoxResponse);
+    FMGR_ROUTE("/api/v1/box/create", box, CreateBox, CreateBoxRequest, CreateBoxResponse);
+    FMGR_ROUTE("/api/v1/box/update", box, UpdateBox, UpdateBoxRequest, UpdateBoxResponse);
+    FMGR_ROUTE("/api/v1/box/archive", box, ArchiveBox, ArchiveBoxRequest, ArchiveBoxResponse);
+
+    // ---- ItemTypeService (item types + custom-field definitions) ----
+    FMGR_ROUTE("/api/v1/item-type/list", item_type, ListItemTypes, ListItemTypesRequest,
+               ListItemTypesResponse);
+    FMGR_ROUTE("/api/v1/item-type/get", item_type, GetItemType, GetItemTypeRequest,
+               GetItemTypeResponse);
+    FMGR_ROUTE("/api/v1/item-type/create", item_type, CreateItemType, CreateItemTypeRequest,
+               CreateItemTypeResponse);
+    FMGR_ROUTE("/api/v1/item-type/update", item_type, UpdateItemType, UpdateItemTypeRequest,
+               UpdateItemTypeResponse);
+    FMGR_ROUTE("/api/v1/item-type/archive", item_type, ArchiveItemType, ArchiveItemTypeRequest,
+               ArchiveItemTypeResponse);
+    FMGR_ROUTE("/api/v1/custom-field-def/list", item_type, ListCustomFieldDefinitions,
+               ListCfdsRequest, ListCfdsResponse);
+    FMGR_ROUTE("/api/v1/custom-field-def/create", item_type, CreateCustomFieldDefinition,
+               CreateCfdRequest, CreateCfdResponse);
+    FMGR_ROUTE("/api/v1/custom-field-def/update", item_type, UpdateCustomFieldDefinition,
+               UpdateCfdRequest, UpdateCfdResponse);
+    FMGR_ROUTE("/api/v1/custom-field-def/archive", item_type, ArchiveCustomFieldDefinition,
+               ArchiveCfdRequest, ArchiveCfdResponse);
+
+    // ---- RoleService (custom roles + permission grants) ----
+    FMGR_ROUTE("/api/v1/role/list", role, ListRoles, ListRolesRequest, ListRolesResponse);
+    FMGR_ROUTE("/api/v1/role/get", role, GetRole, GetRoleRequest, GetRoleResponse);
+    FMGR_ROUTE("/api/v1/role/create", role, CreateRole, CreateRoleRequest, CreateRoleResponse);
+    FMGR_ROUTE("/api/v1/role/update", role, UpdateRole, UpdateRoleRequest, UpdateRoleResponse);
+    FMGR_ROUTE("/api/v1/role/archive", role, ArchiveRole, ArchiveRoleRequest, ArchiveRoleResponse);
+    FMGR_ROUTE("/api/v1/role/permissions/list", role, ListRolePermissions,
+               ListRolePermissionsRequest, ListRolePermissionsResponse);
+    FMGR_ROUTE("/api/v1/role/permissions/grant", role, GrantPermission, GrantPermissionRequest,
+               GrantPermissionResponse);
+    FMGR_ROUTE("/api/v1/role/permissions/revoke", role, RevokePermission, RevokePermissionRequest,
+               RevokePermissionResponse);
+
+    // ---- AuditService ----
+    FMGR_ROUTE("/api/v1/audit/list", audit, ListAuditEvents, ListAuditEventsRequest,
+               ListAuditEventsResponse);
+    FMGR_ROUTE("/api/v1/audit/get", audit, GetAuditEvent, GetAuditEventRequest,
+               GetAuditEventResponse);
+    FMGR_ROUTE("/api/v1/audit/verify", audit, VerifyAuditChain, VerifyAuditChainRequest,
+               VerifyAuditChainResponse);
+    FMGR_ROUTE("/api/v1/audit/export", audit, ExportAuditLog, ExportAuditLogRequest,
+               ExportAuditLogResponse);
+
+    // ---- ShareService (cross-lab share-request workflow) ----
+    FMGR_ROUTE("/api/v1/share/list", share, ListShareRequests, ListShareRequestsRequest,
+               ListShareRequestsResponse);
+    FMGR_ROUTE("/api/v1/share/get", share, GetShareRequest, GetShareRequestRequest,
+               GetShareRequestResponse);
+    FMGR_ROUTE("/api/v1/share/create", share, CreateShareRequest, CreateShareRequestRequest,
+               CreateShareRequestResponse);
+    FMGR_ROUTE("/api/v1/share/approve", share, ApproveShareRequest, ApproveShareRequestRequest,
+               ApproveShareRequestResponse);
+    FMGR_ROUTE("/api/v1/share/reject", share, RejectShareRequest, RejectShareRequestRequest,
+               RejectShareRequestResponse);
+    FMGR_ROUTE("/api/v1/share/revoke", share, RevokeShareRequest, RevokeShareRequestRequest,
+               RevokeShareRequestResponse);
+
 #undef FMGR_ROUTE
   }
 
