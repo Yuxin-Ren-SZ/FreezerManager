@@ -2,7 +2,7 @@
 
 #include "server/FreezerServer.h"
 
-#include "kms/EnvVarKms.h"
+#include "kms/KmsFactory.h"
 
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
@@ -14,16 +14,16 @@
 
 namespace {
 
-  // Build the master-key provider from the environment. Returns null (PHI
-  // storage disabled) when FMGR_MASTER_KEK is unset or invalid, so a deployment
-  // that does not handle PHI starts without a key.
+  // Build the master-key provider via the shared factory (OS keyring, else env,
+  // else none). Returns null (PHI storage disabled) when no key is configured;
+  // a malformed-but-present key throws and aborts startup (fail-fast).
   std::unique_ptr<fmgr::kms::IKmsProvider> make_kms() {
-    try {
-      return std::make_unique<fmgr::kms::EnvVarKms>(fmgr::kms::EnvVarKms::from_env());
-    } catch (const fmgr::kms::KmsError& error) {
-      spdlog::warn("PHI field encryption disabled: {}", error.what());
-      return nullptr;
+    auto kms = fmgr::kms::make_default_kms();
+    if (kms == nullptr) {
+      spdlog::warn("PHI field encryption disabled: no master KEK configured "
+                   "(set CREDENTIALS_DIRECTORY/master_kek or FMGR_MASTER_KEK)");
     }
+    return kms;
   }
 
 } // namespace
