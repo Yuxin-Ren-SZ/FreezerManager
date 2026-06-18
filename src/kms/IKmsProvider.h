@@ -17,6 +17,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace fmgr::kms {
@@ -41,15 +42,20 @@ namespace fmgr::kms {
   public:
     virtual ~IKmsProvider() = default;
 
-    // Stable, non-secret identifier for the active KEK (e.g. a fingerprint).
-    // Stored alongside wrapped DEKs so a future rotation can select the KEK.
+    // Stable, non-secret identifier for the ACTIVE KEK (a fingerprint). Stored as
+    // the envelope `kek_id` by wrap_dek/encrypt so a later rotation can tell which
+    // KEK a record is wrapped under.
     [[nodiscard]] virtual std::string key_id() const = 0;
 
-    // Encrypt a plaintext DEK under the master KEK.
+    // Encrypt a plaintext DEK under the active KEK.
     [[nodiscard]] virtual WrappedDek wrap_dek(std::span<const std::uint8_t> dek) const = 0;
 
-    // Recover the plaintext DEK. Throws KmsError if authentication fails.
-    [[nodiscard]] virtual std::vector<std::uint8_t> unwrap_dek(const WrappedDek& wrapped) const = 0;
+    // Recover the plaintext DEK wrapped under the KEK named by `kek_id` (the value
+    // recorded in the envelope). A provider may hold several KEKs (active +
+    // retired) so records wrapped under an older KEK still decrypt during rotation.
+    // Throws KmsError on an unknown kek_id or on authentication failure.
+    [[nodiscard]] virtual std::vector<std::uint8_t> unwrap_dek(const WrappedDek& wrapped,
+                                                               std::string_view kek_id) const = 0;
   };
 
 } // namespace fmgr::kms

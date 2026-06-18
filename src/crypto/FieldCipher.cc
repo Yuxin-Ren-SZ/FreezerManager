@@ -129,7 +129,8 @@ namespace fmgr::crypto {
     kms::WrappedDek wrapped;
     wrapped.nonce = b64_decode(dek_obj.at("n").get<std::string>());
     wrapped.ciphertext = b64_decode(dek_obj.at("c").get<std::string>());
-    std::vector<std::uint8_t> dek = kms.unwrap_dek(wrapped);
+    const auto kek_id = envelope.value("kek_id", std::string{});
+    std::vector<std::uint8_t> dek = kms.unwrap_dek(wrapped, kek_id);
 
     const auto fields_iter = envelope.find("fields");
     if (fields_iter != envelope.end() && fields_iter->is_object()) {
@@ -139,6 +140,44 @@ namespace fmgr::crypto {
     }
     sodium_memzero(dek.data(), dek.size());
     return result;
+  }
+
+  std::optional<std::string> rewrap(const std::string& envelope_json,
+                                    const kms::IKmsProvider& kms) {
+    if (envelope_json.empty()) {
+      return std::nullopt;
+    }
+    nlohmann::json envelope;
+    try {
+      envelope = nlohmann::json::parse(envelope_json);
+    } catch (const nlohmann::json::exception&) {
+      throw CipherError("PHI envelope is not valid JSON");
+    }
+    if (!envelope.is_object() || !envelope.contains("dek")) {
+      return std::nullopt; // "{}" / empty object: no PHI to re-wrap.
+    }
+    const auto kek_id = envelope.value("kek_id", std::string{});
+    if (kek_id == kms.key_id()) {
+      return std::nullopt; // already wrapped under the active KEK.
+    }
+    ensure_sodium();
+
+    const nlohmann::json& dek_obj = envelope.at("dek");
+    if (!dek_obj.is_object() || !dek_obj.contains("n") || !dek_obj.contains("c")) {
+      throw CipherError("PHI envelope has a malformed wrapped DEK");
+    }
+    kms::WrappedDek wrapped;
+    wrapped.nonce = b64_decode(dek_obj.at("n").get<std::string>());
+    wrapped.ciphertext = b64_decode(dek_obj.at("c").get<std::string>());
+
+    std::vector<std::uint8_t> dek = kms.unwrap_dek(wrapped, kek_id);
+    const kms::WrappedDek rewrapped = kms.wrap_dek(dek);
+    sodium_memzero(dek.data(), dek.size());
+
+    // Fields are sealed under the (unchanged) DEK — copy them verbatim.
+    envelope["kek_id"] = kms.key_id();
+    envelope["dek"] = {{"n", b64_encode(rewrapped.nonce)}, {"c", b64_encode(rewrapped.ciphertext)}};
+    return envelope.dump();
   }
 
 } // namespace fmgr::crypto

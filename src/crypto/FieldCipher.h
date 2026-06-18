@@ -25,6 +25,7 @@
 #include <nlohmann/json.hpp>
 
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -47,6 +48,15 @@ namespace fmgr::crypto {
   // an empty/whitespace string. Throws CipherError on malformed envelope or
   // authentication failure.
   [[nodiscard]] PhiFields decrypt(const std::string& envelope_json, const kms::IKmsProvider& kms);
+
+  // Re-wrap an envelope's per-record DEK under the KMS's *active* KEK, for key
+  // rotation. Field ciphertext is untouched (the DEK is unchanged; only its KEK
+  // wrapping and the recorded kek_id change), so no plaintext PHI is exposed.
+  // Returns nullopt when there is nothing to do: an empty/"{}" envelope, or one
+  // already wrapped under the active KEK. Throws CipherError/KmsError if the
+  // envelope is malformed or its current KEK is unavailable in the keyring.
+  [[nodiscard]] std::optional<std::string> rewrap(const std::string& envelope_json,
+                                                  const kms::IKmsProvider& kms);
 
 } // namespace fmgr::crypto
 

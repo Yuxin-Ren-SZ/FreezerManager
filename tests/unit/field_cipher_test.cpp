@@ -7,7 +7,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -98,6 +100,59 @@ namespace {
   TEST(FieldCipher, MalformedEnvelopeThrows) {
     const auto kms = make_kms();
     EXPECT_THROW((void)decrypt("{not json", kms), CipherError);
+  }
+
+  // ---- rewrap (key rotation) ----
+
+  std::vector<std::uint8_t> kek_a_bytes() {
+    std::vector<std::uint8_t> kek(32);
+    for (std::size_t i = 0; i < kek.size(); ++i) {
+      kek[i] = static_cast<std::uint8_t>(i); // == decoded kKekB64
+    }
+    return kek;
+  }
+
+  std::vector<std::uint8_t> kek_b_bytes() {
+    std::vector<std::uint8_t> kek(32);
+    for (std::size_t i = 0; i < kek.size(); ++i) {
+      kek[i] = static_cast<std::uint8_t>(0x20 + i);
+    }
+    return kek;
+  }
+
+  TEST(FieldCipher, RewrapRotatesAndStillDecrypts) {
+    using fmgr::crypto::rewrap;
+    const auto old_kms = make_kms(); // active = KEK-A (= kek_a_bytes())
+    const PhiFields in{{"mrn", "MRN-555"}, {"dob", "1990-01-01"}};
+    const std::string envelope = encrypt(in, old_kms);
+    const auto old_kek_id = nlohmann::json::parse(envelope).at("kek_id").get<std::string>();
+
+    // New keyring: active = KEK-B, retired = KEK-A (so the old DEK can be unwrapped).
+    const EnvVarKms new_kms(kek_b_bytes(), {kek_a_bytes()});
+
+    const auto rotated = rewrap(envelope, new_kms);
+    ASSERT_TRUE(rotated.has_value());
+    const auto rotated_json = nlohmann::json::parse(*rotated);
+    EXPECT_EQ(rotated_json.at("kek_id").get<std::string>(), new_kms.key_id());
+    EXPECT_NE(rotated_json.at("kek_id").get<std::string>(), old_kek_id);
+    // Field ciphertext is untouched — only the wrapped DEK rotated.
+    EXPECT_EQ(rotated_json.at("fields"), nlohmann::json::parse(envelope).at("fields"));
+    // Plaintext still recovers under the new keyring.
+    EXPECT_EQ(decrypt(*rotated, new_kms), in);
+  }
+
+  TEST(FieldCipher, RewrapNoopWhenAlreadyActive) {
+    using fmgr::crypto::rewrap;
+    const auto kms = make_kms();
+    const std::string envelope = encrypt(PhiFields{{"mrn", "x"}}, kms);
+    EXPECT_FALSE(rewrap(envelope, kms).has_value());
+  }
+
+  TEST(FieldCipher, RewrapNoopOnEmptyEnvelope) {
+    using fmgr::crypto::rewrap;
+    const auto kms = make_kms();
+    EXPECT_FALSE(rewrap("{}", kms).has_value());
+    EXPECT_FALSE(rewrap("", kms).has_value());
   }
 
 } // namespace

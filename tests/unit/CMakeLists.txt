@@ -208,7 +208,7 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-add_executable(freezermanager_kms_unit_tests kms_test.cpp)
+add_executable(freezermanager_kms_unit_tests kms_test.cpp os_keyring_test.cpp)
 target_link_libraries(
   freezermanager_kms_unit_tests
   PRIVATE

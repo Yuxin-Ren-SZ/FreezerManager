@@ -1,45 +1,39 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// EnvVarKms — development/test KMS that holds the master KEK in process memory,
-// sourced from the FMGR_MASTER_KEK environment variable (base64, 32 bytes).
+// EnvVarKms — development/test KMS loader that holds the master KEK in process
+// memory, sourced from environment variables and built on KeyringKms.
 //
 // NOT FOR PRODUCTION: the KEK is recoverable from the process environment and a
-// core dump. Production deployments must use OsKeyringKms / VaultKms (later
-// slices), which satisfy the same IKmsProvider interface. Documented in PRD §8.
+// core dump. Production deployments must use OsKeyringKms (systemd-creds) or a
+// future VaultKms. Documented in PRD §8.
 //
-// DEK wrapping uses libsodium crypto_secretbox (XSalsa20-Poly1305) with a random
-// per-wrap nonce.
+//   FMGR_MASTER_KEK           base64 of the active 32-byte KEK (required)
+//   FMGR_MASTER_KEK_PREVIOUS  comma-separated base64 of retired KEKs (optional),
+//                             kept only so records still wrapped under them can be
+//                             decrypted during a rotation.
 #ifndef FMGR_KMS_ENVVARKMS_H
 #define FMGR_KMS_ENVVARKMS_H
 
-#include "kms/IKmsProvider.h"
+#include "kms/KeyringKms.h"
 
 #include <cstdint>
-#include <span>
 #include <string>
 #include <vector>
 
 namespace fmgr::kms {
 
-  class EnvVarKms final : public IKmsProvider {
+  class EnvVarKms final : public KeyringKms {
   public:
-    // Reads FMGR_MASTER_KEK (base64 of exactly 32 bytes). Throws KmsError if the
-    // variable is unset, not valid base64, or the wrong length.
+    // Read FMGR_MASTER_KEK (+ optional FMGR_MASTER_KEK_PREVIOUS). Throws KmsError
+    // if the active variable is unset or any value is not base64 of a 32-byte key.
     static EnvVarKms from_env();
 
-    // Decode a base64 KEK directly (used by from_env and by tests).
+    // Decode a single base64 active KEK (no retired keys). Used by tests.
     static EnvVarKms from_base64(const std::string& kek_base64);
 
-    // Construct from raw 32-byte KEK material (used by tests). Throws on wrong size.
-    explicit EnvVarKms(std::vector<std::uint8_t> kek);
-
-    [[nodiscard]] std::string key_id() const override;
-    [[nodiscard]] WrappedDek wrap_dek(std::span<const std::uint8_t> dek) const override;
-    [[nodiscard]] std::vector<std::uint8_t> unwrap_dek(const WrappedDek& wrapped) const override;
-
-  private:
-    std::vector<std::uint8_t> kek_;
-    std::string key_id_;
+    // Construct from raw KEK material (active + optional retired). Used by tests.
+    explicit EnvVarKms(std::vector<std::uint8_t> active,
+                       std::vector<std::vector<std::uint8_t>> retired = {});
   };
 
 } // namespace fmgr::kms

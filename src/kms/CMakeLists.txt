@@ -5,7 +5,10 @@ find_package(libsodium REQUIRED)
 add_library(
   freezermanager_kms
   STATIC
+    KeyringKms.cc
     EnvVarKms.cc
+    OsKeyringKms.cc
+    KmsFactory.cc
 )
 add_library(FreezerManager::kms ALIAS freezermanager_kms)
 
