@@ -2,6 +2,7 @@ add_subdirectory(core)
 add_subdirectory(storage)
 add_subdirectory(auth)
 add_subdirectory(kms)
+add_subdirectory(crypto)
 add_subdirectory(audit)
 add_subdirectory(rpc)
 # rest before server: the freezerd target in server/ links FreezerManager::rest,

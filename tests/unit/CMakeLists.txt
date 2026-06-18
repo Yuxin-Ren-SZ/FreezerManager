@@ -208,8 +208,38 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
+add_executable(freezermanager_kms_unit_tests kms_test.cpp)
+target_link_libraries(
+  freezermanager_kms_unit_tests
+  PRIVATE
+    FreezerManager::kms
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_kms_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_crypto_unit_tests field_cipher_test.cpp)
+target_link_libraries(
+  freezermanager_crypto_unit_tests
+  PRIVATE
+    FreezerManager::crypto
+    FreezerManager::kms
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_crypto_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
+gtest_discover_tests(freezermanager_kms_unit_tests)
+gtest_discover_tests(freezermanager_crypto_unit_tests)
 gtest_discover_tests(freezermanager_rest_unit_tests)
 gtest_discover_tests(freezermanager_storage_unit_tests)
 gtest_discover_tests(freezermanager_sqlite_storage_unit_tests)
