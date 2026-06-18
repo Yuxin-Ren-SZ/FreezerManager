@@ -182,6 +182,15 @@ namespace fmgr::server {
       }
     }
 
+    // A PHI field must never be indexed: a JSON-path index would leak plaintext
+    // PHI into the index structure (PRD §4.1, L10.3). Reject at definition time.
+    void reject_indexed_phi(const core::CustomFieldDefinition& cfd) {
+      if (cfd.is_phi && cfd.indexed) {
+        throw storage::ConstraintViolation(
+            "a PHI custom field may not be indexed (is_phi and indexed are mutually exclusive)");
+      }
+    }
+
   } // namespace
 
   ItemTypeServiceImpl::ItemTypeServiceImpl(auth::IAuthProvider& auth,
@@ -416,6 +425,7 @@ namespace fmgr::server {
           .is_phi = wire.is_phi(),
           .created_at = now_timestamp(),
       };
+      reject_indexed_phi(cfd);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -459,6 +469,7 @@ namespace fmgr::server {
       existing->validation_json = wire.validation_json().empty() ? "{}" : wire.validation_json();
       existing->indexed = wire.indexed();
       existing->is_phi = wire.is_phi();
+      reject_indexed_phi(*existing);
       txn->repo<core::CustomFieldDefinition>().update(*existing, make_ctx(sctx, "update_cfd"));
       txn->commit();
 
