@@ -3,6 +3,7 @@
 #define FMGR_SERVER_FREEZERSERVER_H
 
 #include "auth/IAuthProvider.h"
+#include "kms/IKmsProvider.h"
 #include "server/AuditServiceImpl.h"
 #include "server/AuthServiceImpl.h"
 #include "server/BoxServiceImpl.h"
@@ -70,6 +71,10 @@ namespace fmgr::server {
 
   private:
     FreezerServerOptions opts_;
+    // Master-key provider for PHI field encryption. Null when no key is wired
+    // (FMGR_MASTER_KEK unset): the deployment then cannot store PHI. Declared
+    // before sample_svc_ so it is constructed first (sample_svc_ borrows it).
+    std::unique_ptr<kms::IKmsProvider> kms_;
     AuthServiceImpl auth_svc_;
     SessionServiceImpl session_svc_;
     LabServiceImpl lab_svc_;

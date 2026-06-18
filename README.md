@@ -120,8 +120,9 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - 🔲 `MtlsAuthProvider` — client certs for machine/instrument clients
 - ✅ `AuthMiddleware` — 4-step RBAC gate (token → MFA → permission → lab); per-lab permission resolution; `inject_rls_vars()` sets Postgres session vars; static RPC permission registry; session expiry (12 h idle / 7 d absolute); permission-context cache (5 min TTL, invalidated on revoke **and** on `users.authz_version` bump, so role/membership downgrades take effect next request)
 - ✅ API-token scope enforcement — fail-closed scope parsing (`["*"]` = unrestricted); token restricted to its `lab_id`; disabled-user check on every validation
-- 🔲 PHI field-level encryption — per-record DEK wrapped by master KEK; `IKmsProvider` pluggable
-- 🔲 `OsKeyringKms` / `VaultKms` / `EnvVarKms` — production, Vault, and dev/test key sources
+- ⚙️ PHI field-level encryption — Sample PHI custom fields split out of the plaintext blob and AEAD-encrypted (`crypto_secretbox`) with a fresh per-record DEK wrapped by the master KEK; decrypted on read only for callers holding `phi.read`. `is_phi`∧`indexed` rejected at definition time. (Sample done; other entities 🔲)
+- ✅ `IKmsProvider` envelope KMS + keyring — `KeyringKms` holds an active KEK plus retired KEKs (records wrapped under an older KEK still decrypt during rotation); `EnvVarKms` (dev/test, `FMGR_MASTER_KEK` + `FMGR_MASTER_KEK_PREVIOUS`) and `OsKeyringKms` (production, systemd-creds `$CREDENTIALS_DIRECTORY/master_kek`). `VaultKms` 🔲
+- ✅ Key rotation — `freezerctl key rotate` re-wraps every sample's per-record DEK under the active KEK (field ciphertext untouched, no plaintext exposed); idempotent, audited. `key.rotate` permission reserved for a future online RPC
 - 🔲 TLS 1.3 only — HSTS; modern cipher suites; self-signed cert for dev, required for production
 
 ### Audit
@@ -130,7 +131,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ Canonical-JSON serializer (RFC 8785 / JCS) — deterministic compact form for reproducible hashes
 - ✅ Repository-derived snapshots — `before_json`/`after_json` are produced from authoritative entity state inside the repository, never supplied by the caller; no forgeable audit channel
 - ✅ Hash-chain verifier — `freezerctl audit verify` walks the chain and reports first divergence
-- 🔲 PHI-read audit kind — distinct event logged on each PHI field access (key only, never value)
+- ✅ PHI-read audit kind — distinct `action="phi.read"` chain event appended on each PHI disclosure via `ITransaction::note_phi_read`; records disclosed field key names only, never values
 - 🔲 Signed nightly checkpoints — HMAC-SHA-256 with KMS key; stored in `audit_checkpoint` table
 - 🔲 Audit export is itself audited; rows are immutable; corrections are compensating events
 
@@ -186,7 +187,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
 | **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, SSE streaming — live audit feed ✅ (sample list + import progress 🔲), Qt 6 desktop client 🔲 | ⚙️ In progress |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
-| **M5 — PHI + KMS + Backups** | Field-level encryption, KMS adapters, backup/restore, weekly restore-drill | 🔲 Planned |
+| **M5 — PHI + KMS + Backups** | Sample PHI field-level encryption ✅, `IKmsProvider` + `EnvVarKms` + `OsKeyringKms` (keyring) ✅, PHI-read audit kind ✅, key rotation (`freezerctl key rotate`) ✅; `VaultKms`, backup/restore, weekly restore-drill 🔲 | ⚙️ In progress |
 | **M6 — Public API & Sharing** | API tokens, `freezerctl-py`, cross-lab share-request workflow | 🔲 Planned |
 | **M7 — Polish & 1.0** | OIDC + LDAP auth, `.deb` / `.rpm` / Docker packaging, external security review | 🔲 Planned |
 

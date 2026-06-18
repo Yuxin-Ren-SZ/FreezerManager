@@ -2,21 +2,40 @@
 
 #include "server/FreezerServer.h"
 
+#include "kms/KmsFactory.h"
+
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
+#include <spdlog/spdlog.h>
 
 #include <memory>
 #include <stdexcept>
 #include <string>
 
+namespace {
+
+  // Build the master-key provider via the shared factory (OS keyring, else env,
+  // else none). Returns null (PHI storage disabled) when no key is configured;
+  // a malformed-but-present key throws and aborts startup (fail-fast).
+  std::unique_ptr<fmgr::kms::IKmsProvider> make_kms() {
+    auto kms = fmgr::kms::make_default_kms();
+    if (kms == nullptr) {
+      spdlog::warn("PHI field encryption disabled: no master KEK configured "
+                   "(set CREDENTIALS_DIRECTORY/master_kek or FMGR_MASTER_KEK)");
+    }
+    return kms;
+  }
+
+} // namespace
+
 namespace fmgr::server {
 
   FreezerServer::FreezerServer(storage::IStorageBackend& backend, auth::IAuthProvider& auth,
                                FreezerServerOptions opts)
-      : opts_(std::move(opts)), auth_svc_(auth, backend), session_svc_(auth, backend),
-        lab_svc_(auth, backend), box_svc_(auth, backend), item_type_svc_(auth, backend),
-        sample_svc_(auth, backend), role_svc_(auth, backend), audit_svc_(auth, backend),
-        share_svc_(auth, backend) {}
+      : opts_(std::move(opts)), kms_(make_kms()), auth_svc_(auth, backend),
+        session_svc_(auth, backend), lab_svc_(auth, backend), box_svc_(auth, backend),
+        item_type_svc_(auth, backend), sample_svc_(auth, backend, kms_.get()),
+        role_svc_(auth, backend), audit_svc_(auth, backend), share_svc_(auth, backend) {}
 
   FreezerServer::~FreezerServer() {
     if (grpc_server_) {

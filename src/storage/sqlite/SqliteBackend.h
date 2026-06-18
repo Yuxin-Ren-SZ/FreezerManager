@@ -52,6 +52,10 @@ namespace fmgr::storage {
                        const MutationContext& context, std::string action = "mutation",
                        AuditSnapshot snapshot = {});
 
+    void note_phi_read(const std::string& entity_kind, const std::string& entity_id,
+                       const MutationContext& context,
+                       const std::vector<std::string>& field_keys) override;
+
     template <typename Entity>
     void register_sqlite_repository(std::unique_ptr<IRepository<Entity>> repository) {
       register_repository<Entity>(std::move(repository));

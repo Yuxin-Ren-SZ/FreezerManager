@@ -487,6 +487,27 @@ namespace fmgr::test {
       EXPECT_EQ(resp.cfd().data_type(), fmgr::v1::FIELD_DATA_TYPE_INT);
     }
 
+    TEST_F(ItemTypeServiceTest, CreateIndexedPhiCfdRejected) {
+      // A PHI field must never be indexed (PRD §4.1): indexing would leak plaintext
+      // PHI into the index. The combination is rejected at definition time.
+      const auto token = login(kAdminEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::CreateCfdRequest req;
+      auto* const cfd = req.mutable_cfd();
+      cfd->set_lab_id(kLab1);
+      cfd->set_scope_kind(fmgr::v1::SCOPE_KIND_SAMPLE);
+      cfd->set_key("mrn");
+      cfd->set_label("MRN");
+      cfd->set_data_type(fmgr::v1::FIELD_DATA_TYPE_TEXT);
+      cfd->set_is_phi(true);
+      cfd->set_indexed(true);
+      fmgr::v1::CreateCfdResponse resp;
+      const auto status = item_type_stub_->CreateCustomFieldDefinition(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+    }
+
     TEST_F(ItemTypeServiceTest, CreateCfdRejectsMember) {
       const auto token = login(kMemberEmail, kPassword);
       grpc::ClientContext ctx;

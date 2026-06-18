@@ -3,6 +3,7 @@
 #define FMGR_SERVER_SAMPLESERVICEIMPL_H
 
 #include "auth/IAuthProvider.h"
+#include "kms/IKmsProvider.h"
 #include "rpc/AuthMiddleware.h"
 #include "storage/IStorageBackend.h"
 
@@ -21,7 +22,11 @@ namespace fmgr::server {
   // the per-lab permission against that lab.
   class SampleServiceImpl final : public fmgr::v1::SampleService::Service {
   public:
-    explicit SampleServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend);
+    // `kms` is borrowed and may be null: when null the deployment has no master
+    // key, so PHI custom fields cannot be stored (a PHI write is rejected) and no
+    // PHI ciphertext can exist to decrypt on read.
+    SampleServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend,
+                      kms::IKmsProvider* kms = nullptr);
 
     grpc::Status ListSamples(grpc::ServerContext* ctx, const fmgr::v1::ListSamplesRequest* req,
                              fmgr::v1::ListSamplesResponse* resp) override;
@@ -46,6 +51,7 @@ namespace fmgr::server {
   private:
     auth::IAuthProvider& auth_;
     storage::IStorageBackend& backend_;
+    kms::IKmsProvider* kms_;
     rpc::AuthMiddleware middleware_;
   };
 

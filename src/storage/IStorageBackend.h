@@ -407,6 +407,17 @@ namespace fmgr::storage {
     // overrides this to issue "SET LOCAL app.<key> = '<value>'" for RLS.
     virtual void set_session_var(std::string_view /*key*/, std::string_view /*value*/) {}
 
+    // Append a PHI-read audit event (PRD §7.3). Unlike note_mutation this records a
+    // *read*: it carries the disclosed PHI field KEY NAMES only — never the values
+    // (PRD §17 redaction). The action is fixed to "phi.read" and the event joins the
+    // same hash chain at commit. The default throws so a backend that has no audit
+    // chain cannot silently drop a PHI-access record.
+    virtual void note_phi_read(const std::string& /*entity_kind*/, const std::string& /*entity_id*/,
+                               const MutationContext& /*context*/,
+                               const std::vector<std::string>& /*field_keys*/) {
+      throw UnsupportedOperation("note_phi_read is not supported by this backend");
+    }
+
     template <typename Entity> IRepository<Entity>& repo() {
       const auto iterator = repositories_.find(std::type_index(typeid(Entity)));
       if (iterator == repositories_.end()) {

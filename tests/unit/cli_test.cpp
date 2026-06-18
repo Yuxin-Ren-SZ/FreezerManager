@@ -11,6 +11,7 @@
 #include "cli/CustomFieldDefImport.h"
 #include "cli/EntityRead.h"
 #include "cli/ItemTypeImport.h"
+#include "cli/KeyCommands.h"
 #include "cli/LabCommands.h"
 #include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
@@ -19,17 +20,23 @@
 #include "cli/SampleQuery.h"
 #include "cli/UserImport.h"
 
+#include "core/audit_event.h"
 #include "core/box.h"
 #include "core/freezer.h"
 #include "core/identity.h"
 #include "core/item_type.h"
 #include "core/role.h"
 #include "core/sample.h"
+#include "crypto/FieldCipher.h"
+#include "kms/EnvVarKms.h"
+#include "storage/AuditTraits.h"
 #include "storage/BoxGeometryTraits.h"
 #include "storage/FreezerTraits.h"
 #include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
 #include "storage/SampleTraits.h"
+
+#include <nlohmann/json.hpp>
 
 #include "repo_backend_harness.h"
 #include "test_helpers.h"
@@ -690,6 +697,88 @@ namespace fmgr::cli {
       EXPECT_NE(out.str().find("OK:"), std::string::npos);
     }
 
+    // ---- key rotate ----
+
+    constexpr const char* kOldKekB64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+    constexpr const char* kNewKekB64 = "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=";
+
+    std::vector<std::uint8_t> kek_bytes(std::uint8_t base) {
+      std::vector<std::uint8_t> kek(32);
+      for (std::size_t i = 0; i < kek.size(); ++i) {
+        kek[i] = static_cast<std::uint8_t>(base + i);
+      }
+      return kek;
+    }
+    std::vector<std::uint8_t> old_kek() {
+      return kek_bytes(0x00);
+    } // == kKekB64
+    std::vector<std::uint8_t> new_kek() {
+      return kek_bytes(0x40);
+    } // == kNewKekB64
+
+    // Insert an active sample whose PHI envelope is wrapped under `kms`.
+    core::SampleId insert_phi_sample(storage::IStorageBackend& backend, core::LabId lab,
+                                     const fmgr::kms::IKmsProvider& kms, std::uint64_t low) {
+      core::Sample sample =
+          make_sample(low, lab, id_from_low<core::ItemTypeId>(20), id_from_low<core::UserId>(10));
+      sample.phi_fields_enc_json =
+          crypto::encrypt(crypto::PhiFields{{"mrn", "MRN-" + std::to_string(low)}}, kms);
+      auto txn = backend.begin(storage::IsolationLevel::Serializable);
+      txn->set_session_var("current_lab_ids", lab.to_string());
+      txn->repo<core::Sample>().insert(sample, mutation_context());
+      txn->commit();
+      return sample.id;
+    }
+
+    TEST_P(CliBackendTest, KeyRotateRewrapsPhiToActiveKekAndAudits) {
+      auto& backend = fixture_->backend();
+      const auto lab = fixture_->lab_a();
+      const fmgr::kms::EnvVarKms old_kms(old_kek());
+      const auto sid = insert_phi_sample(backend, lab, old_kms, 555);
+
+      // Active KEK is NEW; OLD retained as retired so the existing DEK can unwrap.
+      const fmgr::kms::EnvVarKms new_kms(new_kek(), {old_kek()});
+      std::ostringstream sink;
+      const auto report =
+          rotate_phi_keys(backend, new_kms, lab, id_from_low<core::UserId>(10), sink);
+      EXPECT_EQ(report.scanned, 1U); // the two non-PHI seed samples are not scanned
+      EXPECT_EQ(report.rewrapped, 1U);
+      EXPECT_EQ(report.current, 0U);
+      EXPECT_EQ(report.failed, 0U);
+
+      auto txn = backend.begin(storage::IsolationLevel::ReadCommitted);
+      txn->set_session_var("current_lab_ids", lab.to_string());
+      const auto row = txn->repo<core::Sample>().find_by_id(sid);
+      const auto events =
+          txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
+      txn->commit();
+
+      ASSERT_TRUE(row.has_value());
+      const auto envelope = nlohmann::json::parse(row->phi_fields_enc_json);
+      EXPECT_EQ(envelope.at("kek_id").get<std::string>(), new_kms.key_id());
+      EXPECT_EQ(crypto::decrypt(row->phi_fields_enc_json, new_kms).at("mrn"), "MRN-555");
+
+      // Rotation is audited as a Sample update; its after-image records the
+      // re-wrapped envelope (new kek_id) and never the plaintext PHI value.
+      int rotate_events = 0;
+      for (const auto& event : events) {
+        if (event.entity_kind == "sample" && event.entity_id == sid.to_string() &&
+            event.action == "update") {
+          ++rotate_events;
+          EXPECT_NE(event.after_json.find(new_kms.key_id()), std::string::npos);
+          EXPECT_EQ(event.after_json.find("MRN-555"), std::string::npos);
+        }
+      }
+      EXPECT_EQ(rotate_events, 1);
+
+      // A second rotation under the same active KEK is a no-op.
+      std::ostringstream sink2;
+      const auto again =
+          rotate_phi_keys(backend, new_kms, lab, id_from_low<core::UserId>(10), sink2);
+      EXPECT_EQ(again.rewrapped, 0U);
+      EXPECT_EQ(again.current, 1U);
+    }
+
     // The fixture seeds lab A with item-type id_from_low(20) and user
     // id_from_low(10); imports reference those so repository validation passes.
     SampleImportOptions import_options(core::LabId lab) {
@@ -1047,6 +1136,29 @@ namespace fmgr::cli {
       EXPECT_NE(out.str().find("# freezermanager-export"), std::string::npos);
     }
 
+    TEST(CliAppTest, KeyRotateViaEnv) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const fmgr::kms::EnvVarKms old_kms(old_kek());
+      insert_phi_sample(fixture.backend(), fixture.lab_a(), old_kms, 556);
+
+      ::setenv("FMGR_MASTER_KEK", kNewKekB64, 1);          // NOLINT(concurrency-mt-unsafe)
+      ::setenv("FMGR_MASTER_KEK_PREVIOUS", kOldKekB64, 1); // NOLINT(concurrency-mt-unsafe)
+
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::vector<const char*> args = {"freezerctl",      "key",     "rotate",     "--sqlite",
+                                             sqlite_db.c_str(), "--actor", actor.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+
+      ::unsetenv("FMGR_MASTER_KEK");          // NOLINT(concurrency-mt-unsafe)
+      ::unsetenv("FMGR_MASTER_KEK_PREVIOUS"); // NOLINT(concurrency-mt-unsafe)
+
+      EXPECT_EQ(code, 0) << err.str();
+      EXPECT_NE(out.str().find("rotated 1 of 1"), std::string::npos) << out.str();
+    }
+
     TEST(CliAppTest, SampleImportFromFile) {
       CliFixture fixture(BackendKind::Sqlite);
       const auto item_type = id_from_low<core::ItemTypeId>(20).to_string();
@@ -1248,7 +1360,8 @@ namespace fmgr::cli {
     TEST(CsvReaderTest, VeryWideRowDoesNotCrash) {
       std::string header;
       for (int i = 0; i < 500; ++i) {
-        if (i > 0) header += ",";
+        if (i > 0)
+          header += ",";
         header += "col_" + std::to_string(i);
       }
       const auto rows = parse(header + "\r\n");
@@ -1279,8 +1392,7 @@ namespace fmgr::cli {
 
     TEST(SampleImportTest, SampleWithEmptyCustomFieldsParsesAsEmptyObject) {
       const std::vector<std::vector<std::string>> records = {
-          {"name", "item_type_id", "custom_fields_json"},
-          {"S1", item_type_uuid(), "{}"}};
+          {"name", "item_type_id", "custom_fields_json"}, {"S1", item_type_uuid(), "{}"}};
       const auto report = build_import(records, import_ctx());
       ASSERT_FALSE(report.has_errors());
       ASSERT_FALSE(report.rows.empty());
