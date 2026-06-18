@@ -9,6 +9,7 @@
 #include "cli/CsvImport.h"
 #include "cli/CustomFieldDefImport.h"
 #include "cli/ItemTypeImport.h"
+#include "cli/KeyCommands.h"
 #include "cli/LabCommands.h"
 #include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
@@ -19,6 +20,7 @@
 #include "core/identity.h"
 #include "core/ids.h"
 #include "core/item_type.h"
+#include "kms/KmsFactory.h"
 #include "storage/BoxGeometryTraits.h"
 #include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
@@ -73,6 +75,37 @@ namespace fmgr::cli {
 
     [[nodiscard]] BackendOptions to_backend_options(const CommonArgs& args) {
       return backend_options_from(args.sqlite_path, args.postgres_url);
+    }
+
+    // `key rotate` handler, factored out of run_cli to keep its cognitive
+    // complexity in budget. Returns nullopt when the subcommand was not parsed.
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<int> dispatch_key_rotate(bool parsed, const std::string& sqlite,
+                                                         const std::string& postgres,
+                                                         const std::string& lab,
+                                                         const std::string& actor,
+                                                         std::ostream& out, std::ostream& err) {
+      // NOLINTEND(bugprone-easily-swappable-parameters)
+      if (!parsed) {
+        return std::nullopt;
+      }
+      auto backend = open_backend(backend_options_from(sqlite, postgres));
+      auto kms = kms::make_default_kms();
+      if (kms == nullptr) {
+        err << "error: no master KEK configured (set CREDENTIALS_DIRECTORY/master_kek "
+               "or FMGR_MASTER_KEK)\n";
+        return 1;
+      }
+      std::optional<core::LabId> lab_filter;
+      if (!lab.empty()) {
+        lab_filter = core::LabId::parse(lab);
+      }
+      const auto report =
+          rotate_phi_keys(*backend, *kms, lab_filter, core::UserId::parse(actor), out);
+      out << "rotated " << report.rewrapped << " of " << report.scanned
+          << " PHI sample(s) (already current " << report.current << ", failed " << report.failed
+          << ")\n";
+      return report.failed == 0 ? 0 : 1;
     }
 
     [[nodiscard]] SampleQueryOptions to_query_options(const CommonArgs& args) {
@@ -578,6 +611,21 @@ namespace fmgr::cli {
                            "First SystemAdmin display name");
     lab_create->add_flag("--phi", lab_create_opts.phi_enabled, "Enable PHI mode for this lab");
 
+    // key rotate: re-wrap PHI envelopes under the active master KEK (PRD §8).
+    std::string key_sqlite;
+    std::string key_postgres;
+    std::string key_lab;   // optional; empty = all labs
+    std::string key_actor; // required
+    CLI::App* key = app.add_subcommand("key", "Encryption key commands");
+    key->require_subcommand(1);
+    CLI::App* key_rotate =
+        key->add_subcommand("rotate", "Re-wrap PHI envelopes under the active master KEK");
+    key_rotate->add_option("--sqlite", key_sqlite, "Path to a SQLite database file");
+    key_rotate->add_option("--postgres", key_postgres, "PostgreSQL connection URL");
+    key_rotate->add_option("--lab", key_lab, "Lab UUID to rotate (default: all labs)");
+    key_rotate->add_option("--actor", key_actor, "User UUID recorded as the rotation actor")
+        ->required();
+
     NounSubcommands freezer_noun;
     NounSubcommands box_noun;
     NounSubcommands item_type_noun;
@@ -641,6 +689,10 @@ namespace fmgr::cli {
         auto backend = open_backend(backend_options_from(lab_sqlite, lab_postgres));
         run_lab_create(*backend, lab_create_opts, out);
         return 0;
+      }
+      if (const auto code = dispatch_key_rotate(key_rotate->parsed(), key_sqlite, key_postgres,
+                                                key_lab, key_actor, out, err)) {
+        return *code;
       }
       if (const auto code = dispatch_read_nouns(freezer_noun, box_noun, item_type_noun, out)) {
         return *code;

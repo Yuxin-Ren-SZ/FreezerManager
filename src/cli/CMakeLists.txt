@@ -15,6 +15,7 @@ add_library(
   CsvWriter.cc
   CustomFieldDefImport.cc
   ItemTypeImport.cc
+  KeyCommands.cc
   LabCommands.cc
   NounCommands.cc
   UserImport.cc
@@ -38,6 +39,8 @@ target_link_libraries(
     FreezerManager::audit
     FreezerManager::storage_sqlite
     FreezerManager::storage_postgres
+    FreezerManager::crypto
+    FreezerManager::kms
   PRIVATE
     CLI11::CLI11
 )
