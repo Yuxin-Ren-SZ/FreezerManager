@@ -765,8 +765,7 @@ namespace fmgr::auth {
   // entries idle past the lockout window; if still over the configured cap, drops
   // remaining unlocked entries. Active locks (the security-relevant state) and the
   // entry just touched are always retained. Caller must hold lockout_mutex_.
-  void LocalAuthProvider::evict_stale_lockouts(const std::string& keep_email,
-                                               core::Timestamp now) {
+  void LocalAuthProvider::evict_stale_lockouts(const std::string& keep_email, core::Timestamp now) {
     const std::int64_t window_micros = config_.lockout_duration_seconds * 1'000'000LL;
     for (auto iter = lockout_map_.begin(); iter != lockout_map_.end();) {
       const auto& st = iter->second;

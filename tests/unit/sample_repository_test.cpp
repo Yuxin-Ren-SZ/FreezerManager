@@ -2179,8 +2179,8 @@ namespace fmgr::storage {
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
         const auto results = txn->repo<core::Sample>().query(
-            Query<core::Sample>::where(in(field<core::Sample, core::SampleStatus>(
-                                              core::Sample::Field::Status), statuses))
+            Query<core::Sample>::where(
+                in(field<core::Sample, core::SampleStatus>(core::Sample::Field::Status), statuses))
                 .include_tombstoned());
         txn->commit();
         EXPECT_EQ(results.size(), 2U);
@@ -2254,8 +2254,7 @@ namespace fmgr::storage {
       {
         auto txn = backend().begin(IsolationLevel::Serializable);
         // offset without limit exercises the SQLite LIMIT -1 code path.
-        const auto results =
-            txn->repo<core::Sample>().query(Query<core::Sample>::all().offset(1));
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>::all().offset(1));
         txn->commit();
         EXPECT_EQ(results.size(), 2U);
       }

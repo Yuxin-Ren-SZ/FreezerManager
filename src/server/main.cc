@@ -100,12 +100,12 @@ int main(int /*argc*/, char* /*argv*/[]) {
       schedule.retention = fmgr::backup::RetentionPolicy{env_int("FMGR_BACKUP_DAILY", 30),
                                                          env_int("FMGR_BACKUP_MONTHLY", 12),
                                                          env_int("FMGR_BACKUP_YEARLY", 7)};
-      schedule.backup_interval_micros =
-          static_cast<std::int64_t>(env_double("FMGR_BACKUP_INTERVAL_HOURS", 24.0) * kMicrosPerHour);
+      schedule.backup_interval_micros = static_cast<std::int64_t>(
+          env_double("FMGR_BACKUP_INTERVAL_HOURS", 24.0) * kMicrosPerHour);
       schedule.drill_interval_micros =
           static_cast<std::int64_t>(env_double("FMGR_BACKUP_DRILL_HOURS", 168.0) * kMicrosPerHour);
-      schedule.actor = actor_env != nullptr ? fmgr::core::UserId::parse(actor_env)
-                                            : fmgr::core::UserId{};
+      schedule.actor =
+          actor_env != nullptr ? fmgr::core::UserId::parse(actor_env) : fmgr::core::UserId{};
       opts.backup_schedule = schedule;
     }
 

@@ -93,8 +93,8 @@ namespace fmgr::server {
         spdlog::warn("scheduled backups disabled: no backup KEK configured "
                      "(set CREDENTIALS_DIRECTORY/backup_kek or FMGR_BACKUP_KEK)");
       } else {
-        backup_scheduler_ = std::make_unique<BackupScheduler>(
-            backend_, std::move(backup_kms), opts_.backup_schedule.value());
+        backup_scheduler_ = std::make_unique<BackupScheduler>(backend_, std::move(backup_kms),
+                                                              opts_.backup_schedule.value());
         backup_scheduler_->start();
         spdlog::info("scheduled backups enabled: dir={}", opts_.backup_schedule->backup_dir);
       }

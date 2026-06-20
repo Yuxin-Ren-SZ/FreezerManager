@@ -267,10 +267,9 @@ namespace fmgr::storage {
       // The Query builder is a passive data structure — stored backends resolve
       // contradictions. The builder must accept them without crash.
       const auto query =
-          Query<TestSample>::where(
-              field<TestSample, std::string>(TestSample::Field::Name) == "alpha")
-              .and_where(
-                  field<TestSample, std::string>(TestSample::Field::Name) == "beta");
+          Query<TestSample>::where(field<TestSample, std::string>(TestSample::Field::Name) ==
+                                   "alpha")
+              .and_where(field<TestSample, std::string>(TestSample::Field::Name) == "beta");
       EXPECT_EQ(query.predicates().size(), 2U);
     }
 
@@ -299,8 +298,7 @@ namespace fmgr::storage {
 
     TEST(StorageInterface, QueryWithInOperatorEmptyList) {
       const auto query = Query<TestSample>::where(
-          field<TestSample, std::string>(TestSample::Field::Name)
-              .in(std::vector<std::string>{}));
+          field<TestSample, std::string>(TestSample::Field::Name).in(std::vector<std::string>{}));
       ASSERT_EQ(query.predicates().size(), 1U);
       EXPECT_EQ(query.predicates().at(0).op, PredicateOperator::In);
       EXPECT_TRUE(query.predicates().at(0).values.empty());
@@ -361,9 +359,8 @@ namespace fmgr::storage {
     }
 
     TEST(StorageInterface, QueryWithOnlySortsNoPredicates) {
-      const auto query =
-          Query<TestSample>::all()
-              .order_by(field<TestSample, std::string>(TestSample::Field::Name));
+      const auto query = Query<TestSample>::all().order_by(
+          field<TestSample, std::string>(TestSample::Field::Name));
       EXPECT_EQ(query.predicates().size(), 0U);
       EXPECT_EQ(query.sorts().size(), 1U);
     }

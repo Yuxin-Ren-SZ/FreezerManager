@@ -222,8 +222,7 @@ namespace fmgr::audit {
       // An empty prev_hash on the first row is equivalent to the zero hash.
       std::vector<core::AuditEvent> events = {make_event(1)};
       events[0].prev_hash.clear();
-      events[0].this_hash =
-          compute_audit_hash("", audit_event_content_json(events[0]));
+      events[0].this_hash = compute_audit_hash("", audit_event_content_json(events[0]));
       const auto report = verify_audit_chain(events, "");
       EXPECT_TRUE(report.ok);
     }

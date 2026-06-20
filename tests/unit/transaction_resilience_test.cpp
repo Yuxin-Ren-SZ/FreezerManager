@@ -41,8 +41,8 @@ namespace fmgr::storage {
     class TransactionResilienceTest : public ::testing::Test {
     protected:
       void SetUp() override {
-        backend_ = std::make_unique<SqliteBackend>(
-            SqliteBackendOptions{.database_path = ":memory:"});
+        backend_ =
+            std::make_unique<SqliteBackend>(SqliteBackendOptions{.database_path = ":memory:"});
         register_identity_repositories(*backend_);
         register_role_repositories(*backend_);
         register_session_repositories(*backend_);
@@ -74,8 +74,8 @@ namespace fmgr::storage {
         };
       }
 
-      [[nodiscard]] core::LabMembership
-      make_membership(std::uint64_t user_low, std::uint64_t lab_low) {
+      [[nodiscard]] core::LabMembership make_membership(std::uint64_t user_low,
+                                                        std::uint64_t lab_low) {
         return core::LabMembership{
             .user_id = id_from_low<core::UserId>(user_low),
             .lab_id = id_from_low<core::LabId>(lab_low),
@@ -148,8 +148,7 @@ namespace fmgr::storage {
       EXPECT_NO_THROW(txn->rollback());
 
       auto read_txn = backend_->begin(IsolationLevel::Serializable);
-      EXPECT_TRUE(
-          read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
+      EXPECT_TRUE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
     }
 
     TEST_F(TransactionResilienceTest, CommitAfterRollbackThrows) {
@@ -186,10 +185,8 @@ namespace fmgr::storage {
 
       // Lab 2 must NOT exist (the whole transaction should have been rolled back).
       auto read_txn = backend_->begin(IsolationLevel::Serializable);
-      EXPECT_TRUE(
-          read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
-      EXPECT_FALSE(
-          read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(2)).has_value());
+      EXPECT_TRUE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
+      EXPECT_FALSE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(2)).has_value());
     }
 
     TEST_F(TransactionResilienceTest, NotFoundOnUpdateLeavesEntityUntouched) {
@@ -229,8 +226,7 @@ namespace fmgr::storage {
       // depending on isolation level.  Serializable may still not see it on
       // the same snapshot.  A fresh transaction must see it.
       auto fresh_txn = backend_->begin(IsolationLevel::Serializable);
-      EXPECT_TRUE(
-          fresh_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
+      EXPECT_TRUE(fresh_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
     }
 
     // ---- SQLite database file error simulation ----
@@ -242,8 +238,7 @@ namespace fmgr::storage {
       const auto ctx = mutation_context();
       for (int i = 0; i < 10; ++i) {
         auto txn = backend_->begin(IsolationLevel::Serializable);
-        txn->repo<core::Lab>().insert(
-            make_lab(static_cast<std::uint64_t>(100 + i)), ctx);
+        txn->repo<core::Lab>().insert(make_lab(static_cast<std::uint64_t>(100 + i)), ctx);
         txn->commit();
       }
 
@@ -251,8 +246,7 @@ namespace fmgr::storage {
       auto txn = backend_->begin(IsolationLevel::Serializable);
       for (int i = 0; i < 10; ++i) {
         EXPECT_TRUE(txn->repo<core::Lab>()
-                        .find_by_id(id_from_low<core::LabId>(
-                            static_cast<std::uint64_t>(100 + i)))
+                        .find_by_id(id_from_low<core::LabId>(static_cast<std::uint64_t>(100 + i)))
                         .has_value());
       }
     }
@@ -273,9 +267,7 @@ namespace fmgr::storage {
       auto read_txn = backend_->begin(IsolationLevel::Serializable);
       for (std::uint64_t i = 0; i < 100; ++i) {
         EXPECT_TRUE(
-            read_txn->repo<core::Lab>()
-                .find_by_id(id_from_low<core::LabId>(500 + i))
-                .has_value())
+            read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(500 + i)).has_value())
             << "lab " << (500 + i);
       }
     }
@@ -299,15 +291,13 @@ namespace fmgr::storage {
       // Committed rows exist, rolled-back ones don't.
       auto read_txn = backend_->begin(IsolationLevel::Serializable);
       for (int i = 0; i < 50; ++i) {
-        EXPECT_TRUE(
-            read_txn->repo<core::Lab>()
-                .find_by_id(id_from_low<core::LabId>(static_cast<std::uint64_t>(600 + i)))
-                .has_value())
+        EXPECT_TRUE(read_txn->repo<core::Lab>()
+                        .find_by_id(id_from_low<core::LabId>(static_cast<std::uint64_t>(600 + i)))
+                        .has_value())
             << "committed lab " << (600 + i);
-        EXPECT_FALSE(
-            read_txn->repo<core::Lab>()
-                .find_by_id(id_from_low<core::LabId>(static_cast<std::uint64_t>(700 + i)))
-                .has_value())
+        EXPECT_FALSE(read_txn->repo<core::Lab>()
+                         .find_by_id(id_from_low<core::LabId>(static_cast<std::uint64_t>(700 + i)))
+                         .has_value())
             << "rolled-back lab " << (700 + i);
       }
     }
@@ -364,11 +354,11 @@ namespace fmgr::storage {
       }
       auto read_txn = backend_->begin(IsolationLevel::Serializable);
       EXPECT_TRUE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
-      EXPECT_TRUE(read_txn->repo<core::User>().find_by_id(id_from_low<core::UserId>(1)).has_value());
+      EXPECT_TRUE(
+          read_txn->repo<core::User>().find_by_id(id_from_low<core::UserId>(1)).has_value());
       EXPECT_TRUE(read_txn->repo<core::LabMembership>()
-                      .find_by_id(core::LabMembershipId{
-                          .user_id = id_from_low<core::UserId>(1),
-                          .lab_id = id_from_low<core::LabId>(1)})
+                      .find_by_id(core::LabMembershipId{.user_id = id_from_low<core::UserId>(1),
+                                                        .lab_id = id_from_low<core::LabId>(1)})
                       .has_value());
     }
 
@@ -384,11 +374,9 @@ namespace fmgr::storage {
 
       // Lab 2 must NOT exist since the write happened after commit.
       auto read_txn = backend_->begin(IsolationLevel::Serializable);
-      EXPECT_FALSE(
-          read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(2)).has_value());
+      EXPECT_FALSE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(2)).has_value());
       // Lab 1 was committed before the rogue write and must still exist.
-      EXPECT_TRUE(
-          read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
+      EXPECT_TRUE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
     }
 
     TEST_F(TransactionResilienceTest, WriteContentionWithLongRunningReader) {

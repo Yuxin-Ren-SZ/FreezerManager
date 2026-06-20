@@ -29,8 +29,7 @@ namespace fmgr::fuzz {
     // reproducible via --gtest_random_seed=.
     [[nodiscard]] std::mt19937_64& rng() {
       static std::mt19937_64 engine(
-          static_cast<std::uint64_t>(
-              ::testing::UnitTest::GetInstance()->random_seed()) +
+          static_cast<std::uint64_t>(::testing::UnitTest::GetInstance()->random_seed()) +
           reinterpret_cast<std::uintptr_t>(&rng));
       return engine;
     }
@@ -46,8 +45,9 @@ namespace fmgr::fuzz {
       auto& gen = rng();
       constexpr int kCapacity = 5;
       constexpr int kRefillPerSec = 2;
-      rpc::RateLimiter limiter(rpc::RateLimiterConfig{.capacity = static_cast<double>(kCapacity),
-                                            .refill_per_sec = static_cast<double>(kRefillPerSec)});
+      rpc::RateLimiter limiter(
+          rpc::RateLimiterConfig{.capacity = static_cast<double>(kCapacity),
+                                 .refill_per_sec = static_cast<double>(kRefillPerSec)});
       auto clock = rpc::RateLimiter::TimePoint{};
       constexpr int kOps = 2000;
 
@@ -108,8 +108,8 @@ namespace fmgr::fuzz {
     TEST(FuzzRateLimiter, TrackedKeyCountNeverExceedsMax) {
       auto& gen = rng();
       constexpr std::size_t kMaxKeys = 20;
-      rpc::RateLimiter limiter(
-          rpc::RateLimiterConfig{.capacity = 1.0, .refill_per_sec = 100.0, .max_tracked_keys = kMaxKeys});
+      rpc::RateLimiter limiter(rpc::RateLimiterConfig{
+          .capacity = 1.0, .refill_per_sec = 100.0, .max_tracked_keys = kMaxKeys});
       auto clock = rpc::RateLimiter::TimePoint{};
 
       for (int i = 0; i < 500; ++i) {
@@ -188,8 +188,7 @@ namespace fmgr::fuzz {
         const nlohmann::json fields{{"fuzz_field", value}};
         // Must never throw; at worst, returns validation errors.
         EXPECT_NO_THROW({
-          const auto errors =
-              core::validate_custom_fields(std::span{&def, 1}, fields);
+          const auto errors = core::validate_custom_fields(std::span{&def, 1}, fields);
           (void)errors;
         });
       }
@@ -253,10 +252,18 @@ namespace fmgr::fuzz {
         nlohmann::json value;
         const int shape = std::uniform_int_distribution<int>(0, 6)(gen);
         switch (shape) {
-        case 0: value = nullptr; break;
-        case 1: value = true; break;
-        case 2: value = std::uniform_int_distribution<int>(-1000, 1000)(gen); break;
-        case 3: value = std::uniform_real_distribution<double>(-100.0, 100.0)(gen); break;
+        case 0:
+          value = nullptr;
+          break;
+        case 1:
+          value = true;
+          break;
+        case 2:
+          value = std::uniform_int_distribution<int>(-1000, 1000)(gen);
+          break;
+        case 3:
+          value = std::uniform_real_distribution<double>(-100.0, 100.0)(gen);
+          break;
         case 4: {
           const int len = std::uniform_int_distribution<int>(0, 256)(gen);
           value = std::string(static_cast<std::size_t>(len), 'x');
@@ -298,7 +305,8 @@ namespace fmgr::fuzz {
         const int count = std::uniform_int_distribution<int>(1, 8)(gen);
         for (int j = 0; j < count; ++j) {
           // Insert keys in random order to verify sorting.
-          const auto key = "field_" + std::to_string(std::uniform_int_distribution<int>(0, 20)(gen));
+          const auto key =
+              "field_" + std::to_string(std::uniform_int_distribution<int>(0, 20)(gen));
           if (!obj.contains(key)) {
             obj[key] = std::uniform_int_distribution<int>(0, 999)(gen);
           }
@@ -320,11 +328,21 @@ namespace fmgr::fuzz {
         nlohmann::json value;
         const int shape = std::uniform_int_distribution<int>(0, 6)(gen);
         switch (shape) {
-        case 0: value = nullptr; break;
-        case 1: value = true; break;
-        case 2: value = std::numeric_limits<double>::quiet_NaN(); break;
-        case 3: value = std::numeric_limits<double>::infinity(); break;
-        case 4: value = -std::numeric_limits<double>::infinity(); break;
+        case 0:
+          value = nullptr;
+          break;
+        case 1:
+          value = true;
+          break;
+        case 2:
+          value = std::numeric_limits<double>::quiet_NaN();
+          break;
+        case 3:
+          value = std::numeric_limits<double>::infinity();
+          break;
+        case 4:
+          value = -std::numeric_limits<double>::infinity();
+          break;
         case 5: {
           nlohmann::json deep = nlohmann::json::object();
           nlohmann::json* cursor = &deep;
@@ -344,9 +362,15 @@ namespace fmgr::fuzz {
           for (int j = 0; j < count; ++j) {
             const int elem_type = std::uniform_int_distribution<int>(0, 2)(gen);
             switch (elem_type) {
-            case 0: arr.push_back(nullptr); break;
-            case 1: arr.push_back(std::uniform_int_distribution<int>(0, 99)(gen)); break;
-            case 2: arr.push_back(true); break;
+            case 0:
+              arr.push_back(nullptr);
+              break;
+            case 1:
+              arr.push_back(std::uniform_int_distribution<int>(0, 99)(gen));
+              break;
+            case 2:
+              arr.push_back(true);
+              break;
             }
           }
           value = std::move(arr);
@@ -358,7 +382,8 @@ namespace fmgr::fuzz {
         EXPECT_NO_THROW({
           const auto result = audit::canonical_json(value);
           (void)result;
-        }) << "canonical_json threw on shape " << shape << " iteration " << i;
+        }) << "canonical_json threw on shape "
+           << shape << " iteration " << i;
       }
     }
 
@@ -367,9 +392,8 @@ namespace fmgr::fuzz {
       constexpr int kIterations = 100;
 
       for (int i = 0; i < kIterations; ++i) {
-        const auto prev =
-            std::string(static_cast<std::size_t>(std::uniform_int_distribution<int>(0, 64)(gen)),
-                        'a');
+        const auto prev = std::string(
+            static_cast<std::size_t>(std::uniform_int_distribution<int>(0, 64)(gen)), 'a');
         nlohmann::json content = {{"n", std::uniform_int_distribution<int>(0, 9999)(gen)}};
         const auto json_str = audit::canonical_json(content);
 

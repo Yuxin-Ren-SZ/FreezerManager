@@ -208,8 +208,7 @@ namespace fmgr::server {
       const auto source_lab = core::LabId::parse(req->source_lab_id());
       const auto target_lab = core::LabId::parse(req->target_lab_id());
       if (source_lab == target_lab) {
-        return {grpc::StatusCode::INVALID_ARGUMENT,
-                "source_lab_id and target_lab_id must differ"};
+        return {grpc::StatusCode::INVALID_ARGUMENT, "source_lab_id and target_lab_id must differ"};
       }
       const auto sctx =
           middleware_.authorize(extract_bearer(*ctx), core::Permission::ShareRequest, source_lab);

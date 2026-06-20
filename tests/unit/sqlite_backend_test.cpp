@@ -185,8 +185,7 @@ namespace fmgr::storage {
     }
 
     TEST(SqliteBackend, MissingFileDirectoryIsDetected) {
-      const std::string impossible_path =
-          "/nonexistent_directory_42f8a1b2/test.db";
+      const std::string impossible_path = "/nonexistent_directory_42f8a1b2/test.db";
       SqliteBackend backend(SqliteBackendOptions{.database_path = impossible_path});
       // Opening a database in a nonexistent directory must fail.
       EXPECT_THROW(backend.migrate_to_latest(), BackendError);
@@ -200,8 +199,7 @@ namespace fmgr::storage {
         migrations.push_back(SqliteMigration{
             .version = v,
             .name = "migration_v" + std::to_string(v),
-            .up_sql = "CREATE TABLE migration_" + std::to_string(v) +
-                      " (id INTEGER PRIMARY KEY);",
+            .up_sql = "CREATE TABLE migration_" + std::to_string(v) + " (id INTEGER PRIMARY KEY);",
         });
       }
       SqliteBackend backend(SqliteBackendOptions{

@@ -273,8 +273,8 @@ namespace fmgr::auth {
       const auto code_t0 = totp_generate(kRfc6238Secret, 0);
       const auto code_t29 = totp_generate(kRfc6238Secret, 29);
       const auto code_t30 = totp_generate(kRfc6238Secret, 30);
-      EXPECT_EQ(code_t0, code_t29);   // same step
-      EXPECT_NE(code_t0, code_t30);   // different step
+      EXPECT_EQ(code_t0, code_t29); // same step
+      EXPECT_NE(code_t0, code_t30); // different step
     }
 
     TEST(TotpTest, CounterNearUint64Max) {
@@ -290,8 +290,12 @@ namespace fmgr::auth {
 
     TEST(TotpTest, Base32DecodeInvalidCharAtEveryPosition) {
       // Characters below ASCII 32 (space) or above ASCII 126 are not base32.
-      EXPECT_THROW((void)base32_decode("\x01" "AAAAAAA"), std::invalid_argument);
-      EXPECT_THROW((void)base32_decode("A\x01" "AAAAAA"), std::invalid_argument);
+      EXPECT_THROW((void)base32_decode("\x01"
+                                       "AAAAAAA"),
+                   std::invalid_argument);
+      EXPECT_THROW((void)base32_decode("A\x01"
+                                       "AAAAAA"),
+                   std::invalid_argument);
     }
 
   } // namespace

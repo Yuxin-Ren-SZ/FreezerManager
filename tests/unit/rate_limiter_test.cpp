@@ -179,8 +179,7 @@ namespace fmgr::rpc {
       for (int t = 0; t < kThreads; ++t) {
         threads.emplace_back([&limiter, &clock, t] {
           for (int i = 0; i < kOpsPerThread; ++i) {
-            const auto key =
-                "t" + std::to_string(t) + "-k" + std::to_string(i % 200);
+            const auto key = "t" + std::to_string(t) + "-k" + std::to_string(i % 200);
             limiter.try_acquire(key, clock);
             // We can't safely advance clock here (shared mutable) but the
             // invariant is that tracked_keys never exceeds max.
@@ -346,7 +345,8 @@ namespace fmgr::rpc {
           allowed.fetch_add(local, std::memory_order_relaxed);
         });
       }
-      for (auto& th : threads) th.join();
+      for (auto& th : threads)
+        th.join();
 
       // Capacity 50 + refill at 100/s over 500ms = 50+50 = 100 max per thread,
       // but the shared bucket means total ≤ 50 + 100*0.5 = 100 overall.
@@ -367,7 +367,8 @@ namespace fmgr::rpc {
       RateLimiter limiter(RateLimiterConfig{.capacity = 5.0, .refill_per_sec = 1.0});
       const auto now = base();
       // Drain the bucket.
-      for (int i = 0; i < 5; ++i) limiter.try_acquire("ip", now);
+      for (int i = 0; i < 5; ++i)
+        limiter.try_acquire("ip", now);
       // Jump forward 100 years — must refill to capacity, not overflow.
       using namespace std::chrono_literals;
       const auto far = now + std::chrono::hours(24 * 365 * 100);
@@ -412,7 +413,8 @@ namespace fmgr::rpc {
           }
         });
       }
-      for (auto& th : threads) th.join();
+      for (auto& th : threads)
+        th.join();
       EXPECT_GT(reads.load(), 0);
     }
 

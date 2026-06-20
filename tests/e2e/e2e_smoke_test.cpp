@@ -189,10 +189,8 @@ namespace fmgr::test {
       }
 
       void seed_item_type() {
-        item_type_id_ =
-            core::ItemTypeId::parse("30000000-e2e0-4e2e-8e2e-000000000001");
-        const core::LabId lab_id =
-            core::LabId::parse("20000000-e2e0-4e2e-8e2e-000000000001");
+        item_type_id_ = core::ItemTypeId::parse("30000000-e2e0-4e2e-8e2e-000000000001");
+        const core::LabId lab_id = core::LabId::parse("20000000-e2e0-4e2e-8e2e-000000000001");
         const core::ItemType item_type{
             .id = item_type_id_,
             .lab_id = lab_id,
@@ -201,8 +199,7 @@ namespace fmgr::test {
             .created_at = core::Timestamp::from_unix_micros(1),
         };
         const storage::MutationContext ctx{
-            .actor_user_id =
-                core::UserId::parse("10000000-e2e0-4e2e-8e2e-000000000001"),
+            .actor_user_id = core::UserId::parse("10000000-e2e0-4e2e-8e2e-000000000001"),
             .actor_session_id = "e2e-seed",
             .request_id = "e2e-seed",
             .reason = "e2e test setup",
@@ -274,10 +271,8 @@ namespace fmgr::test {
       create_req.set_item_type_id(item_type_id_.to_string());
       create_req.set_name("E2E Created Sample");
       fmgr::v1::CreateSampleResponse create_resp;
-      const auto create_status =
-          sample_stub_->CreateSample(&create_ctx, create_req, &create_resp);
-      ASSERT_TRUE(create_status.ok())
-          << "CreateSample failed: " << create_status.error_message();
+      const auto create_status = sample_stub_->CreateSample(&create_ctx, create_req, &create_resp);
+      ASSERT_TRUE(create_status.ok()) << "CreateSample failed: " << create_status.error_message();
       EXPECT_FALSE(create_resp.sample().id().empty());
       EXPECT_EQ(create_resp.sample().name(), "E2E Created Sample");
       const std::string created_id = create_resp.sample().id();
@@ -288,10 +283,8 @@ namespace fmgr::test {
       fmgr::v1::ListSamplesRequest list_req;
       list_req.set_lab_id("20000000-e2e0-4e2e-8e2e-000000000001");
       fmgr::v1::ListSamplesResponse list_resp;
-      const auto list_status =
-          sample_stub_->ListSamples(&list_ctx, list_req, &list_resp);
-      ASSERT_TRUE(list_status.ok())
-          << "ListSamples failed: " << list_status.error_message();
+      const auto list_status = sample_stub_->ListSamples(&list_ctx, list_req, &list_resp);
+      ASSERT_TRUE(list_status.ok()) << "ListSamples failed: " << list_status.error_message();
       EXPECT_EQ(list_resp.samples_size(), 1);
 
       bool found = false;
@@ -299,8 +292,7 @@ namespace fmgr::test {
         if (list_resp.samples(i).id() == created_id) {
           found = true;
           EXPECT_EQ(list_resp.samples(i).name(), "E2E Created Sample");
-          EXPECT_EQ(list_resp.samples(i).status(),
-                    fmgr::v1::SAMPLE_STATUS_ACTIVE);
+          EXPECT_EQ(list_resp.samples(i).status(), fmgr::v1::SAMPLE_STATUS_ACTIVE);
         }
       }
       EXPECT_TRUE(found) << "created sample not found in list response";

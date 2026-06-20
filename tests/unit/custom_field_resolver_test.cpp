@@ -39,9 +39,8 @@ namespace fmgr::storage {
     }
 
     [[nodiscard]] core::CustomFieldDefinition
-    make_cfd(std::uint64_t id_low, core::LabId lab_id,
-             std::optional<core::ItemTypeId> item_type_id, std::string key,
-             core::FieldDataType data_type = core::FieldDataType::String,
+    make_cfd(std::uint64_t id_low, core::LabId lab_id, std::optional<core::ItemTypeId> item_type_id,
+             std::string key, core::FieldDataType data_type = core::FieldDataType::String,
              bool required = false) {
       return core::CustomFieldDefinition{
           .id = id_from_low<core::CustomFieldDefinitionId>(id_low),
@@ -55,8 +54,7 @@ namespace fmgr::storage {
           .validation_json = "{}",
           .indexed = false,
           .is_phi = false,
-          .created_at =
-              core::Timestamp::from_unix_micros(200 + static_cast<std::int64_t>(id_low)),
+          .created_at = core::Timestamp::from_unix_micros(200 + static_cast<std::int64_t>(id_low)),
       };
     }
 
@@ -74,8 +72,8 @@ namespace fmgr::storage {
     class CustomFieldResolverTest : public ::testing::Test {
     protected:
       void SetUp() override {
-        backend_ = std::make_unique<SqliteBackend>(
-            SqliteBackendOptions{.database_path = ":memory:"});
+        backend_ =
+            std::make_unique<SqliteBackend>(SqliteBackendOptions{.database_path = ":memory:"});
         register_item_type_repositories(*backend_);
         backend_->migrate_to_latest();
       }
@@ -186,12 +184,14 @@ namespace fmgr::storage {
       seed({make_item_type(1, lab_id, std::nullopt, "root"),
             make_item_type(2, lab_id, root_id, "mid"),
             make_item_type(3, lab_id, id_from_low<core::ItemTypeId>(2), "leaf")},
-           {// Root: "volume" is optional
-            make_cfd(1, lab_id, root_id, "volume", core::FieldDataType::Float, /*required=*/false),
-            // Mid: overrides to required
-            make_cfd(2, lab_id, id_from_low<core::ItemTypeId>(2), "volume",
-                     core::FieldDataType::Float, /*required=*/true),
-            // Leaf: no override
+           {
+               // Root: "volume" is optional
+               make_cfd(1, lab_id, root_id, "volume", core::FieldDataType::Float,
+                        /*required=*/false),
+               // Mid: overrides to required
+               make_cfd(2, lab_id, id_from_low<core::ItemTypeId>(2), "volume",
+                        core::FieldDataType::Float, /*required=*/true),
+               // Leaf: no override
            });
 
       auto txn = backend_->begin(IsolationLevel::Serializable);
