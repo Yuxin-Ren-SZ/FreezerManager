@@ -95,5 +95,73 @@ namespace fmgr::backup {
       EXPECT_EQ(std::find(tags.begin(), tags.end(), "future_b"), tags.end());
     }
 
+    // ---- edge cases ----
+
+    TEST(RetentionPolicyTest, DuplicateTimestampsBrokenByPosition) {
+      // Two files with the same timestamp; the one earlier in the input order
+      // (index 0) is kept as the "newest" in its bucket, the later one pruned.
+      const std::vector<BackupFile> files{
+          at(2 * kDay, "a"), // kept (first seen in this bucket)
+          at(2 * kDay, "b"), // pruned (same bucket, later position)
+      };
+      EXPECT_EQ(deleted_tags(files, RetentionPolicy{1, 0, 0}, kNever),
+                (std::vector<std::string>{"b"}));
+    }
+
+    TEST(RetentionPolicyTest, NegativeCountsTreatedAsZero) {
+      // A negative policy count should not keep anything beyond the safety
+      // floor (newest overall).  If it crashes or keeps more, that's a bug.
+      const std::vector<BackupFile> files{
+          at(0 * kDay, "old"),
+          at(1 * kDay, "mid"),
+          at(2 * kDay, "new"),
+      };
+      const auto tags = deleted_tags(files, RetentionPolicy{-5, -3, -1}, kNever);
+      // Only the newest overall is kept.
+      EXPECT_EQ(tags, (std::vector<std::string>{"mid", "old"}));
+    }
+
+    TEST(RetentionPolicyTest, YearlyTierKeepsNewestYears) {
+      // ~400-day spacing lands each backup in a distinct calendar year.
+      const std::vector<BackupFile> files{
+          at(0 * kDay, "y1970"),    // 1970-01-01
+          at(400 * kDay, "y1971"),  // 1971-02-04
+          at(800 * kDay, "y1972"),  // 1972-03-12
+          at(1200 * kDay, "y1974"), // 1974-04-18
+      };
+      // Keep 2 newest years (y1974, y1972); prune y1971, y1970.
+      EXPECT_EQ(deleted_tags(files, RetentionPolicy{0, 0, 2}, kNever),
+                (std::vector<std::string>{"y1970", "y1971"}));
+    }
+
+    TEST(RetentionPolicyTest, AllTiersActive) {
+      // 6 backups over 6 days across 3 months — daily=3 keeps 3 days,
+      // monthly=2 keeps 2 months, yearly keeps all (only 1 year spanned).
+      const std::vector<BackupFile> files{
+          at(0 * kDay, "day0"),    // d0, m0, y0 — pruned (day-tier exceeded)
+          at(1 * kDay, "day1"),    // d1, m0, y0 — pruned
+          at(2 * kDay, "day2"),    // d2, m0, y0 — kept (daily=3)
+          at(3 * kDay, "day3"),    // d3, m0, y0 — kept
+          at(33 * kDay, "month1"), // d33, m1, y0 — kept (monthly=2)
+          at(63 * kDay, "month2"), // d63, m2, y0 — kept (monthly=2, daily=3)
+      };
+      const auto tags = deleted_tags(files, RetentionPolicy{3, 2, 10}, kNever);
+      // Daily=3 keeps 3 newest day-buckets (63, 33, 3 → month2, month1, day3).
+      // Monthly/yearly add nothing beyond that.  day2/day1/day0 pruned.
+      EXPECT_EQ(tags, (std::vector<std::string>{"day0", "day1", "day2"}));
+    }
+
+    TEST(RetentionPolicyTest, AllFilesAtSameTimestamp) {
+      // All files share the same timestamp. The first in the list is kept
+      // (newest by position tie-break); all others pruned.
+      const std::vector<BackupFile> files{
+          at(kDay, "a"),
+          at(kDay, "b"),
+          at(kDay, "c"),
+      };
+      EXPECT_EQ(deleted_tags(files, RetentionPolicy{1, 0, 0}, kNever),
+                (std::vector<std::string>{"b", "c"}));
+    }
+
   } // namespace
 } // namespace fmgr::backup

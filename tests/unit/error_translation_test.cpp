@@ -9,6 +9,7 @@
 #include "storage/IStorageBackend.h"
 
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <optional>
 #include <stdexcept>
@@ -135,10 +136,10 @@ namespace fmgr::server {
                 grpc::StatusCode::UNAUTHENTICATED);
       EXPECT_EQ(check_throw([] { return auth::MfaRequired("x"); }).error_code(),
                 grpc::StatusCode::UNAUTHENTICATED);
-      EXPECT_EQ(
-          check_throw([] { return auth::AccountLocked(core::Timestamp::from_unix_micros(1)); })
-              .error_code(),
-          grpc::StatusCode::PERMISSION_DENIED);
+      EXPECT_EQ(check_throw([] {
+                  return auth::AccountLocked(core::Timestamp::from_unix_micros(1));
+                }).error_code(),
+                grpc::StatusCode::PERMISSION_DENIED);
       EXPECT_EQ(check_throw([] { return auth::PermissionDenied("x"); }).error_code(),
                 grpc::StatusCode::PERMISSION_DENIED);
     }
@@ -191,6 +192,21 @@ namespace fmgr::server {
         EXPECT_EQ(status.error_message().find("ssn"), std::string::npos);
         EXPECT_EQ(status.error_message().find("users"), std::string::npos);
         EXPECT_EQ(status.error_message().find("leaked"), std::string::npos);
+      }
+    }
+
+    TEST(ErrorTranslation, CurrentExceptionOnJsonParseErrorMapsToInvalidArgument) {
+      // Client-supplied malformed JSON is a bad argument, not an internal fault,
+      // and the parse-error detail (which could echo client PHI) is not leaked
+      // back to the client (review N-1).
+      try {
+        (void)nlohmann::json::parse(R"({"ssn": "123-45-)");
+      } catch (...) {
+        const auto status = current_exception_to_grpc_status();
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+        EXPECT_STREQ(status.error_message().c_str(), "request contained malformed JSON");
+        EXPECT_EQ(status.error_message().find("ssn"), std::string::npos);
+        EXPECT_EQ(status.error_message().find("123-45"), std::string::npos);
       }
     }
 

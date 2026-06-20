@@ -2,6 +2,8 @@
 
 #include "kms/EnvVarKms.h"
 
+#include "core/sodium_init.h"
+
 #include <sodium.h>
 
 #include <cstdlib>
@@ -15,7 +17,7 @@ namespace fmgr::kms {
   namespace {
 
     void ensure_sodium() {
-      if (sodium_init() < 0) {
+      if (!core::sodium_ready()) {
         throw KmsError("libsodium initialization failed");
       }
     }

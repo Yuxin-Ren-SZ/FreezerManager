@@ -2,6 +2,8 @@
 
 #include "crypto/FieldCipher.h"
 
+#include "core/sodium_init.h"
+
 #include <sodium.h>
 
 #include <cstdint>
@@ -15,7 +17,7 @@ namespace fmgr::crypto {
     constexpr int k_envelope_version = 1;
 
     void ensure_sodium() {
-      if (sodium_init() < 0) {
+      if (!core::sodium_ready()) {
         throw CipherError("libsodium initialization failed");
       }
     }

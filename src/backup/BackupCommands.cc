@@ -3,12 +3,15 @@
 #include "backup/BackupCommands.h"
 
 #include "audit/AuditChainVerifier.h"
+#include "backup/PostgresDump.h"
 #include "backup/SqliteBackup.h"
 #include "core/audit_event.h"
 #include "core/timestamp.h"
 #include "crypto/FieldCipher.h" // crypto::CipherError
 #include "crypto/FileCipher.h"
 #include "storage/AuditTraits.h"
+#include "storage/postgres/AuditRepositories.h"
+#include "storage/postgres/PostgresBackend.h"
 #include "storage/sqlite/AuditRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
@@ -38,6 +41,22 @@ namespace fmgr::backup {
     int read_schema_version(const std::string& db_path) {
       storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = db_path});
       return backend.current_version().value;
+    }
+
+    int read_schema_version_postgres(const std::string& conninfo) {
+      storage::PostgresBackend backend(
+          storage::PostgresBackendOptions{.connection_string = conninfo});
+      return backend.current_version().value;
+    }
+
+    // Open a Postgres database with only the audit-event repository registered —
+    // the Postgres analogue of open_sqlite_audit, used to append a `backup.restore`
+    // event to a freshly restored database's own chain.
+    std::unique_ptr<storage::PostgresBackend> open_postgres_audit(const std::string& conninfo) {
+      auto backend = std::make_unique<storage::PostgresBackend>(
+          storage::PostgresBackendOptions{.connection_string = conninfo});
+      storage::register_audit_repositories(*backend);
+      return backend;
     }
 
     // Open a SQLite database with only the read-only audit-event repository
@@ -128,22 +147,27 @@ namespace fmgr::backup {
 
   void append_backup_event(storage::IStorageBackend& backend, const std::string& action,
                            const std::string& entity_id, const nlohmann::json& after,
-                           core::UserId actor) {
-    auto txn = backend.begin(storage::IsolationLevel::Serializable);
-    auto* sqlite_txn = dynamic_cast<storage::SqliteTransaction*>(txn.get());
-    if (sqlite_txn == nullptr) {
-      throw BackupError("backup auditing requires a SQLite backend in this release");
+                           core::UserId actor, std::ostream& warn) {
+    // ReadCommitted, not Serializable: an audit-only append needs no
+    // serialization guarantee, and a Serializable append can conflict under heavy
+    // concurrent write load. The append is best-effort — on failure we log and
+    // continue rather than abort an already-completed backup (review F-4).
+    try {
+      auto txn = backend.begin(storage::IsolationLevel::ReadCommitted);
+      const storage::MutationContext ctx{
+          .actor_user_id = actor,
+          .actor_session_id = "freezerctl",
+          .request_id = "",
+          .reason = action,
+          .lab_id = std::nullopt,
+      };
+      txn->note_mutation("backup", entity_id, ctx, action,
+                         storage::AuditSnapshot{.before = std::nullopt, .after = after});
+      txn->commit();
+    } catch (const std::exception& error) {
+      warn << "warning: could not record " << action << " audit event for " << entity_id << ": "
+           << error.what() << '\n';
     }
-    const storage::MutationContext ctx{
-        .actor_user_id = actor,
-        .actor_session_id = "freezerctl",
-        .request_id = "",
-        .reason = action,
-        .lab_id = std::nullopt,
-    };
-    sqlite_txn->note_mutation("backup", entity_id, ctx, action,
-                              storage::AuditSnapshot{.before = std::nullopt, .after = after});
-    txn->commit();
   }
 
   BackupCreateReport run_backup_create(storage::IStorageBackend& backend,
@@ -168,10 +192,43 @@ namespace fmgr::backup {
                         nlohmann::json{{"path", out_path},
                                        {"schema_version", schema_version},
                                        {"content_sha256", manifest.content_sha256}},
-                        actor);
+                        actor, sink);
 
     sink << "wrote encrypted backup " << out_path << " (schema v" << schema_version << ", sha256 "
          << manifest.content_sha256 << ")\n";
+    return BackupCreateReport{.out_path = out_path,
+                              .schema_version = schema_version,
+                              .content_sha256 = manifest.content_sha256};
+  }
+
+  BackupCreateReport run_backup_create_postgres(storage::IStorageBackend& backend,
+                                                const std::string& conninfo,
+                                                const kms::IKmsProvider& backup_kms,
+                                                const std::string& out_path, core::UserId actor,
+                                                std::ostream& sink) {
+    const std::filesystem::path temp = std::filesystem::path(out_path + ".pgdump.tmp");
+    std::error_code error;
+    std::filesystem::remove(temp, error);
+    pg_dump_to_file(conninfo, temp.string());
+
+    const int schema_version = read_schema_version_postgres(conninfo);
+    const crypto::BackupManifest manifest =
+        crypto::encrypt_file(temp, std::filesystem::path(out_path), backup_kms,
+                             crypto::FileEnvelopeMeta{.schema_version = schema_version,
+                                                      .backend = "postgres",
+                                                      .created_at_micros = now_micros()});
+    std::filesystem::remove(temp, error);
+
+    const std::string filename = std::filesystem::path(out_path).filename().string();
+    append_backup_event(backend, "backup.create", filename,
+                        nlohmann::json{{"path", out_path},
+                                       {"schema_version", schema_version},
+                                       {"backend", "postgres"},
+                                       {"content_sha256", manifest.content_sha256}},
+                        actor, sink);
+
+    sink << "wrote encrypted backup " << out_path << " (postgres, schema v" << schema_version
+         << ", sha256 " << manifest.content_sha256 << ")\n";
     return BackupCreateReport{.out_path = out_path,
                               .schema_version = schema_version,
                               .content_sha256 = manifest.content_sha256};
@@ -193,6 +250,24 @@ namespace fmgr::backup {
       return report;
     }
     report.schema_version = manifest.schema_version;
+
+    // Postgres archives are pg_dump files, not databases: the SQLite integrity +
+    // audit-chain checks do not apply. Verify the dump reads cleanly under
+    // `pg_restore --list` (decrypt already validated content_sha256). A full
+    // restore-into-scratch-DB drill is a documented follow-up.
+    if (manifest.backend == "postgres") {
+      const bool list_ok = pg_restore_list_ok(temp.string(), report.detail);
+      remove_db_files(temp);
+      if (!list_ok) {
+        sink << "FAIL: " << report.detail << '\n';
+        return report;
+      }
+      report.ok = true;
+      report.detail = "pg_restore --list ok";
+      sink << "PASS: backup is restorable (postgres, schema v" << manifest.schema_version << ", "
+           << report.detail << ")\n";
+      return report;
+    }
 
     if (!integrity_check(temp.string(), report.detail)) {
       remove_db_files(temp);
@@ -252,12 +327,45 @@ namespace fmgr::backup {
                           nlohmann::json{{"source", in_path},
                                          {"restored_to", out_path},
                                          {"schema_version", manifest.schema_version}},
-                          actor);
+                          actor, sink);
     }
 
     sink << "restored " << out_path << " from " << in_path << " (schema v"
          << manifest.schema_version << ")\n";
     return BackupRestoreReport{.out_path = out_path, .schema_version = manifest.schema_version};
+  }
+
+  BackupRestoreReport run_backup_restore_postgres(const std::string& in_path,
+                                                  const kms::IKmsProvider& backup_kms,
+                                                  const std::string& conninfo, core::UserId actor,
+                                                  std::ostream& sink) {
+    const std::filesystem::path temp = std::filesystem::path(in_path + ".restore.pgdump.tmp");
+    std::error_code error;
+    std::filesystem::remove(temp, error);
+    const crypto::BackupManifest manifest =
+        crypto::decrypt_file(std::filesystem::path(in_path), temp, backup_kms);
+
+    pg_restore_from_file(conninfo, temp.string());
+    std::filesystem::remove(temp, error);
+
+    // Record the restoration in the restored database's own audit chain.
+    {
+      auto backend = open_postgres_audit(conninfo);
+      // Never record the connection string — it may carry a password (PRD §17).
+      append_backup_event(*backend, "backup.restore",
+                          std::filesystem::path(in_path).filename().string(),
+                          nlohmann::json{{"source", in_path},
+                                         {"restored_to", "postgres"},
+                                         {"backend", "postgres"},
+                                         {"schema_version", manifest.schema_version}},
+                          actor, sink);
+    }
+
+    sink << "restored postgres database from " << in_path << " (schema v" << manifest.schema_version
+         << ")\n";
+    // out_path is left empty: there is no restored file, and the connection string
+    // (which may carry a password) must not be echoed back.
+    return BackupRestoreReport{.out_path = "", .schema_version = manifest.schema_version};
   }
 
 } // namespace fmgr::backup

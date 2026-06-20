@@ -3,6 +3,8 @@
 # behavior is defined in exactly one place.
 
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(libpqxx CONFIG REQUIRED)
+find_package(PostgreSQL REQUIRED) # libpq, for PQconninfoParse in PostgresDump
 
 add_library(
   freezermanager_backup
@@ -10,6 +12,7 @@ add_library(
     BackupCommands.cc
     BackupFilename.cc
     BackupRunner.cc
+    PostgresDump.cc
     RetentionPolicy.cc
     SqliteBackup.cc
 )
@@ -29,7 +32,10 @@ target_link_libraries(
     FreezerManager::audit
     FreezerManager::storage
     FreezerManager::storage_sqlite
+    FreezerManager::storage_postgres
     FreezerManager::crypto
     FreezerManager::kms
     nlohmann_json::nlohmann_json
+    libpqxx::pqxx
+    PostgreSQL::PostgreSQL
 )

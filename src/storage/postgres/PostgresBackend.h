@@ -52,7 +52,7 @@ namespace fmgr::storage {
     // Record a mutation for the audit chain written at commit time.
     void note_mutation(std::string entity_kind, std::string entity_id,
                        const MutationContext& context, std::string action = "mutation",
-                       AuditSnapshot snapshot = {});
+                       AuditSnapshot snapshot = {}) override;
 
     void note_phi_read(const std::string& entity_kind, const std::string& entity_id,
                        const MutationContext& context,

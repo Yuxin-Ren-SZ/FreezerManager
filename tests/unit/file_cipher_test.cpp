@@ -166,4 +166,161 @@ namespace {
     EXPECT_THROW((void)fmgr::crypto::decrypt_file(path("garbage"), path("dec"), kms), CipherError);
   }
 
+  // ---- robustness: crafted / truncated backup files ----
+
+  // F-1 (review 2026-06-19): no newline in "manifest" line — the first line is
+  // the entire file.  std::getline would try to read a multi-GB "line" and
+  // exhaust memory.  This test uses a moderately large buffer to confirm the
+  // current implementation does not crash; it should be accompanied by a code
+  // fix that caps the manifest line at 4 KiB and throws CipherError.
+  TEST_F(FileCipherTest, GiantManifestWithoutNewlineRejected) {
+    const auto kms = EnvVarKms::from_base64(kKekB64);
+    const auto enc = path("no_nl");
+    // Write a non-JSON blob with no '\n' — the entire file becomes the
+    // "manifest line".  Keep it moderate for a unit test.
+    write_bytes(enc, std::vector<std::uint8_t>(128 * 1024, 0x41));
+    EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
+  }
+
+  // Ciphertext truncated mid-chunk-length word (only 2 of 4 bytes available).
+  TEST_F(FileCipherTest, TruncatedChunkLengthRejected) {
+    const auto kms = EnvVarKms::from_base64(kKekB64);
+    const auto src = path("src");
+    write_bytes(src, pattern(2048));
+    const auto enc = path("enc");
+    fmgr::crypto::encrypt_file(src, enc, kms, FileEnvelopeMeta{.backend = "sqlite"});
+
+    auto bytes = read_bytes(enc);
+    ASSERT_GT(bytes.size(), 20U);   // manifest + at least one chunk
+    bytes.resize(bytes.size() - 3); // drop last 3 bytes of a 4-byte length field
+    write_bytes(enc, bytes);
+
+    EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
+  }
+
+  // Ciphertext truncated mid-chunk body.
+  TEST_F(FileCipherTest, TruncatedChunkBodyRejected) {
+    const auto kms = EnvVarKms::from_base64(kKekB64);
+    const auto src = path("src");
+    write_bytes(src, pattern(2048));
+    const auto enc = path("enc");
+    fmgr::crypto::encrypt_file(src, enc, kms, FileEnvelopeMeta{.backend = "sqlite"});
+
+    auto bytes = read_bytes(enc);
+    ASSERT_GT(bytes.size(), 100U);
+    bytes.resize(bytes.size() - 5); // trim into a chunk body
+    write_bytes(enc, bytes);
+
+    EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
+  }
+
+  // Chunk length field too small for AEAD overhead.
+  TEST_F(FileCipherTest, ChunkLengthTooSmallRejected) {
+    const auto kms = EnvVarKms::from_base64(kKekB64);
+    const auto src = path("src");
+    write_bytes(src, pattern(2048));
+    const auto enc = path("enc");
+    fmgr::crypto::encrypt_file(src, enc, kms, FileEnvelopeMeta{.backend = "sqlite"});
+
+    auto bytes = read_bytes(enc);
+    const auto nl_pos = std::find(bytes.begin(), bytes.end(), '\n');
+    ASSERT_NE(nl_pos, bytes.end());
+    const std::size_t off = static_cast<std::size_t>(nl_pos - bytes.begin()) + 1;
+    ASSERT_LT(off + 3, bytes.size());
+    // Patch the first chunk length to 1 (< crypto_secretstream_ABYTES).
+    bytes[off] = 1;
+    bytes[off + 1] = 0;
+    bytes[off + 2] = 0;
+    bytes[off + 3] = 0;
+    write_bytes(enc, bytes);
+
+    EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
+  }
+
+  // Missing FINAL chunk tag.
+  TEST_F(FileCipherTest, MissingFinalChunkRejected) {
+    const auto kms = EnvVarKms::from_base64(kKekB64);
+    const auto src = path("src");
+    write_bytes(src, pattern(100));
+    const auto enc = path("enc");
+    fmgr::crypto::encrypt_file(src, enc, kms, FileEnvelopeMeta{.backend = "sqlite"});
+
+    auto bytes = read_bytes(enc);
+    ASSERT_GT(bytes.size(), 150U);
+    bytes.resize(bytes.size() - 6); // drop last chunk's length + a few body bytes
+    write_bytes(enc, bytes);
+
+    EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
+  }
+
+  // Corrupt manifest ss_header field.
+  TEST_F(FileCipherTest, CorruptSecretStreamHeaderRejected) {
+    const auto kms = EnvVarKms::from_base64(kKekB64);
+    const auto src = path("src");
+    write_bytes(src, pattern(300));
+    const auto enc = path("enc");
+    fmgr::crypto::encrypt_file(src, enc, kms, FileEnvelopeMeta{.backend = "sqlite"});
+
+    auto bytes = read_bytes(enc);
+    std::string text(bytes.begin(), bytes.end());
+    const auto pos = text.find("\"ss_header\":\"");
+    ASSERT_NE(pos, std::string::npos);
+    // Flip a base64 char inside the ss_header value.
+    const auto val_start = pos + 13;
+    text[val_start + 2] = (text[val_start + 2] == 'A') ? 'B' : 'A';
+    write_bytes(enc, std::vector<std::uint8_t>(text.begin(), text.end()));
+
+    EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
+  }
+
+  // Wrong magic string in manifest.
+  TEST_F(FileCipherTest, WrongMagicRejected) {
+    const auto kms = EnvVarKms::from_base64(kKekB64);
+    const auto src = path("src");
+    write_bytes(src, pattern(100));
+    const auto enc = path("enc");
+    fmgr::crypto::encrypt_file(src, enc, kms, FileEnvelopeMeta{.backend = "sqlite"});
+
+    auto bytes = read_bytes(enc);
+    std::string text(bytes.begin(), bytes.end());
+    const auto pos = text.find("\"FMGRBAK\"");
+    ASSERT_NE(pos, std::string::npos);
+    text[pos + 1] = 'X';
+    text[pos + 2] = 'X';
+    text[pos + 3] = 'X';
+    write_bytes(enc, std::vector<std::uint8_t>(text.begin(), text.end()));
+
+    EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
+  }
+
+  // Manifest missing wrapped DEK.
+  TEST_F(FileCipherTest, ManifestMissingDekRejected) {
+    const auto kms = EnvVarKms::from_base64(kKekB64);
+    const auto src = path("src");
+    write_bytes(src, pattern(100));
+    const auto enc = path("enc");
+    fmgr::crypto::encrypt_file(src, enc, kms, FileEnvelopeMeta{.backend = "sqlite"});
+
+    auto bytes = read_bytes(enc);
+    std::string text(bytes.begin(), bytes.end());
+    const auto dek_start = text.find("\"dek\":");
+    const auto dek_end = text.find('}', dek_start);
+    ASSERT_NE(dek_start, std::string::npos);
+    ASSERT_NE(dek_end, std::string::npos);
+    text.erase(dek_start, dek_end - dek_start);
+    write_bytes(enc, std::vector<std::uint8_t>(text.begin(), text.end()));
+
+    EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
+  }
+
+  // Oversized manifest header (no newline) must be rejected by the bounded read
+  // rather than read unboundedly into memory (review F-1).
+  TEST_F(FileCipherTest, OversizedManifestHeaderRejected) {
+    const auto kms = EnvVarKms::from_base64(kKekB64);
+    const auto enc = path("enc");
+    // 5 MiB first "line" with no newline: well over the 4096-byte cap.
+    write_bytes(enc, std::vector<std::uint8_t>(std::size_t{5} * 1024 * 1024, 'A'));
+    EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
+  }
+
 } // namespace

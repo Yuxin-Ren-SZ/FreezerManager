@@ -6,6 +6,7 @@
 #include "storage/IStorageBackend.h"
 
 #include <grpcpp/grpcpp.h>
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 #include <exception>
@@ -93,6 +94,11 @@ namespace fmgr::server {
       return to_grpc_status(e);
     } catch (const storage::Unavailable& e) {
       return to_grpc_status(e);
+    } catch (const nlohmann::json::parse_error&) {
+      // Client supplied malformed JSON (e.g. custom_fields_json / settings_json).
+      // That is a bad argument, not an internal fault (review N-1). The detail is
+      // not echoed back: a parse-error snippet could carry client PHI.
+      return {grpc::StatusCode::INVALID_ARGUMENT, "request contained malformed JSON"};
     } catch (const std::exception& e) {
       // Do not leak internal detail (DB messages carry table/column names) to the
       // client. Log the real error server-side; return a generic status. spdlog's

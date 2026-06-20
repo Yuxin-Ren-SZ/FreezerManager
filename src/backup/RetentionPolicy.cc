@@ -21,18 +21,25 @@ namespace fmgr::backup {
       std::int64_t year;
     };
 
-    Keys bucket_keys(std::int64_t created_micros) {
+    // Compute the GFS bucket keys for a backup. Returns false if the timestamp
+    // cannot be represented as UTC calendar time (gmtime_r returns nullptr for
+    // out-of-range values); the caller then retains the file rather than read an
+    // uninitialised tm (review F-5). created_micros is non-negative in practice.
+    bool bucket_keys(std::int64_t created_micros, Keys& out) {
       const auto seconds = static_cast<std::time_t>(created_micros / k_micros_per_second);
       std::tm tm_utc{};
-      ::gmtime_r(&seconds, &tm_utc);
+      if (::gmtime_r(&seconds, &tm_utc) == nullptr) {
+        return false;
+      }
       const std::int64_t year = tm_utc.tm_year + 1900;
-      return Keys{
+      out = Keys{
           // floor-divide into whole UTC days so the day bucket is calendar-aligned
           // even for negative epochs (created_micros is non-negative in practice).
           .day = (created_micros / k_micros_per_second) / k_seconds_per_day,
           .month = year * 12 + tm_utc.tm_mon,
           .year = year,
       };
+      return true;
     }
 
     // For a single tier: keep the newest file in each bucket, restricted to the
@@ -64,9 +71,12 @@ namespace fmgr::backup {
                                               const RetentionPolicy& policy,
                                               std::int64_t now_micros) {
     const std::size_t count = files.size();
+    std::unordered_set<std::size_t> kept;
     std::vector<Keys> keys(count);
     for (std::size_t i = 0; i < count; ++i) {
-      keys[i] = bucket_keys(files[i].created_micros);
+      if (!bucket_keys(files[i].created_micros, keys[i])) {
+        kept.insert(i); // un-representable timestamp: never prune (F-5)
+      }
     }
 
     // Indices sorted newest-first; tie-break on original position for determinism.
@@ -80,8 +90,6 @@ namespace fmgr::backup {
       }
       return a < b;
     });
-
-    std::unordered_set<std::size_t> kept;
 
     // Data-safety floor: never prune the single newest backup, nor any backup
     // dated in the future relative to `now_micros`.

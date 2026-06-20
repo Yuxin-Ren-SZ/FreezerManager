@@ -30,7 +30,8 @@
 namespace fmgr::backup {
 
   struct BackupScheduleConfig {
-    std::string sqlite_db_path; // live database to hot-copy
+    std::string sqlite_db_path; // live SQLite database to hot-copy (empty for Postgres)
+    std::string postgres_url;   // live PostgreSQL conninfo to pg_dump (empty for SQLite)
     std::string backup_dir;     // directory holding fmgr-*.fmgrbak files
     RetentionPolicy retention{};
     std::int64_t backup_interval_micros{}; // create cadence (e.g. nightly)

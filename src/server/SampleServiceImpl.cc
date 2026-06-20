@@ -8,6 +8,7 @@
 #include "core/permissions.h"
 #include "core/quantity.h"
 #include "core/sample.h"
+#include "core/uuid.h"
 #include "crypto/FieldCipher.h"
 #include "server/GrpcErrorTranslation.h"
 #include "storage/CustomFieldResolver.h"
@@ -26,7 +27,6 @@
 #include <cstdio>
 #include <ctime>
 #include <optional>
-#include <random>
 #include <set>
 #include <sstream>
 #include <string>
@@ -62,29 +62,10 @@ namespace fmgr::server {
       return {buf.data()};
     }
 
-    // RFC 4122 version-4 UUID from a non-deterministic entropy source. IDs must be
-    // unguessable but need not be cryptographically secret (see LabServiceImpl).
-    [[nodiscard]] std::string generate_uuid_v4() {
-      std::random_device rng;
-      std::array<std::uint8_t, 16> bytes{};
-      for (std::size_t i = 0; i < bytes.size(); i += 4) {
-        const std::uint32_t word = rng();
-        bytes[i] = static_cast<std::uint8_t>(word & 0xFFU);
-        bytes[i + 1] = static_cast<std::uint8_t>((word >> 8U) & 0xFFU);
-        bytes[i + 2] = static_cast<std::uint8_t>((word >> 16U) & 0xFFU);
-        bytes[i + 3] = static_cast<std::uint8_t>((word >> 24U) & 0xFFU);
-      }
-      bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U); // version 4
-      bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U); // variant
-      std::array<char, 37> buf{};
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
-      std::snprintf(buf.data(), buf.size(),
-                    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                    bytes[15]);
-      return {buf.data()};
-    }
+    // Entity IDs are minted from the libsodium CSPRNG via core::generate_uuid_v4
+    // so they are unguessable on every platform — std::random_device may degrade
+    // to a deterministic engine on some targets (security audit C-1 / review F-2).
+    using core::generate_uuid_v4;
 
     // ---- SampleStatus / CheckoutAction mapping ----
     //

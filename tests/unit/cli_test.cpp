@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "backup/BackupCommands.h"
+#include "backup/PostgresDump.h"
 #include "backup/SqliteBackup.h"
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
@@ -404,6 +405,38 @@ namespace fmgr::cli {
       EXPECT_THROW(parse("\"unterminated"), CsvParseError);
     }
 
+    // ---- CsvReader resource limits (review F-8) ----
+
+    TEST(CsvReaderTest, RejectsOverlongField) {
+      CsvLimits limits;
+      limits.max_field_length = 8;
+      std::istringstream in(std::string(100, 'x') + "\n");
+      EXPECT_THROW((void)parse_csv(in, limits), CsvParseError);
+    }
+
+    TEST(CsvReaderTest, RejectsTooManyFieldsPerRow) {
+      CsvLimits limits;
+      limits.max_fields_per_row = 3;
+      std::istringstream in("a,b,c,d\n");
+      EXPECT_THROW((void)parse_csv(in, limits), CsvParseError);
+    }
+
+    TEST(CsvReaderTest, RejectsTooManyRows) {
+      CsvLimits limits;
+      limits.max_rows = 2;
+      std::istringstream in("1\n2\n3\n");
+      EXPECT_THROW((void)parse_csv(in, limits), CsvParseError);
+    }
+
+    TEST(CsvReaderTest, AcceptsInputWithinLimits) {
+      CsvLimits limits;
+      limits.max_field_length = 16;
+      limits.max_fields_per_row = 4;
+      limits.max_rows = 4;
+      std::istringstream in("a,b\n1,2\n");
+      EXPECT_EQ(parse_csv(in, limits).size(), 2U);
+    }
+
     // ---- SampleImport (pure mapping/validation) ----
 
     ImportContext import_ctx() {
@@ -636,6 +669,13 @@ namespace fmgr::cli {
     TEST(BackendFactoryTest, RejectsBothTargets) {
       EXPECT_THROW(static_cast<void>(open_backend(BackendOptions{
                        .sqlite_path = "/tmp/x.db", .postgres_url = "postgresql://localhost/x"})),
+                   BackendOptionError);
+    }
+
+    TEST(BackendFactoryTest, RejectsSqlitePathEscapingDataDir) {
+      // A `..` traversal out of the configured data directory is rejected (F-10).
+      EXPECT_THROW(static_cast<void>(open_backend(BackendOptions{
+                       .sqlite_path = "/tmp/data/../../etc/evil.db", .data_dir = "/tmp/data"})),
                    BackendOptionError);
     }
 
@@ -1271,6 +1311,90 @@ namespace fmgr::cli {
 
       std::filesystem::remove(out);
       remove_sqlite_files(dest);
+    }
+
+    // ---- PostgreSQL backup (pg_dump/pg_restore) ----
+
+    // pg_restore --list over a non-archive must report failure, never throw, so the
+    // schedule-safe drill contract holds for Postgres archives too.
+    TEST(PostgresDumpTest, ListRejectsGarbageFile) {
+      const auto garbage = backup_temp(".notadump");
+      { std::ofstream(garbage) << "this is not a pg_dump archive\n"; }
+      std::string detail;
+      EXPECT_FALSE(fmgr::backup::pg_restore_list_ok(garbage.string(), detail));
+      EXPECT_FALSE(detail.empty());
+      std::filesystem::remove(garbage);
+    }
+
+    // A malformed connection string is rejected by libpq parsing before any tool runs.
+    TEST(PostgresDumpTest, InvalidConninfoThrows) {
+      EXPECT_THROW(fmgr::backup::pg_dump_to_file("definitely_not_a_keyword=1", "/tmp/never.dump"),
+                   BackupError);
+    }
+
+    // Full create -> verify -> restore round-trip against a live Postgres. Restores
+    // back into the same database (pg_restore --clean), then asserts the seeded lab
+    // survives and the audit chain still verifies. Skipped without FMGR_TEST_POSTGRES_URL.
+    TEST(PostgresBackupTest, CreateVerifyRestoreRoundTrip) {
+      if (!postgres_test_url().has_value()) {
+        GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres backup test";
+      }
+      CliFixture fixture(BackendKind::Postgres);
+      const std::string url = postgres_test_url().value();
+      const auto backup_kms = fmgr::kms::EnvVarKms::from_base64(kBackupKekB64);
+      const auto out = backup_temp(".pg.fmgrbak");
+      const core::UserId actor = id_from_low<core::UserId>(10);
+      std::ostringstream sink;
+
+      const auto report =
+          run_backup_create_postgres(fixture.backend(), url, backup_kms, out.string(), actor, sink);
+      EXPECT_TRUE(std::filesystem::exists(out));
+      EXPECT_FALSE(report.content_sha256.empty());
+
+      std::ostringstream vsink;
+      EXPECT_TRUE(run_backup_verify(out.string(), backup_kms, vsink).ok) << vsink.str();
+      EXPECT_NE(vsink.str().find("postgres"), std::string::npos) << vsink.str();
+
+      std::ostringstream rsink;
+      run_backup_restore_postgres(out.string(), backup_kms, url, actor, rsink);
+
+      // A fresh backend on the restored database sees the seeded lab and a chain
+      // that still verifies. (fixture.backend()'s pooled connections may hold state
+      // invalidated by pg_restore --clean, so do not reuse it here.)
+      auto backend = open_backend(BackendOptions{.postgres_url = url});
+      auto txn = backend->begin(storage::IsolationLevel::Serializable);
+      const auto labs = txn->repo<core::Lab>().query(storage::Query<core::Lab>::all());
+      txn->commit();
+      EXPECT_TRUE(std::any_of(labs.begin(), labs.end(),
+                              [&](const core::Lab& lab) { return lab.id == fixture.lab_a(); }));
+      std::ostringstream avsink;
+      EXPECT_EQ(run_audit_verify(*backend, AuditVerifyOptions{}, avsink), 0) << avsink.str();
+
+      std::filesystem::remove(out);
+    }
+
+    // backup.create is appended to the live Postgres audit chain — exercising
+    // ITransaction::note_mutation on the Postgres transaction (no SQLite dynamic_cast).
+    TEST(PostgresBackupTest, CreateAppendsAuditEvent) {
+      if (!postgres_test_url().has_value()) {
+        GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres backup test";
+      }
+      CliFixture fixture(BackendKind::Postgres);
+      const std::string url = postgres_test_url().value();
+      const auto backup_kms = fmgr::kms::EnvVarKms::from_base64(kBackupKekB64);
+      const auto out = backup_temp(".pg.fmgrbak");
+      std::ostringstream sink;
+      run_backup_create_postgres(fixture.backend(), url, backup_kms, out.string(),
+                                 id_from_low<core::UserId>(10), sink);
+
+      auto txn = fixture.backend().begin(storage::IsolationLevel::Serializable);
+      const auto events =
+          txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
+      txn->commit();
+      EXPECT_TRUE(std::any_of(events.begin(), events.end(), [](const core::AuditEvent& event) {
+        return event.action == "backup.create";
+      }));
+      std::filesystem::remove(out);
     }
 
     TEST(CliAppTest, BackupCreateAndVerifyViaArgv) {
