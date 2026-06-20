@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#include "backup/BackupCommands.h"
+#include "backup/SqliteBackup.h"
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
-#include "cli/BackupCommands.h"
 #include "cli/BoxImport.h"
 #include "cli/CliApp.h"
 #include "cli/CreateCommands.h"
@@ -19,7 +20,6 @@
 #include "cli/SampleCsv.h"
 #include "cli/SampleImport.h"
 #include "cli/SampleQuery.h"
-#include "cli/SqliteBackup.h"
 #include "cli/UserImport.h"
 
 #include "core/audit_event.h"
@@ -58,6 +58,7 @@
 namespace fmgr::cli {
   namespace {
     using namespace fmgr::test;
+    using namespace fmgr::backup; // run_backup_*, BackupError moved to the backup library
 
     storage::MutationContext mutation_context() {
       return storage::MutationContext{

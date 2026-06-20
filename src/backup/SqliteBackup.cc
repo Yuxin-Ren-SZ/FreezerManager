@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-#include "cli/SqliteBackup.h"
+#include "backup/SqliteBackup.h"
 
 #include <sqlite3.h>
 
 #include <string>
 
-namespace fmgr::cli {
+namespace fmgr::backup {
 
   namespace {
 
@@ -56,4 +56,4 @@ namespace fmgr::cli {
     }
   }
 
-} // namespace fmgr::cli
+} // namespace fmgr::backup

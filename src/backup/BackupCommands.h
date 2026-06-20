@@ -1,22 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// `freezerctl backup` — encrypted SQLite backups, restore, and a restore-drill
-// verify (PRD §14). Backups are an online hot copy of the live database
-// (SqliteBackup::hot_copy) encrypted under a *separate* backup KEK
-// (crypto::encrypt_file + kms::make_backup_kms), so losing the live master key
-// alone cannot decrypt them (PRD §8). Engines are free functions writing to an
-// injected std::ostream so they are unit-testable, mirroring KeyCommands.
-#ifndef FMGR_CLI_BACKUPCOMMANDS_H
-#define FMGR_CLI_BACKUPCOMMANDS_H
+// Encrypted SQLite backups, restore, and a restore-drill verify (PRD §14).
+// Backups are an online hot copy of the live database (SqliteBackup::hot_copy)
+// encrypted under a *separate* backup KEK (crypto::encrypt_file +
+// kms::make_backup_kms), so losing the live master key alone cannot decrypt them
+// (PRD §8). Engines are free functions writing to an injected std::ostream so
+// they are unit-testable, mirroring KeyCommands.
+#ifndef FMGR_BACKUP_BACKUPCOMMANDS_H
+#define FMGR_BACKUP_BACKUPCOMMANDS_H
 
 #include "core/ids.h"
 #include "kms/IKmsProvider.h"
 #include "storage/IStorageBackend.h"
 
+#include <nlohmann/json.hpp>
+
 #include <ostream>
 #include <string>
 
-namespace fmgr::cli {
+namespace fmgr::backup {
 
   struct BackupCreateReport {
     std::string out_path;
@@ -59,6 +61,14 @@ namespace fmgr::cli {
                                          const std::string& out_path, bool force,
                                          core::UserId actor, std::ostream& sink);
 
-} // namespace fmgr::cli
+  // Append a `backup.*` event to a SQLite backend's audit chain. The snapshot is
+  // server-derived metadata (paths/hash), never PHI. Shared by the engines above
+  // and by the scheduler tick (BackupRunner). Throws BackupError if `backend` is
+  // not a SQLite backend (backup auditing is SQLite-only in this release).
+  void append_backup_event(storage::IStorageBackend& backend, const std::string& action,
+                           const std::string& entity_id, const nlohmann::json& after,
+                           core::UserId actor);
 
-#endif // FMGR_CLI_BACKUPCOMMANDS_H
+} // namespace fmgr::backup
+
+#endif // FMGR_BACKUP_BACKUPCOMMANDS_H

@@ -2,9 +2,10 @@
 
 #include "cli/CliApp.h"
 
+#include "backup/BackupCommands.h"
+#include "backup/BackupRunner.h"
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
-#include "cli/BackupCommands.h"
 #include "cli/BoxImport.h"
 #include "cli/CreateCommands.h"
 #include "cli/CsvImport.h"
@@ -126,6 +127,19 @@ namespace fmgr::cli {
       std::string restore_actor;
       bool restore_force{false};
       CLI::App* restore{nullptr};
+
+      std::string run_sqlite;
+      std::string run_dir;
+      std::string run_actor;
+      int run_daily{30};
+      int run_monthly{12};
+      int run_yearly{7};
+      double run_backup_interval_hours{24.0};
+      double run_drill_interval_hours{168.0};
+      CLI::App* run{nullptr};
+
+      std::string list_dir;
+      CLI::App* list{nullptr};
     };
 
     void add_backup_noun(CLI::App& app, BackupSubcommands& backup) {
@@ -155,6 +169,33 @@ namespace fmgr::cli {
       backup.restore->add_flag("--force", backup.restore_force, "Overwrite --out if it exists");
       backup.restore->add_option("--actor", backup.restore_actor, "User UUID recorded as the actor")
           ->required();
+
+      backup.run = root->add_subcommand(
+          "run", "Scheduled tick: create-if-due, prune per retention, weekly restore drill");
+      backup.run->add_option("--sqlite", backup.run_sqlite, "Path to the live SQLite database")
+          ->required();
+      backup.run->add_option("--dir", backup.run_dir, "Directory holding the encrypted backups")
+          ->required();
+      backup.run->add_option("--actor", backup.run_actor, "User UUID recorded as the actor")
+          ->required();
+      backup.run->add_option("--daily", backup.run_daily, "Daily backups to retain")
+          ->capture_default_str();
+      backup.run->add_option("--monthly", backup.run_monthly, "Monthly backups to retain")
+          ->capture_default_str();
+      backup.run->add_option("--yearly", backup.run_yearly, "Yearly backups to retain")
+          ->capture_default_str();
+      backup.run
+          ->add_option("--backup-interval-hours", backup.run_backup_interval_hours,
+                       "Create a new backup only if the newest is older than this")
+          ->capture_default_str();
+      backup.run
+          ->add_option("--drill-interval-hours", backup.run_drill_interval_hours,
+                       "Run a restore drill only if the last one is older than this")
+          ->capture_default_str();
+
+      backup.list = root->add_subcommand("list", "List backups in a directory (newest first)");
+      backup.list->add_option("--dir", backup.list_dir, "Directory holding the encrypted backups")
+          ->required();
     }
 
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
@@ -180,8 +221,8 @@ namespace fmgr::cli {
           return 1;
         }
         auto backend = open_backend(backend_options_from(backup.create_sqlite, ""));
-        run_backup_create(*backend, backup.create_sqlite, *provider, backup.create_out,
-                          core::UserId::parse(backup.create_actor), out);
+        backup::run_backup_create(*backend, backup.create_sqlite, *provider, backup.create_out,
+                                  core::UserId::parse(backup.create_actor), out);
         return 0;
       }
       if (backup.verify->parsed()) {
@@ -189,16 +230,40 @@ namespace fmgr::cli {
         if (provider == nullptr) {
           return 1;
         }
-        return run_backup_verify(backup.verify_in, *provider, out).ok ? 0 : 1;
+        return backup::run_backup_verify(backup.verify_in, *provider, out).ok ? 0 : 1;
       }
       if (backup.restore->parsed()) {
         auto provider = load_backup_kms();
         if (provider == nullptr) {
           return 1;
         }
-        run_backup_restore(backup.restore_in, *provider, backup.restore_out, backup.restore_force,
-                           core::UserId::parse(backup.restore_actor), out);
+        backup::run_backup_restore(backup.restore_in, *provider, backup.restore_out,
+                                   backup.restore_force,
+                                   core::UserId::parse(backup.restore_actor), out);
         return 0;
+      }
+      if (backup.run->parsed()) {
+        auto provider = load_backup_kms();
+        if (provider == nullptr) {
+          return 1;
+        }
+        constexpr double kMicrosPerHour = 3'600.0 * 1'000'000.0;
+        auto backend = open_backend(backend_options_from(backup.run_sqlite, ""));
+        const backup::BackupScheduleConfig config{
+            .sqlite_db_path = backup.run_sqlite,
+            .backup_dir = backup.run_dir,
+            .retention = backup::RetentionPolicy{backup.run_daily, backup.run_monthly,
+                                                 backup.run_yearly},
+            .backup_interval_micros =
+                static_cast<std::int64_t>(backup.run_backup_interval_hours * kMicrosPerHour),
+            .drill_interval_micros =
+                static_cast<std::int64_t>(backup.run_drill_interval_hours * kMicrosPerHour),
+            .actor = core::UserId::parse(backup.run_actor),
+        };
+        return backup::run_backup_run(*backend, *provider, config, out);
+      }
+      if (backup.list->parsed()) {
+        return backup::run_backup_list(backup.list_dir, out);
       }
       return std::nullopt;
     }

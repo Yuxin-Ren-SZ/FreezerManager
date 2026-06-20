@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "auth/LocalAuthProvider.h"
+#include "backup/BackupRunner.h"
+#include "core/ids.h"
 #include "rest/GatewayStubs.h"
 #include "rest/RestGateway.h"
 #include "server/FreezerServer.h"
@@ -77,6 +79,35 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const char* require_tls_env = std::getenv("FMGR_REQUIRE_TLS");
     opts.require_tls = require_tls_env != nullptr && (std::string(require_tls_env) == "1" ||
                                                       std::string(require_tls_env) == "true");
+
+    // Optional in-process scheduled backups (PRD §14). Enabled by FMGR_BACKUP_DIR;
+    // SQLite-only, so skip an in-memory database (nothing on disk to hot-copy).
+    const char* backup_dir_env = std::getenv("FMGR_BACKUP_DIR");
+    if (backup_dir_env != nullptr && db_path != ":memory:") {
+      const auto env_double = [](const char* name, double fallback) {
+        const char* value = std::getenv(name);
+        return value != nullptr ? std::strtod(value, nullptr) : fallback;
+      };
+      const auto env_int = [](const char* name, int fallback) {
+        const char* value = std::getenv(name);
+        return value != nullptr ? std::atoi(value) : fallback;
+      };
+      constexpr double kMicrosPerHour = 3'600.0 * 1'000'000.0;
+      const char* actor_env = std::getenv("FMGR_BACKUP_ACTOR");
+      fmgr::backup::BackupScheduleConfig schedule;
+      schedule.sqlite_db_path = db_path;
+      schedule.backup_dir = backup_dir_env;
+      schedule.retention = fmgr::backup::RetentionPolicy{env_int("FMGR_BACKUP_DAILY", 30),
+                                                         env_int("FMGR_BACKUP_MONTHLY", 12),
+                                                         env_int("FMGR_BACKUP_YEARLY", 7)};
+      schedule.backup_interval_micros =
+          static_cast<std::int64_t>(env_double("FMGR_BACKUP_INTERVAL_HOURS", 24.0) * kMicrosPerHour);
+      schedule.drill_interval_micros =
+          static_cast<std::int64_t>(env_double("FMGR_BACKUP_DRILL_HOURS", 168.0) * kMicrosPerHour);
+      schedule.actor = actor_env != nullptr ? fmgr::core::UserId::parse(actor_env)
+                                            : fmgr::core::UserId{};
+      opts.backup_schedule = schedule;
+    }
 
     fmgr::server::FreezerServer server(*backend, auth, std::move(opts));
     // build() binds the gRPC port and starts accepting (non-blocking). The REST

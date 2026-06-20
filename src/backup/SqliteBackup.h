@@ -7,13 +7,13 @@
 // even while the live server has the database open in WAL mode with concurrent
 // writers. The result is a standalone, fully-checkpointed database file ready to
 // be encrypted by crypto::encrypt_file.
-#ifndef FMGR_CLI_SQLITEBACKUP_H
-#define FMGR_CLI_SQLITEBACKUP_H
+#ifndef FMGR_BACKUP_SQLITEBACKUP_H
+#define FMGR_BACKUP_SQLITEBACKUP_H
 
 #include <stdexcept>
 #include <string>
 
-namespace fmgr::cli {
+namespace fmgr::backup {
 
   // Raised on any SQLite-level backup failure.
   class BackupError : public std::runtime_error {
@@ -25,6 +25,6 @@ namespace fmgr::cli {
   // it). Throws BackupError on any open/copy failure.
   void hot_copy(const std::string& src_db_path, const std::string& dst_db_path);
 
-} // namespace fmgr::cli
+} // namespace fmgr::backup
 
-#endif // FMGR_CLI_SQLITEBACKUP_H
+#endif // FMGR_BACKUP_SQLITEBACKUP_H

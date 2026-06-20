@@ -236,8 +236,44 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
+add_executable(freezermanager_backup_unit_tests
+  backup_filename_test.cpp
+  retention_policy_test.cpp
+  backup_runner_test.cpp
+)
+target_link_libraries(
+  freezermanager_backup_unit_tests
+  PRIVATE
+    FreezerManager::backup
+    FreezerManager::storage_sqlite
+    FreezerManager::kms
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_backup_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_backup_scheduler_tests backup_scheduler_test.cpp)
+target_link_libraries(
+  freezermanager_backup_scheduler_tests
+  PRIVATE
+    FreezerManager::server_lib
+    FreezerManager::storage_sqlite
+    FreezerManager::kms
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_backup_scheduler_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
+gtest_discover_tests(freezermanager_backup_unit_tests)
+gtest_discover_tests(freezermanager_backup_scheduler_tests)
 gtest_discover_tests(freezermanager_kms_unit_tests)
 gtest_discover_tests(freezermanager_crypto_unit_tests)
 gtest_discover_tests(freezermanager_rest_unit_tests)
