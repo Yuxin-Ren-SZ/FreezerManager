@@ -56,7 +56,12 @@ namespace fmgr::auth {
     std::size_t min_password_length{8};
 
     // Number of leading hex characters stored as the indexed lookup prefix.
-    std::size_t token_prefix_len{16};
+    // 8 hex chars (4 bytes / 32 bits) is enough to make the prefix index
+    // selective (≈1 collision near 65k live sessions, disambiguated by the
+    // authoritative constant-time hash compare) while exposing less raw token
+    // material in plaintext if the session table leaks, hardening offline
+    // hash-cracking (review F-11).
+    std::size_t token_prefix_len{8};
 
     // Account lockout: lock after this many consecutive failures.
     int max_failures_before_lockout{5};

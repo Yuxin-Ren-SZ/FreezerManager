@@ -94,14 +94,18 @@ namespace fmgr::backup {
     if (backup_due) {
       const std::string out_path =
           (fs::path(config.backup_dir) / make_backup_filename(now_micros_value)).string();
-      const auto report = run_backup_create(backend, config.sqlite_db_path, backup_kms, out_path,
-                                            config.actor, log);
+      const auto report = config.postgres_url.empty()
+                              ? run_backup_create(backend, config.sqlite_db_path, backup_kms,
+                                                  out_path, config.actor, log)
+                              : run_backup_create_postgres(backend, config.postgres_url, backup_kms,
+                                                           out_path, config.actor, log);
       result.backup_made = true;
       result.backup_path = report.out_path;
       backups = list_backups(config.backup_dir); // include the new file in pruning
     } else {
       log << "backup not due (newest is "
-          << (now_micros_value - backups.front().created_micros) / k_micros_per_second << "s old)\n";
+          << (now_micros_value - backups.front().created_micros) / k_micros_per_second
+          << "s old)\n";
     }
 
     // ---- prune per retention policy ------------------------------------------
@@ -116,7 +120,7 @@ namespace fmgr::backup {
       append_backup_event(
           backend, "backup.prune", filename,
           nlohmann::json{{"path", victim.path}, {"created_at_micros", victim.created_micros}},
-          config.actor);
+          config.actor, log);
       ++result.pruned;
       log << "pruned " << filename << '\n';
     }
@@ -136,7 +140,8 @@ namespace fmgr::backup {
       result.drill_ran = true;
       result.drill_ok = verify.ok;
       append_backup_event(backend, "backup.drill", result.drill_target,
-                          nlohmann::json{{"path", target.path}, {"ok", verify.ok}}, config.actor);
+                          nlohmann::json{{"path", target.path}, {"ok", verify.ok}}, config.actor,
+                          log);
       write_drill_marker(config.backup_dir, now_micros_value);
       if (!verify.ok) {
         log << "DRILL FAILED for " << result.drill_target << ": " << verify.detail << '\n';

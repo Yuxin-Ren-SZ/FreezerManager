@@ -78,11 +78,15 @@ endif()
 if(FREEZERMANAGER_ENABLE_ASAN)
   add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
   add_link_options(-fsanitize=address)
+  # Harden the STL under sanitizers: bounds-check vector::operator[], string, etc.
+  # so out-of-range access traps instead of reading silently (review F-13).
+  add_compile_definitions(_GLIBCXX_ASSERTIONS)
 endif()
 
 if(FREEZERMANAGER_ENABLE_UBSAN)
   add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
   add_link_options(-fsanitize=undefined)
+  add_compile_definitions(_GLIBCXX_ASSERTIONS)
 endif()
 
 if(FREEZERMANAGER_ENABLE_TSAN)

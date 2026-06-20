@@ -418,6 +418,23 @@ namespace fmgr::storage {
       throw UnsupportedOperation("note_phi_read is not supported by this backend");
     }
 
+    // Record a mutation (or a non-domain event such as a `backup.*` record) for the
+    // audit chain written at commit time. The snapshot is server-derived, never
+    // caller-supplied PHI. The default throws so a backend with no audit chain
+    // cannot silently drop the record; SqliteTransaction / PostgresTransaction
+    // override it. Declared here so callers holding only an ITransaction& (e.g. the
+    // backup engines) can append regardless of the concrete backend.
+    // By-value parameters match the overriding signatures, which move them into
+    // the pending-audit record; the throwing default ignores them.
+    // NOLINTBEGIN(performance-unnecessary-value-param)
+    virtual void note_mutation(std::string /*entity_kind*/, std::string /*entity_id*/,
+                               const MutationContext& /*context*/,
+                               std::string /*action*/ = "mutation",
+                               AuditSnapshot /*snapshot*/ = {}) {
+      throw UnsupportedOperation("note_mutation is not supported by this backend");
+    }
+    // NOLINTEND(performance-unnecessary-value-param)
+
     template <typename Entity> IRepository<Entity>& repo() {
       const auto iterator = repositories_.find(std::type_index(typeid(Entity)));
       if (iterator == repositories_.end()) {

@@ -35,16 +35,30 @@ namespace fmgr::backup {
                                        const std::string& out_path, core::UserId actor,
                                        std::ostream& sink);
 
+  // PostgreSQL counterpart: `pg_dump -Fc` the database at `conninfo`, encrypt the
+  // dump to `out_path` under `backup_kms` (manifest tagged backend="postgres"), and
+  // append a `backup.create` audit event to `backend`. Throws BackupError /
+  // CipherError / BackendError on failure.
+  BackupCreateReport run_backup_create_postgres(storage::IStorageBackend& backend,
+                                                const std::string& conninfo,
+                                                const kms::IKmsProvider& backup_kms,
+                                                const std::string& out_path, core::UserId actor,
+                                                std::ostream& sink);
+
   struct BackupVerifyReport {
     bool ok{};
     int schema_version{};
     std::string detail;
   };
 
-  // Restore-drill: decrypt `in_path` to a scratch file, then check it decrypts
-  // intact, passes `PRAGMA integrity_check`, and its audit hash chain verifies.
-  // Never throws on a *bad backup* — it reports ok=false with a reason — so it is
-  // safe to schedule. Throws only on a programmer/IO error it cannot classify.
+  // Restore-drill: decrypt `in_path` to a scratch file, then verify it. The check
+  // dispatches on the archive's manifest `backend` tag: a SQLite archive must
+  // decrypt intact, pass `PRAGMA integrity_check`, and have a verifying audit hash
+  // chain; a Postgres archive (a `pg_dump` custom-format file) must decrypt intact
+  // and read cleanly under `pg_restore --list`. (A full restore-into-scratch-DB
+  // Postgres drill is a documented follow-up.) Never throws on a *bad backup* — it
+  // reports ok=false with a reason — so it is safe to schedule. Throws only on a
+  // programmer/IO error it cannot classify.
   BackupVerifyReport run_backup_verify(const std::string& in_path,
                                        const kms::IKmsProvider& backup_kms, std::ostream& sink);
 
@@ -61,13 +75,27 @@ namespace fmgr::backup {
                                          const std::string& out_path, bool force,
                                          core::UserId actor, std::ostream& sink);
 
-  // Append a `backup.*` event to a SQLite backend's audit chain. The snapshot is
-  // server-derived metadata (paths/hash), never PHI. Shared by the engines above
-  // and by the scheduler tick (BackupRunner). Throws BackupError if `backend` is
-  // not a SQLite backend (backup auditing is SQLite-only in this release).
+  // PostgreSQL counterpart: decrypt `in_path` to a scratch dump, `pg_restore` it
+  // into the database at `conninfo` (--clean --if-exists), then append a
+  // `backup.restore` event to the restored database's own audit chain. The target
+  // database must already exist. Throws BackupError / CipherError on failure.
+  BackupRestoreReport run_backup_restore_postgres(const std::string& in_path,
+                                                  const kms::IKmsProvider& backup_kms,
+                                                  const std::string& conninfo, core::UserId actor,
+                                                  std::ostream& sink);
+
+  // Append a `backup.*` event to a backend's audit chain (SQLite or Postgres). The
+  // snapshot is server-derived metadata (paths/hash), never PHI. Shared by the
+  // engines above and by the scheduler tick (BackupRunner).
+  //
+  // The append is best-effort and uses ReadCommitted isolation: an audit-only
+  // append needs no Serializable guarantee, and under heavy concurrent write load
+  // a Serializable append could conflict and throw, which must not abort the
+  // backup (the backup file itself is already written). A failed append is logged
+  // to `warn` and swallowed, not propagated (review F-4).
   void append_backup_event(storage::IStorageBackend& backend, const std::string& action,
                            const std::string& entity_id, const nlohmann::json& after,
-                           core::UserId actor);
+                           core::UserId actor, std::ostream& warn);
 
 } // namespace fmgr::backup
 

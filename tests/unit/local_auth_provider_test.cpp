@@ -228,7 +228,8 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, AuthenticateEmailCaseInsensitive) {
       // The provider normalizes email to lowercase before looking up.
       EXPECT_NO_THROW(provider_->authenticate(
-          PasswordCredentials{.email = "NOTOTP@EXAMPLE.COM", .password = "hunter22"}, ClientInfo{}));
+          PasswordCredentials{.email = "NOTOTP@EXAMPLE.COM", .password = "hunter22"},
+          ClientInfo{}));
     }
 
     TEST_F(LocalAuthProviderTest, AuthenticateWrongPassword) {
@@ -348,7 +349,8 @@ namespace fmgr::auth {
 
       // Lockout expired instantly; correct password should succeed.
       EXPECT_NO_THROW(local_provider.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{}));
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
+          ClientInfo{}));
     }
 
     TEST_F(LocalAuthProviderTest, AuthenticateSuccessResetsFailureCount) {
@@ -367,7 +369,8 @@ namespace fmgr::auth {
       }
       // ...then a success resets the counter.
       EXPECT_NO_THROW(local_provider.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{}));
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
+          ClientInfo{}));
 
       // Two more failures after reset should not lock.
       for (int i = 0; i < 2; ++i) {
@@ -379,7 +382,8 @@ namespace fmgr::auth {
         }
       }
       EXPECT_NO_THROW(local_provider.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{}));
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
+          ClientInfo{}));
     }
 
     TEST_F(LocalAuthProviderTest, AuthenticateTotpUserMfaIncomplete) {
@@ -532,8 +536,9 @@ namespace fmgr::auth {
 
       const std::string full = "fmgr_pat_" + hex_part;
 
-      // Compute prefix: first 16 hex chars of hex part.
-      const std::string prefix = hex_part.substr(0, 16);
+      // Compute prefix: first token_prefix_len hex chars of hex part (default 8,
+      // see LocalAuthProviderConfig::token_prefix_len / review F-11).
+      const std::string prefix = hex_part.substr(0, 8);
 
       // Compute BLAKE2b-256 hash of hex part (matching hash_token()).
       std::array<unsigned char, crypto_generichash_BYTES> hash_bytes{};
@@ -561,9 +566,8 @@ namespace fmgr::auth {
     TEST_F(LocalAuthProviderTest, CreateApiTokenRejectsUnknownScopeKey) {
       // A typo'd scope key must be rejected at creation, not silently dropped to a
       // zero-permission token (security-audit-2026-06-12 #5).
-      EXPECT_THROW(provider_->create_api_token(kUserNoTotpId, "bad scope",
-                                               R"(["sample.raed"])", std::nullopt, std::nullopt,
-                                               test_ctx()),
+      EXPECT_THROW(provider_->create_api_token(kUserNoTotpId, "bad scope", R"(["sample.raed"])",
+                                               std::nullopt, std::nullopt, test_ctx()),
                    storage::ConstraintViolation);
       EXPECT_THROW(provider_->create_api_token(kUserNoTotpId, "not an array", R"({"a":1})",
                                                std::nullopt, std::nullopt, test_ctx()),
@@ -1213,7 +1217,8 @@ namespace fmgr::auth {
       }
       // Should still be able to log in with correct password.
       EXPECT_NO_THROW(local_provider.authenticate(
-          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{}));
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
+          ClientInfo{}));
     }
 
     TEST_F(LocalAuthProviderTest, ValidateTokenWithEmptyToken) {
@@ -1229,7 +1234,7 @@ namespace fmgr::auth {
       // Empty name should be handled — either accepted or rejected gracefully.
       try {
         (void)provider_->create_api_token(kUserNoTotpId, "", R"(["sample.read"])", std::nullopt,
-                                        std::nullopt, test_ctx());
+                                          std::nullopt, test_ctx());
       } catch (const storage::ConstraintViolation&) {
         // Acceptable: DB constraint rejects empty name.
       }
@@ -1240,7 +1245,7 @@ namespace fmgr::auth {
       // Must not crash; may be accepted or rejected based on column constraints.
       try {
         (void)provider_->create_api_token(kUserNoTotpId, long_name, R"(["sample.read"])",
-                                        std::nullopt, std::nullopt, test_ctx());
+                                          std::nullopt, std::nullopt, test_ctx());
       } catch (const storage::ConstraintViolation&) {
         // Acceptable.
       }
@@ -1252,8 +1257,8 @@ namespace fmgr::auth {
       // Email containing null bytes must not crash or bypass lookup.
       const std::string bad_email("nototp@example.com\0hidden", 25);
       EXPECT_THROW(
-          provider_->authenticate(
-              PasswordCredentials{.email = bad_email, .password = "hunter22"}, ClientInfo{}),
+          provider_->authenticate(PasswordCredentials{.email = bad_email, .password = "hunter22"},
+                                  ClientInfo{}),
           InvalidCredentials);
     }
 
@@ -1281,7 +1286,8 @@ namespace fmgr::auth {
           }
         });
       }
-      for (auto& th : threads) th.join();
+      for (auto& th : threads)
+        th.join();
       // All must succeed — each gets a distinct session.
       EXPECT_EQ(ok.load(), kThreads);
 

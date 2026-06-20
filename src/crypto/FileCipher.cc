@@ -2,6 +2,8 @@
 
 #include "crypto/FileCipher.h"
 
+#include "core/sodium_init.h"
+
 #include <nlohmann/json.hpp>
 #include <sodium.h>
 
@@ -19,8 +21,13 @@ namespace fmgr::crypto {
     constexpr const char* k_magic = "FMGRBAK";
     constexpr std::size_t k_chunk_size = std::size_t{64} * 1024; // plaintext bytes per chunk
 
+    // Hard cap on the manifest header (the first line). A real manifest is a few
+    // hundred bytes; the cap stops a crafted file from exhausting memory with a
+    // multi-gigabyte first "line" before the chunk parser runs (review F-1).
+    constexpr std::size_t k_max_manifest_bytes = 4096;
+
     void ensure_sodium() {
-      if (sodium_init() < 0) {
+      if (!core::sodium_ready()) {
         throw CipherError("libsodium initialization failed");
       }
     }
@@ -98,6 +105,29 @@ namespace fmgr::crypto {
       return true;
     }
 
+    // Read the manifest header (first line) with a hard size cap so a crafted
+    // file cannot exhaust memory with a multi-gigabyte first "line" before the
+    // chunk parser runs (review F-1).
+    std::string read_manifest_line(std::istream& input) {
+      std::string line;
+      char next = 0;
+      bool saw_any = false;
+      while (input.get(next)) {
+        saw_any = true;
+        if (next == '\n') {
+          break;
+        }
+        line.push_back(next);
+        if (line.size() > k_max_manifest_bytes) {
+          throw CipherError("backup manifest header exceeds maximum size");
+        }
+      }
+      if (!saw_any) {
+        throw CipherError("backup file has no manifest header");
+      }
+      return line;
+    }
+
   } // namespace
 
   BackupManifest encrypt_file(const std::filesystem::path& in_path,
@@ -106,6 +136,11 @@ namespace fmgr::crypto {
     ensure_sodium();
 
     // Pass 1: hash the plaintext so the manifest can record an integrity check.
+    // This opens `in_path` a first time; pass 2 below opens it again to stream
+    // the ciphertext. The caller guarantees `in_path` is a private temp file it
+    // alone owns (e.g. `<out>.hotcopy.tmp` / `<out>.pgdump.tmp`), so no other
+    // writer can swap the file between the two opens (review F-3). The decrypt
+    // content-hash check would catch any such mismatch as corruption regardless.
     const std::string content_sha256 = sha256_file_hex(in_path);
 
     std::ifstream input(in_path, std::ios::binary);
@@ -179,10 +214,7 @@ namespace fmgr::crypto {
     if (!input) {
       throw CipherError("cannot open backup file: " + in_path.string());
     }
-    std::string manifest_line;
-    if (!std::getline(input, manifest_line)) {
-      throw CipherError("backup file has no manifest header");
-    }
+    const std::string manifest_line = read_manifest_line(input);
     nlohmann::json manifest;
     try {
       manifest = nlohmann::json::parse(manifest_line);

@@ -287,8 +287,7 @@ namespace fmgr::core {
       // parse_constraints catches the json exception and returns empty object.
       // Validation proceeds as if there were no constraints — the value itself
       // must still be type-correct.
-      const auto def =
-          make_def("note", FieldDataType::String, false, "not valid json {{{");
+      const auto def = make_def("note", FieldDataType::String, false, "not valid json {{{");
       const auto fields = nlohmann::json{{"note", "hello"}};
       const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
       EXPECT_TRUE(errors.empty());
@@ -518,19 +517,33 @@ namespace fmgr::core {
       const auto def = make_def("age", FieldDataType::Int, false, R"({"min":100,"max":0})");
       const auto fields = nlohmann::json{{"age", 50}};
       const auto errors = validate_custom_fields(std::span{&def, 1}, fields);
-      EXPECT_LE(errors.size(), 2U);  // both min and max independently fail
+      EXPECT_LE(errors.size(), 2U); // both min and max independently fail
     }
 
     TEST(CustomFieldValidatorTest, MaxLengthZeroEnforcesEmptyOnly) {
       const auto def = make_def("code", FieldDataType::String, false, R"({"max_length":0})");
       EXPECT_TRUE(validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"code", ""}}).empty());
-      EXPECT_FALSE(validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"code", "x"}}).empty());
+      EXPECT_FALSE(
+          validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"code", "x"}}).empty());
     }
 
     TEST(CustomFieldValidatorTest, FloatFieldWithExtremeBounds) {
-      const auto def = make_def("ratio", FieldDataType::Float, false,
-                                R"({"min":-1e308,"max":1e308})");
-      EXPECT_TRUE(validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"ratio", 1e307}}).empty());
+      const auto def =
+          make_def("ratio", FieldDataType::Float, false, R"({"min":-1e308,"max":1e308})");
+      EXPECT_TRUE(
+          validate_custom_fields(std::span{&def, 1}, nlohmann::json{{"ratio", 1e307}}).empty());
+    }
+
+    TEST(CustomFieldValidatorTest, RejectsTooManySubmittedFields) {
+      // A submitted object with more than the per-entity cap is rejected outright,
+      // independent of definitions, guarding against field-count DoS (review F-9).
+      nlohmann::json fields = nlohmann::json::object();
+      for (std::size_t i = 0; i <= k_max_custom_fields_per_entity; ++i) {
+        fields["k" + std::to_string(i)] = "v";
+      }
+      const auto errors = validate_custom_fields(std::span<const CustomFieldDefinition>{}, fields);
+      ASSERT_EQ(errors.size(), 1U);
+      EXPECT_NE(errors.front().message.find("too many custom fields"), std::string::npos);
     }
 
   } // namespace

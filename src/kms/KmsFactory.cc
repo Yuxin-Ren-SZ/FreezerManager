@@ -24,9 +24,13 @@ namespace fmgr::kms {
       const char* creds_dir = std::getenv("CREDENTIALS_DIRECTORY"); // NOLINT(concurrency-mt-unsafe)
       if (creds_dir != nullptr && *creds_dir != '\0') {
         std::error_code error;
-        const std::filesystem::path active = std::filesystem::path(creds_dir) / basename;
+        const std::filesystem::path creds_path(creds_dir);
+        const std::filesystem::path active = creds_path / basename;
         if (std::filesystem::exists(active, error)) {
-          return std::make_unique<OsKeyringKms>(OsKeyringKms::from_systemd_credentials(basename));
+          // Reuse the already-resolved directory instead of re-reading
+          // CREDENTIALS_DIRECTORY inside from_systemd_credentials (review F-6).
+          return std::make_unique<OsKeyringKms>(
+              OsKeyringKms::from_credentials_dir(creds_path, basename));
         }
       }
 

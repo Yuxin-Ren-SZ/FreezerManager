@@ -102,6 +102,99 @@ namespace {
     EXPECT_THROW((void)decrypt("{not json", kms), CipherError);
   }
 
+  // ---- edge cases: corrupted / malformed envelope fields ----
+
+  TEST(FieldCipher, CorruptFieldNonceRejected) {
+    const auto kms = make_kms();
+    PhiFields in{{"mrn", "x"}};
+    nlohmann::json envelope = nlohmann::json::parse(encrypt(in, kms));
+    // Flip a base64 char in one field's nonce.
+    std::string n = envelope["fields"]["mrn"]["n"].get<std::string>();
+    n[1] = (n[1] == 'A') ? 'B' : 'A';
+    envelope["fields"]["mrn"]["n"] = n;
+    EXPECT_THROW((void)decrypt(envelope.dump(), kms), CipherError);
+  }
+
+  TEST(FieldCipher, CorruptFieldCiphertextBase64Rejected) {
+    const auto kms = make_kms();
+    PhiFields in{{"mrn", "x"}};
+    nlohmann::json envelope = nlohmann::json::parse(encrypt(in, kms));
+    // Inject an invalid base64 character in the field ciphertext.
+    envelope["fields"]["mrn"]["c"] = "!@#^invalid*base64!!";
+    EXPECT_THROW((void)decrypt(envelope.dump(), kms), CipherError);
+  }
+
+  TEST(FieldCipher, CorruptDekNonceRejected) {
+    const auto kms = make_kms();
+    PhiFields in{{"mrn", "x"}};
+    nlohmann::json envelope = nlohmann::json::parse(encrypt(in, kms));
+    std::string n = envelope["dek"]["n"].get<std::string>();
+    n[0] = (n[0] == 'A') ? 'B' : 'A';
+    envelope["dek"]["n"] = n;
+    EXPECT_THROW((void)decrypt(envelope.dump(), kms), fmgr::kms::KmsError);
+  }
+
+  TEST(FieldCipher, CorruptDekCiphertextBase64Rejected) {
+    const auto kms = make_kms();
+    PhiFields in{{"mrn", "x"}};
+    nlohmann::json envelope = nlohmann::json::parse(encrypt(in, kms));
+    envelope["dek"]["c"] = "!!!invalid base64!!!";
+    EXPECT_THROW((void)decrypt(envelope.dump(), kms), CipherError);
+  }
+
+  TEST(FieldCipher, MissingDekRejected) {
+    const auto kms = make_kms();
+    PhiFields in{{"mrn", "x"}};
+    nlohmann::json envelope = nlohmann::json::parse(encrypt(in, kms));
+    envelope.erase("dek");
+    // An envelope without "dek" is treated as having no PHI (returns empty map).
+    // This is by design — "{}" and objects without "dek" both mean "no PHI
+    // present".  See FieldCipher::decrypt() line 120.
+    EXPECT_TRUE(decrypt(envelope.dump(), make_kms()).empty());
+  }
+
+  TEST(FieldCipher, ExtraUnknownFieldsIgnored) {
+    const auto kms = make_kms();
+    PhiFields in{{"mrn", "x"}};
+    nlohmann::json envelope = nlohmann::json::parse(encrypt(in, kms));
+    envelope["future_version"] = 99;
+    envelope["comment"] = "should be ignored";
+    // Decrypt must still succeed — forward-compat tolerance.
+    EXPECT_EQ(decrypt(envelope.dump(), kms), in);
+  }
+
+  TEST(FieldCipher, DekNonceWrongLengthRejected) {
+    const auto kms = make_kms();
+    PhiFields in{{"mrn", "x"}};
+    nlohmann::json envelope = nlohmann::json::parse(encrypt(in, kms));
+    // A base64 string that decodes to 10 bytes (not crypto_secretbox_NONCEBYTES).
+    envelope["dek"]["n"] = "AAECAwQFBgcICQ==";
+    // The KMS unwrap_dek will see a short nonce and throw KmsError.
+    EXPECT_THROW((void)decrypt(envelope.dump(), kms), fmgr::kms::KmsError);
+  }
+
+  // ---- rewrap robustness ----
+
+  TEST(FieldCipher, RewrapThrowsOnMalformedEnvelope) {
+    using fmgr::crypto::rewrap;
+    const auto kms = make_kms();
+    EXPECT_THROW((void)rewrap("not json", kms), CipherError);
+  }
+
+  TEST(FieldCipher, RewrapThrowsOnExtraJunkBase64) {
+    using fmgr::crypto::rewrap;
+    const auto old_kms = make_kms();
+    PhiFields in{{"mrn", "x"}};
+    const std::string envelope = encrypt(in, old_kms);
+    // Use a different KMS whose active KEK doesn't match the envelope's
+    // kek_id, so rewrap reaches the base64-decode step instead of returning
+    // nullopt early.
+    const EnvVarKms other_kms(std::vector<std::uint8_t>(32, 0x66));
+    nlohmann::json env_json = nlohmann::json::parse(envelope);
+    env_json["dek"]["n"] = "not##base64";
+    EXPECT_THROW((void)rewrap(env_json.dump(), other_kms), CipherError);
+  }
+
   // ---- rewrap (key rotation) ----
 
   std::vector<std::uint8_t> kek_a_bytes() {

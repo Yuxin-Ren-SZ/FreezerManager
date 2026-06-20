@@ -124,11 +124,13 @@ namespace fmgr::cli {
 
       std::string restore_in;
       std::string restore_out;
+      std::string restore_postgres;
       std::string restore_actor;
       bool restore_force{false};
       CLI::App* restore{nullptr};
 
       std::string run_sqlite;
+      std::string run_postgres;
       std::string run_dir;
       std::string run_actor;
       int run_daily{30};
@@ -143,15 +145,15 @@ namespace fmgr::cli {
     };
 
     void add_backup_noun(CLI::App& app, BackupSubcommands& backup) {
-      CLI::App* root = app.add_subcommand("backup", "Encrypted backup / restore (SQLite)");
+      CLI::App* root =
+          app.add_subcommand("backup", "Encrypted backup / restore (SQLite or PostgreSQL)");
       root->require_subcommand(1);
 
-      backup.create = root->add_subcommand("create", "Hot-copy + encrypt the live database");
-      backup.create
-          ->add_option("--sqlite", backup.create_sqlite, "Path to the live SQLite database")
-          ->required();
+      backup.create = root->add_subcommand("create", "Back up + encrypt the live database");
+      backup.create->add_option("--sqlite", backup.create_sqlite,
+                                "Path to the live SQLite database");
       backup.create->add_option("--postgres", backup.create_postgres,
-                                "(Postgres backup is not yet supported)");
+                                "PostgreSQL connection string (pg_dump source)");
       backup.create->add_option("--out", backup.create_out, "Encrypted backup file to write")
           ->required();
       backup.create->add_option("--actor", backup.create_actor, "User UUID recorded as the actor")
@@ -162,18 +164,22 @@ namespace fmgr::cli {
       backup.verify->add_option("--in", backup.verify_in, "Encrypted backup file to verify")
           ->required();
 
-      backup.restore =
-          root->add_subcommand("restore", "Decrypt a backup to a SQLite database file");
+      backup.restore = root->add_subcommand(
+          "restore", "Decrypt a backup to a SQLite file or into a PostgreSQL database");
       backup.restore->add_option("--in", backup.restore_in, "Encrypted backup file")->required();
-      backup.restore->add_option("--out", backup.restore_out, "Database file to write")->required();
+      backup.restore->add_option("--out", backup.restore_out,
+                                 "SQLite database file to write (SQLite backups)");
+      backup.restore->add_option("--postgres", backup.restore_postgres,
+                                 "PostgreSQL connection string to restore into (Postgres backups)");
       backup.restore->add_flag("--force", backup.restore_force, "Overwrite --out if it exists");
       backup.restore->add_option("--actor", backup.restore_actor, "User UUID recorded as the actor")
           ->required();
 
       backup.run = root->add_subcommand(
           "run", "Scheduled tick: create-if-due, prune per retention, weekly restore drill");
-      backup.run->add_option("--sqlite", backup.run_sqlite, "Path to the live SQLite database")
-          ->required();
+      backup.run->add_option("--sqlite", backup.run_sqlite, "Path to the live SQLite database");
+      backup.run->add_option("--postgres", backup.run_postgres,
+                             "PostgreSQL connection string (pg_dump source)");
       backup.run->add_option("--dir", backup.run_dir, "Directory holding the encrypted backups")
           ->required();
       backup.run->add_option("--actor", backup.run_actor, "User UUID recorded as the actor")
@@ -212,17 +218,25 @@ namespace fmgr::cli {
       };
 
       if (backup.create->parsed()) {
-        if (!backup.create_postgres.empty()) {
-          err << "error: Postgres backup is not yet supported (SQLite only in this release)\n";
+        const bool has_pg = !backup.create_postgres.empty();
+        if (has_pg == !backup.create_sqlite.empty()) {
+          err << "error: backup create needs exactly one of --sqlite or --postgres\n";
           return 1;
         }
         auto provider = load_backup_kms();
         if (provider == nullptr) {
           return 1;
         }
-        auto backend = open_backend(backend_options_from(backup.create_sqlite, ""));
-        backup::run_backup_create(*backend, backup.create_sqlite, *provider, backup.create_out,
-                                  core::UserId::parse(backup.create_actor), out);
+        const auto actor = core::UserId::parse(backup.create_actor);
+        if (has_pg) {
+          auto backend = open_backend(backend_options_from("", backup.create_postgres));
+          backup::run_backup_create_postgres(*backend, backup.create_postgres, *provider,
+                                             backup.create_out, actor, out);
+        } else {
+          auto backend = open_backend(backend_options_from(backup.create_sqlite, ""));
+          backup::run_backup_create(*backend, backup.create_sqlite, *provider, backup.create_out,
+                                    actor, out);
+        }
         return 0;
       }
       if (backup.verify->parsed()) {
@@ -233,27 +247,44 @@ namespace fmgr::cli {
         return backup::run_backup_verify(backup.verify_in, *provider, out).ok ? 0 : 1;
       }
       if (backup.restore->parsed()) {
+        const bool has_pg = !backup.restore_postgres.empty();
+        if (has_pg == !backup.restore_out.empty()) {
+          err << "error: backup restore needs exactly one of --out or --postgres\n";
+          return 1;
+        }
         auto provider = load_backup_kms();
         if (provider == nullptr) {
           return 1;
         }
-        backup::run_backup_restore(backup.restore_in, *provider, backup.restore_out,
-                                   backup.restore_force,
-                                   core::UserId::parse(backup.restore_actor), out);
+        const auto actor = core::UserId::parse(backup.restore_actor);
+        if (has_pg) {
+          backup::run_backup_restore_postgres(backup.restore_in, *provider, backup.restore_postgres,
+                                              actor, out);
+        } else {
+          backup::run_backup_restore(backup.restore_in, *provider, backup.restore_out,
+                                     backup.restore_force, actor, out);
+        }
         return 0;
       }
       if (backup.run->parsed()) {
+        const bool has_pg = !backup.run_postgres.empty();
+        if (has_pg == !backup.run_sqlite.empty()) {
+          err << "error: backup run needs exactly one of --sqlite or --postgres\n";
+          return 1;
+        }
         auto provider = load_backup_kms();
         if (provider == nullptr) {
           return 1;
         }
         constexpr double kMicrosPerHour = 3'600.0 * 1'000'000.0;
-        auto backend = open_backend(backend_options_from(backup.run_sqlite, ""));
+        auto backend = open_backend(has_pg ? backend_options_from("", backup.run_postgres)
+                                           : backend_options_from(backup.run_sqlite, ""));
         const backup::BackupScheduleConfig config{
             .sqlite_db_path = backup.run_sqlite,
+            .postgres_url = backup.run_postgres,
             .backup_dir = backup.run_dir,
-            .retention = backup::RetentionPolicy{backup.run_daily, backup.run_monthly,
-                                                 backup.run_yearly},
+            .retention =
+                backup::RetentionPolicy{backup.run_daily, backup.run_monthly, backup.run_yearly},
             .backup_interval_micros =
                 static_cast<std::int64_t>(backup.run_backup_interval_hours * kMicrosPerHour),
             .drill_interval_micros =
