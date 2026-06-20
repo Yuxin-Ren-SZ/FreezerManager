@@ -13,6 +13,7 @@ add_library(freezermanager_server_lib STATIC
   RoleServiceImpl.cc
   AuditServiceImpl.cc
   ShareServiceImpl.cc
+  BackupScheduler.cc
   FreezerServer.cc
   # CSV export reused from the CLI: ExportSamplesCsv shares the exact column model
   # and chain-of-custody header as `freezerctl sample export`.
@@ -35,6 +36,7 @@ target_link_libraries(
     FreezerManager::rpc
     FreezerManager::auth
     FreezerManager::storage
+    FreezerManager::backup
     FreezerManager::kms
     FreezerManager::crypto
     gRPC::grpc++

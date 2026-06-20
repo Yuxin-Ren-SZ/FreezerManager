@@ -4,6 +4,7 @@ add_subdirectory(auth)
 add_subdirectory(kms)
 add_subdirectory(crypto)
 add_subdirectory(audit)
+add_subdirectory(backup)
 add_subdirectory(rpc)
 # rest before server: the freezerd target in server/ links FreezerManager::rest,
 # so the alias must already exist. rest depends only on proto (from rpc) + drogon.

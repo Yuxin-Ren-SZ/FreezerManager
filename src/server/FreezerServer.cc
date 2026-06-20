@@ -3,6 +3,7 @@
 #include "server/FreezerServer.h"
 
 #include "kms/KmsFactory.h"
+#include "server/BackupScheduler.h"
 
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
@@ -32,12 +33,15 @@ namespace fmgr::server {
 
   FreezerServer::FreezerServer(storage::IStorageBackend& backend, auth::IAuthProvider& auth,
                                FreezerServerOptions opts)
-      : opts_(std::move(opts)), kms_(make_kms()), auth_svc_(auth, backend),
+      : opts_(std::move(opts)), backend_(backend), kms_(make_kms()), auth_svc_(auth, backend),
         session_svc_(auth, backend), lab_svc_(auth, backend), box_svc_(auth, backend),
         item_type_svc_(auth, backend), sample_svc_(auth, backend, kms_.get()),
         role_svc_(auth, backend), audit_svc_(auth, backend), share_svc_(auth, backend) {}
 
   FreezerServer::~FreezerServer() {
+    if (backup_scheduler_) {
+      backup_scheduler_->stop();
+    }
     if (grpc_server_) {
       grpc_server_->Shutdown();
     }
@@ -79,6 +83,22 @@ namespace fmgr::server {
     if (!grpc_server_) {
       throw std::runtime_error("failed to start gRPC server on " + opts_.listen_address);
     }
+
+    // Optional in-process scheduled-backup runner (PRD §14). Needs a backup KEK
+    // distinct from the master KEK; without one, encrypted backups are off, so we
+    // warn and skip rather than abort the server.
+    if (opts_.backup_schedule.has_value()) {
+      auto backup_kms = kms::make_backup_kms();
+      if (backup_kms == nullptr) {
+        spdlog::warn("scheduled backups disabled: no backup KEK configured "
+                     "(set CREDENTIALS_DIRECTORY/backup_kek or FMGR_BACKUP_KEK)");
+      } else {
+        backup_scheduler_ = std::make_unique<BackupScheduler>(
+            backend_, std::move(backup_kms), opts_.backup_schedule.value());
+        backup_scheduler_->start();
+        spdlog::info("scheduled backups enabled: dir={}", opts_.backup_schedule->backup_dir);
+      }
+    }
   }
 
   void FreezerServer::wait() {
@@ -93,6 +113,9 @@ namespace fmgr::server {
   }
 
   void FreezerServer::shutdown() {
+    if (backup_scheduler_) {
+      backup_scheduler_->stop();
+    }
     if (grpc_server_) {
       grpc_server_->Shutdown();
     }

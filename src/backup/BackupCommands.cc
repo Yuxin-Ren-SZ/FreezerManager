@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-#include "cli/BackupCommands.h"
+#include "backup/BackupCommands.h"
 
-#include "cli/AuditCommands.h"
-#include "cli/BackendFactory.h"
-#include "cli/SqliteBackup.h"
+#include "audit/AuditChainVerifier.h"
+#include "backup/SqliteBackup.h"
+#include "core/audit_event.h"
+#include "core/timestamp.h"
 #include "crypto/FieldCipher.h" // crypto::CipherError
 #include "crypto/FileCipher.h"
+#include "storage/AuditTraits.h"
+#include "storage/sqlite/AuditRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
 #include <nlohmann/json.hpp>
@@ -16,11 +19,13 @@
 #include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 
-namespace fmgr::cli {
+namespace fmgr::backup {
 
   namespace {
 
@@ -35,34 +40,25 @@ namespace fmgr::cli {
       return backend.current_version().value;
     }
 
+    // Open a SQLite database with only the read-only audit-event repository
+    // registered — enough to append a `backup.*` event (the chain is written by
+    // commit()) and to read the chain back for verification. We deliberately do
+    // not register the full domain repositories or run migrations: a restored
+    // backup is already at its own schema version, and the backup engines never
+    // touch domain rows.
+    std::unique_ptr<storage::SqliteBackend> open_sqlite_audit(const std::string& db_path) {
+      auto backend = std::make_unique<storage::SqliteBackend>(
+          storage::SqliteBackendOptions{.database_path = db_path});
+      storage::register_audit_repositories(*backend);
+      return backend;
+    }
+
     // Remove a SQLite database file plus any WAL/SHM/journal sidecars.
     void remove_db_files(const std::filesystem::path& path) {
       std::error_code error;
       for (const char* suffix : {"", "-wal", "-shm", "-journal"}) {
         std::filesystem::remove(std::filesystem::path(path.string() + suffix), error);
       }
-    }
-
-    // Append a `backup.*` event to the backend's audit chain. The snapshot is
-    // server-derived metadata (paths/hash), never PHI.
-    void append_backup_event(storage::IStorageBackend& backend, const std::string& action,
-                             const std::string& entity_id, const nlohmann::json& after,
-                             core::UserId actor) {
-      auto txn = backend.begin(storage::IsolationLevel::Serializable);
-      auto* sqlite_txn = dynamic_cast<storage::SqliteTransaction*>(txn.get());
-      if (sqlite_txn == nullptr) {
-        throw BackupError("backup auditing requires a SQLite backend in this release");
-      }
-      const storage::MutationContext ctx{
-          .actor_user_id = actor,
-          .actor_session_id = "freezerctl",
-          .request_id = "",
-          .reason = action,
-          .lab_id = std::nullopt,
-      };
-      sqlite_txn->note_mutation("backup", entity_id, ctx, action,
-                                storage::AuditSnapshot{.before = std::nullopt, .after = after});
-      txn->commit();
     }
 
     bool integrity_check(const std::string& db_path, std::string& detail) {
@@ -90,7 +86,65 @@ namespace fmgr::cli {
       return passed;
     }
 
+    [[nodiscard]] std::string_view chain_status_label(audit::AuditChainStatus status) {
+      switch (status) {
+      case audit::AuditChainStatus::BrokenLink:
+        return "broken link";
+      case audit::AuditChainStatus::HashMismatch:
+        return "hash mismatch (row tampered)";
+      case audit::AuditChainStatus::Ok:
+        return "ok";
+      }
+      return "unknown";
+    }
+
+    // Walk the audit chain of an already-opened SQLite database. Returns 0 if
+    // intact, 1 on the first divergence (details written to `out`). Self-contained
+    // so the backup library does not depend on the CLI's `audit verify` command.
+    int verify_audit_chain(storage::SqliteBackend& backend, std::ostream& out) {
+      auto txn = backend.begin(storage::IsolationLevel::Serializable);
+      const auto events = txn->repo<core::AuditEvent>().query(
+          storage::Query<core::AuditEvent>::all()
+              .order_by(
+                  storage::field<core::AuditEvent, core::Timestamp>(core::AuditEvent::Field::At),
+                  storage::SortDirection::Ascending)
+              .order_by(storage::field<core::AuditEvent, std::string>(core::AuditEvent::Field::Id),
+                        storage::SortDirection::Ascending));
+      txn->commit();
+
+      const auto report = audit::verify_audit_chain(events);
+      if (report.ok || !report.first_error.has_value()) {
+        out << "OK: " << report.verified_count << " audit event(s) verified\n";
+        return 0;
+      }
+      const auto& error = report.first_error.value();
+      out << "DIVERGENCE at #" << error.index << " (id=" << error.id.to_string()
+          << "): " << chain_status_label(error.status) << " — " << error.detail << '\n';
+      out << report.verified_count << " event(s) verified before the divergence\n";
+      return 1;
+    }
+
   } // namespace
+
+  void append_backup_event(storage::IStorageBackend& backend, const std::string& action,
+                           const std::string& entity_id, const nlohmann::json& after,
+                           core::UserId actor) {
+    auto txn = backend.begin(storage::IsolationLevel::Serializable);
+    auto* sqlite_txn = dynamic_cast<storage::SqliteTransaction*>(txn.get());
+    if (sqlite_txn == nullptr) {
+      throw BackupError("backup auditing requires a SQLite backend in this release");
+    }
+    const storage::MutationContext ctx{
+        .actor_user_id = actor,
+        .actor_session_id = "freezerctl",
+        .request_id = "",
+        .reason = action,
+        .lab_id = std::nullopt,
+    };
+    sqlite_txn->note_mutation("backup", entity_id, ctx, action,
+                              storage::AuditSnapshot{.before = std::nullopt, .after = after});
+    txn->commit();
+  }
 
   BackupCreateReport run_backup_create(storage::IStorageBackend& backend,
                                        const std::string& sqlite_db_path,
@@ -149,8 +203,8 @@ namespace fmgr::cli {
     std::ostringstream audit_out;
     int audit_rc = 0;
     {
-      auto backend = open_backend(BackendOptions{.sqlite_path = temp.string()});
-      audit_rc = run_audit_verify(*backend, AuditVerifyOptions{}, audit_out);
+      auto backend = open_sqlite_audit(temp.string());
+      audit_rc = verify_audit_chain(*backend, audit_out);
     }
     remove_db_files(temp);
     if (audit_rc != 0) {
@@ -192,7 +246,7 @@ namespace fmgr::cli {
 
     // Record the restoration in the restored database's own audit chain.
     {
-      auto backend = open_backend(BackendOptions{.sqlite_path = out_path});
+      auto backend = open_sqlite_audit(out_path);
       append_backup_event(*backend, "backup.restore",
                           std::filesystem::path(in_path).filename().string(),
                           nlohmann::json{{"source", in_path},
@@ -206,4 +260,4 @@ namespace fmgr::cli {
     return BackupRestoreReport{.out_path = out_path, .schema_version = manifest.schema_version};
   }
 
-} // namespace fmgr::cli
+} // namespace fmgr::backup

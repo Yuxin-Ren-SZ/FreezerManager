@@ -1718,12 +1718,22 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
   - [ ] **H5.1.** Postgres path: `pg_basebackup` baseline + WAL
         archiving for PITR. Encrypt with backup key (separate from
         master key) using libsodium streaming API.
-  - [ ] **H5.2.** SQLite path: `sqlite3_backup` hot copy + nightly
-        rotation. Same encryption.
-  - [ ] **H5.3.** `freezerctl backup run | list | restore` CLI.
-  - [ ] **H5.4.** Weekly restore-drill job: pick a random recent
+  - [x] **H5.2.** SQLite path: `sqlite3_backup` hot copy + nightly
+        rotation. Same encryption. (In-server `BackupScheduler` thread
+        drives `backup::run_backup_tick`: create-if-due + GFS retention
+        prune (`RetentionPolicy`, default 30 daily / 12 monthly / 7
+        yearly) + weekly drill; `backup.create`/`backup.prune`/
+        `backup.drill` audit events. Enabled by `FMGR_BACKUP_DIR`.)
+  - [x] **H5.3.** `freezerctl backup run | list | restore` CLI.
+        (`run` = one scheduler tick on the real clock; `list` enumerates
+        a backup dir newest-first without decrypting; `restore` ✅ from
+        M5 slice 3.)
+  - [x] **H5.4.** Weekly restore-drill job: pick a random recent
         backup, restore into a temp DB, run integrity checks, audit
         the result. Failures page (or email) the system admin.
+        (`BackupScheduler` runs the drill via `run_backup_verify`;
+        random pick via seeded RNG, cadence tracked by a `.last_drill`
+        marker; failure → spdlog error-level page + `backup run` exit 1.)
   - **⚠ Watch:** backup key MUST live separately from the master KEK.
     Document this in the operator runbook and assert it at server
     startup if both are configured to the same source.
