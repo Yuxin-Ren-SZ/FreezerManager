@@ -28,6 +28,11 @@ namespace fmgr::kms {
     // if the active variable is unset or any value is not base64 of a 32-byte key.
     static EnvVarKms from_env();
 
+    // Read an arbitrary active/previous variable pair, so an independent key (e.g.
+    // the backup KEK from FMGR_BACKUP_KEK / FMGR_BACKUP_KEK_PREVIOUS, PRD §8) can
+    // be loaded the same way. `previous_var` may be empty to skip retired keys.
+    static EnvVarKms from_env(const std::string& active_var, const std::string& previous_var);
+
     // Decode a single base64 active KEK (no retired keys). Used by tests.
     static EnvVarKms from_base64(const std::string& kek_base64);
 

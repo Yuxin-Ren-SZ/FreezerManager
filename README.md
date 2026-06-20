@@ -150,9 +150,9 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 
 ### Operations
 
-- 🔲 Encrypted scheduled backups — PostgreSQL: `pg_basebackup` + WAL/PITR; SQLite: hot copy + rotation
-- 🔲 Separate backup key — loss of live master key alone does not decrypt backups
-- 🔲 Weekly restore-drill — pick a random backup, restore to temp DB, run integrity checks, alert on failure
+- ⚙️ Encrypted backups — SQLite: online `sqlite3_backup` hot copy, stream-encrypted (`crypto_secretstream`) under a separate backup KEK, with a content-hash manifest (`freezerctl backup create` / `restore`). PostgreSQL backup + in-server scheduling/rotation 🔲
+- ✅ Separate backup key — `IKmsProvider` backup KEK (`kms::make_backup_kms`: `backup_kek` systemd-cred / `FMGR_BACKUP_KEK`), independent of the master KEK, so loss of the live master key alone does not decrypt backups
+- ⚙️ Restore-drill — `freezerctl backup verify` decrypts a backup, runs `PRAGMA integrity_check`, and verifies its audit hash chain; never throws on a bad backup (reports FAIL) so it is schedule-safe. Weekly automated scheduling + random-backup selection 🔲
 - 🔲 Prometheus `/metrics` — RPC latency histograms, error rates, audit append latency, backup status
 - 🔲 OpenTelemetry tracing — opt-in via `FMGR_OTLP_ENDPOINT` env var
 - 🔲 Structured JSON logs to stdout — journald-friendly; PHI never written to logs
@@ -187,7 +187,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
 | **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, SSE streaming — live audit feed ✅ (sample list + import progress 🔲), Qt 6 desktop client 🔲 | ⚙️ In progress |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
-| **M5 — PHI + KMS + Backups** | Sample PHI field-level encryption ✅, `IKmsProvider` + `EnvVarKms` + `OsKeyringKms` (keyring) ✅, PHI-read audit kind ✅, key rotation (`freezerctl key rotate`) ✅; `VaultKms`, backup/restore, weekly restore-drill 🔲 | ⚙️ In progress |
+| **M5 — PHI + KMS + Backups** | Sample PHI field-level encryption ✅, `IKmsProvider` + `EnvVarKms` + `OsKeyringKms` (keyring) ✅, PHI-read audit kind ✅, key rotation (`freezerctl key rotate`) ✅, separate backup KEK ✅, encrypted SQLite backup/restore + restore-drill verify (`freezerctl backup`) ✅; `VaultKms`, Postgres backup, scheduled backups + retention + weekly drill 🔲 | ⚙️ In progress |
 | **M6 — Public API & Sharing** | API tokens, `freezerctl-py`, cross-lab share-request workflow | 🔲 Planned |
 | **M7 — Polish & 1.0** | OIDC + LDAP auth, `.deb` / `.rpm` / Docker packaging, external security review | 🔲 Planned |
 

@@ -7,6 +7,7 @@ add_library(
   freezermanager_crypto
   STATIC
     FieldCipher.cc
+    FileCipher.cc
 )
 add_library(FreezerManager::crypto ALIAS freezermanager_crypto)
 

@@ -221,7 +221,7 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-add_executable(freezermanager_crypto_unit_tests field_cipher_test.cpp)
+add_executable(freezermanager_crypto_unit_tests field_cipher_test.cpp file_cipher_test.cpp)
 target_link_libraries(
   freezermanager_crypto_unit_tests
   PRIVATE

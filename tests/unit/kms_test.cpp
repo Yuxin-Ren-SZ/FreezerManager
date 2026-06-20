@@ -3,6 +3,7 @@
 #include "kms/EnvVarKms.h"
 #include "kms/IKmsProvider.h"
 #include "kms/KeyringKms.h"
+#include "kms/KmsFactory.h"
 
 #include <gtest/gtest.h>
 
@@ -134,6 +135,44 @@ namespace {
   TEST(KeyringKms, FingerprintMatchesRegisteredId) {
     const EnvVarKms keyring(kek_a());
     EXPECT_EQ(keyring.key_id(), KeyringKms::fingerprint(kek_a()));
+  }
+
+  // ---- Backup key (independent of the master KEK, PRD §8/§14) ----
+
+  TEST(EnvVarKms, FromNamedEnvVarsLoadIndependentKey) {
+    ::setenv("FMGR_BACKUP_KEK", kKek2B64, 1); // NOLINT(concurrency-mt-unsafe)
+    ::unsetenv("FMGR_BACKUP_KEK_PREVIOUS");   // NOLINT(concurrency-mt-unsafe)
+    const auto kms = EnvVarKms::from_env("FMGR_BACKUP_KEK", "FMGR_BACKUP_KEK_PREVIOUS");
+    const auto dek = sample_dek();
+    EXPECT_EQ(kms.unwrap_dek(kms.wrap_dek(dek), kms.key_id()), dek);
+    ::unsetenv("FMGR_BACKUP_KEK"); // NOLINT(concurrency-mt-unsafe)
+  }
+
+  TEST(KmsFactory, BackupKmsIsDistinctFromMasterAndCannotCrossUnwrap) {
+    ::unsetenv("CREDENTIALS_DIRECTORY");      // NOLINT(concurrency-mt-unsafe)
+    ::setenv("FMGR_MASTER_KEK", kKekB64, 1);  // NOLINT(concurrency-mt-unsafe)
+    ::setenv("FMGR_BACKUP_KEK", kKek2B64, 1); // NOLINT(concurrency-mt-unsafe)
+    ::unsetenv("FMGR_MASTER_KEK_PREVIOUS");   // NOLINT(concurrency-mt-unsafe)
+    ::unsetenv("FMGR_BACKUP_KEK_PREVIOUS");   // NOLINT(concurrency-mt-unsafe)
+
+    auto master = fmgr::kms::make_default_kms();
+    auto backup = fmgr::kms::make_backup_kms();
+    ASSERT_NE(master, nullptr);
+    ASSERT_NE(backup, nullptr);
+    EXPECT_NE(master->key_id(), backup->key_id());
+
+    // A DEK wrapped by the backup key does not unwrap under the master key.
+    const WrappedDek wrapped = backup->wrap_dek(sample_dek());
+    EXPECT_THROW((void)master->unwrap_dek(wrapped, backup->key_id()), KmsError);
+
+    ::unsetenv("FMGR_MASTER_KEK"); // NOLINT(concurrency-mt-unsafe)
+    ::unsetenv("FMGR_BACKUP_KEK"); // NOLINT(concurrency-mt-unsafe)
+  }
+
+  TEST(KmsFactory, BackupKmsNullWhenUnconfigured) {
+    ::unsetenv("CREDENTIALS_DIRECTORY"); // NOLINT(concurrency-mt-unsafe)
+    ::unsetenv("FMGR_BACKUP_KEK");       // NOLINT(concurrency-mt-unsafe)
+    EXPECT_EQ(fmgr::kms::make_backup_kms(), nullptr);
   }
 
   TEST(EnvVarKms, EnvPreviousKeysAreRetainedForUnwrap) {

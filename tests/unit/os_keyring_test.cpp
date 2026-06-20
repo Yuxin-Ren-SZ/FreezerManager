@@ -114,6 +114,32 @@ namespace {
     ::unsetenv("CREDENTIALS_DIRECTORY"); // NOLINT(concurrency-mt-unsafe)
   }
 
+  TEST_F(CredentialsDir, LoadsNamedBackupCredential) {
+    // An independent `backup_kek` in the same directory loads via the basename
+    // overload and is distinct from a `master_kek` in that directory.
+    write_raw("master_kek", kek_a_bytes());
+    write_raw("backup_kek", kek_b_bytes());
+    const auto backup = OsKeyringKms::from_credentials_dir(dir_, "backup_kek");
+    EXPECT_EQ(backup.key_id(), KeyringKms::fingerprint(kek_b_bytes()));
+    const auto dek = sample_dek();
+    EXPECT_EQ(backup.unwrap_dek(backup.wrap_dek(dek), backup.key_id()), dek);
+  }
+
+  TEST_F(CredentialsDir, NamedCredentialHonoursItsOwnRetiredKeys) {
+    const EnvVarKms producer(kek_a_bytes());
+    const WrappedDek wrapped = producer.wrap_dek(sample_dek());
+    write_raw("backup_kek", kek_b_bytes());
+    write_raw("backup_kek.prev.001", kek_a_bytes());
+    const auto backup = OsKeyringKms::from_credentials_dir(dir_, "backup_kek");
+    EXPECT_EQ(backup.key_id(), KeyringKms::fingerprint(kek_b_bytes()));
+    EXPECT_EQ(backup.unwrap_dek(wrapped, producer.key_id()), sample_dek());
+  }
+
+  TEST_F(CredentialsDir, MissingNamedCredentialFailsFast) {
+    write_raw("master_kek", kek_a_bytes()); // present, but backup_kek is not
+    EXPECT_THROW((void)OsKeyringKms::from_credentials_dir(dir_, "backup_kek"), KmsError);
+  }
+
   TEST(OsKeyringKms, MissingDirFailsFast) {
     EXPECT_THROW((void)OsKeyringKms::from_credentials_dir("/nonexistent/fmgr/creds/dir/xyz"),
                  KmsError);

@@ -2,6 +2,7 @@
 
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
+#include "cli/BackupCommands.h"
 #include "cli/BoxImport.h"
 #include "cli/CliApp.h"
 #include "cli/CreateCommands.h"
@@ -18,6 +19,7 @@
 #include "cli/SampleCsv.h"
 #include "cli/SampleImport.h"
 #include "cli/SampleQuery.h"
+#include "cli/SqliteBackup.h"
 #include "cli/UserImport.h"
 
 #include "core/audit_event.h"
@@ -1157,6 +1159,149 @@ namespace fmgr::cli {
 
       EXPECT_EQ(code, 0) << err.str();
       EXPECT_NE(out.str().find("rotated 1 of 1"), std::string::npos) << out.str();
+    }
+
+    // ---- backup (encrypted SQLite hot-copy + restore-drill) ----
+
+    constexpr const char* kBackupKekB64 = "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=";
+
+    std::filesystem::path backup_temp(const std::string& suffix) {
+      static std::atomic<std::uint64_t> counter{0};
+      return std::filesystem::temp_directory_path() /
+             ("freezermanager-backup-" + std::to_string(counter.fetch_add(1)) + suffix);
+    }
+
+    TEST(BackupTest, CreateVerifyRestoreRoundTrip) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const auto backup_kms = fmgr::kms::EnvVarKms::from_base64(kBackupKekB64);
+      const auto out = backup_temp(".fmgrbak");
+      const core::UserId actor = id_from_low<core::UserId>(10);
+      std::ostringstream sink;
+
+      const auto report = run_backup_create(fixture.backend(), fixture.db_path(), backup_kms,
+                                            out.string(), actor, sink);
+      EXPECT_TRUE(std::filesystem::exists(out));
+      EXPECT_FALSE(report.content_sha256.empty());
+
+      std::ostringstream vsink;
+      EXPECT_TRUE(run_backup_verify(out.string(), backup_kms, vsink).ok) << vsink.str();
+
+      const auto restored = backup_temp(".restored.db");
+      std::ostringstream rsink;
+      run_backup_restore(out.string(), backup_kms, restored.string(), false, actor, rsink);
+
+      // The restored database has lab A and a chain that still verifies.
+      auto backend = open_backend(BackendOptions{.sqlite_path = restored.string()});
+      auto txn = backend->begin(storage::IsolationLevel::Serializable);
+      const auto labs = txn->repo<core::Lab>().query(storage::Query<core::Lab>::all());
+      txn->commit();
+      EXPECT_TRUE(std::any_of(labs.begin(), labs.end(),
+                              [&](const core::Lab& lab) { return lab.id == fixture.lab_a(); }));
+      std::ostringstream avsink;
+      EXPECT_EQ(run_audit_verify(*backend, AuditVerifyOptions{}, avsink), 0) << avsink.str();
+      backend.reset();
+
+      std::filesystem::remove(out);
+      remove_sqlite_files(restored);
+    }
+
+    TEST(BackupTest, CreateAppendsAuditEvent) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const auto backup_kms = fmgr::kms::EnvVarKms::from_base64(kBackupKekB64);
+      const auto out = backup_temp(".fmgrbak");
+      std::ostringstream sink;
+      run_backup_create(fixture.backend(), fixture.db_path(), backup_kms, out.string(),
+                        id_from_low<core::UserId>(10), sink);
+
+      auto txn = fixture.backend().begin(storage::IsolationLevel::Serializable);
+      const auto events =
+          txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
+      txn->commit();
+      EXPECT_TRUE(std::any_of(events.begin(), events.end(), [](const core::AuditEvent& event) {
+        return event.action == "backup.create";
+      }));
+      std::filesystem::remove(out);
+    }
+
+    TEST(BackupTest, TamperedBackupFailsVerify) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const auto backup_kms = fmgr::kms::EnvVarKms::from_base64(kBackupKekB64);
+      const auto out = backup_temp(".fmgrbak");
+      std::ostringstream sink;
+      run_backup_create(fixture.backend(), fixture.db_path(), backup_kms, out.string(),
+                        id_from_low<core::UserId>(10), sink);
+
+      // Flip a byte in the ciphertext region (well past the manifest line).
+      std::vector<char> bytes;
+      {
+        std::ifstream in(out, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+      }
+      ASSERT_GT(bytes.size(), 100U);
+      bytes[bytes.size() - 5] ^= 0x01;
+      {
+        std::ofstream rewrite(out, std::ios::binary | std::ios::trunc);
+        rewrite.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+      }
+
+      std::ostringstream vsink;
+      EXPECT_FALSE(run_backup_verify(out.string(), backup_kms, vsink).ok);
+      EXPECT_NE(vsink.str().find("FAIL"), std::string::npos);
+      std::filesystem::remove(out);
+    }
+
+    TEST(BackupTest, RestoreRefusesOverwriteWithoutForce) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const auto backup_kms = fmgr::kms::EnvVarKms::from_base64(kBackupKekB64);
+      const auto out = backup_temp(".fmgrbak");
+      const core::UserId actor = id_from_low<core::UserId>(10);
+      std::ostringstream sink;
+      run_backup_create(fixture.backend(), fixture.db_path(), backup_kms, out.string(), actor,
+                        sink);
+
+      const auto dest = backup_temp(".restored.db");
+      { std::ofstream(dest) << "existing"; } // occupy the destination
+
+      std::ostringstream rsink;
+      EXPECT_THROW(run_backup_restore(out.string(), backup_kms, dest.string(), false, actor, rsink),
+                   BackupError);
+      EXPECT_NO_THROW(
+          run_backup_restore(out.string(), backup_kms, dest.string(), true, actor, rsink));
+
+      std::filesystem::remove(out);
+      remove_sqlite_files(dest);
+    }
+
+    TEST(CliAppTest, BackupCreateAndVerifyViaArgv) {
+      CliFixture fixture(BackendKind::Sqlite);
+      ::setenv("FMGR_BACKUP_KEK", kBackupKekB64, 1); // NOLINT(concurrency-mt-unsafe)
+      ::unsetenv("FMGR_BACKUP_KEK_PREVIOUS");        // NOLINT(concurrency-mt-unsafe)
+
+      const std::string sqlite_db = fixture.db_path();
+      const auto out_path = backup_temp(".fmgrbak");
+      const std::string out = out_path.string();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+
+      std::ostringstream o1;
+      std::ostringstream e1;
+      const std::vector<const char*> create_args = {"freezerctl", "backup",          "create",
+                                                    "--sqlite",   sqlite_db.c_str(), "--out",
+                                                    out.c_str(),  "--actor",         actor.c_str()};
+      const int create_code =
+          run_cli(static_cast<int>(create_args.size()), create_args.data(), o1, e1);
+      EXPECT_EQ(create_code, 0) << e1.str();
+
+      std::ostringstream o2;
+      std::ostringstream e2;
+      const std::vector<const char*> verify_args = {"freezerctl", "backup", "verify", "--in",
+                                                    out.c_str()};
+      const int verify_code =
+          run_cli(static_cast<int>(verify_args.size()), verify_args.data(), o2, e2);
+      EXPECT_EQ(verify_code, 0) << e2.str();
+      EXPECT_NE(o2.str().find("PASS"), std::string::npos);
+
+      ::unsetenv("FMGR_BACKUP_KEK"); // NOLINT(concurrency-mt-unsafe)
+      std::filesystem::remove(out_path);
     }
 
     TEST(CliAppTest, SampleImportFromFile) {

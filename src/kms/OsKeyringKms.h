@@ -27,9 +27,18 @@ namespace fmgr::kms {
     // or the active `master_kek` file is missing, or any key is not 32 bytes.
     static OsKeyringKms from_credentials_dir(const std::filesystem::path& dir);
 
+    // Load a named credential (active `<basename>`, retired `<basename>.prev.*`),
+    // so an independent key — e.g. the backup KEK at `backup_kek` (PRD §8) — can be
+    // loaded from the same directory.
+    static OsKeyringKms from_credentials_dir(const std::filesystem::path& dir,
+                                             const std::string& basename);
+
     // Load from $CREDENTIALS_DIRECTORY (set by systemd LoadCredential=). Throws
     // KmsError if the variable is unset.
     static OsKeyringKms from_systemd_credentials();
+
+    // Load a named credential from $CREDENTIALS_DIRECTORY.
+    static OsKeyringKms from_systemd_credentials(const std::string& basename);
 
   private:
     explicit OsKeyringKms(std::vector<std::uint8_t> active,

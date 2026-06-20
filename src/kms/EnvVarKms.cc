@@ -45,20 +45,26 @@ namespace fmgr::kms {
   }
 
   EnvVarKms EnvVarKms::from_env() {
+    return from_env("FMGR_MASTER_KEK", "FMGR_MASTER_KEK_PREVIOUS");
+  }
+
+  EnvVarKms EnvVarKms::from_env(const std::string& active_var, const std::string& previous_var) {
     ensure_sodium();
-    const char* active = std::getenv("FMGR_MASTER_KEK"); // NOLINT(concurrency-mt-unsafe)
+    const char* active = std::getenv(active_var.c_str()); // NOLINT(concurrency-mt-unsafe)
     if (active == nullptr || *active == '\0') {
-      throw KmsError("FMGR_MASTER_KEK is not set");
+      throw KmsError(active_var + " is not set");
     }
 
     std::vector<std::vector<std::uint8_t>> retired;
-    const char* previous = std::getenv("FMGR_MASTER_KEK_PREVIOUS"); // NOLINT(concurrency-mt-unsafe)
-    if (previous != nullptr && *previous != '\0') {
-      std::istringstream stream{std::string(previous)};
-      std::string item;
-      while (std::getline(stream, item, ',')) {
-        if (!item.empty()) {
-          retired.push_back(decode_kek_base64(item));
+    if (!previous_var.empty()) {
+      const char* previous = std::getenv(previous_var.c_str()); // NOLINT(concurrency-mt-unsafe)
+      if (previous != nullptr && *previous != '\0') {
+        std::istringstream stream{std::string(previous)};
+        std::string item;
+        while (std::getline(stream, item, ',')) {
+          if (!item.empty()) {
+            retired.push_back(decode_kek_base64(item));
+          }
         }
       }
     }
