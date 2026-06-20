@@ -4,6 +4,7 @@
 
 #include "cli/AuditCommands.h"
 #include "cli/BackendFactory.h"
+#include "cli/BackupCommands.h"
 #include "cli/BoxImport.h"
 #include "cli/CreateCommands.h"
 #include "cli/CsvImport.h"
@@ -106,6 +107,100 @@ namespace fmgr::cli {
           << " PHI sample(s) (already current " << report.current << ", failed " << report.failed
           << ")\n";
       return report.failed == 0 ? 0 : 1;
+    }
+
+    // ---- backup noun (encrypted SQLite backup / restore / restore-drill) ----
+
+    struct BackupSubcommands {
+      std::string create_sqlite;
+      std::string create_postgres;
+      std::string create_out;
+      std::string create_actor;
+      CLI::App* create{nullptr};
+
+      std::string verify_in;
+      CLI::App* verify{nullptr};
+
+      std::string restore_in;
+      std::string restore_out;
+      std::string restore_actor;
+      bool restore_force{false};
+      CLI::App* restore{nullptr};
+    };
+
+    void add_backup_noun(CLI::App& app, BackupSubcommands& backup) {
+      CLI::App* root = app.add_subcommand("backup", "Encrypted backup / restore (SQLite)");
+      root->require_subcommand(1);
+
+      backup.create = root->add_subcommand("create", "Hot-copy + encrypt the live database");
+      backup.create
+          ->add_option("--sqlite", backup.create_sqlite, "Path to the live SQLite database")
+          ->required();
+      backup.create->add_option("--postgres", backup.create_postgres,
+                                "(Postgres backup is not yet supported)");
+      backup.create->add_option("--out", backup.create_out, "Encrypted backup file to write")
+          ->required();
+      backup.create->add_option("--actor", backup.create_actor, "User UUID recorded as the actor")
+          ->required();
+
+      backup.verify =
+          root->add_subcommand("verify", "Restore-drill: check a backup decrypts and verifies");
+      backup.verify->add_option("--in", backup.verify_in, "Encrypted backup file to verify")
+          ->required();
+
+      backup.restore =
+          root->add_subcommand("restore", "Decrypt a backup to a SQLite database file");
+      backup.restore->add_option("--in", backup.restore_in, "Encrypted backup file")->required();
+      backup.restore->add_option("--out", backup.restore_out, "Database file to write")->required();
+      backup.restore->add_flag("--force", backup.restore_force, "Overwrite --out if it exists");
+      backup.restore->add_option("--actor", backup.restore_actor, "User UUID recorded as the actor")
+          ->required();
+    }
+
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<int> dispatch_backup(const BackupSubcommands& backup,
+                                                     std::ostream& out, std::ostream& err) {
+      // NOLINTEND(bugprone-easily-swappable-parameters)
+      const auto load_backup_kms = [&err]() {
+        auto provider = kms::make_backup_kms();
+        if (provider == nullptr) {
+          err << "error: no backup KEK configured (set CREDENTIALS_DIRECTORY/backup_kek "
+                 "or FMGR_BACKUP_KEK)\n";
+        }
+        return provider;
+      };
+
+      if (backup.create->parsed()) {
+        if (!backup.create_postgres.empty()) {
+          err << "error: Postgres backup is not yet supported (SQLite only in this release)\n";
+          return 1;
+        }
+        auto provider = load_backup_kms();
+        if (provider == nullptr) {
+          return 1;
+        }
+        auto backend = open_backend(backend_options_from(backup.create_sqlite, ""));
+        run_backup_create(*backend, backup.create_sqlite, *provider, backup.create_out,
+                          core::UserId::parse(backup.create_actor), out);
+        return 0;
+      }
+      if (backup.verify->parsed()) {
+        auto provider = load_backup_kms();
+        if (provider == nullptr) {
+          return 1;
+        }
+        return run_backup_verify(backup.verify_in, *provider, out).ok ? 0 : 1;
+      }
+      if (backup.restore->parsed()) {
+        auto provider = load_backup_kms();
+        if (provider == nullptr) {
+          return 1;
+        }
+        run_backup_restore(backup.restore_in, *provider, backup.restore_out, backup.restore_force,
+                           core::UserId::parse(backup.restore_actor), out);
+        return 0;
+      }
+      return std::nullopt;
     }
 
     [[nodiscard]] SampleQueryOptions to_query_options(const CommonArgs& args) {
@@ -639,6 +734,9 @@ namespace fmgr::cli {
     ImportNouns import_nouns;
     add_import_nouns(app, box_noun, item_type_noun, import_nouns);
 
+    BackupSubcommands backup_noun;
+    add_backup_noun(app, backup_noun);
+
     try {
       app.parse(argc, argv);
     } catch (const CLI::ParseError& error) {
@@ -701,6 +799,9 @@ namespace fmgr::cli {
         return *code;
       }
       if (const auto code = dispatch_import_nouns(import_nouns, out)) {
+        return *code;
+      }
+      if (const auto code = dispatch_backup(backup_noun, out, err)) {
         return *code;
       }
     } catch (const std::exception& error) {

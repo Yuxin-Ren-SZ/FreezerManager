@@ -8,8 +8,10 @@ add_library(
   freezermanager_cli
   AuditCommands.cc
   BackendFactory.cc
+  BackupCommands.cc
   CliApp.cc
   BoxImport.cc
+  SqliteBackup.cc
   CreateCommands.cc
   CsvReader.cc
   CsvWriter.cc

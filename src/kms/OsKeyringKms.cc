@@ -16,8 +16,7 @@ namespace fmgr::kms {
 
   namespace {
 
-    constexpr const char* k_active_filename = "master_kek";
-    constexpr const char* k_retired_prefix = "master_kek.prev.";
+    constexpr const char* k_default_basename = "master_kek";
 
     std::vector<std::uint8_t> read_file_bytes(const std::filesystem::path& path) {
       std::ifstream stream(path, std::ios::binary);
@@ -52,21 +51,27 @@ namespace fmgr::kms {
       : KeyringKms(std::move(active), std::move(retired)) {}
 
   OsKeyringKms OsKeyringKms::from_credentials_dir(const std::filesystem::path& dir) {
+    return from_credentials_dir(dir, k_default_basename);
+  }
+
+  OsKeyringKms OsKeyringKms::from_credentials_dir(const std::filesystem::path& dir,
+                                                  const std::string& basename) {
     std::error_code error;
     if (!std::filesystem::is_directory(dir, error)) {
       throw KmsError("credential directory does not exist: " + dir.string());
     }
-    const std::filesystem::path active_path = dir / k_active_filename;
+    const std::filesystem::path active_path = dir / basename;
     if (!std::filesystem::exists(active_path, error)) {
       throw KmsError("active KEK file is missing: " + active_path.string());
     }
     std::vector<std::uint8_t> active = load_kek(active_path);
 
     // Collect retired keys in a deterministic order (sorted by filename).
+    const std::string retired_prefix = basename + ".prev.";
     std::vector<std::filesystem::path> retired_paths;
     for (const auto& entry : std::filesystem::directory_iterator(dir, error)) {
       const std::string name = entry.path().filename().string();
-      if (name.rfind(k_retired_prefix, 0) == 0) {
+      if (name.rfind(retired_prefix, 0) == 0) {
         retired_paths.push_back(entry.path());
       }
     }
@@ -81,11 +86,15 @@ namespace fmgr::kms {
   }
 
   OsKeyringKms OsKeyringKms::from_systemd_credentials() {
+    return from_systemd_credentials(k_default_basename);
+  }
+
+  OsKeyringKms OsKeyringKms::from_systemd_credentials(const std::string& basename) {
     const char* dir = std::getenv("CREDENTIALS_DIRECTORY"); // NOLINT(concurrency-mt-unsafe)
     if (dir == nullptr || *dir == '\0') {
       throw KmsError("CREDENTIALS_DIRECTORY is not set");
     }
-    return from_credentials_dir(std::filesystem::path(dir));
+    return from_credentials_dir(std::filesystem::path(dir), basename);
   }
 
 } // namespace fmgr::kms
