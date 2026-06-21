@@ -7,6 +7,7 @@ find_package(CLI11 CONFIG REQUIRED)
 add_library(
   freezermanager_cli
   AuditCommands.cc
+  AuditCsv.cc
   BackendFactory.cc
   CliApp.cc
   BoxImport.cc

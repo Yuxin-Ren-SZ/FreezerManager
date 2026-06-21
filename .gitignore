@@ -22,3 +22,7 @@ coverage/
 .agents/
 package-lock.json
 skills-lock.json
+
+# Web build artifacts (src/web)
+src/web/node_modules/
+src/web/*.tsbuildinfo

@@ -788,6 +788,22 @@ namespace fmgr::cli {
     verify->add_option("--sqlite", audit_sqlite, "Path to a SQLite database file");
     verify->add_option("--postgres", audit_postgres, "PostgreSQL connection URL");
 
+    // audit export: chain-of-custody CSV of the audit log. The export is itself
+    // audited (PRD §7.3), so it needs an --actor; --lab scopes it to one lab.
+    std::string audit_export_sqlite;
+    std::string audit_export_postgres;
+    std::string audit_export_lab;   // optional; empty = all labs (global export)
+    std::string audit_export_actor; // required
+    std::string audit_export_out;   // optional; empty = stdout
+    CLI::App* audit_export =
+        audit->add_subcommand("export", "Export the audit log as chain-of-custody CSV");
+    audit_export->add_option("--sqlite", audit_export_sqlite, "Path to a SQLite database file");
+    audit_export->add_option("--postgres", audit_export_postgres, "PostgreSQL connection URL");
+    audit_export->add_option("--lab", audit_export_lab, "Lab UUID to scope the export to");
+    audit_export->add_option("--actor", audit_export_actor, "User UUID recorded as the exporter")
+        ->required();
+    audit_export->add_option("--out", audit_export_out, "Write CSV to this file instead of stdout");
+
     // lab create: first-run bootstrap. No --lab (it mints one); ids are
     // server-generated. Takes its own backend selector + lab/admin descriptors.
     std::string lab_sqlite;
@@ -883,6 +899,25 @@ namespace fmgr::cli {
       if (verify->parsed()) {
         auto backend = open_backend(backend_options_from(audit_sqlite, audit_postgres));
         return run_audit_verify(*backend, AuditVerifyOptions{}, out);
+      }
+      if (audit_export->parsed()) {
+        auto backend =
+            open_backend(backend_options_from(audit_export_sqlite, audit_export_postgres));
+        const AuditExportOptions export_options{
+            .lab_id = audit_export_lab.empty()
+                          ? std::nullopt
+                          : std::optional<core::LabId>(core::LabId::parse(audit_export_lab)),
+            .actor = core::UserId::parse(audit_export_actor),
+        };
+        if (audit_export_out.empty()) {
+          return run_audit_export(*backend, export_options, out);
+        }
+        std::ofstream file(audit_export_out, std::ios::binary | std::ios::trunc);
+        if (!file) {
+          err << "error: cannot open output file: " << audit_export_out << '\n';
+          return 1;
+        }
+        return run_audit_export(*backend, export_options, file);
       }
       if (lab_create->parsed()) {
         auto backend = open_backend(backend_options_from(lab_sqlite, lab_postgres));
