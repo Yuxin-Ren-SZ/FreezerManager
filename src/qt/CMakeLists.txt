@@ -24,9 +24,12 @@ set(CMAKE_AUTOMOC ON)
 # pattern used by src/cli.
 add_library(
   freezermanager_qt_lib
+  AuthServiceClient.cc
   ConfigManager.cc
   GrpcChannel.cc
+  LoginDialog.cc
   MainWindow.cc
+  SessionManager.cc
 )
 add_library(FreezerManager::qt_lib ALIAS freezermanager_qt_lib)
 
