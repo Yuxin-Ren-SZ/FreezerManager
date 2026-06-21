@@ -140,13 +140,15 @@ jobs:
         if: ${{ matrix.preset == 'dev' || matrix.preset == 'asan' || matrix.preset == 'ubsan' || matrix.preset == 'tsan' }}
         env:
           FMGR_TEST_POSTGRES_URL: postgresql://postgres:test@localhost/fmgr_test
-        # The gRPC server integration tests are excluded under asan/tsan: Conan's
-        # gRPC/absl are built without sanitizers, so they emit library-internal
-        # false positives across the instrumentation boundary. Our own code stays
-        # covered under sanitizers by the unit tests.
+        # The gRPC server integration and e2e tests are excluded under asan/tsan:
+        # Conan's gRPC/absl are built without sanitizers, so they emit
+        # library-internal false positives across the instrumentation boundary
+        # (e.g. abseil any_invocable / status-payload, gRPC epoll/combiner
+        # threads during server shutdown). Both labels spin a real gRPC server.
+        # Our own code stays covered under sanitizers by the unit tests.
         run: >
           ctest --preset ${{ matrix.preset }} --output-on-failure
-          ${{ (matrix.preset == 'asan' || matrix.preset == 'tsan') && '--label-exclude grpc_integration' || '' }}
+          ${{ (matrix.preset == 'asan' || matrix.preset == 'tsan') && '--label-exclude "grpc_integration|e2e"' || '' }}
 
       - name: Check SPDX headers
         run: tools/check-spdx-headers.sh
