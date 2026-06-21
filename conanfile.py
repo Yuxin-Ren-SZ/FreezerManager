@@ -40,3 +40,9 @@ class FreezerManagerConan(ConanFile):
         # grpc/1.78.1 pins c-ares/1.34.6; trantor (a drogon dep) wants 1.25.0.
         # Force the newer so the graph resolves to a single c-ares.
         self.requires("c-ares/1.34.6", override=True)
+        # Qt 6 (desktop client, src/qt) is intentionally NOT a Conan requirement.
+        # We dynamically link the system Qt 6 (qt6-base-dev) discovered via CMake's
+        # find_package(Qt6). This keeps the AGPL/commercial dual-license clean under
+        # Qt's LGPLv3: dynamic linking only, no static Qt bundled. Building Qt from
+        # source through Conan would also add hours to a clean build with no benefit
+        # over the distro package. See src/qt/CMakeLists.txt.

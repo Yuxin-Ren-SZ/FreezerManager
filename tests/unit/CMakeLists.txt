@@ -270,10 +270,36 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
+# Qt desktop-client unit tests. Only built when the Qt client itself was built
+# (the FreezerManager::qt_lib alias exists). Headless: no QApplication, no
+# DISPLAY — ConfigManager uses an isolated INI file and GrpcChannel connects
+# lazily, so neither needs a GUI or a live server.
+if(TARGET FreezerManager::qt_lib)
+  add_executable(
+    freezermanager_qt_unit_tests
+    qt_config_manager_test.cpp
+    qt_grpc_channel_test.cpp
+  )
+  target_link_libraries(
+    freezermanager_qt_unit_tests
+    PRIVATE
+      FreezerManager::qt_lib
+      GTest::gtest_main
+  )
+  target_include_directories(
+    freezermanager_qt_unit_tests
+    PRIVATE
+      ${CMAKE_SOURCE_DIR}/tests
+  )
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
 gtest_discover_tests(freezermanager_backup_unit_tests)
 gtest_discover_tests(freezermanager_backup_scheduler_tests)
+if(TARGET freezermanager_qt_unit_tests)
+  gtest_discover_tests(freezermanager_qt_unit_tests)
+endif()
 gtest_discover_tests(freezermanager_kms_unit_tests)
 gtest_discover_tests(freezermanager_crypto_unit_tests)
 gtest_discover_tests(freezermanager_rest_unit_tests)
