@@ -3,17 +3,24 @@
 #define FMGR_SERVER_FREEZERSERVER_H
 
 #include "auth/IAuthProvider.h"
+#include "backup/BackupRunner.h"
+#include "kms/IKmsProvider.h"
+#include "server/AuditServiceImpl.h"
 #include "server/AuthServiceImpl.h"
+#include "server/BackupScheduler.h"
 #include "server/BoxServiceImpl.h"
 #include "server/ItemTypeServiceImpl.h"
 #include "server/LabServiceImpl.h"
+#include "server/RoleServiceImpl.h"
 #include "server/SampleServiceImpl.h"
 #include "server/SessionServiceImpl.h"
+#include "server/ShareServiceImpl.h"
 #include "storage/IStorageBackend.h"
 
 #include <grpcpp/grpcpp.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace fmgr::server {
@@ -24,6 +31,15 @@ namespace fmgr::server {
     // If empty, server starts without TLS (dev mode only).
     std::string tls_cert_path;
     std::string tls_key_path;
+    // Production safety guard: when true, build() refuses to start a plaintext
+    // server. A misconfiguration that drops TLS (missing cert/key paths) then
+    // fails loudly at startup instead of silently exposing bearer tokens and
+    // PHI on the wire. Set from FMGR_REQUIRE_TLS in production deployments.
+    bool require_tls{false};
+    // When set, build() starts an in-process scheduled-backup runner
+    // (BackupScheduler) using this config plus a backup KEK from
+    // kms::make_backup_kms(). Left empty, no scheduler runs (current behavior).
+    std::optional<backup::BackupScheduleConfig> backup_schedule;
   };
 
   // Owns the gRPC server, all service impls, and manages the lifecycle.
@@ -54,15 +70,33 @@ namespace fmgr::server {
     // Only valid after build() returns.
     [[nodiscard]] int bound_port() const;
 
+    // In-memory channel to this server's services — no socket, no TLS hop. The
+    // REST gateway dials its gRPC stubs over this so a REST request reuses the
+    // same handlers (RBAC gate, audit append, transactions) as a native client.
+    // Only valid after build() returns.
+    [[nodiscard]] std::shared_ptr<grpc::Channel> in_process_channel();
+
   private:
     FreezerServerOptions opts_;
+    // The live backend, retained so build() can hand it to the backup scheduler.
+    storage::IStorageBackend& backend_;
+    // Master-key provider for PHI field encryption. Null when no key is wired
+    // (FMGR_MASTER_KEK unset): the deployment then cannot store PHI. Declared
+    // before sample_svc_ so it is constructed first (sample_svc_ borrows it).
+    std::unique_ptr<kms::IKmsProvider> kms_;
     AuthServiceImpl auth_svc_;
     SessionServiceImpl session_svc_;
     LabServiceImpl lab_svc_;
     BoxServiceImpl box_svc_;
     ItemTypeServiceImpl item_type_svc_;
     SampleServiceImpl sample_svc_;
+    RoleServiceImpl role_svc_;
+    AuditServiceImpl audit_svc_;
+    ShareServiceImpl share_svc_;
     std::unique_ptr<grpc::Server> grpc_server_;
+    // In-process scheduled-backup runner; null unless opts_.backup_schedule is set
+    // and a backup KEK is configured. Stopped/joined in shutdown() and the dtor.
+    std::unique_ptr<BackupScheduler> backup_scheduler_;
     int bound_port_{0};
   };
 

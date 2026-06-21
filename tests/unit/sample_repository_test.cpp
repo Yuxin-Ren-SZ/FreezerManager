@@ -2077,6 +2077,189 @@ namespace fmgr::storage {
       EXPECT_FALSE(errors.empty());
     }
 
+    // ---- Phase 2 continued: additional predicate and pagination coverage ----
+
+    TEST_P(SampleRepositoryTest, SampleQueryGreaterOrEqualCreatedAt) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.created_at = ts(100);
+      s1.last_modified_at = ts(100);
+
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.created_at = ts(200);
+      s2.last_modified_at = ts(200);
+
+      auto s3 = make_sample(12, lab_id, it_id, user_id);
+      s3.created_at = ts(300);
+      s3.last_modified_at = ts(300);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->repo<core::Sample>().insert(s3, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>::where(
+            greater_or_equal(field<core::Sample, std::int64_t>(core::Sample::Field::CreatedAt),
+                             ts(200).unix_micros())));
+        txn->commit();
+        ASSERT_EQ(results.size(), 2U);
+        EXPECT_EQ(results[0].created_at, ts(200));
+        EXPECT_EQ(results[1].created_at, ts(300));
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, SampleQueryLessOrEqualCreatedAt) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.created_at = ts(100);
+      s1.last_modified_at = ts(100);
+
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.created_at = ts(200);
+      s2.last_modified_at = ts(200);
+
+      auto s3 = make_sample(12, lab_id, it_id, user_id);
+      s3.created_at = ts(300);
+      s3.last_modified_at = ts(300);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->repo<core::Sample>().insert(s3, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>::where(
+            less_or_equal(field<core::Sample, std::int64_t>(core::Sample::Field::CreatedAt),
+                          ts(200).unix_micros())));
+        txn->commit();
+        ASSERT_EQ(results.size(), 2U);
+        EXPECT_EQ(results[0].created_at, ts(100));
+        EXPECT_EQ(results[1].created_at, ts(200));
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, SampleQueryInStatusPredicate) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.status = core::SampleStatus::Active;
+      // s2 gets Tombstoned — must insert first so it's live, then soft-delete.
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.status = core::SampleStatus::Active;
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().soft_delete(s2.id, mutation_context());
+        txn->commit();
+      }
+
+      const std::vector<core::SampleStatus> statuses = {core::SampleStatus::Active,
+                                                        core::SampleStatus::Tombstoned};
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results = txn->repo<core::Sample>().query(
+            Query<core::Sample>::where(
+                in(field<core::Sample, core::SampleStatus>(core::Sample::Field::Status), statuses))
+                .include_tombstoned());
+        txn->commit();
+        EXPECT_EQ(results.size(), 2U);
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, SampleQueryMultipleSortFields) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.name = "A";
+      s1.created_at = ts(300);
+      s1.last_modified_at = ts(300);
+
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.name = "A";
+      s2.created_at = ts(100);
+      s2.last_modified_at = ts(100);
+
+      auto s3 = make_sample(12, lab_id, it_id, user_id);
+      s3.name = "B";
+      s3.created_at = ts(200);
+      s3.last_modified_at = ts(200);
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->repo<core::Sample>().insert(s3, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto results = txn->repo<core::Sample>().query(
+            Query<core::Sample>::all()
+                .order_by(field<core::Sample, std::string>(core::Sample::Field::Name))
+                .order_by(field<core::Sample, std::int64_t>(core::Sample::Field::CreatedAt)));
+        txn->commit();
+        ASSERT_EQ(results.size(), 3U);
+        // name "A": sorted by CreatedAt asc → s2 (100) before s1 (300)
+        EXPECT_EQ(results[0].name, "A");
+        EXPECT_EQ(results[0].created_at, ts(100));
+        EXPECT_EQ(results[1].name, "A");
+        EXPECT_EQ(results[1].created_at, ts(300));
+        EXPECT_EQ(results[2].name, "B");
+        EXPECT_EQ(results[2].created_at, ts(200));
+      }
+    }
+
+    TEST_P(SampleRepositoryTest, SampleQueryOffsetWithoutLimit) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+
+      auto s1 = make_sample(10, lab_id, it_id, user_id);
+      s1.name = "S1";
+      auto s2 = make_sample(11, lab_id, it_id, user_id);
+      s2.name = "S2";
+      auto s3 = make_sample(12, lab_id, it_id, user_id);
+      s3.name = "S3";
+
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(s1, mutation_context());
+        txn->repo<core::Sample>().insert(s2, mutation_context());
+        txn->repo<core::Sample>().insert(s3, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        // offset without limit exercises the SQLite LIMIT -1 code path.
+        const auto results = txn->repo<core::Sample>().query(Query<core::Sample>::all().offset(1));
+        txn->commit();
+        EXPECT_EQ(results.size(), 2U);
+      }
+    }
+
     INSTANTIATE_TEST_SUITE_P(Backends, SampleRepositoryTest,
                              ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
                              [](const ::testing::TestParamInfo<BackendKind>& info) {

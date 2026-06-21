@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-blue?logo=linux)](https://kernel.org)
 [![Build](https://img.shields.io/badge/build-CMake%203.25%2B-blue?logo=cmake)](./README.md#building)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-%232088FF?logo=githubactions)](./.github/workflows)
-[![Tests](https://img.shields.io/badge/tests-817%2B%20passing-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-1080%2B%20passing-brightgreen)](./tests)
 [![Sanitizers](https://img.shields.io/badge/sanitizers-ASan%20%7C%20UBSan%20%7C%20TSan-red)](./README.md#building)
 [![SQL](https://img.shields.io/badge/backends-SQLite%20%7C%20PostgreSQL-blue?logo=postgresql)](./README.md#storage--data-safety)
 
@@ -39,11 +39,14 @@ server that is fast, correct, and safe to operate — even without a dedicated D
 - **Full chain of custody.** Aliquot lineage, check-out/check-in with volume
   tracking, and cross-lab share requests with three-signature approval.
 - **Modern toolchain.** C++20, CMake 3.25+, Conan 2 lockfiles, clang-tidy,
-  sanitizer CI builds, and TDD throughout (817+ tests).
+  sanitizer CI builds, and TDD throughout (1080+ tests).
 
 > **Status:** Pre-alpha — active implementation. Core domain, both reference
-> backends (SQLite + PostgreSQL), auth foundation, and the audit chain are
-> complete; security-remediation pass done. Next: RPC layer (gRPC) + clients.
+> backends (SQLite + PostgreSQL), auth foundation, the audit chain, the full
+> gRPC service layer (9 services), the M1 CLI/CSV surface, and the REST/JSON
+> gateway (Drogon front door over the gRPC in-process channel, all 9 services)
+> are complete; security-remediation pass done. Next: SSE streaming +
+> desktop/web/Python clients.
 > See [`doc/PRD.md`](./doc/PRD.md) for the full product requirements & design
 > document and the [Roadmap](#roadmap) below for current progress.
 
@@ -117,8 +120,9 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - 🔲 `MtlsAuthProvider` — client certs for machine/instrument clients
 - ✅ `AuthMiddleware` — 4-step RBAC gate (token → MFA → permission → lab); per-lab permission resolution; `inject_rls_vars()` sets Postgres session vars; static RPC permission registry; session expiry (12 h idle / 7 d absolute); permission-context cache (5 min TTL, invalidated on revoke **and** on `users.authz_version` bump, so role/membership downgrades take effect next request)
 - ✅ API-token scope enforcement — fail-closed scope parsing (`["*"]` = unrestricted); token restricted to its `lab_id`; disabled-user check on every validation
-- 🔲 PHI field-level encryption — per-record DEK wrapped by master KEK; `IKmsProvider` pluggable
-- 🔲 `OsKeyringKms` / `VaultKms` / `EnvVarKms` — production, Vault, and dev/test key sources
+- ⚙️ PHI field-level encryption — Sample PHI custom fields split out of the plaintext blob and AEAD-encrypted (`crypto_secretbox`) with a fresh per-record DEK wrapped by the master KEK; decrypted on read only for callers holding `phi.read`. `is_phi`∧`indexed` rejected at definition time. (Sample done; other entities 🔲)
+- ✅ `IKmsProvider` envelope KMS + keyring — `KeyringKms` holds an active KEK plus retired KEKs (records wrapped under an older KEK still decrypt during rotation); `EnvVarKms` (dev/test, `FMGR_MASTER_KEK` + `FMGR_MASTER_KEK_PREVIOUS`) and `OsKeyringKms` (production, systemd-creds `$CREDENTIALS_DIRECTORY/master_kek`). `VaultKms` 🔲
+- ✅ Key rotation — `freezerctl key rotate` re-wraps every sample's per-record DEK under the active KEK (field ciphertext untouched, no plaintext exposed); idempotent, audited. `key.rotate` permission reserved for a future online RPC
 - 🔲 TLS 1.3 only — HSTS; modern cipher suites; self-signed cert for dev, required for production
 
 ### Audit
@@ -127,25 +131,28 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ Canonical-JSON serializer (RFC 8785 / JCS) — deterministic compact form for reproducible hashes
 - ✅ Repository-derived snapshots — `before_json`/`after_json` are produced from authoritative entity state inside the repository, never supplied by the caller; no forgeable audit channel
 - ✅ Hash-chain verifier — `freezerctl audit verify` walks the chain and reports first divergence
-- 🔲 PHI-read audit kind — distinct event logged on each PHI field access (key only, never value)
+- ✅ PHI-read audit kind — distinct `action="phi.read"` chain event appended on each PHI disclosure via `ITransaction::note_phi_read`; records disclosed field key names only, never values
 - 🔲 Signed nightly checkpoints — HMAC-SHA-256 with KMS key; stored in `audit_checkpoint` table
 - 🔲 Audit export is itself audited; rows are immutable; corrections are compensating events
 
 ### Interfaces & Clients
 
-- 🔲 `.proto` definitions under `proto/` — source of truth; never edit generated code
-- 🔲 gRPC server — every RPC handler opens a transaction, does work, appends audit row, commits
-- 🔲 REST / JSON gateway — `/api/v1/*`; streaming RPCs bridged to SSE / WebSocket
+- ✅ `.proto` definitions under `proto/` — source of truth; never edit generated code; 10 service files
+- ✅ gRPC server — all 9 services; every RPC handler opens a transaction, does work, appends audit row, commits
+- ✅ REST / JSON gateway — Drogon HTTP front door at `/api/v1/*`; forwards to the gRPC services over the in-process channel (reuses the RBAC gate + audit + transactions, no logic duplicated); JSON↔proto via proto3 JSON mapping. **All 9 services wired** (Auth/Session/Lab/Sample/Box/ItemType/Role/Audit/Share) with positive/negative authz integration tests. ⚙️ SSE streaming: live audit feed
+(`GET /api/v1/audit/watch`, server-streaming `WatchAuditFeed` bridged to
+`text/event-stream`); live sample list + bulk-import progress 🔲
 - 🔲 Qt 6 desktop client — sample browser, box drag-and-drop grid, barcode-scanner focus mode, CSV import wizard
 - 🔲 React / TypeScript SPA — feature parity with Qt client; live updates via SSE
 - 🔲 `freezerctl-py` Python client — thin REST wrapper; Jupyter quick-start notebook with example plots
-- 🔲 CSV import (transactional with dry-run validation report) and export for all entity tables
+- ⚙️ CSV import — `freezerctl sample import` (transactional, all-or-nothing; `--dry-run` per-row validation report; RFC 4180 reader skips the export header block). Samples done; remaining entity tables 🔲
+- ✅ CSV export — chain-of-custody `freezerctl sample export` for samples
 
 ### Operations
 
-- 🔲 Encrypted scheduled backups — PostgreSQL: `pg_basebackup` + WAL/PITR; SQLite: hot copy + rotation
-- 🔲 Separate backup key — loss of live master key alone does not decrypt backups
-- 🔲 Weekly restore-drill — pick a random backup, restore to temp DB, run integrity checks, alert on failure
+- ⚙️ Encrypted backups — SQLite: online `sqlite3_backup` hot copy, stream-encrypted (`crypto_secretstream`) under a separate backup KEK, with a content-hash manifest (`freezerctl backup create` / `restore`). In-server scheduled runner (`BackupScheduler`, enabled by `FMGR_BACKUP_DIR`) + GFS retention (default 30 daily / 12 monthly / 7 yearly) + `freezerctl backup run | list` ✅. PostgreSQL backup 🔲
+- ✅ Separate backup key — `IKmsProvider` backup KEK (`kms::make_backup_kms`: `backup_kek` systemd-cred / `FMGR_BACKUP_KEK`), independent of the master KEK, so loss of the live master key alone does not decrypt backups
+- ✅ Restore-drill — `freezerctl backup verify` decrypts a backup, runs `PRAGMA integrity_check`, and verifies its audit hash chain; never throws on a bad backup (reports FAIL) so it is schedule-safe. Weekly automated drill (random-backup pick, `backup.drill` audit, error-level page on failure) runs inside `BackupScheduler` and on each `backup run`
 - 🔲 Prometheus `/metrics` — RPC latency histograms, error rates, audit append latency, backup status
 - 🔲 OpenTelemetry tracing — opt-in via `FMGR_OTLP_ENDPOINT` env var
 - 🔲 Structured JSON logs to stdout — journald-friendly; PHI never written to logs
@@ -159,8 +166,8 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ clang-format + clang-tidy enforced in CI; SPDX header checks on every source file
 - ✅ CLA Assistant Lite bot — required before any PR is merged
 - ✅ Abstract backend conformance suite — parameterized GoogleTest fixtures; new backend = pass the suite (SQLite + in-memory pass; Postgres suite skips without `FMGR_TEST_POSTGRES_URL`)
-- 🔲 Property tests (RapidCheck) — box geometry invariants, audit-chain integrity
-- 🔲 Fuzz harnesses (libFuzzer) — RPC parsers, custom-field validator, CSV importer, canonical-JSON serializer
+- ⚙️ Property tests (RapidCheck) — box geometry invariants (no-double-booking), audit-chain integrity (intact/tampered)
+- ⚙️ Fuzz harnesses — rate-limiter invariants, UUID generation, custom-field validator crash-safety; CSV importer, canonical-JSON serializer 🔲
 - ⚙️ Authorization tests — `AuthMiddleware` 4-step gate covered in `auth_middleware_test.cpp`; per-RPC positive/negative tests land with the gRPC server
 
 ---
@@ -175,12 +182,12 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
 | **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3) | ✅ Complete |
 | **C5 — PostgreSQL backend** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0013 + RLS policies + full domain repositories; conformance + repository suites green against live `postgres:16` in CI | ✅ Complete |
-| **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, `freezerctl` skeleton + `audit verify` ✅; CSV import + remaining CLI nouns 🔲 | ⚙️ In progress |
-| **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots — see [`doc/HANDOFF_2026-06-07.md`](./doc/HANDOFF_2026-06-07.md) | ✅ Complete |
+| **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅, freezer/box/item-type `list` + `inspect` ✅, CLI `create` nouns (6 entities) ✅, non-sample CSV import (item-type/box/custom-field-def/user) ✅ | ✅ Complete |
+| **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots | ✅ Complete |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
-| **M3 — gRPC + Qt client** | Proto definitions, gRPC server, REST gateway, Qt 6 desktop client — first end-to-end usable build | 🔲 Planned |
+| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, SSE streaming — live audit feed ✅ (sample list + import progress 🔲), Qt 6 desktop client 🔲 | ⚙️ In progress |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
-| **M5 — PHI + KMS + Backups** | Field-level encryption, KMS adapters, backup/restore, weekly restore-drill | 🔲 Planned |
+| **M5 — PHI + KMS + Backups** | Sample PHI field-level encryption ✅, `IKmsProvider` + `EnvVarKms` + `OsKeyringKms` (keyring) ✅, PHI-read audit kind ✅, key rotation (`freezerctl key rotate`) ✅, separate backup KEK ✅, encrypted SQLite backup/restore + restore-drill verify (`freezerctl backup`) ✅, in-server scheduled backups + GFS retention + weekly restore drill (`BackupScheduler`, `freezerctl backup run | list`) ✅; `VaultKms`, Postgres backup 🔲 | ⚙️ In progress |
 | **M6 — Public API & Sharing** | API tokens, `freezerctl-py`, cross-lab share-request workflow | 🔲 Planned |
 | **M7 — Polish & 1.0** | OIDC + LDAP auth, `.deb` / `.rpm` / Docker packaging, external security review | 🔲 Planned |
 

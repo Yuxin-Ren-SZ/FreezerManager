@@ -9,9 +9,19 @@ add_library(
   AuditCommands.cc
   BackendFactory.cc
   CliApp.cc
+  BoxImport.cc
+  CreateCommands.cc
+  CsvReader.cc
   CsvWriter.cc
+  CustomFieldDefImport.cc
+  ItemTypeImport.cc
+  KeyCommands.cc
+  LabCommands.cc
+  NounCommands.cc
+  UserImport.cc
   SampleCommands.cc
   SampleCsv.cc
+  SampleImport.cc
   SampleQuery.cc
 )
 add_library(FreezerManager::cli ALIAS freezermanager_cli)
@@ -27,8 +37,11 @@ target_link_libraries(
   PUBLIC
     FreezerManager::core
     FreezerManager::audit
+    FreezerManager::backup
     FreezerManager::storage_sqlite
     FreezerManager::storage_postgres
+    FreezerManager::crypto
+    FreezerManager::kms
   PRIVATE
     CLI11::CLI11
 )

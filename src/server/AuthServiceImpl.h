@@ -5,6 +5,7 @@
 #include "auth/AuthTypes.h"
 #include "auth/IAuthProvider.h"
 #include "rpc/AuthMiddleware.h"
+#include "rpc/RateLimiter.h"
 #include "storage/IStorageBackend.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
@@ -14,6 +15,11 @@ namespace fmgr::server {
 
   class AuthServiceImpl final : public fmgr::v1::AuthService::Service {
   public:
+    // Default token-bucket budget for unauthenticated Login attempts per source
+    // IP. Referenced by tests so the limit stays in lockstep with the handler.
+    static constexpr double k_login_rate_capacity = 30.0;
+    static constexpr double k_login_rate_refill_per_sec = 5.0;
+
     explicit AuthServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend);
 
     grpc::Status Login(grpc::ServerContext* ctx, const fmgr::v1::LoginRequest* req,
@@ -40,6 +46,8 @@ namespace fmgr::server {
     auth::IAuthProvider& auth_;
     storage::IStorageBackend& backend_;
     rpc::AuthMiddleware middleware_;
+    // Throttles unauthenticated Login attempts per source IP (audit H-1).
+    rpc::RateLimiter login_limiter_;
   };
 
 } // namespace fmgr::server

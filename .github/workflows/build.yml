@@ -105,7 +105,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.conan2
-          key: conan-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ hashFiles('conanfile.txt', 'conan.lock') }}
+          key: conan-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ hashFiles('conanfile.py', 'conan.lock') }}
           restore-keys: |
             conan-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-
             conan-${{ runner.os }}-
@@ -140,13 +140,15 @@ jobs:
         if: ${{ matrix.preset == 'dev' || matrix.preset == 'asan' || matrix.preset == 'ubsan' || matrix.preset == 'tsan' }}
         env:
           FMGR_TEST_POSTGRES_URL: postgresql://postgres:test@localhost/fmgr_test
-        # The gRPC server integration tests are excluded under asan/tsan: Conan's
-        # gRPC/absl are built without sanitizers, so they emit library-internal
-        # false positives across the instrumentation boundary. Our own code stays
-        # covered under sanitizers by the unit tests.
+        # The gRPC server integration and e2e tests are excluded under asan/tsan:
+        # Conan's gRPC/absl are built without sanitizers, so they emit
+        # library-internal false positives across the instrumentation boundary
+        # (e.g. abseil any_invocable / status-payload, gRPC epoll/combiner
+        # threads during server shutdown). Both labels spin a real gRPC server.
+        # Our own code stays covered under sanitizers by the unit tests.
         run: >
           ctest --preset ${{ matrix.preset }} --output-on-failure
-          ${{ (matrix.preset == 'asan' || matrix.preset == 'tsan') && '--label-exclude grpc_integration' || '' }}
+          ${{ (matrix.preset == 'asan' || matrix.preset == 'tsan') && '--label-exclude "grpc_integration|e2e"' || '' }}
 
       - name: Check SPDX headers
         run: tools/check-spdx-headers.sh
@@ -166,7 +168,10 @@ jobs:
           # prebuilt). The trailing regex (Python re.search, negative lookahead)
           # excludes the protoc/grpc-generated .pb.cc / .grpc.pb.cc translation
           # units, which are not ours to lint.
-          run-clang-tidy-17 -p out/build/dev -j "$(nproc)" -quiet '^(?!.*proto_generated).*$'
+          # Cap parallelism at 2: each clang-tidy process can consume 2–4 GB with
+          # the full check set enabled; -j $(nproc) easily OOMs a runner with
+          # 16 GB RAM (same constraint as the build step above).
+          run-clang-tidy-17 -p out/build/dev -j 2 -quiet '^(?!.*proto_generated).*$'
 
       - name: Coverage tooling
         if: ${{ matrix.preset == 'dev' }}

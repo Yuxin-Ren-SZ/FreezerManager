@@ -780,6 +780,16 @@ INSERT INTO role_permissions (role_id, permission_key) VALUES
     });
   }
 
+  void PostgresTransaction::note_phi_read(const std::string& entity_kind,
+                                          const std::string& entity_id,
+                                          const MutationContext& context,
+                                          const std::vector<std::string>& field_keys) {
+    // Records key names only; the disclosed values never enter the audit chain.
+    note_mutation(
+        entity_kind, entity_id, context, "phi.read",
+        AuditSnapshot{.before = std::nullopt, .after = nlohmann::json{{"phi_keys", field_keys}}});
+  }
+
   void PostgresTransaction::commit() {
     if (impl_->completed) {
       throw ConstraintViolation("postgres transaction already completed");

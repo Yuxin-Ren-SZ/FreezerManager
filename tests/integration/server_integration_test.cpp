@@ -4,6 +4,7 @@
 #include "core/identity.h"
 #include "core/role.h"
 #include "server/FreezerServer.h"
+#include "server/GrpcErrorTranslation.h"
 #include "storage/IdentityTraits.h"
 #include "storage/RoleTraits.h"
 #include "storage/SessionTraits.h"
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 
@@ -115,7 +117,7 @@ namespace fmgr::test {
       }
 
       const std::string kEmail{"admin@example.com"};
-      const std::string kPassword{"hunter2"};
+      const std::string kPassword{"hunter22"};
 
       std::filesystem::path db_path_;
       std::unique_ptr<storage::SqliteBackend> backend_;
@@ -340,6 +342,79 @@ namespace fmgr::test {
       // + 6 (ShareService) = 70 RPCs
       EXPECT_GE(registry.size(), 60U) << "RPC registry smaller than expected; "
                                          "a new service may have been added without registering.";
+    }
+
+    // Security audit H-1: a burst of Login attempts from one source is throttled
+    // with RESOURCE_EXHAUSTED once the per-IP token bucket drains, regardless of
+    // which account each attempt targets.
+    TEST_F(ServerIntegrationTest, LoginBurstFromOneSourceIsRateLimited) {
+      const int attempts = static_cast<int>(server::AuthServiceImpl::k_login_rate_capacity) + 20;
+      int unauthenticated = 0;
+      int resource_exhausted = 0;
+      for (int i = 0; i < attempts; ++i) {
+        grpc::ClientContext ctx;
+        fmgr::v1::LoginRequest req;
+        req.set_email("sprayed-" + std::to_string(i) + "@example.com");
+        req.set_password("wrong-password");
+        fmgr::v1::LoginResponse resp;
+        const auto status = auth_stub_->Login(&ctx, req, &resp);
+        if (status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED) {
+          ++resource_exhausted;
+        } else if (status.error_code() == grpc::StatusCode::UNAUTHENTICATED) {
+          ++unauthenticated;
+        }
+      }
+      // The first ~capacity attempts reach the auth layer (wrong creds ->
+      // UNAUTHENTICATED); the overflow is throttled before any work is done.
+      EXPECT_GT(unauthenticated, 0);
+      EXPECT_GT(resource_exhausted, 0);
+    }
+
+    // Security audit H-2: a production deployment that requires TLS must refuse
+    // to start a plaintext listener if the cert/key paths are missing.
+    TEST(FreezerServerTlsGuard, RequireTlsWithoutCertThrowsBeforeBinding) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      backend.migrate_to_latest();
+      auth::LocalAuthProvider provider(backend, fast_config());
+
+      server::FreezerServerOptions opts;
+      opts.listen_address = "localhost:0";
+      opts.require_tls = true; // cert/key paths intentionally left empty
+
+      server::FreezerServer server(backend, provider, std::move(opts));
+      EXPECT_THROW(server.build(), std::invalid_argument);
+      // bound_port() stays 0 — the guard fired before AddListeningPort.
+      EXPECT_EQ(server.bound_port(), 0);
+    }
+
+    // Security audit H-3: the error funnel must log internal detail server-side
+    // (now via spdlog) but never leak it to the client-facing status message.
+    TEST(GrpcErrorTranslation, UnknownExceptionMapsToGenericInternalWithoutLeak) {
+      grpc::Status status;
+      try {
+        throw std::runtime_error("table=users column=ssn value=secret-detail");
+      } catch (...) {
+        status = server::current_exception_to_grpc_status();
+      }
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL);
+      EXPECT_EQ(status.error_message(), "internal server error");
+      EXPECT_EQ(status.error_message().find("ssn"), std::string::npos);
+      EXPECT_EQ(status.error_message().find("secret-detail"), std::string::npos);
+    }
+
+    TEST(FreezerServerTlsGuard, NoRequireTlsStartsPlaintextInDevMode) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      backend.migrate_to_latest();
+      auth::LocalAuthProvider provider(backend, fast_config());
+
+      server::FreezerServerOptions opts;
+      opts.listen_address = "localhost:0";
+      opts.require_tls = false;
+
+      server::FreezerServer server(backend, provider, std::move(opts));
+      EXPECT_NO_THROW(server.build());
+      EXPECT_GT(server.bound_port(), 0);
+      server.shutdown();
     }
 
   } // namespace

@@ -15,6 +15,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <typeindex>
 #include <typeinfo>
 #include <unordered_map>
@@ -294,7 +295,7 @@ namespace fmgr::storage {
 
   template <typename Entity, typename Value>
   [[nodiscard]] Predicate<Entity> operator==(FieldRef<Entity, Value> field_ref,
-                                             const Value& value) {
+                                             const std::type_identity_t<Value>& value) {
     return Predicate<Entity>{
         .field = field_ref.field(),
         .op = PredicateOperator::Equal,
@@ -405,6 +406,34 @@ namespace fmgr::storage {
     // Set a backend-specific session variable. No-op for SQLite; PostgresTransaction
     // overrides this to issue "SET LOCAL app.<key> = '<value>'" for RLS.
     virtual void set_session_var(std::string_view /*key*/, std::string_view /*value*/) {}
+
+    // Append a PHI-read audit event (PRD §7.3). Unlike note_mutation this records a
+    // *read*: it carries the disclosed PHI field KEY NAMES only — never the values
+    // (PRD §17 redaction). The action is fixed to "phi.read" and the event joins the
+    // same hash chain at commit. The default throws so a backend that has no audit
+    // chain cannot silently drop a PHI-access record.
+    virtual void note_phi_read(const std::string& /*entity_kind*/, const std::string& /*entity_id*/,
+                               const MutationContext& /*context*/,
+                               const std::vector<std::string>& /*field_keys*/) {
+      throw UnsupportedOperation("note_phi_read is not supported by this backend");
+    }
+
+    // Record a mutation (or a non-domain event such as a `backup.*` record) for the
+    // audit chain written at commit time. The snapshot is server-derived, never
+    // caller-supplied PHI. The default throws so a backend with no audit chain
+    // cannot silently drop the record; SqliteTransaction / PostgresTransaction
+    // override it. Declared here so callers holding only an ITransaction& (e.g. the
+    // backup engines) can append regardless of the concrete backend.
+    // By-value parameters match the overriding signatures, which move them into
+    // the pending-audit record; the throwing default ignores them.
+    // NOLINTBEGIN(performance-unnecessary-value-param)
+    virtual void note_mutation(std::string /*entity_kind*/, std::string /*entity_id*/,
+                               const MutationContext& /*context*/,
+                               std::string /*action*/ = "mutation",
+                               AuditSnapshot /*snapshot*/ = {}) {
+      throw UnsupportedOperation("note_mutation is not supported by this backend");
+    }
+    // NOLINTEND(performance-unnecessary-value-param)
 
     template <typename Entity> IRepository<Entity>& repo() {
       const auto iterator = repositories_.find(std::type_index(typeid(Entity)));

@@ -4,12 +4,16 @@
 
 #include "cli/SampleCsv.h"
 #include "core/custom_field_validator.h"
+#include "core/identity.h"
 #include "core/permissions.h"
 #include "core/quantity.h"
 #include "core/sample.h"
+#include "core/uuid.h"
+#include "crypto/FieldCipher.h"
 #include "server/GrpcErrorTranslation.h"
 #include "storage/CustomFieldResolver.h"
 #include "storage/IStorageBackend.h"
+#include "storage/IdentityTraits.h"
 #include "storage/SampleOps.h"
 #include "storage/SampleTraits.h"
 
@@ -23,10 +27,11 @@
 #include <cstdio>
 #include <ctime>
 #include <optional>
-#include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fmgr::server {
   namespace {
@@ -57,29 +62,10 @@ namespace fmgr::server {
       return {buf.data()};
     }
 
-    // RFC 4122 version-4 UUID from a non-deterministic entropy source. IDs must be
-    // unguessable but need not be cryptographically secret (see LabServiceImpl).
-    [[nodiscard]] std::string generate_uuid_v4() {
-      std::random_device rng;
-      std::array<std::uint8_t, 16> bytes{};
-      for (std::size_t i = 0; i < bytes.size(); i += 4) {
-        const std::uint32_t word = rng();
-        bytes[i] = static_cast<std::uint8_t>(word & 0xFFU);
-        bytes[i + 1] = static_cast<std::uint8_t>((word >> 8U) & 0xFFU);
-        bytes[i + 2] = static_cast<std::uint8_t>((word >> 16U) & 0xFFU);
-        bytes[i + 3] = static_cast<std::uint8_t>((word >> 24U) & 0xFFU);
-      }
-      bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U); // version 4
-      bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U); // variant
-      std::array<char, 37> buf{};
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
-      std::snprintf(buf.data(), buf.size(),
-                    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                    bytes[15]);
-      return {buf.data()};
-    }
+    // Entity IDs are minted from the libsodium CSPRNG via core::generate_uuid_v4
+    // so they are unguessable on every platform — std::random_device may degrade
+    // to a deterministic engine on some targets (security audit C-1 / review F-2).
+    using core::generate_uuid_v4;
 
     // ---- SampleStatus / CheckoutAction mapping ----
     //
@@ -179,16 +165,27 @@ namespace fmgr::server {
       out->set_custom_fields_json(sample.custom_fields_json);
     }
 
-    // Throws ConstraintViolation listing every custom-field validation error, so
-    // the RPC surfaces as INVALID_ARGUMENT. `custom_fields_json` may be empty
-    // (treated as an empty object).
-    void validate_sample_custom_fields(storage::ITransaction& txn, const core::LabId& lab_id,
-                                       const core::ItemTypeId& item_type_id,
-                                       const std::string& custom_fields_json) {
+    // Outcome of partitioning an incoming custom-field blob into the plaintext
+    // (non-PHI) column and the encrypted PHI envelope.
+    struct PreparedCustomFields {
+      std::string custom_fields_json{"{}"};  // non-PHI, validated
+      std::string phi_fields_enc_json{"{}"}; // AEAD envelope; "{}" when no PHI
+    };
+
+    // Validate the combined incoming custom fields, then split them: PHI-tagged
+    // keys are encrypted into the envelope under a fresh per-record DEK, the rest
+    // stay in the plaintext column. Throws ConstraintViolation (→ INVALID_ARGUMENT)
+    // on validation failure or when a PHI value is supplied for a lab that has PHI
+    // mode disabled. Throws when PHI is supplied but no KMS is configured.
+    PreparedCustomFields prepare_custom_fields(storage::ITransaction& txn,
+                                               const core::LabId& lab_id,
+                                               const core::ItemTypeId& item_type_id,
+                                               const std::string& incoming_json,
+                                               const kms::IKmsProvider* kms) {
       const auto definitions = storage::resolve_custom_field_defs(txn, lab_id, item_type_id);
-      const auto fields = custom_fields_json.empty() ? nlohmann::json::object()
-                                                     : nlohmann::json::parse(custom_fields_json);
-      const auto errors = core::validate_custom_fields(definitions, fields);
+      const auto incoming =
+          incoming_json.empty() ? nlohmann::json::object() : nlohmann::json::parse(incoming_json);
+      const auto errors = core::validate_custom_fields(definitions, incoming);
       if (!errors.empty()) {
         std::string message = "custom field validation failed:";
         for (const auto& error : errors) {
@@ -196,12 +193,79 @@ namespace fmgr::server {
         }
         throw storage::ConstraintViolation(message);
       }
+
+      std::set<std::string> phi_keys;
+      for (const auto& def : definitions) {
+        if (def.is_phi) {
+          phi_keys.insert(def.key);
+        }
+      }
+
+      PreparedCustomFields prepared;
+      nlohmann::json non_phi = nlohmann::json::object();
+      crypto::PhiFields phi;
+      if (incoming.is_object()) {
+        for (const auto& [key, value] : incoming.items()) {
+          if (phi_keys.contains(key)) {
+            phi.emplace(key, value);
+          } else {
+            non_phi[key] = value;
+          }
+        }
+      }
+      prepared.custom_fields_json = non_phi.dump();
+
+      if (!phi.empty()) {
+        const auto lab = txn.repo<core::Lab>().find_by_id(lab_id);
+        if (!lab.has_value() || !lab->is_phi_enabled) {
+          throw storage::ConstraintViolation(
+              "PHI custom fields supplied but PHI mode is disabled for this lab");
+        }
+        if (kms == nullptr) {
+          // Server misconfiguration, not a client error: no master key is wired.
+          throw std::runtime_error(
+              "server is not configured with a master key; cannot store PHI fields");
+        }
+        prepared.phi_fields_enc_json = crypto::encrypt(phi, *kms);
+      }
+      return prepared;
+    }
+
+    // If the caller holds phi.read for the sample's lab and the sample carries a
+    // PHI envelope, decrypt it, merge the PHI fields into the response's
+    // custom_fields_json, and return the disclosed key names (for the PHI-read
+    // audit event). Returns empty when there is no PHI, no permission, or no KMS.
+    std::vector<std::string> reveal_phi(fmgr::v1::Sample* out, const core::Sample& sample,
+                                        const auth::SessionContext& sctx,
+                                        const kms::IKmsProvider* kms) {
+      if (sample.phi_fields_enc_json.empty() || sample.phi_fields_enc_json == "{}") {
+        return {};
+      }
+      if (kms == nullptr || !sctx.has_for_lab(sample.lab_id, core::Permission::PhiRead)) {
+        return {}; // PHI stays hidden; no decryption attempted.
+      }
+      const crypto::PhiFields phi = crypto::decrypt(sample.phi_fields_enc_json, *kms);
+      if (phi.empty()) {
+        return {};
+      }
+      auto merged = sample.custom_fields_json.empty()
+                        ? nlohmann::json::object()
+                        : nlohmann::json::parse(sample.custom_fields_json);
+      std::vector<std::string> disclosed;
+      disclosed.reserve(phi.size());
+      for (const auto& [key, value] : phi) {
+        merged[key] = value;
+        disclosed.push_back(key);
+      }
+      out->set_custom_fields_json(merged.dump());
+      return disclosed;
     }
 
   } // namespace
 
-  SampleServiceImpl::SampleServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend)
-      : auth_(auth), backend_(backend), middleware_(auth) {
+  SampleServiceImpl::SampleServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend,
+                                       kms::IKmsProvider* kms)
+      : auth_(auth), backend_(backend), kms_(kms), middleware_(auth) {
     using P = core::Permission;
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ListSamples", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/GetSample", P::SampleRead);
@@ -218,9 +282,12 @@ namespace fmgr::server {
                                               const fmgr::v1::ListSamplesRequest* req,
                                               fmgr::v1::ListSamplesResponse* resp) {
     try {
+      // Authenticate before touching request fields: a missing/invalid token must
+      // surface as UNAUTHENTICATED, not as a downstream INTERNAL from parsing an
+      // (unvalidated) empty lab_id.
+      const auto bearer = extract_bearer(*ctx);
       const auto lab_id = core::LabId::parse(req->lab_id());
-      const auto sctx =
-          middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
+      const auto sctx = middleware_.authorize(bearer, core::Permission::SampleRead, lab_id);
 
       auto query = storage::Query<core::Sample>::where(
           storage::field<core::Sample, std::string>(core::Sample::Field::LabId) ==
@@ -260,11 +327,18 @@ namespace fmgr::server {
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
       const auto samples = txn->repo<core::Sample>().query(query);
-      txn->commit();
 
       for (const auto& sample : samples) {
-        fill_sample(resp->add_samples(), sample);
+        auto* out = resp->add_samples();
+        fill_sample(out, sample);
+        const auto disclosed = reveal_phi(out, sample, sctx, kms_);
+        if (!disclosed.empty()) {
+          auto ctx = make_ctx(sctx, "list_samples");
+          ctx.lab_id = sample.lab_id.to_string();
+          txn->note_phi_read("sample", sample.id.to_string(), ctx, disclosed);
+        }
       }
+      txn->commit();
       // A full page implies there may be more; hand back the next offset.
       if (page_size > 0 && samples.size() == static_cast<std::size_t>(page_size)) {
         resp->mutable_page()->set_next_page_token(std::to_string(offset + samples.size()));
@@ -288,7 +362,6 @@ namespace fmgr::server {
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
       const auto sample = txn->repo<core::Sample>().find_by_id(sample_id);
-      txn->commit();
 
       // find_by_id returns tombstoned rows; treat them as not found (soft-delete).
       if (!sample.has_value() || sample->status == core::SampleStatus::Tombstoned) {
@@ -297,7 +370,15 @@ namespace fmgr::server {
       if (!sctx.has_for_lab(sample->lab_id, core::Permission::SampleRead)) {
         throw auth::PermissionDenied("sample.read required for this lab");
       }
-      fill_sample(resp->mutable_sample(), *sample);
+      auto* out = resp->mutable_sample();
+      fill_sample(out, *sample);
+      const auto disclosed = reveal_phi(out, *sample, sctx, kms_);
+      if (!disclosed.empty()) {
+        auto ctx = make_ctx(sctx, "get_sample");
+        ctx.lab_id = sample->lab_id.to_string();
+        txn->note_phi_read("sample", sample->id.to_string(), ctx, disclosed);
+      }
+      txn->commit();
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();
@@ -361,7 +442,10 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      validate_sample_custom_fields(*txn, lab_id, item_type_id, sample.custom_fields_json);
+      const auto prepared =
+          prepare_custom_fields(*txn, lab_id, item_type_id, req->custom_fields_json(), kms_);
+      sample.custom_fields_json = prepared.custom_fields_json;
+      sample.phi_fields_enc_json = prepared.phi_fields_enc_json;
       txn->repo<core::Sample>().insert(sample, make_ctx(sctx, "create_sample"));
       txn->commit();
 
@@ -428,12 +512,13 @@ namespace fmgr::server {
           wire.has_parent_sample_id()
               ? std::optional<core::SampleId>{core::SampleId::parse(wire.parent_sample_id())}
               : std::nullopt;
-      existing->custom_fields_json =
-          wire.custom_fields_json().empty() ? "{}" : wire.custom_fields_json();
+      const auto prepared =
+          prepare_custom_fields(*txn, lab_id, item_type_id, wire.custom_fields_json(), kms_);
+      existing->custom_fields_json = prepared.custom_fields_json;
+      existing->phi_fields_enc_json = prepared.phi_fields_enc_json;
       existing->last_modified_by = sctx.user_id;
       existing->last_modified_at = now_timestamp();
 
-      validate_sample_custom_fields(*txn, lab_id, item_type_id, existing->custom_fields_json);
       txn->repo<core::Sample>().update(*existing, make_ctx(sctx, "update_sample"));
       txn->commit();
 
@@ -554,9 +639,12 @@ namespace fmgr::server {
                                                    const fmgr::v1::ExportSamplesCsvRequest* req,
                                                    fmgr::v1::ExportSamplesCsvResponse* resp) {
     try {
+      // Authenticate before touching request fields: a missing/invalid token must
+      // surface as UNAUTHENTICATED, not as a downstream INTERNAL from parsing an
+      // (unvalidated) empty lab_id.
+      const auto bearer = extract_bearer(*ctx);
       const auto lab_id = core::LabId::parse(req->lab_id());
-      const auto sctx =
-          middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
+      const auto sctx = middleware_.authorize(bearer, core::Permission::SampleRead, lab_id);
 
       auto query = storage::Query<core::Sample>::where(
           storage::field<core::Sample, std::string>(core::Sample::Field::LabId) ==

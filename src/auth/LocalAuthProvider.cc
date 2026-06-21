@@ -68,11 +68,37 @@ namespace fmgr::auth {
             perms.insert(core::parse_permission(item.get<std::string>()));
             // NOLINTNEXTLINE(bugprone-empty-catch)
           } catch (const std::exception&) {
-            // Unknown permission keys are silently skipped.
+            // Unknown permission keys are silently skipped here; create-time
+            // validation (validate_scope_json) rejects them up front so this only
+            // ever sees keys that were valid when the token was minted.
           }
         }
       }
       return perms;
+    }
+
+    // Validate an API-token scope at creation time. A scope is either the ["*"]
+    // sentinel or a JSON array of known permission keys. A typo would otherwise
+    // silently yield a zero-permission token (see security-audit-2026-06-12 #5).
+    void validate_scope_json(const std::string& scope_json) {
+      const auto parsed = nlohmann::json::parse(scope_json, nullptr, false);
+      if (!parsed.is_array()) {
+        throw storage::ConstraintViolation("scope_json must be a JSON array of permission keys");
+      }
+      if (parsed.size() == 1 && parsed[0].is_string() && parsed[0].get<std::string>() == "*") {
+        return;
+      }
+      for (const auto& item : parsed) {
+        if (!item.is_string()) {
+          throw storage::ConstraintViolation("scope_json entries must be permission-key strings");
+        }
+        try {
+          (void)core::parse_permission(item.get<std::string>());
+        } catch (const std::exception&) {
+          throw storage::ConstraintViolation("unknown permission key in scope: " +
+                                             item.get<std::string>());
+        }
+      }
     }
 
     struct ScopedPermissionGrants {
@@ -170,6 +196,11 @@ namespace fmgr::auth {
   // ---- Public: hash_password ----
 
   std::string LocalAuthProvider::hash_password(std::string_view plaintext) const {
+    if (plaintext.size() < config_.min_password_length) {
+      throw storage::ConstraintViolation("password must be at least " +
+                                         std::to_string(config_.min_password_length) +
+                                         " characters");
+    }
     std::array<char, crypto_pwhash_STRBYTES> hash{};
     if (crypto_pwhash_str(hash.data(), plaintext.data(), plaintext.size(), config_.pwhash_opslimit,
                           config_.pwhash_memlimit) != 0) {
@@ -718,14 +749,45 @@ namespace fmgr::auth {
 
   void LocalAuthProvider::record_failure(const std::string& lower_email) {
     std::scoped_lock lock(lockout_mutex_);
+    const auto now = now_timestamp();
     auto& state = lockout_map_[lower_email];
     ++state.failure_count;
+    state.last_activity = now;
     if (state.failure_count >= config_.max_failures_before_lockout) {
-      const auto unlock_micros = std::chrono::duration_cast<std::chrono::microseconds>(
-                                     std::chrono::system_clock::now().time_since_epoch())
-                                     .count() +
-                                 (config_.lockout_duration_seconds * 1'000'000LL);
+      const auto unlock_micros =
+          now.unix_micros() + (config_.lockout_duration_seconds * 1'000'000LL);
       state.locked_until = core::Timestamp::from_unix_micros(unlock_micros);
+    }
+    evict_stale_lockouts(lower_email, now);
+  }
+
+  // Bound lockout_map_ memory. Drops entries whose lock has expired and unlocked
+  // entries idle past the lockout window; if still over the configured cap, drops
+  // remaining unlocked entries. Active locks (the security-relevant state) and the
+  // entry just touched are always retained. Caller must hold lockout_mutex_.
+  void LocalAuthProvider::evict_stale_lockouts(const std::string& keep_email, core::Timestamp now) {
+    const std::int64_t window_micros = config_.lockout_duration_seconds * 1'000'000LL;
+    for (auto iter = lockout_map_.begin(); iter != lockout_map_.end();) {
+      const auto& st = iter->second;
+      const bool lock_expired = st.locked_until.has_value() && now >= *st.locked_until;
+      const bool idle = !st.locked_until.has_value() &&
+                        (now.unix_micros() - st.last_activity.unix_micros()) > window_micros;
+      if (iter->first != keep_email && (lock_expired || idle)) {
+        iter = lockout_map_.erase(iter);
+      } else {
+        ++iter;
+      }
+    }
+    if (lockout_map_.size() <= config_.max_lockout_entries) {
+      return;
+    }
+    for (auto iter = lockout_map_.begin();
+         iter != lockout_map_.end() && lockout_map_.size() > config_.max_lockout_entries;) {
+      if (iter->first != keep_email && !iter->second.locked_until.has_value()) {
+        iter = lockout_map_.erase(iter);
+      } else {
+        ++iter;
+      }
     }
   }
 
@@ -758,6 +820,7 @@ namespace fmgr::auth {
                                                      std::optional<core::LabId> lab_id,
                                                      std::optional<core::Timestamp> expires_at,
                                                      const storage::MutationContext& ctx) {
+    validate_scope_json(scope_json);
     const auto hex = generate_token();
     const auto plaintext = "fmgr_pat_" + hex;
     const auto prefix = prefix_of(plaintext);

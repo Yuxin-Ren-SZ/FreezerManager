@@ -51,13 +51,25 @@ namespace fmgr::auth {
     std::size_t pwhash_memlimit{64ULL * 1024 * 1024}; // 64 MiB default (OWASP)
     std::uint64_t pwhash_opslimit{3};
 
+    // Minimum accepted password length (bytes). Enforced at hashing time so every
+    // password-setting path is covered. NIST 800-63B floor is 8.
+    std::size_t min_password_length{8};
+
     // Number of leading hex characters stored as the indexed lookup prefix.
-    std::size_t token_prefix_len{16};
+    // 8 hex chars (4 bytes / 32 bits) is enough to make the prefix index
+    // selective (≈1 collision near 65k live sessions, disambiguated by the
+    // authoritative constant-time hash compare) while exposing less raw token
+    // material in plaintext if the session table leaks, hardening offline
+    // hash-cracking (review F-11).
+    std::size_t token_prefix_len{8};
 
     // Account lockout: lock after this many consecutive failures.
     int max_failures_before_lockout{5};
     // Duration of the lockout window in seconds.
     std::int64_t lockout_duration_seconds{3600}; // 1 hour
+    // Hard cap on tracked failure entries. Bounds memory under a credential-spray
+    // attack that submits many distinct emails; unlocked entries are evicted first.
+    std::size_t max_lockout_entries{10000};
 
     // TOTP window / step parameters.
     TotpConfig totp{};
@@ -110,6 +122,10 @@ namespace fmgr::auth {
     struct LockoutState {
       int failure_count{0};
       std::optional<core::Timestamp> locked_until;
+      // Last time this email recorded a failure; used to evict stale, unlocked
+      // entries so an attacker spraying random emails cannot grow the map without
+      // bound (see security-audit-2026-06-12 #2).
+      core::Timestamp last_activity{};
     };
 
     mutable std::mutex lockout_mutex_;
@@ -173,6 +189,9 @@ namespace fmgr::auth {
     void record_success(const std::string& lower_email);
     [[nodiscard]] std::optional<core::Timestamp>
     check_lockout(const std::string& lower_email) const;
+    // Evicts stale/unlocked entries to bound lockout_map_; caller MUST hold
+    // lockout_mutex_. keep_email is never evicted.
+    void evict_stale_lockouts(const std::string& keep_email, core::Timestamp now);
 
     // Current time as a Timestamp.
     [[nodiscard]] static core::Timestamp now_ts();

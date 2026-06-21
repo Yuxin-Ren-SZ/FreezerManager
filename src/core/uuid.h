@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-// RFC 4122 UUID value type — parse and format only, no generation.
-// Callers obtain UUID strings from the OS (e.g. libuuid, /proc/sys/kernel/random/uuid)
-// or from the database DEFAULT and pass them here as strings.
+// RFC 4122 UUID value type — parse and format. The `Uuid` class itself does no
+// generation; `generate_uuid_v4()` below mints a random v4 string for service-layer
+// entity IDs, drawing from the libsodium CSPRNG so IDs are unguessable on every
+// platform (no weak-PRNG fallback).
 // `to_string()` always emits lowercase hex; `parse()` accepts both cases.
 // Stored internally as 16 raw bytes to avoid repeated string allocation at rest.
 #ifndef FMGR_CORE_UUID_H
 #define FMGR_CORE_UUID_H
 
 #include <nlohmann/json.hpp>
+#include <sodium.h>
 
 #include <array>
 #include <compare>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -108,6 +112,25 @@ namespace fmgr::core {
 
   inline void from_json(const nlohmann::json& json, Uuid& uuid) {
     uuid = Uuid::parse(json.get<std::string>());
+  }
+
+  // Mint a fresh RFC 4122 version-4 UUID string from a cryptographically secure
+  // source. libsodium's randombytes_buf() draws from the OS CSPRNG
+  // (getrandom/getentropy on Linux, RtlGenRandom on Windows) with no
+  // fallback-to-weak-PRNG path, unlike std::random_device which is permitted to
+  // degrade to a deterministic engine on some platforms (security audit C-1).
+  [[nodiscard]] inline std::string generate_uuid_v4() {
+    std::array<std::uint8_t, 16> bytes{};
+    randombytes_buf(bytes.data(), bytes.size());
+    bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U); // version 4
+    bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U); // variant
+    std::array<char, 37> buf{};
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
+    std::snprintf(buf.data(), buf.size(),
+                  "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", bytes[0],
+                  bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8],
+                  bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+    return {buf.data()};
   }
 
 } // namespace fmgr::core

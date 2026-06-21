@@ -10,6 +10,8 @@
 #include <nlohmann/json.hpp>
 
 #include <concepts>
+#include <cstddef>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -28,6 +30,30 @@ namespace fmgr::core {
       EXPECT_THROW((void)Uuid::parse("550e8400e29b41d4a716446655440000"), std::invalid_argument);
       EXPECT_THROW((void)Uuid::parse("550e8400-e29b-41d4-a716-44665544000z"),
                    std::invalid_argument);
+    }
+
+    // Guards the libsodium-backed entropy source (security audit C-1): the
+    // generator must always emit a canonical, parseable, RFC 4122 version-4
+    // UUID and never repeat across calls.
+    TEST(CoreUuid, GeneratesCanonicalVersion4) {
+      const auto text = generate_uuid_v4();
+
+      ASSERT_EQ(text.size(), 36U);
+      // Round-trips through the parser and re-serializes identically (lowercase).
+      EXPECT_EQ(Uuid::parse(text).to_string(), text);
+      // Version nibble (char 14) is '4'; variant nibble (char 19) is one of 8/9/a/b.
+      EXPECT_EQ(text.at(14), '4');
+      const char variant = text.at(19);
+      EXPECT_TRUE(variant == '8' || variant == '9' || variant == 'a' || variant == 'b');
+    }
+
+    TEST(CoreUuid, GeneratesUniqueValuesAcrossManyCalls) {
+      constexpr int kCount = 4096;
+      std::set<std::string> seen;
+      for (int i = 0; i < kCount; ++i) {
+        EXPECT_TRUE(seen.insert(generate_uuid_v4()).second) << "duplicate UUID minted";
+      }
+      EXPECT_EQ(seen.size(), static_cast<std::size_t>(kCount));
     }
 
     TEST(CoreIds, AreStronglyTypedAndRoundTripThroughJson) {

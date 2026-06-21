@@ -1,11 +1,21 @@
 # Test Coverage Inventory
 
-_Last updated: 2026-06-06._
+_Last updated: 2026-06-14._
 
-601 tests across 35 test source files (+ 6 benchmark files). All pass
+839 tests across 45+ test source files. All pass
 (16 Postgres conformance/RLS tests skip without `FMGR_TEST_POSTGRES_URL`).
 Document maps each module/function → test status. ✓=explicit test
 ○=indirect ✗=untested —=N/A
+
+Test breakdown by category:
+| Category | Test count | Files | Status |
+|---|---|---|---|
+| Unit | 608 | 35 | ✅ strong |
+| Integration | 182 | 7 | ✅ strong |
+| Backend conformance | 36 | 3 | ✅ strong |
+| Property (RapidCheck) | 3 | 2 | ⚙️ growing |
+| Fuzz | 6 | 1 | ⚙️ growing |
+| E2E | 4 | 1 | ⚙️ minimal |
 
 ---
 
@@ -247,6 +257,9 @@ Document maps each module/function → test status. ✓=explicit test
 | Downgrade + re-migrate                                         | ✓      |
 | Migration ordering enforced                                    | ✓      |
 | Downgrade past zero rejected                                   | ✓      |
+| Corrupted database file detected                               | ✓      |
+| Empty database file detected                                   | ✓      |
+| Missing file directory detected                                | ✓      |
 | audit_event_count_for_tests                                    | ○      |
 | used in audit tests; not directly tested                       |        |
 | fail_next_audit_append_for_tests                               | ○      |
@@ -355,7 +368,7 @@ is: `find_by_id`, `query`, `insert`, `update`, `soft_delete`.
 |               |      |       |        |          |          | concurrent soft_delete snapshot isolation  |                                 |
 |               |      |       |        |          |          | two concurrent CheckoutEvents both succeed |                                 |
 |               |      |       |        |          |          | volume_delta auto-depletion                | ✗ deferred                      |
-| skipped: D7.3 volume auto-depletion moves to RPC layer per TODO.md; not implemented at repo level |      |       |        |          |          |                                            |                                 |
+| skipped: D7.3 volume auto-depletion moves to RPC layer per TODO.md; not implemented at repo level |
 | Project       | ✓    | ✓     | ✓      | ✓        | ✓        | duplicate name same lab                    | query with sort/limit/and_where |
 |               |      |       |        |          |          | tombstone visibility                       |                                 |
 |               |      |       |        |          |          | sort by created_at                         |                                 |
@@ -395,7 +408,7 @@ is: `find_by_id`, `query`, `insert`, `update`, `soft_delete`.
 ## 6. Backend Conformance Suite
 
 10 tests for IStorageBackend contract. In-memory and SQLite pass;
-the Postgres backend runs the same 10 plus 3 Postgres-specific tests
+the Postgres backend runs the same 10 plus 6 Postgres-specific tests
 (`postgres_backend_conformance_test.cpp`), all of which `GTEST_SKIP`
 unless `FMGR_TEST_POSTGRES_URL` points at a live database.
 
@@ -411,6 +424,16 @@ unless `FMGR_TEST_POSTGRES_URL` points at a live database.
 | MutationsAppendAuditEventsAtomically            | Audit          |
 | AuditAppendFailurePreventsMutationCommit        | Audit atomic   |
 | MigrationCanDowngradeAndForwardMigrateSeedData  | Migration      |
+
+Postgres-specific extras:
+| Test                                            | Category       |
+| ----------------------------------------------- | -------------- |
+| CapabilitiesReportRowLevelSecurity              | Capabilities   |
+| MigrateToLatestIdempotent                       | Migration      |
+| SetSessionVarVisibleWithinTransaction           | RLS plumbing   |
+| InjectRlsVarsBlocksWrongLab                     | RLS integration |
+| InjectRlsVarsAllowsCorrectLab                   | RLS integration |
+| InjectRlsVarsSetsCorrectSessionVariable         | RLS integration |
 
 Note: conformance tests use a synthetic ConformanceSample entity,
 not the real domain entities. The DSL infrastructure is tested,
@@ -477,7 +500,7 @@ but entity-specific query fields are tested at the repo level.
 
 ## 8. E2 — LocalAuthProvider (`src/auth/`)
 
-9 TOTP tests in `tests/unit/totp_test.cpp`; 20 LocalAuthProvider integration
+10 TOTP tests in `tests/unit/totp_test.cpp`; 20 LocalAuthProvider integration
 tests in `tests/unit/local_auth_provider_test.cpp` (SQLite fixture, fast
 Argon2id params).
 
@@ -539,8 +562,6 @@ Argon2id params).
 
 ## 8b. RBAC Middleware, Seed Templates & Postgres (added E3 / C5.1)
 
-Test files not in the original inventory:
-
 ### `tests/unit/auth_middleware_test.cpp` — `AuthMiddleware` 4-step gate
 | Case                                              | Status |
 | ------------------------------------------------- | ------ |
@@ -566,15 +587,108 @@ Test files not in the original inventory:
 | 96-well rack template has 96 positions            | ✓      |
 | Mixed-Eppendorf template has 13 positions         | ✓      |
 
-### `tests/backend_conformance/postgres_backend_conformance_test.cpp`
-16 tests: 10 shared conformance + `CapabilitiesReportRowLevelSecurity`,
-`MigrateToLatestIdempotent`, `SetSessionVarVisibleWithinTransaction` + 3 RLS integration
-tests (`InjectRlsVarsBlocksWrongLab`, `InjectRlsVarsAllowsCorrectLab`,
-`InjectRlsVarsSetsCorrectSessionVariable`). All skip without `FMGR_TEST_POSTGRES_URL`.
+---
+
+## 8c. Rate Limiter (`tests/unit/rate_limiter_test.cpp`)
+
+9 tests in `tests/unit/rate_limiter_test.cpp`.
+
+| Case                                              | Status |
+| ------------------------------------------------- | ------ |
+| AllowsBurstUpToCapacityThenRejects                | ✓      |
+| RefillsOverElapsedTime                            | ✓      |
+| RefillIsCappedAtCapacity                          | ✓      |
+| KeysAreIsolated                                   | ✓      |
+| BoundsTrackedKeysByEvictingLeastRecentlySeen      | ✓      |
+| ClockGoingBackwardsDoesNotReplenish               | ✓      |
+| IsSafeUnderConcurrentSingleKey                    | ✓      |
+| IsSafeUnderConcurrentDistinctKeys                 | ✓      |
+| EvictionUnderConcurrencyPreservesMaxKeyBound      | ✓      |
 
 ---
 
-## 9. Intentionally Not Tested
+## 8d. Audit Chain Verifier (`tests/unit/audit_chain_verifier_test.cpp`)
+
+7 tests in `tests/unit/audit_chain_verifier_test.cpp`.
+
+| Case                                              | Status |
+| ------------------------------------------------- | ------ |
+| EmptyChainIsOk                                    | ✓      |
+| SingleRowVerifies                                 | ✓      |
+| ValidChainVerifies                                | ✓      |
+| TamperedFieldIsHashMismatchAtThatRow              | ✓      |
+| TamperedAfterJsonIsDetected                       | ✓      |
+| BrokenLinkIsDetected                              | ✓      |
+| WrongExpectedFirstPrevIsBrokenLinkAtZero          | ✓      |
+
+---
+
+## 9. Property Tests (RapidCheck)
+
+3 property-based tests across 2 files. Uses `rc::check()` with
+randomized inputs to verify invariants that must hold under all
+circumstances.
+
+| Test                                              | File                                 |
+| ------------------------------------------------- | ------------------------------------ |
+| IntactChainAlwaysVerifies                         | property/audit_chain_property_test   |
+| TamperingAnyRowIsDetected                         | property/audit_chain_property_test   |
+| RandomMovesNeverDoubleBook                        | property/box_geometry_property_test  |
+
+---
+
+## 10. Fuzz Tests
+
+6 fuzz tests in 1 file (`tests/fuzz/fuzz_ratelimit_and_validator.cpp`).
+Deterministic PRNG seeded from `--gtest_random_seed=`.
+
+| Test                                              | Target              |
+| ------------------------------------------------- | ------------------- |
+| TokenCountNeverExceedsCapacity                    | RateLimiter         |
+| DistinctKeysDontInterfere                         | RateLimiter         |
+| TrackedKeyCountNeverExceedsMax                    | RateLimiter         |
+| GenerationNeverProducesInvalidUuid                | UUID v4 generation   |
+| RandomStringsNeverCrash                           | CustomFieldValidator |
+| RandomKeysAndValuesNeverCrash                     | CustomFieldValidator |
+
+---
+
+## 11. E2E Smoke Tests
+
+4 tests in 1 file (`tests/e2e/e2e_smoke_test.cpp`). Spins up an in-process
+FreezerServer on a random port and exercises complete user journeys through
+the gRPC surface.
+
+| Test                                              | Journey                    |
+| ------------------------------------------------- | -------------------------- |
+| FullAuthFlowLoginLogout                           | Auth: login → logout       |
+| ListSessionsAfterLogin                            | Auth → Session: list       |
+| ListSamplesAsAuthenticatedUser                    | Auth → Sample: list        |
+| UnauthenticatedRequestIsRejected                  | Auth: missing bearer       |
+
+---
+
+## 12. Integration Tests
+
+182 tests across 7 files (`tests/integration/`). Start a FreezerServer in-process
+with a seeded SQLite database. Cover server authentication, session management,
+API token lifecycle, and full domain-service RPCs (box, item-type, lab, role,
+sample, share, audit).
+
+| Test file                                         | Service coverage                     |
+| ------------------------------------------------- | ------------------------------------ |
+| server_integration_test.cpp                       | Auth, Session, API tokens, rate-limit, TLS guard, error funnel |
+| box_service_integration_test.cpp                  | BoxService CRUD + list               |
+| item_type_service_integration_test.cpp            | ItemTypeService CRUD + list          |
+| lab_service_integration_test.cpp                  | LabService CRUD + list               |
+| role_service_integration_test.cpp                 | RoleService CRUD + list              |
+| sample_service_integration_test.cpp               | SampleService CRUD + list            |
+| share_service_integration_test.cpp                | ShareRequest workflow                |
+| audit_service_integration_test.cpp                | AuditService list + verify           |
+
+---
+
+## 13. Intentionally Not Tested
 
 | Item                       | Reason                                                             |
 | -------------------------- | ------------------------------------------------------------------ |
@@ -584,13 +698,10 @@ tests (`InjectRlsVarsBlocksWrongLab`, `InjectRlsVarsAllowsCorrectLab`,
 | Datetime format validation | Same as above                                                      |
 | Enum without "values" key  | Malformed validation_json is data-integrity concern, not validator |
 | volume_delta auto-deplete  | D7.3 deferred to RPC layer per TODO.md                             |
-| Postgres backend (live DB) | 13-test conformance suite exists; skips without `FMGR_TEST_POSTGRES_URL`. **Never run end-to-end** — see CODE_REVIEW_2026-06-02 B1–B3 |
-| Property tests             | tests/property/ empty; RapidCheck not yet integrated               |
-| Fuzz tests                 | tests/fuzz/ empty; libFuzzer harnesses not yet written             |
-| Audit hash-chain tests     | Only event counting tested; hash-chain verification deferred       |
+| Postgres backend (live DB) | 16-test conformance suite exists; skips without `FMGR_TEST_POSTGRES_URL` |
 | PHI encryption tests       | is_phi flag exists; encryption not yet implemented                 |
 | Log redaction tests        | Not yet implemented                                                |
-| Rate limiting tests        | Not yet implemented                                                |
-| E2E smoke tests            | No server exists yet (placeholder dirs)                            |
-| CSV import/export tests    | Not yet implemented                                                |
 | Backup/restore tests       | Not yet implemented                                                |
+| Canonical-JSON fuzz tests  | Not yet implemented; planned in README                             |
+| CSV import fuzz tests      | Not yet implemented; planned in README                             |
+| Performance/benchmark tests| Blocked by cross-TU static library linker issue; plan documented in README |

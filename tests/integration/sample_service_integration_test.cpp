@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "auth/LocalAuthProvider.h"
+#include "core/audit_event.h"
 #include "core/box.h"
 #include "core/freezer.h"
 #include "core/identity.h"
@@ -8,6 +9,7 @@
 #include "core/role.h"
 #include "core/sample.h"
 #include "server/FreezerServer.h"
+#include "storage/AuditTraits.h"
 #include "storage/BoxGeometryTraits.h"
 #include "storage/FreezerTraits.h"
 #include "storage/IdentityTraits.h"
@@ -32,6 +34,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -64,7 +67,11 @@ namespace fmgr::test {
     // with positions A1/A2, storage container, box) are seeded directly.
     class SampleServiceTest : public ::testing::Test {
     protected:
+      // base64 of 32 bytes 0x00..0x1F — a fixed dev master KEK for the test server.
+      static constexpr const char* kMasterKek = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+
       void SetUp() override {
+        ::setenv("FMGR_MASTER_KEK", kMasterKek, 1); // NOLINT(concurrency-mt-unsafe)
         db_path_ = unique_db_path();
         remove_sqlite_files(db_path_);
 
@@ -98,6 +105,7 @@ namespace fmgr::test {
         provider_.reset();
         backend_.reset();
         remove_sqlite_files(db_path_);
+        ::unsetenv("FMGR_MASTER_KEK"); // NOLINT(concurrency-mt-unsafe)
       }
 
       // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
@@ -162,7 +170,7 @@ namespace fmgr::test {
       const std::string kMemberEmail{"member@example.com"};
       const std::string kReadonlyEmail{"readonly@example.com"};
       const std::string kOutsiderEmail{"outsider@example.com"};
-      const std::string kPassword{"hunter2"};
+      const std::string kPassword{"hunter22"};
       const std::string kLab1{"20000000-0000-0000-0000-000000000001"};
       const std::string kLab2{"20000000-0000-0000-0000-000000000002"};
       const std::string kItemType{"30000000-0000-0000-0000-000000000001"};
@@ -219,6 +227,7 @@ namespace fmgr::test {
               .contact = "test@example.com",
               .created_at = core::Timestamp::from_unix_micros(1),
               .settings_json = nlohmann::json::object(),
+              .is_phi_enabled = true, // PHI mode on so PHI custom fields can be stored
           };
         };
         const auto make_user = [&hash](const core::UserId& id, const std::string& email) {
@@ -265,12 +274,39 @@ namespace fmgr::test {
               make_membership(readonly_id, lab1, core::RoleKind::ReadOnly), ctx);
           txn->repo<core::LabMembership>().insert(
               make_membership(outsider_id, lab2, core::RoleKind::SystemAdmin), ctx);
+          // PhiRead is excluded from every built-in role by default (PRD §3); grant
+          // it to SystemAdmin here so `admin` is the phi.read-holder and `member`
+          // (Member role) is the in-lab negative for PHI disclosure.
+          txn->repo<core::RolePermission>().insert(
+              core::RolePermission{.role_id = core::builtin_role_id(core::RoleKind::SystemAdmin),
+                                   .permission = core::Permission::PhiRead},
+              ctx);
           txn->repo<core::ItemType>().insert(
               core::ItemType{.id = core::ItemTypeId::parse(kItemType),
                              .lab_id = lab1,
                              .parent_id = std::nullopt,
                              .name = "liquid",
                              .created_at = core::Timestamp::from_unix_micros(1)},
+              ctx);
+          txn->commit();
+        }
+        {
+          // PHI-tagged (is_phi) custom field, not required, on the seeded item type.
+          // Separate transaction: the repository validates item_type_id against the
+          // committed DB, not the staging map.
+          auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+          txn->repo<core::CustomFieldDefinition>().insert(
+              core::CustomFieldDefinition{.id = core::CustomFieldDefinitionId::parse(
+                                              "80000000-0000-0000-0000-0000000000ff"),
+                                          .lab_id = lab1,
+                                          .scope_kind = core::ScopeKind::Sample,
+                                          .item_type_id = core::ItemTypeId::parse(kItemType),
+                                          .key = "mrn",
+                                          .label = "Medical Record Number",
+                                          .data_type = core::FieldDataType::String,
+                                          .required = false,
+                                          .is_phi = true,
+                                          .created_at = core::Timestamp::from_unix_micros(1)},
               ctx);
           txn->commit();
         }
@@ -471,6 +507,115 @@ namespace fmgr::test {
       ASSERT_TRUE(sample_stub_->GetSample(&ctx, req, &resp).ok());
       EXPECT_EQ(resp.sample().name(), "findme");
       EXPECT_EQ(resp.sample().status(), fmgr::v1::SAMPLE_STATUS_ACTIVE);
+    }
+
+    // =====================================================================
+    // PHI field-level encryption (M5)
+    // =====================================================================
+
+    TEST_F(SampleServiceTest, PhiFieldStoredEncryptedAtRest) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = token, .name = "phi-1", .custom_fields = R"({"mrn":"MRN-555"})"},
+                        &id)
+              .ok());
+
+      // Read the row straight from storage: PHI must be ciphertext, the plaintext
+      // value must appear in neither column.
+      auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(id));
+      txn->commit();
+      ASSERT_TRUE(row.has_value());
+      EXPECT_NE(row->phi_fields_enc_json, "{}");
+      EXPECT_EQ(row->phi_fields_enc_json.find("MRN-555"), std::string::npos);
+      EXPECT_EQ(row->custom_fields_json.find("MRN-555"), std::string::npos);
+      EXPECT_EQ(row->custom_fields_json.find("mrn"), std::string::npos);
+    }
+
+    TEST_F(SampleServiceTest, PhiVisibleToPhiReader) {
+      const auto token = login(kAdminEmail, kPassword); // SystemAdmin + phi.read
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = token, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::GetSampleRequest req;
+      req.set_sample_id(id);
+      fmgr::v1::GetSampleResponse resp;
+      ASSERT_TRUE(sample_stub_->GetSample(&ctx, req, &resp).ok());
+      const auto fields = nlohmann::json::parse(resp.sample().custom_fields_json());
+      EXPECT_EQ(fields.value("mrn", ""), "MRN-555");
+    }
+
+    TEST_F(SampleServiceTest, PhiHiddenFromNonReader) {
+      // admin (phi.read) creates a PHI sample; member (SampleRead, no phi.read) reads it.
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, member);
+      fmgr::v1::GetSampleRequest req;
+      req.set_sample_id(id);
+      fmgr::v1::GetSampleResponse resp;
+      ASSERT_TRUE(sample_stub_->GetSample(&ctx, req, &resp).ok());
+      EXPECT_EQ(resp.sample().custom_fields_json().find("mrn"), std::string::npos);
+      EXPECT_EQ(resp.sample().custom_fields_json().find("MRN-555"), std::string::npos);
+    }
+
+    TEST_F(SampleServiceTest, PhiWriteDoesNotRequirePhiRead) {
+      // member holds SampleWrite but not phi.read; storing PHI must still succeed.
+      const auto member = login(kMemberEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = member, .custom_fields = R"({"mrn":"MRN-777"})"}, &id).ok());
+
+      auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(id));
+      txn->commit();
+      ASSERT_TRUE(row.has_value());
+      EXPECT_NE(row->phi_fields_enc_json, "{}");
+      EXPECT_EQ(row->phi_fields_enc_json.find("MRN-777"), std::string::npos);
+    }
+
+    TEST_F(SampleServiceTest, PhiReadEmitsAuditEventWithKeysOnly) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = token, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::GetSampleRequest req;
+      req.set_sample_id(id);
+      fmgr::v1::GetSampleResponse resp;
+      ASSERT_TRUE(sample_stub_->GetSample(&ctx, req, &resp).ok());
+
+      auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto events =
+          txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
+      txn->commit();
+
+      int phi_reads = 0;
+      for (const auto& event : events) {
+        if (event.action != "phi.read") {
+          continue;
+        }
+        ++phi_reads;
+        EXPECT_EQ(event.entity_kind, "sample");
+        ASSERT_TRUE(event.entity_id.has_value());
+        EXPECT_EQ(*event.entity_id, id);
+        // Keys recorded, values never.
+        EXPECT_NE(event.after_json.find("mrn"), std::string::npos);
+        EXPECT_EQ(event.after_json.find("MRN-555"), std::string::npos);
+      }
+      EXPECT_EQ(phi_reads, 1);
     }
 
     TEST_F(SampleServiceTest, GetSampleCrossLabRejectsOutsider) {

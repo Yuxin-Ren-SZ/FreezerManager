@@ -1,5 +1,393 @@
 # TODO — Implementation Backlog
 
+## Handoff note — 2026-06-19, M5 slice 3 (encrypted SQLite backup + restore-drill)
+
+First Backup/DR slice (PRD §14). SQLite path end-to-end: an online hot copy,
+stream-encrypted under a **separate** backup KEK (PRD §8), with restore and a
+schedule-safe restore-drill verify. CLI-driven (mirrors `key rotate`); Postgres
+backup and the in-server scheduler are explicit follow-ups.
+
+**Separate backup key (`src/kms/`):**
+- `EnvVarKms::from_env(active_var, prev_var)` and
+  `OsKeyringKms::from_credentials_dir(dir, basename)` /
+  `from_systemd_credentials(basename)` overloads let an independent key load
+  through the same keyring loaders. The no-arg/default forms still read
+  `FMGR_MASTER_KEK` / `master_kek`.
+- `kms::make_backup_kms()` (`KmsFactory`): OS keyring `backup_kek` →
+  `FMGR_BACKUP_KEK` → nullptr (backups off). `make_default_kms`/`make_backup_kms`
+  now share an internal `make_kms(basename, env_active, env_previous)` resolver.
+
+**Whole-file cipher (`src/crypto/FileCipher.{h,cc}`):**
+- `encrypt_file`/`decrypt_file` over libsodium `crypto_secretstream` (chunked,
+  bounded memory). Fresh per-archive DEK wrapped by the injected KMS. On-disk =
+  one JSON manifest line (`magic`, `v`, `kek_id`, wrapped `dek`, `ss_header`,
+  `schema_version`, `backend`, `created_at_micros`, `content_sha256`) then
+  length-prefixed ciphertext chunks; the last carries the FINAL tag.
+  `content_sha256` (plaintext SHA-256) is verified on decrypt. Throws
+  `crypto::CipherError` on wrong key / tamper / hash mismatch / malformed.
+
+**SQLite hot copy (`src/cli/SqliteBackup.{h,cc}`):**
+- `hot_copy(src, dst)` via `sqlite3_backup_init/step/finish` on a fresh READONLY
+  source connection — safe online copy under WAL with live writers.
+
+**CLI (`src/cli/BackupCommands.{h,cc}`, wired in `CliApp.cc`):**
+- `freezerctl backup create --sqlite <db> --out <file> --actor <uuid>`: hot-copy
+  → read schema version → `encrypt_file` → append a `backup.create` audit event
+  (entity_kind `backup`, after-image = path/schema/hash; uses a `dynamic_cast` to
+  `SqliteTransaction::note_mutation` since backup is not a domain entity).
+- `freezerctl backup verify --in <file>` (= restore drill): decrypt to a scratch
+  file, `PRAGMA integrity_check`, audit-chain verify. Reports PASS/FAIL; **never
+  throws on a bad backup** (catches `CipherError`) so it is schedule-safe.
+- `freezerctl backup restore --in <file> --out <db> [--force] --actor <uuid>`:
+  decrypt to temp → rename into place (refuses to clobber without `--force`) →
+  append `backup.restore` to the restored DB's own chain.
+- `--postgres` on `backup create` returns a clear "not yet supported" error.
+
+**Tests:** `file_cipher_test.cpp` (round-trip 0/small/multi-chunk, wrong key,
+tamper, content-hash mismatch, plaintext-absent, malformed); `kms_test.cpp` /
+`os_keyring_test.cpp` (named env/credential load, backup key distinct from master,
+cross-unwrap fails, null when unconfigured); `cli_test.cpp` BackupTest
+(create→verify→restore round-trip, `backup.create` audited, tamper→verify FAIL,
+restore refuses overwrite without `--force`) + argv create/verify.
+
+**Known limitations / follow-ups:**
+- SQLite only. Postgres backup (encrypted `pg_dump` logical + documented
+  `pg_basebackup`/WAL/PITR runbook) is slice 2.
+- No scheduler yet: in-server nightly runner, retention rotation (30 daily / 12
+  monthly / 7 yearly), and a weekly automated restore-drill are slice 3 (no
+  scheduler exists; `SseBridge` uses `trantor::Timer`, reusable). A Prometheus
+  backup-status metric and an optional `BackupService` RPC land with it.
+- `backup create` audits via a `dynamic_cast` to `SqliteTransaction`; generalize
+  when Postgres backup arrives (or add `note_mutation` to `ITransaction`).
+- Whole-file streaming is memory-bounded but reads the input twice (hash pass +
+  encrypt pass); fine for a local DB file.
+
+Verification: `cmake --build --preset dev` clean; `ctest --preset dev -j1` — new
+file-cipher / kms-backup / backup tests green; only the pre-existing baseline
+failures remain. Manual E2E: create → verify PASS → tamper → verify FAIL →
+restore → `audit verify` clean. `run-clang-tidy-17` on new/changed sources clean;
+`clang-format-17` clean; `tools/check-spdx-headers.sh` clean; `git diff --check`
+clean.
+
+## Handoff note — 2026-06-17, M5 slice 2 (production KMS + key rotation)
+
+Hardens the PHI key story from dev-only to production-ready and adds master-KEK
+rotation (PRD §8). Builds on slice 1. Trigger is the CLI (the new KEK is staged
+in the server's credential store, never sent over an RPC); a `RotateKeys` RPC can
+wrap the same engine later.
+
+**Keyring + key sources (`src/kms/`):**
+- `IKmsProvider::unwrap_dek` now takes the envelope's `kek_id` so a provider can
+  hold several KEKs. `KeyringKms` is the shared engine: a `map<kek_id, key>` with
+  one active KEK; `wrap_dek` seals under the active KEK, `unwrap_dek(w, kek_id)`
+  selects by id (throws on unknown id). Centralizes the `crypto_secretbox`
+  wrap/unwrap + BLAKE2b fingerprint that used to live in `EnvVarKms`.
+- `EnvVarKms` is now a `KeyringKms` loader: `FMGR_MASTER_KEK` (active) +
+  optional `FMGR_MASTER_KEK_PREVIOUS` (comma-separated base64 retired keys).
+- `OsKeyringKms` (production): reads `$CREDENTIALS_DIRECTORY/master_kek` (active)
+  and `master_kek.prev.*` (retired) — systemd-creds `LoadCredential=`. Each file
+  is raw 32 bytes or base64. Pure file I/O + libsodium, no new dependency.
+- `make_default_kms()` (`KmsFactory`): OS keyring if `$CREDENTIALS_DIRECTORY/
+  master_kek` exists, else `EnvVarKms`, else null (PHI disabled). `FreezerServer`
+  and the CLI both use it.
+
+**Rotation:**
+- `crypto::rewrap(envelope, kms)` re-wraps the per-record DEK under the active
+  KEK and rewrites `kek_id`; field ciphertext is copied verbatim (DEK unchanged),
+  so no plaintext PHI is decrypted to disk. Returns nullopt for an empty envelope
+  or one already on the active KEK.
+- `cli::rotate_phi_keys(backend, kms, lab?, actor, sink)` walks samples
+  (incl. tombstoned — PHI persists) per lab, rewraps, and updates via the Sample
+  repo. Returns `{scanned, rewrapped, current, failed}`. A sample that fails to
+  re-wrap (e.g. update FK re-validation) is counted in `failed` and logged, not
+  aborted — so the old KEK is retired only once `failed == 0`.
+- `freezerctl key rotate [--sqlite|--postgres] [--lab <uuid>] --actor <uuid>`.
+
+**Operator runbook (rotate the master KEK):**
+1. Move the current KEK to `FMGR_MASTER_KEK_PREVIOUS` (or a `master_kek.prev.*`
+   credential file).
+2. Install the new KEK as `FMGR_MASTER_KEK` / `master_kek`.
+3. Run `freezerctl key rotate --actor <uuid>` until it reports `failed 0` and
+   `rewrapped + current == scanned`.
+4. Drop the retired KEK once every record is migrated.
+
+**Tests:** `kms_test` (keyring: retired-key unwrap, unknown-id throws, env
+previous keys), `os_keyring_test` (base64/raw files, retired keys, missing
+dir/file fail-fast), `field_cipher_test` (rewrap rotates + still decrypts, no-op
+when current/empty), `cli_test` (rotate rewraps to active KEK + audits + second
+rotate no-op; argv `key rotate` via env). SQLite + Postgres-param where relevant.
+
+**Known limitations / follow-ups:**
+- Rotation audits as a Sample `update` (after-image shows the new `kek_id`,
+  ciphertext only). A distinct `key.rotate` audit *action* would need a custom
+  action threaded through the repository update path (the `MutationContext.reason`
+  is currently not persisted) — deferred. The `key.rotate` permission and the
+  online `RotateKeys` RPC are also deferred.
+- Rotation scope is the Sample entity (the only PHI column).
+- `VaultKms` (transit engine) not implemented.
+
+Verification: `cmake --build --preset dev` clean; `ctest --preset dev -j1` — new
+kms/crypto/os-keyring/cli-rotation tests green; only the 12 pre-existing baseline
+failures (SqliteBackend file-detection, CustomFieldResolver, E2E unauth) plus the
+known-flaky `FuzzRateLimiter` under parallel load (passes in isolation).
+`run-clang-tidy-17` on new/changed sources clean; `clang-format-17` clean;
+`tools/check-spdx-headers.sh` clean; `git diff --check` clean.
+
+## Handoff note — 2026-06-17, M5 slice 1 (PHI field-level encryption + KMS + PHI-read audit)
+
+First PHI-safety slice (PRD §8). PHI custom fields stop sitting in plaintext: they
+are split out of the sample's plaintext blob, AEAD-encrypted with a per-record DEK
+wrapped by a master KEK, and disclosed on read only to `phi.read` holders — every
+disclosure audited. Scope: Sample entity only.
+
+**New modules:**
+- `src/kms/IKmsProvider.h` — envelope KMS interface: `wrap_dek`/`unwrap_dek`
+  (`WrappedDek{nonce,ciphertext}`) + `key_id()`. Domain-free, I/O-free.
+- `src/kms/EnvVarKms.{h,cc}` — dev/test provider; KEK from `FMGR_MASTER_KEK`
+  (base64, 32 bytes), `crypto_secretbox` DEK wrapping, fail-fast on missing/short
+  key. `key_id()` = BLAKE2b fingerprint. **NOT for production** (OsKeyring/Vault
+  later). `tests/unit/kms_test.cpp` (9): round-trip, fresh nonce, tamper/wrong-key
+  rejected, bad/missing key fail-fast.
+- `src/crypto/FieldCipher.{h,cc}` — `encrypt(PhiFields, kms)`/`decrypt(...)`.
+  Fresh per-record DEK, per-field `crypto_secretbox`. Envelope JSON
+  `{v,kek_id,dek:{n,c},fields:{key:{n,c}}}`; empty map → `"{}"`.
+  `tests/unit/field_cipher_test.cpp` (9): round-trip, mixed types, plaintext never
+  in envelope, fresh-DEK divergence, tamper/wrong-KEK/malformed rejected.
+
+**Audit seam:**
+- `ITransaction::note_phi_read(entity_kind, entity_id, ctx, field_keys)` — new
+  virtual, default throws `UnsupportedOperation`. Sqlite/Postgres transactions
+  override it to append an immutable `action="phi.read"` row (joins the same hash
+  chain) with `after_json={"phi_keys":[...]}` — **key names only, never values**
+  (PRD §7.3, §17). Delegates to `note_mutation`.
+
+**Service wiring:**
+- `SampleServiceImpl` takes a borrowed `kms::IKmsProvider*` (nullable). Write
+  (`Create`/`Update`): `prepare_custom_fields` resolves defs, validates the combined
+  blob, splits by `is_phi` — non-PHI stays plaintext, PHI encrypted into
+  `phi_fields_enc_json`. PHI write requires `Lab.is_phi_enabled` (else
+  `INVALID_ARGUMENT`) + a configured KMS (else `INTERNAL`); does **not** require
+  `phi.read`. Read (`Get`/`List`): `reveal_phi` decrypts + merges into
+  `custom_fields_json` only when the caller holds `phi.read`, then `note_phi_read`
+  per disclosing sample. `validate_sample_custom_fields` removed (folded into
+  `prepare_custom_fields`).
+- `FreezerServer` builds `EnvVarKms` from env at construction; null (PHI disabled,
+  warn-logged) when `FMGR_MASTER_KEK` unset. `kms_` declared before `sample_svc_`.
+- `ItemTypeServiceImpl` rejects `is_phi ∧ indexed` on CFD create/update (PRD §4.1).
+- `tests/integration/sample_service_integration_test.cpp` (+5): ciphertext at rest,
+  value absent from both columns, visible to phi.read holder, hidden from non-holder,
+  write without phi.read, PHI-read audit row keys-only. Fixture now sets
+  `FMGR_MASTER_KEK`, enables PHI on the labs, grants `phi.read` to SystemAdmin
+  (excluded by default per PRD §3), and seeds a non-required `is_phi` CFD.
+  `item_type_service_integration_test.cpp` (+1): indexed-PHI rejected.
+
+**Known limitations / follow-ups:**
+- PHI on Sample only; other entities have no PHI column yet.
+- List discloses one `phi.read` audit row per sample (precise but verbose for large
+  lists); per-request batching is a later option.
+- `EnvVarKms` only; OsKeyringKms / VaultKms and `key.rotate` rotation deferred.
+  `kek_id` is recorded in the envelope for forward rotation support.
+- Decrypted PHI is **not** echoed in the Create/Update response (only on Get/List
+  for phi.read holders).
+
+Verification: `cmake --build --preset dev` clean; `ctest --preset dev -j1` — new
+kms/crypto/sample-PHI/item-type tests green; only the 12 pre-existing baseline
+failures remain (SqliteBackend file-detection, CustomFieldResolver, E2E unauth).
+`run-clang-tidy-17` on new/changed sources clean; `clang-format-17` clean;
+`tools/check-spdx-headers.sh` clean; `git diff --check` clean. Postgres
+`note_phi_read` override compiles but is untested without `FMGR_TEST_POSTGRES_URL`.
+
+## Handoff note — 2026-06-15, M3 SSE streaming slice 1 (WatchAuditFeed → SSE)
+
+First server-streaming RPC + reusable SSE bridge, proving the pattern end-to-end.
+
+**Changed/new:**
+- `proto/fmgr/v1/audit.proto` — `rpc WatchAuditFeed(WatchAuditFeedRequest) returns
+  (stream AuditEvent)` + request message (lab/entity filters + `since` cursor).
+- `src/server/AuditServiceImpl.{h,cc}` — poll-tail `ServerWriter` handler: authorize
+  once at stream-open (same gating as `ListAuditEvents`), then re-query
+  `at >= cursor` every ~1s, dedup same-microsecond ids, write each as proto, exit
+  on `ServerContext::IsCancelled()`. Registers the RPC (AuditRead). Helpers
+  `build_watch_query` / `emit_new_events` keep cognitive complexity under budget.
+- `src/rest/SseBridge.h` (new) — generic `stream_sse<RespT>()`: drives the gRPC
+  `ClientReader` on a worker thread, posts each frame to the connection's event
+  loop via `queueInLoop` (trantor `AsyncStream::send` is loop-thread-only), 15s
+  keepalive comments, maps a non-OK `Finish()` to an `event: error` frame. The
+  loop-side keepalive `TryCancel`s a parked Read when the client disconnects.
+- `src/rest/RestGateway.cc` — `GET /api/v1/audit/watch` route; `since` resume via
+  `Last-Event-ID`/`?since=`; emits `id:`+`data:` SSE frames.
+- Tests: `audit_service_integration_test.cpp` (+5: live-tail receives event,
+  member/outsider/no-bearer denied, `ListSince` range regression);
+  `rest_gateway_integration_test.cpp` (+2: raw-socket SSE positive + no-bearer
+  error frame).
+
+**Bug fixed along the way:** the SQLite **and** Postgres audit repositories
+rendered *every* predicate as `column = ?`, so `since`/`until` (range predicates)
+silently matched nothing — `ListAuditEvents` since/until were broken and untested.
+Now render `=`/`>=`/`<=` by operator and throw on unsupported ops.
+
+**Known limitations / follow-ups:**
+- Polling (~1s), not LISTEN/NOTIFY — portable across SQLite/Postgres; push is a
+  later optimization (`caps().listen_notify` still unused).
+- SSE auth failures surface as an `event: error` frame (HTTP 200 already
+  committed), not an HTTP 401.
+- TSan does **not** cover the bridge: the streaming tests are `grpc_integration`-
+  labelled and excluded from asan/tsan (Conan gRPC/absl are uninstrumented). The
+  bridge's safety rests on the queueInLoop serialization design + review.
+- Next on this bridge: `WatchSampleList` (delta add/update/remove), bulk-import
+  progress, periodic mid-stream re-authorization.
+
+Verification: `cmake --build --preset dev` clean; `ctest --preset dev -j1` — only
+the 12 pre-existing baseline failures (SqliteBackend file-detection,
+CustomFieldResolver, E2E unauth); new streaming/SSE tests green;
+`run-clang-tidy-17 -p out/build/dev src/server src/rest src/storage/...` clean;
+`clang-format` clean.
+
+## Handoff note — 2026-06-15, M3 REST gateway fan-out (Box/ItemType/Role/Audit/Share)
+
+Completed the REST/JSON gateway fan-out: the Drogon front door now fronts **all
+9 gRPC services** (was Auth/Session/Lab/Sample). Pure mechanical reuse of the
+existing `forward()` macro and the generic `JsonProtoMapping`/`RestErrorTranslation`
+helpers — no new abstractions, no CMake change (all stubs already live in the
+single `FreezerManager::proto` target).
+
+**Changed:**
+- `src/rest/GatewayStubs.h` — add Box/ItemType/Role/Audit/Share stubs + includes.
+- `src/rest/RestGateway.cc` — `FMGR_ROUTE(...)` for the remaining ~45 unary RPCs.
+  Paths are kebab-case under `/api/v1/*` (e.g. `/api/v1/freezer/list`,
+  `/api/v1/storage-container/create`, `/api/v1/custom-field-def/create`,
+  `/api/v1/role/permissions/grant`, `/api/v1/audit/export`, `/api/v1/share/approve`).
+
+**Tests (`tests/integration/rest_gateway_integration_test.cpp`):** per-service
+positive (admin holds the perm → 200), negative (member lacks it → 403), and
+missing-bearer (→ 401), plus an E2E `item-type/create` write through the gateway.
+28/28 `RestGatewayTest` pass. Note: some write handlers validate the request body
+*before* the auth gate (→ 400), and `ShareService.ApproveShareRequest` runs a
+custom role gate after loading the request — so missing-bearer checks target the
+lenient `list` endpoints, and share `share.approve` authz stays covered by
+`share_service_integration_test.cpp` at the gRPC layer.
+
+**Deferred:** SSE/WebSocket streaming (needs streaming RPCs added to proto first),
+Qt 6 client, React SPA, `freezerctl-py`.
+
+Verification: `cmake --build --preset dev` clean; `ctest --preset dev -R
+RestGatewayTest` 28/28 pass; `run-clang-tidy-17 -p out/build/dev src/rest/` clean;
+`clang-format` clean. (12 pre-existing env failures unrelated to this change:
+SqliteBackend file-detection, CustomFieldResolver, E2E unauth — also red on the
+`dev` baseline.)
+
+## Handoff note — 2026-06-13, M1 CLI read nouns (freezer/box/item-type list + inspect)
+
+Added the read-only half of the outstanding M1 CLI nouns: `freezerctl freezer|box|
+item-type list` and `... inspect --id <uuid>` (PRD §19 M1). Every read is
+lab-scoped and Postgres-RLS-gated, reusing the `sample list` query/format pattern.
+
+**New files:**
+- `src/cli/EntityRead.h` — header-only, templated `query_in_lab<T>()` and
+  `find_in_lab<T>()`, factored from `SampleQuery.cc`. Both inject the
+  `current_lab_ids` RLS session var (no-op on SQLite). `find_in_lab` returns
+  nullopt when the row is absent **or** belongs to another lab — defense-in-depth
+  against cross-lab disclosure via a guessed id, complementing RLS.
+- `src/cli/NounCommands.{h,cc}` — `run_{freezer,box,item_type}_list` (tab table +
+  `N x(s)` footer) and `run_{freezer,box,item_type}_inspect` (FIELD<TAB>VALUE
+  detail; returns 1 + "not found" when absent/foreign). Output to an injected
+  `std::ostream` (no stdout), so unit-testable.
+
+**Changed:**
+- `src/cli/CliApp.cc` — `freezer`/`box`/`item-type` subcommands, each with `list`
+  (shared `--sqlite`/`--postgres`/`--lab`/`--limit`/`--include-tombstoned`) and
+  `inspect` (`--lab` + required `--id`). Dispatch extracted into
+  `dispatch_read_noun`/`dispatch_read_nouns` helpers to stay under the run_cli
+  cognitive-complexity budget.
+- `src/cli/CMakeLists.txt` — adds `NounCommands.cc`.
+
+**Tests (`tests/unit/cli_test.cpp`):** the `CliFixture` now also seeds a
+container-type, a root storage container + freezer per lab, a box-type, and a box
+in lab A. New SQLite+Postgres-parameterized cases: per-noun list (incl. lab-scope
+exclusion of lab B's freezer), box list tombstone include/exclude, freezer inspect
+detail, inspect of an unknown id, and inspect of another lab's id (both
+not-found). Plus argv-level `freezer list`, `box inspect`, and `item-type inspect`
+through `run_cli`.
+
+Verification: `cmake --build --preset dev` clean; `ctest --preset dev -j1` —
+918/918 pass (Postgres cli/conformance skip without `FMGR_TEST_POSTGRES_URL`);
+`clang-format --dry-run --Werror` + `run-clang-tidy-17` on new/changed sources
+clean; `tools/check-spdx-headers.sh` + `git diff --check` clean.
+
+Handoff notes:
+- Read-only slice. The `create` nouns (write + audit `MutationContext`) are the
+  next slice and need a lab to exist — pair with `lab create` / D1.3 first-run.
+- `storage-container` and `container-type` read nouns drop in with the same
+  `EntityRead.h` helpers when wanted.
+- CSV import beyond Sample (boxes, item types, custom-field defs, users) remains a
+  separate follow-up reusing `CsvReader` + the `build_import`/report pattern.
+
+## Handoff note — 2026-06-13, M1 sample CSV import (transactional + dry-run)
+
+Implemented `freezerctl sample import`, closing the CSV-import half of M1 for the
+Sample entity (PRD §13). Export already existed; this adds the read path.
+
+**New files:**
+- `src/cli/CsvReader.{h,cc}` — RFC 4180 reader (the counterpart to `CsvWriter`).
+  Honours double-quoted fields, doubled embedded quotes, embedded commas/CR/LF,
+  CRLF or bare-LF separators; skips `#`-prefixed comment lines so a file produced
+  by `sample export` (chain-of-custody header block) round-trips unchanged. No
+  spurious trailing empty record. `CsvParseError` on an unterminated quote. Kept
+  domain-free for fuzzing (PRD §15 lists the CSV importer as a fuzz target).
+- `src/cli/SampleImport.{h,cc}` — pure CSV-row → `core::Sample` mapping and
+  validation (`build_import`). No I/O, no DB, clock-injected: required fields,
+  UUID/enum parse, box/position pairing (mirrors the samples CHECK), well-formed
+  `custom_fields_json`, volume/mass value+unit pairing, and intra-file duplicate
+  `(box_id, position_label)` detection. Server-managed columns (id, lab_id,
+  status, created_*, last_modified_*, phi_fields_enc_json) are ignored if present,
+  so a file cannot forge ownership/authorship or smuggle a row into another lab.
+  Emits a per-row `ImportReport`.
+
+**Changed:**
+- `src/cli/SampleCommands.{h,cc}` — `run_sample_import()`. Structural gate first
+  (any row error ⇒ nothing written, exit 1). `--dry-run`: each row inserted in
+  its own transaction that is rolled back (never committed), so DB-level checks
+  (item-type liveness, box existence, size-class) report per-row without a poison
+  cascade. Normal mode: all rows inserted in a single transaction and committed
+  all-or-nothing. RLS `current_lab_ids` injected on every transaction.
+- `src/cli/CliApp.cc` — `sample import [--dry-run] --lab <uuid> --actor <uuid>
+  <file|->` subcommand (reads stdin on `-`). `--actor` is the recorded importer.
+- `src/cli/CMakeLists.txt` — adds `CsvReader.cc`, `SampleImport.cc`.
+
+**Tests (`tests/unit/cli_test.cpp`, all in the existing cli suite):**
+- CsvReader: simple rows, bare-LF / no-trailing-newline, comment-line skip,
+  quoted comma/newline/doubled-quote, no trailing empty record, unterminated-quote
+  throw.
+- SampleImport (pure): valid mapping with server-controlled fields, ignores
+  server-managed columns, missing-name / bad-UUID / box-without-position /
+  intra-file-duplicate-position / bad-custom-JSON row errors, missing-required-
+  header and empty-document header errors.
+- run_sample_import (SQLite + Postgres-parameterized): persists transactionally,
+  dry-run writes nothing, rejects unknown item-type at the DB layer. Plus an
+  argv-level `sample import` end-to-end test reading from a file.
+
+Verification:
+- `cmake --build --preset dev` — clean.
+- `ctest --preset dev -j1` — 889/889 passed (Postgres cli/conformance tests skip
+  without `FMGR_TEST_POSTGRES_URL`). NOTE: under `-j$(nproc)` the pre-existing
+  `grpc_integration` tests collide on fixed ports/paths and report failures; they
+  pass in isolation and serially. Unrelated to this slice.
+- `clang-format --dry-run --Werror` on all new/changed files — clean.
+- `run-clang-tidy-17 -p out/build/dev` on the new/changed `.cc` — clean.
+- `tools/check-spdx-headers.sh` — clean. `git diff --check` — clean.
+
+Handoff notes:
+- Dry-run cannot detect a `(box_id, position_label)` collision against *already
+  committed* rows (the partial unique index fires at commit, which dry-run never
+  reaches); intra-file collisions are caught structurally. Real-mode import
+  surfaces a committed-row collision as a `UniqueViolation` that aborts the whole
+  batch. Documented limitation, acceptable for v1.
+- Import currently covers Sample only. PRD §13 also lists boxes, item types,
+  custom-field definitions, and (admin) users — each is a follow-up that can reuse
+  `CsvReader` and the `build_import`/report pattern.
+- Remaining M1 CLI nouns (freezer/box/item-type create/list/inspect) are still
+  outstanding; see Section F6 / L9 for the command-tree conventions.
+
 ## Handoff note — 2026-06-02, C5.1 PostgreSQL backend core + conformance suite
 
 Implemented C5.1: `PostgresBackend` + `PostgresTransaction` core and Postgres-dialect migrations
@@ -1207,22 +1595,31 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
 
 ## Section F — RPC layer & client transports (M3)
 
-- [ ] **F1. `.proto` definitions** under `proto/`. One file per service
-      (`auth.proto`, `lab.proto`, `freezer.proto`, `sample.proto`,
-      `audit.proto`, etc.). Versioned `package fmgr.v1;`. **Source of
-      truth — never edit generated code.**
+- [x] **F1. `.proto` definitions** under `proto/fmgr/v1/`. One file per service
+      (`auth.proto`, `lab.proto`, `sample.proto`, `audit.proto`, etc.; 10 files).
+      Versioned `package fmgr.v1;`. **Source of truth — never edit generated
+      code.**
 
-- [ ] **F2. gRPC server** in `src/rpc/`. Each RPC handler:
+- [x] **F2. gRPC server** in `src/server/`. All 9 services implemented. Each RPC
+      handler:
   1. Goes through E3 middleware.
   2. Opens a transaction via `IStorageBackend`.
   3. Performs work via the typed repos.
   4. Writes audit row in the same transaction.
   5. Commits.
 
-- [ ] **F3. REST/JSON gateway**. For each gRPC method, expose
-      `/api/v1/<resource>/<verb>` with documented JSON shape. Streaming
-      RPCs are bridged to Server-Sent Events (or WebSocket for
-      bidirectional like bulk-import progress).
+- [~] **F3. REST/JSON gateway** (`src/rest/`). Drogon HTTP listener inside
+      `freezerd`, forwarding to the gRPC services over `Server::InProcessChannel`
+      — reuses the RBAC gate + audit + transactions with no logic duplicated.
+      JSON↔proto via proto3 JSON mapping (`JsonProtoMapping`); gRPC status →
+      HTTP via `RestErrorTranslation`. Verb-style routes `/api/v1/<service>/<verb>`.
+  - [x] Auth + Session + Lab + Sample wired end-to-end (login → bearer → RBAC →
+        unary CRUD → JSON), positive/negative authz + missing-bearer + REST e2e
+        tests green.
+  - [ ] Fan out the remaining 5 services (Box, ItemType, Role, Audit, Share) —
+        mechanical copies of the route pattern.
+  - [ ] Streaming RPCs bridged to SSE / WebSocket (live sample-list, audit feed,
+        bulk-import progress).
   - **⚠ Watch:** the REST gateway is what the React SPA and Python
     client speak. Any breaking change to a `.proto` must increment the
     `v1` package label.
@@ -1321,12 +1718,22 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
   - [ ] **H5.1.** Postgres path: `pg_basebackup` baseline + WAL
         archiving for PITR. Encrypt with backup key (separate from
         master key) using libsodium streaming API.
-  - [ ] **H5.2.** SQLite path: `sqlite3_backup` hot copy + nightly
-        rotation. Same encryption.
-  - [ ] **H5.3.** `freezerctl backup run | list | restore` CLI.
-  - [ ] **H5.4.** Weekly restore-drill job: pick a random recent
+  - [x] **H5.2.** SQLite path: `sqlite3_backup` hot copy + nightly
+        rotation. Same encryption. (In-server `BackupScheduler` thread
+        drives `backup::run_backup_tick`: create-if-due + GFS retention
+        prune (`RetentionPolicy`, default 30 daily / 12 monthly / 7
+        yearly) + weekly drill; `backup.create`/`backup.prune`/
+        `backup.drill` audit events. Enabled by `FMGR_BACKUP_DIR`.)
+  - [x] **H5.3.** `freezerctl backup run | list | restore` CLI.
+        (`run` = one scheduler tick on the real clock; `list` enumerates
+        a backup dir newest-first without decrypting; `restore` ✅ from
+        M5 slice 3.)
+  - [x] **H5.4.** Weekly restore-drill job: pick a random recent
         backup, restore into a temp DB, run integrity checks, audit
         the result. Failures page (or email) the system admin.
+        (`BackupScheduler` runs the drill via `run_backup_verify`;
+        random pick via seeded RNG, cadence tracked by a `.last_drill`
+        marker; failure → spdlog error-level page + `backup run` exit 1.)
   - **⚠ Watch:** backup key MUST live separately from the master KEK.
     Document this in the operator runbook and assert it at server
     startup if both are configured to the same source.

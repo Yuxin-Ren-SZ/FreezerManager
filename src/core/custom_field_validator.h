@@ -13,12 +13,19 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstddef>
 #include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace fmgr::core {
+
+  // Hardening cap on how many custom fields one entity may carry. Enforced both
+  // when a definition is created (ItemTypeService) and when submitted values are
+  // validated, so a lab admin cannot define thousands of fields and degrade every
+  // sample create/update (review F-9 / security-audit M-2).
+  inline constexpr std::size_t k_max_custom_fields_per_entity = 200;
 
   struct FieldValidationError {
     std::string key;
@@ -226,6 +233,13 @@ namespace fmgr::core {
   validate_custom_fields(std::span<const CustomFieldDefinition> definitions,
                          const nlohmann::json& fields_json) {
     std::vector<FieldValidationError> errors;
+    if (fields_json.is_object() && fields_json.size() > k_max_custom_fields_per_entity) {
+      errors.push_back({.key = "",
+                        .message = "too many custom fields: " + std::to_string(fields_json.size()) +
+                                   " exceeds the limit of " +
+                                   std::to_string(k_max_custom_fields_per_entity)});
+      return errors;
+    }
     for (const auto& def : definitions) {
       detail::validate_single_field(def, fields_json, errors);
     }

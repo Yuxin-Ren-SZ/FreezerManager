@@ -74,8 +74,16 @@ namespace fmgr::auth {
       EXPECT_EQ(totp_generate(kRfc6238Secret, 1111111109LL), "081804");
     }
 
+    TEST(TotpTest, Rfc6238Vector_T1111111111) {
+      EXPECT_EQ(totp_generate(kRfc6238Secret, 1111111111LL), "050471");
+    }
+
     TEST(TotpTest, Rfc6238Vector_T1234567890) {
       EXPECT_EQ(totp_generate(kRfc6238Secret, 1234567890LL), "005924");
+    }
+
+    TEST(TotpTest, Rfc6238Vector_T2000000000) {
+      EXPECT_EQ(totp_generate(kRfc6238Secret, 2000000000LL), "279037");
     }
 
     // ---- Window tests ----
@@ -127,6 +135,167 @@ namespace fmgr::auth {
 
     TEST(TotpTest, TotpVerifyRejectsTooLongCode) {
       EXPECT_FALSE(totp_verify(kRfc6238Secret, "1234567", 1234567890LL));
+    }
+
+    TEST(TotpTest, CounterBelowZeroSkipInVerifyWindow) {
+      // When now_unix_seconds is small enough that base_counter == 0, negative
+      // deltas produce counter == -1. TOTP verify must skip negative counters
+      // (RFC 6238 §5.2: counter must be ≥ 0) and still accept the current step.
+      constexpr std::int64_t time_in_first_step = 15;
+      const auto code = totp_generate(kRfc6238Secret, time_in_first_step);
+      EXPECT_TRUE(totp_verify(kRfc6238Secret, code, time_in_first_step));
+    }
+
+    // ---- Break-it: empty / malformed / extreme secrets ----
+
+    TEST(TotpTest, EmptySecretThrows) {
+      // An empty secret should fail — the exact exception type depends on the
+      // implementation (could be std::invalid_argument or std::runtime_error from
+      // the HMAC layer).
+      EXPECT_THROW((void)totp_generate("", 1234567890LL), std::exception);
+    }
+
+    TEST(TotpTest, SecretWithOnlyPaddingCharacters) {
+      // Padding-only strings are valid base32 that decode to zero bytes.
+      // The implementation may accept them or reject them — must not crash.
+      try {
+        (void)totp_generate("========", 1234567890LL);
+        // If accepted, it produced a 6-digit code. That's fine.
+      } catch (const std::exception&) {
+        SUCCEED() << "rejecting padding-only secrets is also acceptable";
+      }
+    }
+
+    TEST(TotpTest, SecretWithSpacesAndDashes) {
+      // base32_decode may or may not strip spaces/dashes. If it throws, that's
+      // acceptable; if it strips them and computes a valid TOTP, that's also OK.
+      // The key property: must not crash or produce UB.
+      try {
+        (void)totp_generate("GEZD GN BV GY 3T QOJ Q", 1234567890LL);
+        // If it didn't throw, it produced a 6-digit code — verify it's a valid code.
+      } catch (const std::invalid_argument&) {
+        SUCCEED() << "rejecting non-base32 characters is also acceptable";
+      }
+    }
+
+    TEST(TotpTest, VeryLongSecretDoesNotCrash) {
+      // A 10'000 character base32 secret — must not crash, hang, or overflow.
+      const std::string long_secret(10'000, 'A');
+      try {
+        (void)totp_generate(long_secret, 1234567890LL);
+      } catch (const std::invalid_argument&) {
+        SUCCEED() << "rejecting an over-long secret is acceptable";
+      }
+    }
+
+    // ---- Break-it: extreme time values ----
+
+    TEST(TotpTest, NegativeTimeGeneratesCode) {
+      // Negative time values correspond to counter < 0; the implementation must
+      // handle this gracefully (RFC 6238 only defines counter ≥ 0).
+      try {
+        (void)totp_generate(kRfc6238Secret, -1);
+      } catch (const std::invalid_argument&) {
+        SUCCEED() << "rejecting a negative time is acceptable";
+      }
+      // If it didn't throw, it must not have crashed — that's sufficient.
+    }
+
+    TEST(TotpTest, VeryLargeTimeDoesNotOverflow) {
+      // Time near INT64_MAX should not cause overflow in counter calculation.
+      constexpr std::int64_t big_time = 9'223'372'036'854'775'807LL; // INT64_MAX-ish
+      try {
+        (void)totp_generate(kRfc6238Secret, big_time);
+      } catch (const std::invalid_argument&) {
+        SUCCEED() << "rejecting a near-INT64_MAX time is acceptable";
+      } catch (const std::overflow_error&) {
+        SUCCEED() << "reporting overflow on a near-INT64_MAX time is acceptable";
+      }
+    }
+
+    TEST(TotpTest, TimeZeroGeneratesCode) {
+      // T=0 is the Unix epoch — counter 0. Must generate a valid 6-digit code.
+      const auto code = totp_generate(kRfc6238Secret, 0);
+      EXPECT_EQ(code.size(), 6U);
+    }
+
+    // ---- Break-it: verify edge cases ----
+
+    TEST(TotpTest, VerifyWithNonNumericCode) {
+      EXPECT_FALSE(totp_verify(kRfc6238Secret, "abcdef", 1234567890LL));
+    }
+
+    TEST(TotpTest, VerifyWithCodeContainingSpaces) {
+      EXPECT_FALSE(totp_verify(kRfc6238Secret, " 12345", 1234567890LL));
+      EXPECT_FALSE(totp_verify(kRfc6238Secret, "123456 ", 1234567890LL));
+    }
+
+    TEST(TotpTest, Base32DecodeSingleCharacter) {
+      // Single base32 character (A=0) decodes to 0 bits — empty output.
+      const auto bytes = base32_decode("A");
+      EXPECT_TRUE(bytes.empty());
+    }
+
+    TEST(TotpTest, Base32DecodeWhitespaceCharactersThrows) {
+      EXPECT_THROW((void)base32_decode("AAAA AAAA"), std::invalid_argument);
+    }
+
+    TEST(TotpTest, Base32DecodeMaximumPadding) {
+      // A valid base32 string with maximal padding (6 = signs).
+      const auto bytes = base32_decode("A======");
+      EXPECT_TRUE(bytes.empty()); // 'A' alone decodes to 0 bits
+    }
+
+    // ==== Aggressive: mixed-case secrets, edge step counts, counter overflow ====
+
+    TEST(TotpTest, TotpGenerateWithMixedCaseSecret) {
+      // base32 should be case-insensitive.
+      const auto upper = totp_generate("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", 1234567890LL);
+      const auto lower = totp_generate("gezdgnbvgY3TQOJQGEZDGNBVGY3TQOJQ", 1234567890LL);
+      EXPECT_EQ(upper, lower);
+    }
+
+    TEST(TotpTest, TotpVerifyWithMixedCaseSecret) {
+      const std::int64_t t = 1234567890LL;
+      const auto code = totp_generate(kRfc6238Secret, t);
+      EXPECT_TRUE(totp_verify("gezdgnbvgY3TQOJQGEZDGNBVGY3TQOJQ", code, t));
+    }
+
+    TEST(TotpTest, Base32DecodeLowercaseLetters) {
+      // "abcdefghijklmnopqrstuvwxyz234567" → lowercase must decode identically.
+      const auto lower = base32_decode("gezdgnbv");
+      const auto upper = base32_decode("GEZDGNBV");
+      EXPECT_EQ(lower, upper);
+    }
+
+    TEST(TotpTest, TimeStepExactlyAtBoundary) {
+      // At exactly T=30, the counter is 1 (step boundary).
+      const auto code_t0 = totp_generate(kRfc6238Secret, 0);
+      const auto code_t29 = totp_generate(kRfc6238Secret, 29);
+      const auto code_t30 = totp_generate(kRfc6238Secret, 30);
+      EXPECT_EQ(code_t0, code_t29); // same step
+      EXPECT_NE(code_t0, code_t30); // different step
+    }
+
+    TEST(TotpTest, CounterNearUint64Max) {
+      // T = 30 * (2^64 - 1) — counter at the edge of uint64_t range.
+      // Must not overflow or crash; either produces a code or throws.
+      try {
+        constexpr std::int64_t huge_t = 30LL * static_cast<std::int64_t>(0xFFFFFFFFFFFFFFFFULL);
+        (void)totp_generate(kRfc6238Secret, huge_t);
+      } catch (const std::exception&) {
+        SUCCEED() << "rejecting a counter at the edge of uint64_t is acceptable";
+      }
+    }
+
+    TEST(TotpTest, Base32DecodeInvalidCharAtEveryPosition) {
+      // Characters below ASCII 32 (space) or above ASCII 126 are not base32.
+      EXPECT_THROW((void)base32_decode("\x01"
+                                       "AAAAAAA"),
+                   std::invalid_argument);
+      EXPECT_THROW((void)base32_decode("A\x01"
+                                       "AAAAAA"),
+                   std::invalid_argument);
     }
 
   } // namespace

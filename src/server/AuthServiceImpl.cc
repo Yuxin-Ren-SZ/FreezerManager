@@ -31,6 +31,18 @@ namespace fmgr::server {
       return sctx;
     }
 
+    // Derive a per-source-IP rate-limit key from the gRPC peer string, dropping
+    // the ephemeral port so all connections from one host share a bucket.
+    // Peer looks like "ipv4:1.2.3.4:54321" or "ipv6:[::1]:54321".
+    [[nodiscard]] std::string peer_ip_key(const grpc::ServerContext& ctx) {
+      std::string peer = ctx.peer();
+      const auto last_colon = peer.rfind(':');
+      if (last_colon == std::string::npos) {
+        return peer;
+      }
+      return peer.substr(0, last_colon);
+    }
+
     [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
@@ -62,7 +74,9 @@ namespace fmgr::server {
   } // namespace
 
   AuthServiceImpl::AuthServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend)
-      : auth_(auth), backend_(backend), middleware_(auth) {
+      : auth_(auth), backend_(backend), middleware_(auth),
+        login_limiter_(rpc::RateLimiterConfig{.capacity = k_login_rate_capacity,
+                                              .refill_per_sec = k_login_rate_refill_per_sec}) {
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Login",
                                       core::Permission::SessionRevoke);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/SubmitMfa",
@@ -77,9 +91,14 @@ namespace fmgr::server {
                                       core::Permission::SessionRevoke);
   }
 
-  grpc::Status AuthServiceImpl::Login(grpc::ServerContext* /*ctx*/,
-                                      const fmgr::v1::LoginRequest* req,
+  grpc::Status AuthServiceImpl::Login(grpc::ServerContext* ctx, const fmgr::v1::LoginRequest* req,
                                       fmgr::v1::LoginResponse* resp) {
+    // Throttle by source IP before doing any work (notably the expensive
+    // Argon2id verify). Caps credential-spray / account-enumeration volume that
+    // the per-email lockout cannot (audit H-1).
+    if (!login_limiter_.try_acquire(peer_ip_key(*ctx), rpc::RateLimiter::Clock::now())) {
+      return {grpc::StatusCode::RESOURCE_EXHAUSTED, "too many login attempts; slow down"};
+    }
     try {
       const auth::AuthCredentials creds = auth::PasswordCredentials{
           .email = req->email(),

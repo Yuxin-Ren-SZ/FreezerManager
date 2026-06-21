@@ -2,8 +2,10 @@
 
 #include "server/ItemTypeServiceImpl.h"
 
+#include "core/custom_field_validator.h"
 #include "core/item_type.h"
 #include "core/permissions.h"
+#include "core/uuid.h"
 #include "server/GrpcErrorTranslation.h"
 #include "storage/IStorageBackend.h"
 #include "storage/ItemTypeTraits.h"
@@ -16,7 +18,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <optional>
-#include <random>
 #include <string>
 #include <string_view>
 
@@ -40,29 +41,10 @@ namespace fmgr::server {
       return core::Timestamp::from_unix_micros(static_cast<std::int64_t>(micros));
     }
 
-    // RFC 4122 version-4 UUID from a non-deterministic entropy source. IDs must be
-    // unguessable but need not be cryptographically secret (see LabServiceImpl).
-    [[nodiscard]] std::string generate_uuid_v4() {
-      std::random_device rng;
-      std::array<std::uint8_t, 16> bytes{};
-      for (std::size_t i = 0; i < bytes.size(); i += 4) {
-        const std::uint32_t word = rng();
-        bytes[i] = static_cast<std::uint8_t>(word & 0xFFU);
-        bytes[i + 1] = static_cast<std::uint8_t>((word >> 8U) & 0xFFU);
-        bytes[i + 2] = static_cast<std::uint8_t>((word >> 16U) & 0xFFU);
-        bytes[i + 3] = static_cast<std::uint8_t>((word >> 24U) & 0xFFU);
-      }
-      bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0FU) | 0x40U); // version 4
-      bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3FU) | 0x80U); // variant
-      std::array<char, 37> buf{};
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg)
-      std::snprintf(buf.data(), buf.size(),
-                    "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-                    bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-                    bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14],
-                    bytes[15]);
-      return {buf.data()};
-    }
+    // Entity IDs are minted from the libsodium CSPRNG via core::generate_uuid_v4
+    // so they are unguessable on every platform — std::random_device may degrade
+    // to a deterministic engine on some targets (security audit C-1 / review F-2).
+    using core::generate_uuid_v4;
 
     // ---- ScopeKind / FieldDataType mapping ----
     //
@@ -179,6 +161,15 @@ namespace fmgr::server {
       out->mutable_created_at()->set_unix_micros(cfd.created_at.unix_micros());
       if (cfd.archived_at.has_value()) {
         out->mutable_archived_at()->set_unix_micros(cfd.archived_at->unix_micros());
+      }
+    }
+
+    // A PHI field must never be indexed: a JSON-path index would leak plaintext
+    // PHI into the index structure (PRD §4.1, L10.3). Reject at definition time.
+    void reject_indexed_phi(const core::CustomFieldDefinition& cfd) {
+      if (cfd.is_phi && cfd.indexed) {
+        throw storage::ConstraintViolation(
+            "a PHI custom field may not be indexed (is_phi and indexed are mutually exclusive)");
       }
     }
 
@@ -416,9 +407,27 @@ namespace fmgr::server {
           .is_phi = wire.is_phi(),
           .created_at = now_timestamp(),
       };
+      reject_indexed_phi(cfd);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+
+      // Cap the number of definitions per entity so a lab admin cannot define
+      // thousands of fields and degrade every sample create/update (review F-9).
+      auto count_query = storage::Query<core::CustomFieldDefinition>::where(
+          storage::field<core::CustomFieldDefinition, std::string>(
+              core::CustomFieldDefinition::Field::LabId) == lab_id.to_string());
+      if (cfd.item_type_id.has_value()) {
+        count_query = count_query.and_where(
+            storage::field<core::CustomFieldDefinition, std::string>(
+                core::CustomFieldDefinition::Field::ItemTypeId) == cfd.item_type_id->to_string());
+      }
+      if (txn->repo<core::CustomFieldDefinition>().query(count_query).size() >=
+          core::k_max_custom_fields_per_entity) {
+        throw storage::ConstraintViolation(
+            "custom field limit reached: an entity may have at most " +
+            std::to_string(core::k_max_custom_fields_per_entity) + " custom fields");
+      }
       txn->repo<core::CustomFieldDefinition>().insert(cfd, make_ctx(sctx, "create_cfd"));
       txn->commit();
 
@@ -459,6 +468,7 @@ namespace fmgr::server {
       existing->validation_json = wire.validation_json().empty() ? "{}" : wire.validation_json();
       existing->indexed = wire.indexed();
       existing->is_phi = wire.is_phi();
+      reject_indexed_phi(*existing);
       txn->repo<core::CustomFieldDefinition>().update(*existing, make_ctx(sctx, "update_cfd"));
       txn->commit();
 

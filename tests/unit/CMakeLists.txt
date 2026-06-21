@@ -1,4 +1,5 @@
 find_package(GTest CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
 
 add_executable(
   freezermanager_core_unit_tests
@@ -7,6 +8,7 @@ add_executable(
   custom_field_validator_test.cpp
   freezer_types_test.cpp
   identity_types_test.cpp
+  json_helpers_test.cpp
   item_types_test.cpp
   permission_catalog_test.cpp
   role_types_test.cpp
@@ -109,7 +111,7 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-add_executable(freezermanager_rpc_unit_tests auth_middleware_test.cpp)
+add_executable(freezermanager_rpc_unit_tests auth_middleware_test.cpp rate_limiter_test.cpp)
 target_link_libraries(
   freezermanager_rpc_unit_tests
   PRIVATE
@@ -149,13 +151,141 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
+add_executable(freezermanager_custom_field_resolver_tests custom_field_resolver_test.cpp)
+target_link_libraries(
+  freezermanager_custom_field_resolver_tests
+  PRIVATE
+    FreezerManager::storage_sqlite
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_custom_field_resolver_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_error_translation_tests error_translation_test.cpp)
+target_link_libraries(
+  freezermanager_error_translation_tests
+  PRIVATE
+    FreezerManager::server_lib
+    FreezerManager::storage
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_error_translation_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_transaction_resilience_tests transaction_resilience_test.cpp)
+target_link_libraries(
+  freezermanager_transaction_resilience_tests
+  PRIVATE
+    FreezerManager::storage_sqlite
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_transaction_resilience_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_rest_unit_tests
+  json_proto_mapping_test.cpp
+  rest_error_translation_test.cpp
+)
+target_link_libraries(
+  freezermanager_rest_unit_tests
+  PRIVATE
+    FreezerManager::rest
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_rest_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_kms_unit_tests kms_test.cpp os_keyring_test.cpp)
+target_link_libraries(
+  freezermanager_kms_unit_tests
+  PRIVATE
+    FreezerManager::kms
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_kms_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_crypto_unit_tests field_cipher_test.cpp file_cipher_test.cpp)
+target_link_libraries(
+  freezermanager_crypto_unit_tests
+  PRIVATE
+    FreezerManager::crypto
+    FreezerManager::kms
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_crypto_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_backup_unit_tests
+  backup_filename_test.cpp
+  retention_policy_test.cpp
+  backup_runner_test.cpp
+)
+target_link_libraries(
+  freezermanager_backup_unit_tests
+  PRIVATE
+    FreezerManager::backup
+    FreezerManager::storage_sqlite
+    FreezerManager::kms
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_backup_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_backup_scheduler_tests backup_scheduler_test.cpp)
+target_link_libraries(
+  freezermanager_backup_scheduler_tests
+  PRIVATE
+    FreezerManager::server_lib
+    FreezerManager::storage_sqlite
+    FreezerManager::kms
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_backup_scheduler_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
+gtest_discover_tests(freezermanager_backup_unit_tests)
+gtest_discover_tests(freezermanager_backup_scheduler_tests)
+gtest_discover_tests(freezermanager_kms_unit_tests)
+gtest_discover_tests(freezermanager_crypto_unit_tests)
+gtest_discover_tests(freezermanager_rest_unit_tests)
 gtest_discover_tests(freezermanager_storage_unit_tests)
 gtest_discover_tests(freezermanager_sqlite_storage_unit_tests)
 gtest_discover_tests(freezermanager_auth_unit_tests)
 gtest_discover_tests(freezermanager_rpc_unit_tests)
 gtest_discover_tests(freezermanager_audit_unit_tests)
+gtest_discover_tests(freezermanager_custom_field_resolver_tests)
+gtest_discover_tests(freezermanager_error_translation_tests
+  PROPERTIES LABELS "grpc_integration")
+gtest_discover_tests(freezermanager_transaction_resilience_tests)
 # The Postgres parameter of these tests DROPs/CREATEs the shared public schema;
 # serialize against every other Postgres-touching suite with one resource lock.
 gtest_discover_tests(freezermanager_storage_repository_tests
