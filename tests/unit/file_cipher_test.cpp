@@ -41,13 +41,14 @@ namespace {
       return dir_ / name;
     }
 
-    void write_bytes(const std::filesystem::path& p, const std::vector<std::uint8_t>& bytes) const {
+    static void write_bytes(const std::filesystem::path& p,
+                            const std::vector<std::uint8_t>& bytes) {
       std::ofstream out(p, std::ios::binary);
       out.write(reinterpret_cast<const char*>(bytes.data()),
                 static_cast<std::streamsize>(bytes.size()));
     }
 
-    [[nodiscard]] std::vector<std::uint8_t> read_bytes(const std::filesystem::path& p) const {
+    [[nodiscard]] static std::vector<std::uint8_t> read_bytes(const std::filesystem::path& p) {
       std::ifstream in(p, std::ios::binary);
       return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
     }
@@ -178,7 +179,7 @@ namespace {
     const auto enc = path("no_nl");
     // Write a non-JSON blob with no '\n' — the entire file becomes the
     // "manifest line".  Keep it moderate for a unit test.
-    write_bytes(enc, std::vector<std::uint8_t>(128 * 1024, 0x41));
+    write_bytes(enc, std::vector<std::uint8_t>(std::size_t{128} * 1024, 0x41));
     EXPECT_THROW((void)fmgr::crypto::decrypt_file(enc, path("dec"), kms), CipherError);
   }
 
@@ -263,7 +264,7 @@ namespace {
 
     auto bytes = read_bytes(enc);
     std::string text(bytes.begin(), bytes.end());
-    const auto pos = text.find("\"ss_header\":\"");
+    const auto pos = text.find(R"("ss_header":")");
     ASSERT_NE(pos, std::string::npos);
     // Flip a base64 char inside the ss_header value.
     const auto val_start = pos + 13;

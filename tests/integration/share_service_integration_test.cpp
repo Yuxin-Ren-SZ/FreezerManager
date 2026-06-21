@@ -23,6 +23,7 @@
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <memory>
@@ -120,6 +121,7 @@ namespace fmgr::test {
         return resp.request().id();
       }
 
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       grpc::Status approve(const std::string& token, const std::string& id,
                            fmgr::v1::ShareApprovalRole role) {
         grpc::ClientContext ctx;
@@ -131,6 +133,7 @@ namespace fmgr::test {
         return share_stub_->ApproveShareRequest(&ctx, req, &resp);
       }
 
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       fmgr::v1::ShareRequestStatus get_status(const std::string& token, const std::string& id) {
         grpc::ClientContext ctx;
         set_bearer(ctx, token);
@@ -492,12 +495,8 @@ namespace fmgr::test {
         req.set_include_decided(include_decided);
         fmgr::v1::ListShareRequestsResponse resp;
         EXPECT_TRUE(share_stub_->ListShareRequests(&ctx, req, &resp).ok());
-        for (const auto& r : resp.requests()) {
-          if (r.id() == id) {
-            return true;
-          }
-        }
-        return false;
+        return std::ranges::any_of(resp.requests(),
+                                   [&](const auto& request) { return request.id() == id; });
       };
 
       EXPECT_FALSE(contains_id(false)); // default: pending only

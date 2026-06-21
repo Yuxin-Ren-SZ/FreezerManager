@@ -184,6 +184,8 @@ namespace fmgr::fuzz {
         case 4:
           value = nlohmann::json::object();
           break;
+        default:
+          break;
         }
         const nlohmann::json fields{{"fuzz_field", value}};
         // Must never throw; at worst, returns validation errors.
@@ -230,6 +232,8 @@ namespace fmgr::fuzz {
             }
             case 3:
               fields[key] = std::uniform_real_distribution<double>(-1000.0, 1000.0)(gen);
+              break;
+            default:
               break;
             }
           }
@@ -287,6 +291,8 @@ namespace fmgr::fuzz {
           value = std::move(obj);
           break;
         }
+        default:
+          break;
         }
 
         const auto first = audit::canonical_json(value);
@@ -371,11 +377,15 @@ namespace fmgr::fuzz {
             case 2:
               arr.push_back(true);
               break;
+            default:
+              break;
             }
           }
           value = std::move(arr);
           break;
         }
+        default:
+          break;
         }
 
         // canonical_json must never throw on valid JSON inputs.

@@ -1216,7 +1216,7 @@ namespace fmgr::cli {
       CliFixture fixture(BackendKind::Sqlite);
       const auto backup_kms = fmgr::kms::EnvVarKms::from_base64(kBackupKekB64);
       const auto out = backup_temp(".fmgrbak");
-      const core::UserId actor = id_from_low<core::UserId>(10);
+      const auto actor = id_from_low<core::UserId>(10);
       std::ostringstream sink;
 
       const auto report = run_backup_create(fixture.backend(), fixture.db_path(), backup_kms,
@@ -1295,7 +1295,7 @@ namespace fmgr::cli {
       CliFixture fixture(BackendKind::Sqlite);
       const auto backup_kms = fmgr::kms::EnvVarKms::from_base64(kBackupKekB64);
       const auto out = backup_temp(".fmgrbak");
-      const core::UserId actor = id_from_low<core::UserId>(10);
+      const auto actor = id_from_low<core::UserId>(10);
       std::ostringstream sink;
       run_backup_create(fixture.backend(), fixture.db_path(), backup_kms, out.string(), actor,
                         sink);
@@ -1343,7 +1343,7 @@ namespace fmgr::cli {
       const std::string url = postgres_test_url().value();
       const auto backup_kms = fmgr::kms::EnvVarKms::from_base64(kBackupKekB64);
       const auto out = backup_temp(".pg.fmgrbak");
-      const core::UserId actor = id_from_low<core::UserId>(10);
+      const auto actor = id_from_low<core::UserId>(10);
       std::ostringstream sink;
 
       const auto report =
@@ -1630,8 +1630,9 @@ namespace fmgr::cli {
     TEST(CsvReaderTest, VeryWideRowDoesNotCrash) {
       std::string header;
       for (int i = 0; i < 500; ++i) {
-        if (i > 0)
+        if (i > 0) {
           header += ",";
+        }
         header += "col_" + std::to_string(i);
       }
       const auto rows = parse(header + "\r\n");
@@ -1687,7 +1688,7 @@ namespace fmgr::cli {
         (void)open_backend(BackendOptions{.sqlite_path = ""});
         // If accepted, it opened successfully (likely as :memory:).
       } catch (const BackendOptionError&) {
-        // Rejection is also acceptable.
+        SUCCEED() << "rejecting an empty SQLite path is acceptable";
       }
     }
 

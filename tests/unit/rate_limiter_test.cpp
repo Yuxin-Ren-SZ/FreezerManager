@@ -250,7 +250,7 @@ namespace fmgr::rpc {
       const auto now = base();
       // Keys with special characters (spaces, null bytes, unicode) must not crash.
       EXPECT_TRUE(limiter.try_acquire("key with spaces", now));
-      EXPECT_TRUE(limiter.try_acquire(std::string("key\0with\0nulls", 15), now));
+      EXPECT_TRUE(limiter.try_acquire(std::string("key\0with\0nulls", 14), now));
       // Unicode key gets its own bucket with capacity 2 — twice should succeed.
       EXPECT_TRUE(limiter.try_acquire("key-with-unicode-🔥", now));
       EXPECT_TRUE(limiter.try_acquire("key-with-unicode-🔥", now));
@@ -332,6 +332,7 @@ namespace fmgr::rpc {
 
       std::atomic<int> allowed{0};
       std::vector<std::thread> threads;
+      threads.reserve(kThreads);
       for (int t = 0; t < kThreads; ++t) {
         threads.emplace_back([&] {
           int local = 0;
@@ -345,8 +346,9 @@ namespace fmgr::rpc {
           allowed.fetch_add(local, std::memory_order_relaxed);
         });
       }
-      for (auto& th : threads)
+      for (auto& th : threads) {
         th.join();
+      }
 
       // Capacity 50 + refill at 100/s over 500ms = 50+50 = 100 max per thread,
       // but the shared bucket means total ≤ 50 + 100*0.5 = 100 overall.
@@ -367,8 +369,9 @@ namespace fmgr::rpc {
       RateLimiter limiter(RateLimiterConfig{.capacity = 5.0, .refill_per_sec = 1.0});
       const auto now = base();
       // Drain the bucket.
-      for (int i = 0; i < 5; ++i)
+      for (int i = 0; i < 5; ++i) {
         limiter.try_acquire("ip", now);
+      }
       // Jump forward 100 years — must refill to capacity, not overflow.
       using namespace std::chrono_literals;
       const auto far = now + std::chrono::hours(24 * 365 * 100);
@@ -401,6 +404,7 @@ namespace fmgr::rpc {
       std::atomic<int> reads{0};
 
       std::vector<std::thread> threads;
+      threads.reserve(kThreads);
       for (int t = 0; t < kThreads; ++t) {
         threads.emplace_back([&, t] {
           for (int i = 0; i < 200 && !stop.load(); ++i) {
@@ -413,8 +417,9 @@ namespace fmgr::rpc {
           }
         });
       }
-      for (auto& th : threads)
+      for (auto& th : threads) {
         th.join();
+      }
       EXPECT_GT(reads.load(), 0);
     }
 

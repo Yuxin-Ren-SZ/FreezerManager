@@ -157,38 +157,48 @@ namespace fmgr::storage {
         file << "this is not a valid SQLite database file";
       }
 
-      SqliteBackend backend(SqliteBackendOptions{.database_path = path.string()});
-
-      // The backend should detect the corruption when attempting to read schema
-      // version or run migrations — not silently succeed.
-      EXPECT_THROW(backend.migrate_to_latest(), BackendError);
+      // The backend opens an anchor connection eagerly at construction, so the
+      // corruption is detected there; migrate_to_latest would also surface it.
+      // Either way the failure must be a BackendError, never a silent success.
+      EXPECT_THROW(
+          {
+            SqliteBackend backend(SqliteBackendOptions{.database_path = path.string()});
+            backend.migrate_to_latest();
+          },
+          BackendError);
 
       remove_sqlite_files(path);
     }
 
-    TEST(SqliteBackend, EmptyDatabaseFileIsDetectedAtOpen) {
+    TEST(SqliteBackend, EmptyDatabaseFileIsTreatedAsNewDatabase) {
       const auto path = sqlite_test_path("empty-db");
       remove_sqlite_files(path);
 
-      // Create an empty file that is definitely not a valid SQLite database.
+      // Create a zero-length file.
       {
         std::ofstream file(path, std::ios::binary);
         // Write nothing — zero-length file.
       }
 
+      // A zero-byte file is a *valid* empty SQLite database: SQLite adopts it
+      // and writes the schema on first use.  Opening and migrating must succeed.
       SqliteBackend backend(SqliteBackendOptions{.database_path = path.string()});
-      // A zero-byte file is not a valid SQLite database.  The backend should
-      // detect this when it tries to access the schema.
-      EXPECT_THROW(backend.migrate_to_latest(), BackendError);
+      EXPECT_NO_THROW(backend.migrate_to_latest());
+      EXPECT_GT(backend.current_version().value, 0);
 
       remove_sqlite_files(path);
     }
 
     TEST(SqliteBackend, MissingFileDirectoryIsDetected) {
       const std::string impossible_path = "/nonexistent_directory_42f8a1b2/test.db";
-      SqliteBackend backend(SqliteBackendOptions{.database_path = impossible_path});
-      // Opening a database in a nonexistent directory must fail.
-      EXPECT_THROW(backend.migrate_to_latest(), BackendError);
+      // Opening a database in a nonexistent directory must fail.  The anchor
+      // connection is opened at construction, so the failure surfaces there.
+      EXPECT_THROW(
+          {
+            SqliteBackend backend(SqliteBackendOptions{.database_path = impossible_path});
+            backend.migrate_to_latest();
+          },
+          BackendError);
     }
 
     // ---- Break-it: many migrations ----

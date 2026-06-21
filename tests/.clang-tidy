@@ -10,7 +10,17 @@
 #   convention (kLabId, kTotpSecret, ...) distinct from src's k_lower_snake, and
 #   GTest mandates the CamelCase free function name `PrintTo`. The root rule
 #   encodes the src convention; enforcing it here is a false positive.
+# - readability-identifier-length: tests use short, local, throw-away names
+#   (stream objects `in`/`out`, fixtures `o1`/`o2`, loop counters). Enforcing
+#   >=3-char names here is churn without improving the production surface.
+# - bugprone-unchecked-optional-access: test bodies dereference std::optional
+#   immediately after an ASSERT_*/EXPECT_* guard (or a known-good fixture build).
+#   The dataflow analysis cannot see through the GoogleTest macros, and an
+#   unguarded access in a test simply fails that test loudly — it is not a latent
+#   production hazard.
 InheritParentConfig: true
 Checks: >
   -readability-function-cognitive-complexity,
-  -readability-identifier-naming
+  -readability-identifier-naming,
+  -readability-identifier-length,
+  -bugprone-unchecked-optional-access

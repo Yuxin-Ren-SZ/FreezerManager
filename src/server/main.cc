@@ -46,8 +46,8 @@ int main(int /*argc*/, char* /*argv*/[]) {
   // pool, and an error flood drops the oldest lines instead of building up
   // unbounded memory (audit H-3). Set as the default so spdlog::error() in the
   // gRPC error funnel routes here.
-  constexpr std::size_t kLogQueueSize = 8192;
-  spdlog::init_thread_pool(kLogQueueSize, 1);
+  constexpr std::size_t k_log_queue_size = 8192;
+  spdlog::init_thread_pool(k_log_queue_size, 1);
   auto logger = spdlog::create_async_nb<spdlog::sinks::stderr_color_sink_mt>("freezerd");
   spdlog::set_default_logger(logger);
   spdlog::flush_on(spdlog::level::err);
@@ -92,7 +92,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         const char* value = std::getenv(name);
         return value != nullptr ? std::atoi(value) : fallback;
       };
-      constexpr double kMicrosPerHour = 3'600.0 * 1'000'000.0;
+      constexpr double k_micros_per_hour = 3'600.0 * 1'000'000.0;
       const char* actor_env = std::getenv("FMGR_BACKUP_ACTOR");
       fmgr::backup::BackupScheduleConfig schedule;
       schedule.sqlite_db_path = db_path;
@@ -101,9 +101,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
                                                          env_int("FMGR_BACKUP_MONTHLY", 12),
                                                          env_int("FMGR_BACKUP_YEARLY", 7)};
       schedule.backup_interval_micros = static_cast<std::int64_t>(
-          env_double("FMGR_BACKUP_INTERVAL_HOURS", 24.0) * kMicrosPerHour);
-      schedule.drill_interval_micros =
-          static_cast<std::int64_t>(env_double("FMGR_BACKUP_DRILL_HOURS", 168.0) * kMicrosPerHour);
+          env_double("FMGR_BACKUP_INTERVAL_HOURS", 24.0) * k_micros_per_hour);
+      schedule.drill_interval_micros = static_cast<std::int64_t>(
+          env_double("FMGR_BACKUP_DRILL_HOURS", 168.0) * k_micros_per_hour);
       schedule.actor =
           actor_env != nullptr ? fmgr::core::UserId::parse(actor_env) : fmgr::core::UserId{};
       opts.backup_schedule = schedule;

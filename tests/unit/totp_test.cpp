@@ -162,7 +162,7 @@ namespace fmgr::auth {
         (void)totp_generate("========", 1234567890LL);
         // If accepted, it produced a 6-digit code. That's fine.
       } catch (const std::exception&) {
-        // Rejection is also fine.
+        SUCCEED() << "rejecting padding-only secrets is also acceptable";
       }
     }
 
@@ -174,7 +174,7 @@ namespace fmgr::auth {
         (void)totp_generate("GEZD GN BV GY 3T QOJ Q", 1234567890LL);
         // If it didn't throw, it produced a 6-digit code — verify it's a valid code.
       } catch (const std::invalid_argument&) {
-        // Also acceptable: rejecting non-base32 chars.
+        SUCCEED() << "rejecting non-base32 characters is also acceptable";
       }
     }
 
@@ -184,7 +184,7 @@ namespace fmgr::auth {
       try {
         (void)totp_generate(long_secret, 1234567890LL);
       } catch (const std::invalid_argument&) {
-        // Acceptable if the implementation has its own bounds.
+        SUCCEED() << "rejecting an over-long secret is acceptable";
       }
     }
 
@@ -196,7 +196,7 @@ namespace fmgr::auth {
       try {
         (void)totp_generate(kRfc6238Secret, -1);
       } catch (const std::invalid_argument&) {
-        // Acceptable if rejected.
+        SUCCEED() << "rejecting a negative time is acceptable";
       }
       // If it didn't throw, it must not have crashed — that's sufficient.
     }
@@ -207,9 +207,9 @@ namespace fmgr::auth {
       try {
         (void)totp_generate(kRfc6238Secret, big_time);
       } catch (const std::invalid_argument&) {
-        // Acceptable.
+        SUCCEED() << "rejecting a near-INT64_MAX time is acceptable";
       } catch (const std::overflow_error&) {
-        // Also acceptable.
+        SUCCEED() << "reporting overflow on a near-INT64_MAX time is acceptable";
       }
     }
 
@@ -284,7 +284,7 @@ namespace fmgr::auth {
         constexpr std::int64_t huge_t = 30LL * static_cast<std::int64_t>(0xFFFFFFFFFFFFFFFFULL);
         (void)totp_generate(kRfc6238Secret, huge_t);
       } catch (const std::exception&) {
-        // Rejection acceptable.
+        SUCCEED() << "rejecting a counter at the edge of uint64_t is acceptable";
       }
     }
 

@@ -42,6 +42,7 @@ namespace fmgr::backup {
 
     TEST(RetentionPolicyTest, DailyTierKeepsNewestDays) {
       std::vector<BackupFile> files;
+      files.reserve(5);
       for (int d = 0; d < 5; ++d) {
         files.push_back(at(d * kDay, "d" + std::to_string(d)));
       }

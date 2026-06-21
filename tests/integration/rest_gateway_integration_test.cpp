@@ -542,6 +542,7 @@ namespace fmgr::test {
     // open SSE stream. So drive the feed over a raw socket: send the GET, fire a
     // trigger (a mutation that appends an audit row) once the stream is up, and
     // accumulate bytes until `needle` appears or the deadline passes.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     [[nodiscard]] std::string sse_read_until(const std::string& path, const std::string& bearer,
                                              const std::string& needle,
                                              const std::function<void()>& trigger,

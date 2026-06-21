@@ -6,17 +6,22 @@
 
 #include "storage/CustomFieldResolver.h"
 
+#include "core/identity.h"
 #include "core/item_type.h"
+#include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
+#include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/ItemTypeRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
 #include "test_helpers.h"
 #include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -25,6 +30,16 @@ namespace fmgr::storage {
     using namespace fmgr::test;
 
     // ---- Helpers ----
+
+    [[nodiscard]] core::Lab make_lab(core::LabId lab_id) {
+      return core::Lab{
+          .id = lab_id,
+          .name = "Lab " + lab_id.to_string(),
+          .contact = "lab@example.org",
+          .created_at = core::Timestamp::from_unix_micros(100),
+          .settings_json = nlohmann::json::object(),
+      };
+    }
 
     [[nodiscard]] core::ItemType make_item_type(std::uint64_t id_low, core::LabId lab_id,
                                                 std::optional<core::ItemTypeId> parent_id,
@@ -74,6 +89,7 @@ namespace fmgr::storage {
       void SetUp() override {
         backend_ =
             std::make_unique<SqliteBackend>(SqliteBackendOptions{.database_path = ":memory:"});
+        register_identity_repositories(*backend_);
         register_item_type_repositories(*backend_);
         backend_->migrate_to_latest();
       }
@@ -86,18 +102,43 @@ namespace fmgr::storage {
         return *backend_;
       }
 
-      // Seed helper: insert item types and CFDs within a single transaction.
+      // Seed helper. Labs and item types are committed first, then the CFDs in a
+      // separate transaction: a CustomFieldDefinition insert validates its
+      // item_type_id against the *persisted* item_types table, and repository
+      // writes are staged until commit — so a CFD cannot reference an item type
+      // created in the same transaction. (Production creates them independently.)
       void seed(const std::vector<core::ItemType>& item_types,
                 const std::vector<core::CustomFieldDefinition>& cfds) {
-        auto txn = backend_->begin(IsolationLevel::Serializable);
         const auto ctx = mutation_context();
+
+        // item_types and custom_field_definitions both carry a FK to labs, so
+        // insert a row for every distinct lab referenced before inserting them.
+        std::set<core::LabId> lab_ids;
         for (const auto& it : item_types) {
-          txn->repo<core::ItemType>().insert(it, ctx);
+          lab_ids.insert(it.lab_id);
         }
         for (const auto& cfd : cfds) {
-          txn->repo<core::CustomFieldDefinition>().insert(cfd, ctx);
+          lab_ids.insert(cfd.lab_id);
         }
-        txn->commit();
+
+        {
+          auto txn = backend_->begin(IsolationLevel::Serializable);
+          for (const auto& lab_id : lab_ids) {
+            txn->repo<core::Lab>().insert(make_lab(lab_id), ctx);
+          }
+          for (const auto& it : item_types) {
+            txn->repo<core::ItemType>().insert(it, ctx);
+          }
+          txn->commit();
+        }
+
+        {
+          auto txn = backend_->begin(IsolationLevel::Serializable);
+          for (const auto& cfd : cfds) {
+            txn->repo<core::CustomFieldDefinition>().insert(cfd, ctx);
+          }
+          txn->commit();
+        }
       }
 
       std::unique_ptr<SqliteBackend> backend_;

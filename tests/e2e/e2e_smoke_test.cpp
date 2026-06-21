@@ -97,6 +97,7 @@ namespace fmgr::test {
         remove_sqlite_files(db_path_);
       }
 
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       [[nodiscard]] std::string login(const std::string& email, const std::string& password) {
         grpc::ClientContext ctx;
         fmgr::v1::LoginRequest req;

@@ -1207,13 +1207,13 @@ namespace fmgr::auth {
       cfg.max_failures_before_lockout = 3;
       auto local_provider = LocalAuthProvider(*backend_, cfg);
 
-      // N-1 failures should NOT lock (2 failures < 3 threshold).
+      // N-1 failures should NOT lock (2 failures < 3 threshold). Each bad-password
+      // attempt is expected to throw.
       for (int i = 0; i < 2; ++i) {
-        try {
-          local_provider.authenticate(
-              PasswordCredentials{.email = "nototp@example.com", .password = "bad"}, ClientInfo{});
-        } catch (...) {
-        }
+        EXPECT_THROW(local_provider.authenticate(
+                         PasswordCredentials{.email = "nototp@example.com", .password = "bad"},
+                         ClientInfo{}),
+                     InvalidCredentials);
       }
       // Should still be able to log in with correct password.
       EXPECT_NO_THROW(local_provider.authenticate(
@@ -1236,7 +1236,7 @@ namespace fmgr::auth {
         (void)provider_->create_api_token(kUserNoTotpId, "", R"(["sample.read"])", std::nullopt,
                                           std::nullopt, test_ctx());
       } catch (const storage::ConstraintViolation&) {
-        // Acceptable: DB constraint rejects empty name.
+        SUCCEED() << "rejecting an empty token name via a DB constraint is acceptable";
       }
     }
 
@@ -1247,7 +1247,7 @@ namespace fmgr::auth {
         (void)provider_->create_api_token(kUserNoTotpId, long_name, R"(["sample.read"])",
                                           std::nullopt, std::nullopt, test_ctx());
       } catch (const storage::ConstraintViolation&) {
-        // Acceptable.
+        SUCCEED() << "rejecting an over-long token name via a column constraint is acceptable";
       }
     }
 
@@ -1275,6 +1275,7 @@ namespace fmgr::auth {
       std::vector<std::thread> threads;
       std::vector<AuthToken> tokens(kThreads);
       std::atomic<int> ok{0};
+      threads.reserve(kThreads);
       for (int t = 0; t < kThreads; ++t) {
         threads.emplace_back([&, t] {
           try {
@@ -1282,12 +1283,15 @@ namespace fmgr::auth {
                 PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
                 ClientInfo{});
             ++ok;
-          } catch (...) {
+          } catch (...) { // NOLINT(bugprone-empty-catch)
+            // A failed race leaves `ok` unincremented; GoogleTest assertion macros
+            // are not thread-safe, so the post-join EXPECT_EQ does the checking.
           }
         });
       }
-      for (auto& th : threads)
+      for (auto& th : threads) {
         th.join();
+      }
       // All must succeed — each gets a distinct session.
       EXPECT_EQ(ok.load(), kThreads);
 

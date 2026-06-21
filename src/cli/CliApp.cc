@@ -204,7 +204,12 @@ namespace fmgr::cli {
           ->required();
     }
 
+    // dispatch_backup is a flat dispatcher over five independent subcommands
+    // (create/verify/restore/run/list); the cognitive-complexity score comes from
+    // repeated guard boilerplate, not nested logic, so splitting it would not aid
+    // readability.
     // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    // NOLINTNEXTLINE(readability-function-cognitive-complexity)
     [[nodiscard]] std::optional<int> dispatch_backup(const BackupSubcommands& backup,
                                                      std::ostream& out, std::ostream& err) {
       // NOLINTEND(bugprone-easily-swappable-parameters)
@@ -276,7 +281,7 @@ namespace fmgr::cli {
         if (provider == nullptr) {
           return 1;
         }
-        constexpr double kMicrosPerHour = 3'600.0 * 1'000'000.0;
+        constexpr double k_micros_per_hour = 3'600.0 * 1'000'000.0;
         auto backend = open_backend(has_pg ? backend_options_from("", backup.run_postgres)
                                            : backend_options_from(backup.run_sqlite, ""));
         const backup::BackupScheduleConfig config{
@@ -286,9 +291,9 @@ namespace fmgr::cli {
             .retention =
                 backup::RetentionPolicy{backup.run_daily, backup.run_monthly, backup.run_yearly},
             .backup_interval_micros =
-                static_cast<std::int64_t>(backup.run_backup_interval_hours * kMicrosPerHour),
+                static_cast<std::int64_t>(backup.run_backup_interval_hours * k_micros_per_hour),
             .drill_interval_micros =
-                static_cast<std::int64_t>(backup.run_drill_interval_hours * kMicrosPerHour),
+                static_cast<std::int64_t>(backup.run_drill_interval_hours * k_micros_per_hour),
             .actor = core::UserId::parse(backup.run_actor),
         };
         return backup::run_backup_run(*backend, *provider, config, out);

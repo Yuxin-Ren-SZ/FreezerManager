@@ -84,14 +84,14 @@ namespace fmgr::storage::detail {
   // dotted, non-empty domain. Rejects "@@", "a@b" (no domain dot), leading/trailing
   // '@', and multiple '@'. Full validation belongs at the API layer.
   [[nodiscard]] inline bool looks_like_email(std::string_view email) {
-    const auto at = email.find('@');
-    if (at == std::string_view::npos || at == 0 || at == email.size() - 1) {
+    const auto at_pos = email.find('@');
+    if (at_pos == std::string_view::npos || at_pos == 0 || at_pos == email.size() - 1) {
       return false;
     }
-    if (email.find('@', at + 1) != std::string_view::npos) {
+    if (email.find('@', at_pos + 1) != std::string_view::npos) {
       return false; // more than one '@'
     }
-    const std::string_view domain = email.substr(at + 1);
+    const std::string_view domain = email.substr(at_pos + 1);
     const auto dot = domain.find('.');
     return dot != std::string_view::npos && dot != 0 && dot != domain.size() - 1;
   }

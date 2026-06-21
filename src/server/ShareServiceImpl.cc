@@ -14,6 +14,7 @@
 #include <grpcpp/grpcpp.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -180,12 +181,9 @@ namespace fmgr::server {
     [[nodiscard]] bool user_already_signed(storage::ITransaction& txn,
                                            const core::ShareRequestId& request_id,
                                            const core::UserId& user_id) {
-      for (const auto& approval : load_approvals(txn, request_id)) {
-        if (approval.approver_user_id == user_id) {
-          return true;
-        }
-      }
-      return false;
+      const auto approvals = load_approvals(txn, request_id);
+      return std::ranges::any_of(
+          approvals, [&](const auto& approval) { return approval.approver_user_id == user_id; });
     }
 
   } // namespace

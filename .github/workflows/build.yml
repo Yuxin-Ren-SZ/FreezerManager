@@ -166,7 +166,10 @@ jobs:
           # prebuilt). The trailing regex (Python re.search, negative lookahead)
           # excludes the protoc/grpc-generated .pb.cc / .grpc.pb.cc translation
           # units, which are not ours to lint.
-          run-clang-tidy-17 -p out/build/dev -j "$(nproc)" -quiet '^(?!.*proto_generated).*$'
+          # Cap parallelism at 2: each clang-tidy process can consume 2–4 GB with
+          # the full check set enabled; -j $(nproc) easily OOMs a runner with
+          # 16 GB RAM (same constraint as the build step above).
+          run-clang-tidy-17 -p out/build/dev -j 2 -quiet '^(?!.*proto_generated).*$'
 
       - name: Coverage tooling
         if: ${{ matrix.preset == 'dev' }}

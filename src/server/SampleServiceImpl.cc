@@ -282,9 +282,12 @@ namespace fmgr::server {
                                               const fmgr::v1::ListSamplesRequest* req,
                                               fmgr::v1::ListSamplesResponse* resp) {
     try {
+      // Authenticate before touching request fields: a missing/invalid token must
+      // surface as UNAUTHENTICATED, not as a downstream INTERNAL from parsing an
+      // (unvalidated) empty lab_id.
+      const auto bearer = extract_bearer(*ctx);
       const auto lab_id = core::LabId::parse(req->lab_id());
-      const auto sctx =
-          middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
+      const auto sctx = middleware_.authorize(bearer, core::Permission::SampleRead, lab_id);
 
       auto query = storage::Query<core::Sample>::where(
           storage::field<core::Sample, std::string>(core::Sample::Field::LabId) ==
@@ -636,9 +639,12 @@ namespace fmgr::server {
                                                    const fmgr::v1::ExportSamplesCsvRequest* req,
                                                    fmgr::v1::ExportSamplesCsvResponse* resp) {
     try {
+      // Authenticate before touching request fields: a missing/invalid token must
+      // surface as UNAUTHENTICATED, not as a downstream INTERNAL from parsing an
+      // (unvalidated) empty lab_id.
+      const auto bearer = extract_bearer(*ctx);
       const auto lab_id = core::LabId::parse(req->lab_id());
-      const auto sctx =
-          middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
+      const auto sctx = middleware_.authorize(bearer, core::Permission::SampleRead, lab_id);
 
       auto query = storage::Query<core::Sample>::where(
           storage::field<core::Sample, std::string>(core::Sample::Field::LabId) ==

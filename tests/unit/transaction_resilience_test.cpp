@@ -53,7 +53,7 @@ namespace fmgr::storage {
         backend_.reset();
       }
 
-      [[nodiscard]] core::Lab make_lab(std::uint64_t low) {
+      [[nodiscard]] static core::Lab make_lab(std::uint64_t low) {
         return core::Lab{
             .id = id_from_low<core::LabId>(low),
             .name = "Lab " + std::to_string(low),
@@ -63,7 +63,7 @@ namespace fmgr::storage {
         };
       }
 
-      [[nodiscard]] core::User make_user(std::uint64_t low) {
+      [[nodiscard]] static core::User make_user(std::uint64_t low) {
         return core::User{
             .id = id_from_low<core::UserId>(low),
             .primary_email = "user" + std::to_string(low) + "@example.com",
@@ -74,8 +74,8 @@ namespace fmgr::storage {
         };
       }
 
-      [[nodiscard]] core::LabMembership make_membership(std::uint64_t user_low,
-                                                        std::uint64_t lab_low) {
+      [[nodiscard]] static core::LabMembership make_membership(std::uint64_t user_low,
+                                                               std::uint64_t lab_low) {
         return core::LabMembership{
             .user_id = id_from_low<core::UserId>(user_low),
             .lab_id = id_from_low<core::LabId>(lab_low),
@@ -238,7 +238,7 @@ namespace fmgr::storage {
       const auto ctx = mutation_context();
       for (int i = 0; i < 10; ++i) {
         auto txn = backend_->begin(IsolationLevel::Serializable);
-        txn->repo<core::Lab>().insert(make_lab(static_cast<std::uint64_t>(100 + i)), ctx);
+        txn->repo<core::Lab>().insert(make_lab(static_cast<std::uint64_t>(i) + 100), ctx);
         txn->commit();
       }
 
@@ -279,12 +279,12 @@ namespace fmgr::storage {
       for (int i = 0; i < 50; ++i) {
         {
           auto txn = backend_->begin(IsolationLevel::Serializable);
-          txn->repo<core::Lab>().insert(make_lab(static_cast<std::uint64_t>(600 + i)), ctx);
+          txn->repo<core::Lab>().insert(make_lab(static_cast<std::uint64_t>(i) + 600), ctx);
           txn->commit();
         }
         {
           auto txn = backend_->begin(IsolationLevel::Serializable);
-          txn->repo<core::Lab>().insert(make_lab(static_cast<std::uint64_t>(700 + i)), ctx);
+          txn->repo<core::Lab>().insert(make_lab(static_cast<std::uint64_t>(i) + 700), ctx);
           txn->rollback();
         }
       }

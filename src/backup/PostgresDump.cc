@@ -9,7 +9,7 @@
 // the Conan libpq package ships the library but does not export its include
 // directory. PQconninfoOption is a long-stable public ABI struct.
 extern "C" {
-struct fmgr_PQconninfoOption {
+struct FmgrPQconninfoOption {
   char* keyword;
   char* envvar;
   char* compiled;
@@ -19,8 +19,8 @@ struct fmgr_PQconninfoOption {
   int dispsize;
 };
 // NOLINTBEGIN(readability-identifier-naming)
-fmgr_PQconninfoOption* PQconninfoParse(const char* conninfo, char** errmsg);
-void PQconninfoFree(fmgr_PQconninfoOption* connOptions);
+FmgrPQconninfoOption* PQconninfoParse(const char* conninfo, char** errmsg);
+void PQconninfoFree(FmgrPQconninfoOption* connOptions);
 void PQfreemem(void* ptr);
 // NOLINTEND(readability-identifier-naming)
 }
@@ -64,7 +64,7 @@ namespace fmgr::backup {
     // because PQconninfoParse accepts both. Throws BackupError on a malformed string.
     SanitizedConn sanitize_conninfo(const std::string& conninfo) {
       char* errmsg = nullptr;
-      fmgr_PQconninfoOption* options = PQconninfoParse(conninfo.c_str(), &errmsg);
+      FmgrPQconninfoOption* options = PQconninfoParse(conninfo.c_str(), &errmsg);
       if (options == nullptr) {
         const std::string detail = (errmsg != nullptr) ? errmsg : "malformed connection string";
         PQfreemem(errmsg);
@@ -74,7 +74,7 @@ namespace fmgr::backup {
       SanitizedConn result;
       std::ostringstream rebuilt;
       bool first = true;
-      for (fmgr_PQconninfoOption* opt = options; opt->keyword != nullptr; ++opt) {
+      for (FmgrPQconninfoOption* opt = options; opt->keyword != nullptr; ++opt) {
         if (opt->val == nullptr || *opt->val == '\0') {
           continue; // only emit options the caller actually set
         }
@@ -166,35 +166,42 @@ namespace fmgr::backup {
 
   } // namespace
 
+  // conninfo vs out_path are distinct roles but both libpq strings; the header
+  // documents the order.
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   void pg_dump_to_file(const std::string& conninfo, const std::string& out_path) {
     const SanitizedConn conn = sanitize_conninfo(conninfo);
     std::string tool_stderr;
-    const int rc = run_pg_tool(
+    const int exit_code = run_pg_tool(
         {"pg_dump", "-Fc", "--no-owner", "--no-acl", "-f", out_path, "-d", conn.conninfo},
         conn.password, tool_stderr);
-    if (rc != 0) {
-      throw BackupError("pg_dump failed (exit " + std::to_string(rc) +
+    if (exit_code != 0) {
+      throw BackupError("pg_dump failed (exit " + std::to_string(exit_code) +
                         "): " + trim_trailing_newlines(tool_stderr));
     }
   }
 
+  // conninfo vs dump_path are distinct roles but both libpq strings; the header
+  // documents the order.
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   void pg_restore_from_file(const std::string& conninfo, const std::string& dump_path) {
     const SanitizedConn conn = sanitize_conninfo(conninfo);
     std::string tool_stderr;
-    const int rc = run_pg_tool(
+    const int exit_code = run_pg_tool(
         {"pg_restore", "--clean", "--if-exists", "--no-owner", "-d", conn.conninfo, dump_path},
         conn.password, tool_stderr);
-    if (rc != 0) {
-      throw BackupError("pg_restore failed (exit " + std::to_string(rc) +
+    if (exit_code != 0) {
+      throw BackupError("pg_restore failed (exit " + std::to_string(exit_code) +
                         "): " + trim_trailing_newlines(tool_stderr));
     }
   }
 
   bool pg_restore_list_ok(const std::string& dump_path, std::string& detail) {
     std::string tool_stderr;
-    const int rc = run_pg_tool({"pg_restore", "--list", dump_path}, std::nullopt, tool_stderr);
-    if (rc != 0) {
-      detail = "pg_restore --list failed (exit " + std::to_string(rc) +
+    const int exit_code =
+        run_pg_tool({"pg_restore", "--list", dump_path}, std::nullopt, tool_stderr);
+    if (exit_code != 0) {
+      detail = "pg_restore --list failed (exit " + std::to_string(exit_code) +
                "): " + trim_trailing_newlines(tool_stderr);
       return false;
     }

@@ -75,6 +75,7 @@ namespace fmgr::backup {
             txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
         txn->commit();
         std::vector<std::string> actions;
+        actions.reserve(events.size());
         for (const auto& event : events) {
           actions.push_back(event.action);
         }
@@ -92,7 +93,7 @@ namespace fmgr::backup {
       }
 
       // Seed a dummy (non-decryptable) backup file with a valid name on a day.
-      void seed_dummy(std::int64_t day) {
+      void seed_dummy(std::int64_t day) const {
         const fs::path p = dir / make_backup_filename(day * kDay);
         std::ofstream(p) << "dummy";
       }
