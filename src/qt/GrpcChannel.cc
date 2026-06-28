@@ -38,4 +38,11 @@ std::unique_ptr<v1::BoxService::Stub> GrpcChannel::makeBoxStub() const {
   return v1::BoxService::NewStub(channel_);
 }
 
+std::unique_ptr<v1::SampleService::Stub> GrpcChannel::makeSampleStub() const {
+  if (channel_ == nullptr) {
+    return nullptr;
+  }
+  return v1::SampleService::NewStub(channel_);
+}
+
 }  // namespace fmgr::qt

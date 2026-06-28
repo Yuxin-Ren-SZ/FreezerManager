@@ -10,6 +10,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QString>
@@ -19,6 +20,8 @@
 #include "qt/LabServiceClient.h"
 #include "qt/LabTreeWidget.h"
 #include "qt/LoginDialog.h"
+#include "qt/SampleBrowserWidget.h"
+#include "qt/SampleServiceClient.h"
 
 namespace fmgr::qt {
 
@@ -131,29 +134,60 @@ bool MainWindow::runLoginFlow() {
 void MainWindow::showAuthenticated() {
   lab_client_ = std::make_unique<LabServiceClient>(channel_.makeLabStub());
   box_client_ = std::make_unique<BoxServiceClient>(channel_.makeBoxStub());
+  sample_client_ =
+      std::make_unique<SampleServiceClient>(channel_.makeSampleStub());
 
   // Recreate the page so it binds to the current clients (a re-login mints new
   // stubs).
-  if (tree_page_ != nullptr) {
-    pages_->removeWidget(tree_page_);
-    delete tree_page_;
+  if (auth_page_ != nullptr) {
+    pages_->removeWidget(auth_page_);
+    delete auth_page_;
   }
-  tree_page_ = new LabTreeWidget(lab_client_.get(), box_client_.get());
-  pages_->addWidget(tree_page_);
-  tree_page_->setToken(session_.token());
-  tree_page_->reload();
-  pages_->setCurrentWidget(tree_page_);
+  auto* splitter = new QSplitter(::Qt::Horizontal);
+  tree_ = new LabTreeWidget(lab_client_.get(), box_client_.get());
+  browser_ = new SampleBrowserWidget(sample_client_.get());
+  splitter->addWidget(tree_);
+  splitter->addWidget(browser_);
+  splitter->setStretchFactor(0, 1);
+  splitter->setStretchFactor(1, 3);
+  auth_page_ = splitter;
+
+  connect(tree_, &LabTreeWidget::nodeSelected, this,
+          &MainWindow::onNodeSelected);
+
+  tree_->setToken(session_.token());
+  browser_->setToken(session_.token());
+  tree_->reload();
+
+  pages_->addWidget(auth_page_);
+  pages_->setCurrentWidget(auth_page_);
 
   if (logout_action_ != nullptr) {
     logout_action_->setEnabled(true);
   }
 }
 
+void MainWindow::onNodeSelected(const QString& kind, const QString& id,
+                                const QString& lab_id) {
+  if (browser_ == nullptr || lab_id.isEmpty()) {
+    return;
+  }
+  if (kind == QStringLiteral("box")) {
+    browser_->setScope(lab_id, id);
+  } else {
+    // lab / freezer / container → lab-wide (ListSamples scopes by box, not
+    // container).
+    browser_->setScope(lab_id);
+  }
+}
+
 void MainWindow::showPlaceholder() {
-  if (tree_page_ != nullptr) {
-    pages_->removeWidget(tree_page_);
-    delete tree_page_;
-    tree_page_ = nullptr;
+  if (auth_page_ != nullptr) {
+    pages_->removeWidget(auth_page_);
+    delete auth_page_;
+    auth_page_ = nullptr;
+    tree_ = nullptr;
+    browser_ = nullptr;
   }
   if (placeholder_ != nullptr) {
     pages_->setCurrentWidget(placeholder_);

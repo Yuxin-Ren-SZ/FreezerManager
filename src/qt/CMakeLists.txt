@@ -33,6 +33,10 @@ add_library(
   LabTreeWidget.cc
   LoginDialog.cc
   MainWindow.cc
+  SampleBrowserWidget.cc
+  SampleSearchBar.cc
+  SampleServiceClient.cc
+  SampleTableModel.cc
   SessionManager.cc
 )
 add_library(FreezerManager::qt_lib ALIAS freezermanager_qt_lib)

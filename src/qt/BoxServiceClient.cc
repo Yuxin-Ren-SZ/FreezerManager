@@ -24,6 +24,16 @@ BoxServiceClient::FreezerRow toRow(const v1::Freezer& freezer) {
   return row;
 }
 
+BoxServiceClient::BoxRow toRow(const v1::Box& box) {
+  BoxServiceClient::BoxRow row;
+  row.id = QString::fromStdString(box.id());
+  row.lab_id = QString::fromStdString(box.lab_id());
+  row.storage_container_id =
+      QString::fromStdString(box.storage_container_id());
+  row.label = QString::fromStdString(box.label());
+  return row;
+}
+
 BoxServiceClient::ContainerRow toRow(const v1::StorageContainer& container) {
   BoxServiceClient::ContainerRow row;
   row.id = QString::fromStdString(container.id());
@@ -89,6 +99,31 @@ BoxServiceClient::ListContainersResult BoxServiceClient::listStorageContainers(
   result.containers.reserve(resp.containers_size());
   for (const v1::StorageContainer& container : resp.containers()) {
     result.containers.push_back(toRow(container));
+  }
+  return result;
+}
+
+BoxServiceClient::ListBoxesResult BoxServiceClient::listBoxes(
+    const QString& session_token, const QString& lab_id,
+    const QString& storage_container_id) {
+  v1::ListBoxesRequest req;
+  req.set_lab_id(lab_id.toStdString());
+  req.set_storage_container_id(storage_container_id.toStdString());
+
+  grpc::ClientContext ctx;
+  setBearer(&ctx, session_token);
+  v1::ListBoxesResponse resp;
+  const grpc::Status status = stub_->ListBoxes(&ctx, req, &resp);
+
+  ListBoxesResult result;
+  if (!status.ok()) {
+    result.error = status.error_message();
+    return result;
+  }
+  result.ok = true;
+  result.boxes.reserve(resp.boxes_size());
+  for (const v1::Box& box : resp.boxes()) {
+    result.boxes.push_back(toRow(box));
   }
   return result;
 }

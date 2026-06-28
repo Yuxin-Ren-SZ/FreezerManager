@@ -11,6 +11,7 @@
 #include "fmgr/v1/auth.grpc.pb.h"
 #include "fmgr/v1/box.grpc.pb.h"
 #include "fmgr/v1/lab.grpc.pb.h"
+#include "fmgr/v1/sample.grpc.pb.h"
 
 namespace fmgr::qt {
 
@@ -36,6 +37,7 @@ class GrpcChannel {
   std::unique_ptr<v1::AuthService::Stub> makeAuthStub() const;
   std::unique_ptr<v1::LabService::Stub> makeLabStub() const;
   std::unique_ptr<v1::BoxService::Stub> makeBoxStub() const;
+  std::unique_ptr<v1::SampleService::Stub> makeSampleStub() const;
 
  private:
   std::string target_;

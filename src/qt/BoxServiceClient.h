@@ -38,6 +38,13 @@ class BoxServiceClient {
     QString label;
   };
 
+  struct BoxRow {
+    QString id;
+    QString lab_id;
+    QString storage_container_id;
+    QString label;
+  };
+
   struct ListFreezersResult {
     bool ok = false;
     std::string error;
@@ -48,6 +55,12 @@ class BoxServiceClient {
     bool ok = false;
     std::string error;
     std::vector<ContainerRow> containers;
+  };
+
+  struct ListBoxesResult {
+    bool ok = false;
+    std::string error;
+    std::vector<BoxRow> boxes;
   };
 
   explicit BoxServiceClient(std::unique_ptr<v1::BoxService::StubInterface> stub);
@@ -62,6 +75,10 @@ class BoxServiceClient {
   ListContainersResult listStorageContainers(
       const QString& session_token, const QString& lab_id,
       const std::optional<QString>& parent_id = std::nullopt);
+
+  // List the boxes placed directly in a storage container.
+  ListBoxesResult listBoxes(const QString& session_token, const QString& lab_id,
+                            const QString& storage_container_id);
 
  private:
   std::unique_ptr<v1::BoxService::StubInterface> stub_;

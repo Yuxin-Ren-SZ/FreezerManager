@@ -40,6 +40,23 @@ class FakeBoxService final : public fmgr::v1::BoxService::Service {
     return grpc::Status::OK;
   }
 
+  std::string seen_boxes_lab_id;
+  std::string seen_boxes_container_id;
+
+  grpc::Status ListBoxes(grpc::ServerContext* /*ctx*/,
+                         const fmgr::v1::ListBoxesRequest* req,
+                         fmgr::v1::ListBoxesResponse* resp) override {
+    seen_boxes_lab_id = req->lab_id();
+    seen_boxes_container_id =
+        req->has_storage_container_id() ? req->storage_container_id() : "";
+    fmgr::v1::Box* b = resp->add_boxes();
+    b->set_id("box-1");
+    b->set_lab_id(req->lab_id());
+    b->set_storage_container_id(seen_boxes_container_id);
+    b->set_label("Cryobox 1");
+    return grpc::Status::OK;
+  }
+
   grpc::Status ListStorageContainers(
       grpc::ServerContext* /*ctx*/,
       const fmgr::v1::ListStorageContainersRequest* req,
@@ -131,6 +148,20 @@ TEST_F(BoxServiceClientTest, ListContainersWithoutParentOmitsFilter) {
   ASSERT_TRUE(result.ok);
   EXPECT_FALSE(service_.seen_containers_has_parent);
   EXPECT_TRUE(result.containers.empty());
+}
+
+TEST_F(BoxServiceClientTest, ListBoxesScopesToContainer) {
+  auto result = client_->listBoxes(QStringLiteral("tok-1"),
+                                   QStringLiteral("lab-1"),
+                                   QStringLiteral("ctr-shelf-1"));
+  ASSERT_TRUE(result.ok);
+  EXPECT_EQ(service_.seen_boxes_lab_id, "lab-1");
+  EXPECT_EQ(service_.seen_boxes_container_id, "ctr-shelf-1");
+  ASSERT_EQ(result.boxes.size(), 1u);
+  EXPECT_EQ(result.boxes[0].id, QStringLiteral("box-1"));
+  EXPECT_EQ(result.boxes[0].label, QStringLiteral("Cryobox 1"));
+  EXPECT_EQ(result.boxes[0].storage_container_id,
+            QStringLiteral("ctr-shelf-1"));
 }
 
 }  // namespace

@@ -36,6 +36,7 @@ void LabTreeWidget::appendNode(QTreeWidgetItem* parent_item,
   item->setText(0, node.label);
   item->setData(0, kKindRole, node.kind);
   item->setData(0, kIdRole, node.id);
+  item->setData(0, kLabIdRole, node.lab_id);
   for (const TreeNode& child : node.children) {
     appendNode(item, child);
   }
@@ -47,7 +48,8 @@ void LabTreeWidget::handleItemActivated(QTreeWidgetItem* item, int /*column*/) {
   }
   const QString kind = item->data(0, kKindRole).toString();
   const QString id = item->data(0, kIdRole).toString();
-  emit nodeSelected(kind, id);
+  const QString lab_id = item->data(0, kLabIdRole).toString();
+  emit nodeSelected(kind, id, lab_id);
 }
 
 }  // namespace fmgr::qt

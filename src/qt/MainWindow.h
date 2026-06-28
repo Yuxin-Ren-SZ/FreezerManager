@@ -21,7 +21,9 @@ namespace fmgr::qt {
 class AuthServiceClient;
 class LabServiceClient;
 class BoxServiceClient;
+class SampleServiceClient;
 class LabTreeWidget;
+class SampleBrowserWidget;
 
 // Application shell: menu bar, central stacked widget (one page per module), and
 // a status bar showing connection state. Owns the ConfigManager, GrpcChannel,
@@ -45,6 +47,9 @@ class MainWindow : public QMainWindow {
   void onConnect();
   void onLogout();
   void onQuit();
+  // Map a tree selection to a sample-browser scope.
+  void onNodeSelected(const QString& kind, const QString& id,
+                      const QString& lab_id);
 
  private:
   void buildMenus();
@@ -66,10 +71,13 @@ class MainWindow : public QMainWindow {
   std::unique_ptr<AuthServiceClient> auth_;
   std::unique_ptr<LabServiceClient> lab_client_;
   std::unique_ptr<BoxServiceClient> box_client_;
+  std::unique_ptr<SampleServiceClient> sample_client_;
 
   QStackedWidget* pages_ = nullptr;
   QWidget* placeholder_ = nullptr;
-  LabTreeWidget* tree_page_ = nullptr;
+  QWidget* auth_page_ = nullptr;  // splitter: tree | browser
+  LabTreeWidget* tree_ = nullptr;
+  SampleBrowserWidget* browser_ = nullptr;
   QLabel* status_label_ = nullptr;
   QAction* logout_action_ = nullptr;
 };

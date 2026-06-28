@@ -88,6 +88,21 @@ class FakeBoxService final : public fmgr::v1::BoxService::Service {
     }
     return grpc::Status::OK;
   }
+
+  grpc::Status ListBoxes(grpc::ServerContext* /*ctx*/,
+                         const fmgr::v1::ListBoxesRequest* req,
+                         fmgr::v1::ListBoxesResponse* resp) override {
+    // A single box lives in the drawer; other containers have none.
+    if (req->has_storage_container_id() &&
+        req->storage_container_id() == "ctr-drawer-1") {
+      fmgr::v1::Box* b = resp->add_boxes();
+      b->set_id("box-1");
+      b->set_lab_id("lab-1");
+      b->set_storage_container_id("ctr-drawer-1");
+      b->set_label("Cryobox 1");
+    }
+    return grpc::Status::OK;
+  }
 };
 
 class LabTreeModelTest : public ::testing::Test {
@@ -128,13 +143,15 @@ TEST_F(LabTreeModelTest, BuildsLabFreezerContainerHierarchy) {
   const TreeNode& alpha = (*tree)[0];
   EXPECT_EQ(alpha.kind, QStringLiteral("lab"));
   EXPECT_EQ(alpha.id, QStringLiteral("lab-1"));
+  EXPECT_EQ(alpha.lab_id, QStringLiteral("lab-1"));
   EXPECT_EQ(alpha.label, QStringLiteral("Alpha"));
   ASSERT_EQ(alpha.children.size(), 2u);
 
-  // frz-1 → shelf-1 → drawer-1 (recursion).
+  // frz-1 → shelf-1 → drawer-1 → box-1 (recursion + box leaf).
   const TreeNode& frz1 = alpha.children[0];
   EXPECT_EQ(frz1.kind, QStringLiteral("freezer"));
   EXPECT_EQ(frz1.id, QStringLiteral("frz-1"));
+  EXPECT_EQ(frz1.lab_id, QStringLiteral("lab-1"));
   ASSERT_EQ(frz1.children.size(), 1u);
   const TreeNode& shelf = frz1.children[0];
   EXPECT_EQ(shelf.kind, QStringLiteral("container"));
@@ -144,7 +161,14 @@ TEST_F(LabTreeModelTest, BuildsLabFreezerContainerHierarchy) {
   const TreeNode& drawer = shelf.children[0];
   EXPECT_EQ(drawer.id, QStringLiteral("ctr-drawer-1"));
   EXPECT_EQ(drawer.label, QStringLiteral("Drawer 1"));  // name fallback
-  EXPECT_TRUE(drawer.children.empty());
+  // The drawer holds one box leaf.
+  ASSERT_EQ(drawer.children.size(), 1u);
+  const TreeNode& box = drawer.children[0];
+  EXPECT_EQ(box.kind, QStringLiteral("box"));
+  EXPECT_EQ(box.id, QStringLiteral("box-1"));
+  EXPECT_EQ(box.lab_id, QStringLiteral("lab-1"));
+  EXPECT_EQ(box.label, QStringLiteral("Cryobox 1"));
+  EXPECT_TRUE(box.children.empty());
 
   // frz-2 has an empty root container.
   EXPECT_TRUE(alpha.children[1].children.empty());

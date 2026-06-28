@@ -283,6 +283,8 @@ if(TARGET FreezerManager::qt_lib)
     qt_grpc_channel_test.cpp
     qt_lab_service_client_test.cpp
     qt_lab_tree_model_test.cpp
+    qt_sample_service_client_test.cpp
+    qt_sample_table_model_test.cpp
     qt_session_manager_test.cpp
   )
   target_link_libraries(

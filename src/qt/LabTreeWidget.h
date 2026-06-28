@@ -27,10 +27,11 @@ class LabTreeWidget : public QTreeWidget {
   Q_OBJECT
 
  public:
-  // Roles used to stash the entity kind ("lab"/"freezer"/"container") and id on
-  // each tree item.
+  // Roles used to stash the entity kind ("lab"/"freezer"/"container"/"box"), id,
+  // and owning lab id on each tree item.
   static constexpr int kKindRole = ::Qt::UserRole;
   static constexpr int kIdRole = ::Qt::UserRole + 1;
+  static constexpr int kLabIdRole = ::Qt::UserRole + 2;
 
   LabTreeWidget(LabServiceClient* labs, BoxServiceClient* boxes,
                 QWidget* parent = nullptr);
@@ -42,7 +43,8 @@ class LabTreeWidget : public QTreeWidget {
   bool reload();
 
  signals:
-  void nodeSelected(const QString& kind, const QString& id);
+  void nodeSelected(const QString& kind, const QString& id,
+                    const QString& lab_id);
 
  private slots:
   // Wired to itemClicked; emits nodeSelected from the item's stored data.

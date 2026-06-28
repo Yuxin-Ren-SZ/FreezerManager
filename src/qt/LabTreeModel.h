@@ -13,13 +13,15 @@ namespace fmgr::qt {
 class LabServiceClient;
 class BoxServiceClient;
 
-// One node in the navigation tree. kind is "lab" | "freezer" | "container";
-// id is the entity id (stashed on the rendered QTreeWidgetItem); label is the
+// One node in the navigation tree. kind is "lab" | "freezer" | "container" |
+// "box"; id is the entity id (stashed on the rendered QTreeWidgetItem); lab_id
+// is the owning lab (needed to scope sample queries from any node); label is the
 // display text. This is a plain data tree with no Qt-widget dependency, so the
 // build logic is unit-testable headlessly (no QApplication needed).
 struct TreeNode {
   QString kind;
   QString id;
+  QString lab_id;
   QString label;
   std::vector<TreeNode> children;
 };
