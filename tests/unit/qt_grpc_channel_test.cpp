@@ -45,4 +45,17 @@ TEST(GrpcChannelTest, AuthStubNullWhenNotConnected) {
   EXPECT_EQ(channel.makeAuthStub(), nullptr);
 }
 
+TEST(GrpcChannelTest, LabAndBoxStubsCreatedAfterConnect) {
+  GrpcChannel channel;
+  channel.connect();
+  EXPECT_NE(channel.makeLabStub(), nullptr);
+  EXPECT_NE(channel.makeBoxStub(), nullptr);
+}
+
+TEST(GrpcChannelTest, LabAndBoxStubsNullWhenNotConnected) {
+  GrpcChannel channel;
+  EXPECT_EQ(channel.makeLabStub(), nullptr);
+  EXPECT_EQ(channel.makeBoxStub(), nullptr);
+}
+
 }  // namespace

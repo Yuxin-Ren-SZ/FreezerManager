@@ -278,8 +278,11 @@ if(TARGET FreezerManager::qt_lib)
   add_executable(
     freezermanager_qt_unit_tests
     qt_auth_service_client_test.cpp
+    qt_box_service_client_test.cpp
     qt_config_manager_test.cpp
     qt_grpc_channel_test.cpp
+    qt_lab_service_client_test.cpp
+    qt_lab_tree_model_test.cpp
     qt_session_manager_test.cpp
   )
   target_link_libraries(

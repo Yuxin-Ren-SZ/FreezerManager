@@ -25,8 +25,12 @@ set(CMAKE_AUTOMOC ON)
 add_library(
   freezermanager_qt_lib
   AuthServiceClient.cc
+  BoxServiceClient.cc
   ConfigManager.cc
   GrpcChannel.cc
+  LabServiceClient.cc
+  LabTreeModel.cc
+  LabTreeWidget.cc
   LoginDialog.cc
   MainWindow.cc
   SessionManager.cc
