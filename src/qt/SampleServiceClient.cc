@@ -105,4 +105,27 @@ SampleServiceClient::GetSampleResult SampleServiceClient::getSample(
   return result;
 }
 
+SampleServiceClient::GetSampleResult SampleServiceClient::moveSample(
+    const QString& session_token, const QString& sample_id,
+    const QString& dest_box_id, const QString& dest_position) {
+  v1::MoveSampleRequest req;
+  req.set_sample_id(sample_id.toStdString());
+  req.set_dest_box_id(dest_box_id.toStdString());
+  req.set_dest_position(dest_position.toStdString());
+
+  grpc::ClientContext ctx;
+  setBearer(&ctx, session_token);
+  v1::MoveSampleResponse resp;
+  const grpc::Status status = stub_->MoveSample(&ctx, req, &resp);
+
+  GetSampleResult result;
+  if (!status.ok()) {
+    result.error = status.error_message();
+    return result;
+  }
+  result.ok = true;
+  result.sample = toRow(resp.sample());
+  return result;
+}
+
 }  // namespace fmgr::qt

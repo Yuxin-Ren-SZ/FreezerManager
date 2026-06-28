@@ -28,9 +28,32 @@ BoxServiceClient::BoxRow toRow(const v1::Box& box) {
   BoxServiceClient::BoxRow row;
   row.id = QString::fromStdString(box.id());
   row.lab_id = QString::fromStdString(box.lab_id());
+  row.box_type_id = QString::fromStdString(box.box_type_id());
   row.storage_container_id =
       QString::fromStdString(box.storage_container_id());
   row.label = QString::fromStdString(box.label());
+  return row;
+}
+
+BoxServiceClient::BoxTypeRow toRow(const v1::BoxType& box_type) {
+  BoxServiceClient::BoxTypeRow row;
+  row.id = QString::fromStdString(box_type.id());
+  row.name = QString::fromStdString(box_type.name());
+  row.positions.reserve(box_type.positions_size());
+  for (const v1::BoxPosition& pos : box_type.positions()) {
+    BoxServiceClient::PositionRow p;
+    p.label = QString::fromStdString(pos.label());
+    p.row = pos.row();
+    p.col = pos.col();
+    if (pos.has_z()) {
+      p.z = pos.z();
+    }
+    p.accepts.reserve(pos.accepts_size());
+    for (const std::string& token : pos.accepts()) {
+      p.accepts.push_back(QString::fromStdString(token));
+    }
+    row.positions.push_back(std::move(p));
+  }
   return row;
 }
 
@@ -124,6 +147,49 @@ BoxServiceClient::ListBoxesResult BoxServiceClient::listBoxes(
   result.boxes.reserve(resp.boxes_size());
   for (const v1::Box& box : resp.boxes()) {
     result.boxes.push_back(toRow(box));
+  }
+  return result;
+}
+
+BoxServiceClient::GetBoxResult BoxServiceClient::getBox(
+    const QString& session_token, const QString& box_id) {
+  v1::GetBoxRequest req;
+  req.set_box_id(box_id.toStdString());
+
+  grpc::ClientContext ctx;
+  setBearer(&ctx, session_token);
+  v1::GetBoxResponse resp;
+  const grpc::Status status = stub_->GetBox(&ctx, req, &resp);
+
+  GetBoxResult result;
+  if (!status.ok()) {
+    result.error = status.error_message();
+    return result;
+  }
+  result.ok = true;
+  result.box = toRow(resp.box());
+  return result;
+}
+
+BoxServiceClient::ListBoxTypesResult BoxServiceClient::listBoxTypes(
+    const QString& session_token, const QString& lab_id) {
+  v1::ListBoxTypesRequest req;
+  req.set_lab_id(lab_id.toStdString());
+
+  grpc::ClientContext ctx;
+  setBearer(&ctx, session_token);
+  v1::ListBoxTypesResponse resp;
+  const grpc::Status status = stub_->ListBoxTypes(&ctx, req, &resp);
+
+  ListBoxTypesResult result;
+  if (!status.ok()) {
+    result.error = status.error_message();
+    return result;
+  }
+  result.ok = true;
+  result.box_types.reserve(resp.box_types_size());
+  for (const v1::BoxType& box_type : resp.box_types()) {
+    result.box_types.push_back(toRow(box_type));
   }
   return result;
 }

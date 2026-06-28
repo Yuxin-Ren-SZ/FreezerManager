@@ -57,6 +57,34 @@ class FakeBoxService final : public fmgr::v1::BoxService::Service {
     return grpc::Status::OK;
   }
 
+  std::string seen_get_box_id;
+
+  grpc::Status GetBox(grpc::ServerContext* /*ctx*/,
+                      const fmgr::v1::GetBoxRequest* req,
+                      fmgr::v1::GetBoxResponse* resp) override {
+    seen_get_box_id = req->box_id();
+    fmgr::v1::Box* b = resp->mutable_box();
+    b->set_id(req->box_id());
+    b->set_lab_id("lab-1");
+    b->set_box_type_id("bt-1");
+    b->set_label("Cryobox 1");
+    return grpc::Status::OK;
+  }
+
+  grpc::Status ListBoxTypes(grpc::ServerContext* /*ctx*/,
+                            const fmgr::v1::ListBoxTypesRequest* /*req*/,
+                            fmgr::v1::ListBoxTypesResponse* resp) override {
+    fmgr::v1::BoxType* bt = resp->add_box_types();
+    bt->set_id("bt-1");
+    bt->set_name("9x9 Cryobox");
+    fmgr::v1::BoxPosition* p = bt->add_positions();
+    p->set_label("A1");
+    p->set_row(0);
+    p->set_col(0);
+    p->add_accepts("cryovial_2mL");
+    return grpc::Status::OK;
+  }
+
   grpc::Status ListStorageContainers(
       grpc::ServerContext* /*ctx*/,
       const fmgr::v1::ListStorageContainersRequest* req,
@@ -162,6 +190,30 @@ TEST_F(BoxServiceClientTest, ListBoxesScopesToContainer) {
   EXPECT_EQ(result.boxes[0].label, QStringLiteral("Cryobox 1"));
   EXPECT_EQ(result.boxes[0].storage_container_id,
             QStringLiteral("ctr-shelf-1"));
+}
+
+TEST_F(BoxServiceClientTest, GetBoxCarriesBoxTypeId) {
+  auto result =
+      client_->getBox(QStringLiteral("tok-1"), QStringLiteral("box-1"));
+  ASSERT_TRUE(result.ok);
+  EXPECT_EQ(service_.seen_get_box_id, "box-1");
+  EXPECT_EQ(result.box.id, QStringLiteral("box-1"));
+  EXPECT_EQ(result.box.box_type_id, QStringLiteral("bt-1"));
+}
+
+TEST_F(BoxServiceClientTest, ListBoxTypesMapsPositions) {
+  auto result =
+      client_->listBoxTypes(QStringLiteral("tok-1"), QStringLiteral("lab-1"));
+  ASSERT_TRUE(result.ok);
+  ASSERT_EQ(result.box_types.size(), 1u);
+  const auto& bt = result.box_types[0];
+  EXPECT_EQ(bt.id, QStringLiteral("bt-1"));
+  ASSERT_EQ(bt.positions.size(), 1u);
+  EXPECT_EQ(bt.positions[0].label, QStringLiteral("A1"));
+  EXPECT_EQ(bt.positions[0].row, 0);
+  EXPECT_EQ(bt.positions[0].col, 0);
+  ASSERT_EQ(bt.positions[0].accepts.size(), 1u);
+  EXPECT_EQ(bt.positions[0].accepts[0], QStringLiteral("cryovial_2mL"));
 }
 
 }  // namespace

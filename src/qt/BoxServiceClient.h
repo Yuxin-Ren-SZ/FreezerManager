@@ -41,8 +41,23 @@ class BoxServiceClient {
   struct BoxRow {
     QString id;
     QString lab_id;
+    QString box_type_id;
     QString storage_container_id;
     QString label;
+  };
+
+  struct PositionRow {
+    QString label;
+    int row = 0;
+    int col = 0;
+    std::optional<int> z;
+    std::vector<QString> accepts;
+  };
+
+  struct BoxTypeRow {
+    QString id;
+    QString name;
+    std::vector<PositionRow> positions;
   };
 
   struct ListFreezersResult {
@@ -63,6 +78,18 @@ class BoxServiceClient {
     std::vector<BoxRow> boxes;
   };
 
+  struct GetBoxResult {
+    bool ok = false;
+    std::string error;
+    BoxRow box;
+  };
+
+  struct ListBoxTypesResult {
+    bool ok = false;
+    std::string error;
+    std::vector<BoxTypeRow> box_types;
+  };
+
   explicit BoxServiceClient(std::unique_ptr<v1::BoxService::StubInterface> stub);
 
   // List the freezers in a lab.
@@ -79,6 +106,14 @@ class BoxServiceClient {
   // List the boxes placed directly in a storage container.
   ListBoxesResult listBoxes(const QString& session_token, const QString& lab_id,
                             const QString& storage_container_id);
+
+  // Fetch a single box (carries its box_type_id).
+  GetBoxResult getBox(const QString& session_token, const QString& box_id);
+
+  // List the lab's box types, each with its position grid. There is no
+  // GetBoxType RPC, so callers match on box_type_id themselves.
+  ListBoxTypesResult listBoxTypes(const QString& session_token,
+                                  const QString& lab_id);
 
  private:
   std::unique_ptr<v1::BoxService::StubInterface> stub_;

@@ -14,8 +14,11 @@
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QString>
+#include <QTabWidget>
 
 #include "qt/AuthServiceClient.h"
+#include "qt/BoxGridModel.h"
+#include "qt/BoxGridWidget.h"
 #include "qt/BoxServiceClient.h"
 #include "qt/LabServiceClient.h"
 #include "qt/LabTreeWidget.h"
@@ -145,9 +148,19 @@ void MainWindow::showAuthenticated() {
   }
   auto* splitter = new QSplitter(::Qt::Horizontal);
   tree_ = new LabTreeWidget(lab_client_.get(), box_client_.get());
+
+  // Right pane: a tab over the sample table and the box layout grid.
   browser_ = new SampleBrowserWidget(sample_client_.get());
+  grid_model_ = std::make_unique<BoxGridModel>(box_client_.get(),
+                                               sample_client_.get());
+  grid_model_->setToken(session_.token());
+  grid_ = new BoxGridWidget(grid_model_.get());
+  auto* tabs = new QTabWidget;
+  tabs->addTab(browser_, QStringLiteral("Samples"));
+  tabs->addTab(grid_, QStringLiteral("Box Layout"));
+
   splitter->addWidget(tree_);
-  splitter->addWidget(browser_);
+  splitter->addWidget(tabs);
   splitter->setStretchFactor(0, 1);
   splitter->setStretchFactor(1, 3);
   auth_page_ = splitter;
@@ -174,6 +187,17 @@ void MainWindow::onNodeSelected(const QString& kind, const QString& id,
   }
   if (kind == QStringLiteral("box")) {
     browser_->setScope(lab_id, id);
+    if (grid_model_ != nullptr) {
+      grid_model_->setBox(lab_id, id);
+    }
+    // Surface the box layout (the grid lives next to the table in the right
+    // pane's tab).
+    if (grid_ != nullptr) {
+      auto* tabs = qobject_cast<QTabWidget*>(grid_->parentWidget());
+      if (tabs != nullptr) {
+        tabs->setCurrentWidget(grid_);
+      }
+    }
   } else {
     // lab / freezer / container → lab-wide (ListSamples scopes by box, not
     // container).
@@ -188,6 +212,8 @@ void MainWindow::showPlaceholder() {
     auth_page_ = nullptr;
     tree_ = nullptr;
     browser_ = nullptr;
+    grid_ = nullptr;
+    grid_model_.reset();
   }
   if (placeholder_ != nullptr) {
     pages_->setCurrentWidget(placeholder_);

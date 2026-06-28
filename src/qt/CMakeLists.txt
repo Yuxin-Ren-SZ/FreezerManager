@@ -25,6 +25,8 @@ set(CMAKE_AUTOMOC ON)
 add_library(
   freezermanager_qt_lib
   AuthServiceClient.cc
+  BoxGridModel.cc
+  BoxGridWidget.cc
   BoxServiceClient.cc
   ConfigManager.cc
   GrpcChannel.cc

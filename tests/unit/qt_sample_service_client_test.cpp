@@ -81,6 +81,27 @@ class FakeSampleService final : public fmgr::v1::SampleService::Service {
     return grpc::Status::OK;
   }
 
+  bool fail_move = false;
+  std::string seen_move_id;
+  std::string seen_move_box;
+  std::string seen_move_position;
+
+  grpc::Status MoveSample(grpc::ServerContext* /*ctx*/,
+                          const fmgr::v1::MoveSampleRequest* req,
+                          fmgr::v1::MoveSampleResponse* resp) override {
+    seen_move_id = req->sample_id();
+    seen_move_box = req->has_dest_box_id() ? req->dest_box_id() : "";
+    seen_move_position = req->has_dest_position() ? req->dest_position() : "";
+    if (fail_move) {
+      return {grpc::StatusCode::FAILED_PRECONDITION, "size mismatch"};
+    }
+    fmgr::v1::Sample* s = resp->mutable_sample();
+    s->set_id(req->sample_id());
+    s->set_box_id(req->dest_box_id());
+    s->set_position_label(req->dest_position());
+    return grpc::Status::OK;
+  }
+
  private:
   static std::string metadata(grpc::ServerContext* ctx, const char* key) {
     const auto& md = ctx->client_metadata();
@@ -186,6 +207,29 @@ TEST_F(SampleServiceClientTest, GetSamplePassesId) {
   EXPECT_EQ(service_.seen_get_id, "s-9");
   EXPECT_EQ(result.sample.id, QStringLiteral("s-9"));
   EXPECT_EQ(result.sample.name, QStringLiteral("Resolved"));
+}
+
+TEST_F(SampleServiceClientTest, MoveSamplePassesDestination) {
+  auto result = client_->moveSample(QStringLiteral("tok-1"),
+                                    QStringLiteral("s-1"),
+                                    QStringLiteral("box-2"),
+                                    QStringLiteral("B3"));
+  ASSERT_TRUE(result.ok);
+  EXPECT_EQ(service_.seen_move_id, "s-1");
+  EXPECT_EQ(service_.seen_move_box, "box-2");
+  EXPECT_EQ(service_.seen_move_position, "B3");
+  EXPECT_EQ(result.sample.box_id, QStringLiteral("box-2"));
+  EXPECT_EQ(result.sample.position_label, QStringLiteral("B3"));
+}
+
+TEST_F(SampleServiceClientTest, MoveSampleRejectionCarriesError) {
+  service_.fail_move = true;
+  auto result = client_->moveSample(QStringLiteral("tok-1"),
+                                    QStringLiteral("s-1"),
+                                    QStringLiteral("box-2"),
+                                    QStringLiteral("B3"));
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.error, "size mismatch");
 }
 
 }  // namespace

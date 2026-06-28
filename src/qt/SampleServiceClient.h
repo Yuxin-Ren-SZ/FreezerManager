@@ -69,6 +69,13 @@ class SampleServiceClient {
   GetSampleResult getSample(const QString& session_token,
                             const QString& sample_id);
 
+  // Place/relocate a sample into a box position. The server validates size-class
+  // compatibility and atomicity; a rejected move comes back as {ok=false, error}.
+  GetSampleResult moveSample(const QString& session_token,
+                             const QString& sample_id,
+                             const QString& dest_box_id,
+                             const QString& dest_position);
+
  private:
   std::unique_ptr<v1::SampleService::StubInterface> stub_;
 };
