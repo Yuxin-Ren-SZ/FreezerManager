@@ -132,6 +132,40 @@ class FakeSampleService final : public fmgr::v1::SampleService::Service {
     return grpc::Status::OK;
   }
 
+  bool fail_import = false;
+  std::string seen_import_lab;
+  std::string seen_import_csv;
+  bool seen_import_dry_run = false;
+  std::string seen_import_authorization;
+
+  grpc::Status ImportSamples(grpc::ServerContext* ctx,
+                             const fmgr::v1::ImportSamplesRequest* req,
+                             fmgr::v1::ImportSamplesResponse* resp) override {
+    seen_import_lab = req->lab_id();
+    seen_import_csv = req->csv_content();
+    seen_import_dry_run = req->dry_run();
+    seen_import_authorization = metadata(ctx, "authorization");
+    if (fail_import) {
+      return {grpc::StatusCode::PERMISSION_DENIED, "denied"};
+    }
+    // Script: row 1 OK, row 2 fails validation. Dry-run reports without
+    // committing; a real import echoes a sample_id and sets committed.
+    auto* r1 = resp->add_rows();
+    r1->set_row_number(1);
+    r1->set_ok(true);
+    if (!req->dry_run()) {
+      r1->set_sample_id("new-s-1");
+    }
+    auto* r2 = resp->add_rows();
+    r2->set_row_number(2);
+    r2->set_ok(false);
+    r2->set_error("unknown item_type_id");
+    resp->set_succeeded(1);
+    resp->set_failed(1);
+    resp->set_committed(!req->dry_run());
+    return grpc::Status::OK;
+  }
+
  private:
   static std::string metadata(grpc::ServerContext* ctx, const char* key) {
     const auto& md = ctx->client_metadata();
@@ -257,6 +291,52 @@ TEST_F(SampleServiceClientTest, ExportSamplesCsvMapsContent) {
   EXPECT_EQ(service_.seen_export_lab, "lab-1");
   EXPECT_TRUE(service_.seen_export_archived);
   EXPECT_EQ(result.csv, QStringLiteral("id,name\ns-1,Sample 1\n"));
+}
+
+TEST_F(SampleServiceClientTest, ImportSamplesDryRunMapsRowReport) {
+  auto result = client_->importSamples(QStringLiteral("tok-1"),
+                                       QStringLiteral("lab-1"),
+                                       QStringLiteral("id,name\n,A\n,B\n"),
+                                       /*dry_run=*/true);
+  ASSERT_TRUE(result.ok);
+  EXPECT_EQ(service_.seen_import_lab, "lab-1");
+  EXPECT_EQ(service_.seen_import_csv, "id,name\n,A\n,B\n");
+  EXPECT_TRUE(service_.seen_import_dry_run);
+  EXPECT_EQ(service_.seen_import_authorization, "Bearer tok-1");
+
+  EXPECT_FALSE(result.committed);
+  EXPECT_TRUE(result.header_error.isEmpty());
+  EXPECT_EQ(result.succeeded, 1);
+  EXPECT_EQ(result.failed, 1);
+  ASSERT_EQ(result.rows.size(), 2u);
+  EXPECT_EQ(result.rows[0].row_number, 1);
+  EXPECT_TRUE(result.rows[0].ok);
+  EXPECT_TRUE(result.rows[0].sample_id.isEmpty());
+  EXPECT_FALSE(result.rows[1].ok);
+  EXPECT_EQ(result.rows[1].error, QStringLiteral("unknown item_type_id"));
+}
+
+TEST_F(SampleServiceClientTest, ImportSamplesCommitCarriesSampleIds) {
+  auto result = client_->importSamples(QStringLiteral("tok-1"),
+                                       QStringLiteral("lab-1"),
+                                       QStringLiteral("id,name\n,A\n"),
+                                       /*dry_run=*/false);
+  ASSERT_TRUE(result.ok);
+  EXPECT_FALSE(service_.seen_import_dry_run);
+  EXPECT_TRUE(result.committed);
+  ASSERT_EQ(result.rows.size(), 2u);
+  EXPECT_EQ(result.rows[0].sample_id, QStringLiteral("new-s-1"));
+}
+
+TEST_F(SampleServiceClientTest, ImportSamplesFailureCarriesError) {
+  service_.fail_import = true;
+  auto result = client_->importSamples(QStringLiteral("tok-1"),
+                                       QStringLiteral("lab-1"),
+                                       QStringLiteral("id,name\n"),
+                                       /*dry_run=*/true);
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.error, "denied");
+  EXPECT_TRUE(result.rows.empty());
 }
 
 TEST_F(SampleServiceClientTest, GetSamplePassesId) {

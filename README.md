@@ -47,9 +47,10 @@ server that is fast, correct, and safe to operate — even without a dedicated D
 > gateway (Drogon front door over the gRPC in-process channel, all 9 services)
 > are complete; security-remediation pass done. The **Qt 6 desktop client** is
 > now usable end-to-end (login, lab/freezer/box tree, virtualized sample browser,
-> box drag-and-drop grid, barcode scan, CSV export); local password enrolment
-> (`freezerctl user set-password`) makes login work end-to-end. Next: the Qt CSV
-> import wizard (server `ImportSamples` RPC done), SSE streaming, web/Python clients.
+> box drag-and-drop grid, barcode scan, CSV export + **CSV import wizard** with a
+> dry-run validation report); local password enrolment
+> (`freezerctl user set-password`) makes login work end-to-end. Next: SSE
+> streaming (live sample list + import progress), web/Python clients.
 > See [`doc/PRD.md`](./doc/PRD.md) for the full product requirements & design
 > document and the [Roadmap](#roadmap) below for current progress.
 
@@ -146,7 +147,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ REST / JSON gateway — Drogon HTTP front door at `/api/v1/*`; forwards to the gRPC services over the in-process channel (reuses the RBAC gate + audit + transactions, no logic duplicated); JSON↔proto via proto3 JSON mapping. **All 9 services wired** (Auth/Session/Lab/Sample/Box/ItemType/Role/Audit/Share) with positive/negative authz integration tests. ⚙️ SSE streaming: live audit feed
 (`GET /api/v1/audit/watch`, server-streaming `WatchAuditFeed` bridged to
 `text/event-stream`); live sample list + bulk-import progress 🔲
-- ⚙️ Qt 6 desktop client — ✅ login + session shell, ✅ Lab→Freezer→Container→Box tree, ✅ virtualized sample browser (cursor paging + structured filters), ✅ box drag-and-drop grid (server-validated placement, "size mismatch" toast), ✅ barcode-scanner focus mode (bulk check-in/out), ✅ CSV export from the sample list; CSV import wizard 🔲 (server RPC ready)
+- ⚙️ Qt 6 desktop client — ✅ login + session shell, ✅ Lab→Freezer→Container→Box tree, ✅ virtualized sample browser (cursor paging + structured filters), ✅ box drag-and-drop grid (server-validated placement, "size mismatch" toast), ✅ barcode-scanner focus mode (bulk check-in/out), ✅ CSV export from the sample list, ✅ CSV import wizard (file pick → server dry-run report → all-or-nothing commit → list refresh)
 - 🔲 React / TypeScript SPA — feature parity with Qt client; live updates via SSE
 - 🔲 `freezerctl-py` Python client — thin REST wrapper; Jupyter quick-start notebook with example plots
 - ⚙️ CSV import — `freezerctl sample import` and the `SampleService.ImportSamples` RPC (gRPC + REST `/api/v1/sample/import`): transactional, all-or-nothing; `--dry-run`/`dry_run` per-row validation report (the RPC additionally probes each row against committed state); RFC 4180 reader skips the export header block. Samples done; remaining entity tables 🔲
@@ -189,7 +190,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅, freezer/box/item-type `list` + `inspect` ✅, CLI `create` nouns (6 entities) ✅, non-sample CSV import (item-type/box/custom-field-def/user) ✅ | ✅ Complete |
 | **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots | ✅ Complete |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
-| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, `SampleService.ImportSamples` RPC (transactional CSV import + dry-run) ✅, SSE streaming — live audit feed ✅ (sample list + import progress 🔲), Qt 6 desktop client — login + tree + sample browser + box grid + barcode + CSV export ✅ (CSV import wizard 🔲) | ⚙️ In progress |
+| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, `SampleService.ImportSamples` RPC (transactional CSV import + dry-run) ✅, SSE streaming — live audit feed ✅ (sample list + import progress 🔲), Qt 6 desktop client — login + tree + sample browser + box grid + barcode + CSV export ✅ + CSV import wizard ✅ | ⚙️ In progress |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
 | **M5 — PHI + KMS + Backups** | Sample PHI field-level encryption ✅, `IKmsProvider` + `EnvVarKms` + `OsKeyringKms` (keyring) ✅, PHI-read audit kind ✅, key rotation (`freezerctl key rotate`) ✅, separate backup KEK ✅, encrypted SQLite backup/restore + restore-drill verify (`freezerctl backup`) ✅, in-server scheduled backups + GFS retention + weekly restore drill (`BackupScheduler`, `freezerctl backup run | list`) ✅; `VaultKms`, Postgres backup 🔲 | ⚙️ In progress |
 | **M6 — Public API & Sharing** | API tokens, `freezerctl-py`, cross-lab share-request workflow | 🔲 Planned |

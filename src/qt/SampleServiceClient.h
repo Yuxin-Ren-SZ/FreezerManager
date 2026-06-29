@@ -63,6 +63,26 @@ class SampleServiceClient {
     QString csv;  // RFC 4180 CSV with chain-of-custody header
   };
 
+  // One row of an import validation/commit report (mirrors
+  // ImportSampleRowResult).
+  struct ImportRowResult {
+    int row_number = 0;  // 1-based, excludes the header
+    bool ok = false;
+    QString error;      // empty when ok
+    QString sample_id;  // set only for a committed (non-dry-run) row
+  };
+
+  struct ImportResult {
+    bool ok = false;    // gRPC transport status
+    std::string error;  // transport / status error message
+    bool committed =
+        false;             // true only when a non-dry-run import wrote all rows
+    QString header_error;  // non-empty when the CSV is structurally unusable
+    int succeeded = 0;
+    int failed = 0;
+    std::vector<ImportRowResult> rows;
+  };
+
   explicit SampleServiceClient(
       std::unique_ptr<v1::SampleService::StubInterface> stub);
 
@@ -84,17 +104,24 @@ class SampleServiceClient {
 
   // Check a sample out / in / discard. Optional volume_used (+ unit) records a
   // draw; optional reason is audited. Returns the updated sample.
-  GetSampleResult checkoutSample(const QString& session_token,
-                                 const QString& sample_id,
-                                 v1::CheckoutAction action,
-                                 std::optional<double> volume_used = std::nullopt,
-                                 const QString& volume_unit = QString(),
-                                 const QString& reason = QString());
+  GetSampleResult checkoutSample(
+      const QString& session_token, const QString& sample_id,
+      v1::CheckoutAction action,
+      std::optional<double> volume_used = std::nullopt,
+      const QString& volume_unit = QString(),
+      const QString& reason = QString());
 
   // Export every sample in a lab as RFC 4180 CSV (lab-scoped; no per-box filter).
   ExportCsvResult exportSamplesCsv(const QString& session_token,
                                    const QString& lab_id,
                                    bool include_archived = false);
+
+  // Import samples from RFC 4180 CSV (same schema as export). dry_run validates
+  // and returns a per-row report without persisting; a non-dry-run import is
+  // all-or-nothing (committed=true only if every row wrote).
+  ImportResult importSamples(const QString& session_token,
+                             const QString& lab_id, const QString& csv_content,
+                             bool dry_run);
 
  private:
   std::unique_ptr<v1::SampleService::StubInterface> stub_;

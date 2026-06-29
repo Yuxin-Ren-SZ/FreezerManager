@@ -161,7 +161,8 @@ SampleServiceClient::GetSampleResult SampleServiceClient::checkoutSample(
 }
 
 SampleServiceClient::ExportCsvResult SampleServiceClient::exportSamplesCsv(
-    const QString& session_token, const QString& lab_id, bool include_archived) {
+    const QString& session_token, const QString& lab_id,
+    bool include_archived) {
   v1::ExportSamplesCsvRequest req;
   req.set_lab_id(lab_id.toStdString());
   req.set_include_archived(include_archived);
@@ -178,6 +179,41 @@ SampleServiceClient::ExportCsvResult SampleServiceClient::exportSamplesCsv(
   }
   result.ok = true;
   result.csv = QString::fromStdString(resp.csv_content());
+  return result;
+}
+
+SampleServiceClient::ImportResult SampleServiceClient::importSamples(
+    const QString& session_token, const QString& lab_id,
+    const QString& csv_content, bool dry_run) {
+  v1::ImportSamplesRequest req;
+  req.set_lab_id(lab_id.toStdString());
+  req.set_csv_content(csv_content.toStdString());
+  req.set_dry_run(dry_run);
+
+  grpc::ClientContext ctx;
+  setBearer(&ctx, session_token);
+  v1::ImportSamplesResponse resp;
+  const grpc::Status status = stub_->ImportSamples(&ctx, req, &resp);
+
+  ImportResult result;
+  if (!status.ok()) {
+    result.error = status.error_message();
+    return result;
+  }
+  result.ok = true;
+  result.committed = resp.committed();
+  result.header_error = QString::fromStdString(resp.header_error());
+  result.succeeded = resp.succeeded();
+  result.failed = resp.failed();
+  result.rows.reserve(resp.rows_size());
+  for (const v1::ImportSampleRowResult& row : resp.rows()) {
+    ImportRowResult mapped;
+    mapped.row_number = row.row_number();
+    mapped.ok = row.ok();
+    mapped.error = QString::fromStdString(row.error());
+    mapped.sample_id = QString::fromStdString(row.sample_id());
+    result.rows.push_back(std::move(mapped));
+  }
   return result;
 }
 

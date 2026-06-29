@@ -35,6 +35,10 @@ class SampleBrowserWidget : public QWidget {
   // Export the whole current lab to a CSV file (ExportSamplesCsv is lab-scoped).
   void exportCsv();
 
+  // Open the CSV import wizard (dry-run report + all-or-nothing commit) and
+  // refresh the list on a committed import.
+  void importCsv();
+
  private:
   SampleServiceClient* client_;
   SampleTableModel* model_ = nullptr;
@@ -42,6 +46,7 @@ class SampleBrowserWidget : public QWidget {
   QTableView* table_ = nullptr;
   QString token_;
   QString lab_id_;
+  std::optional<QString> box_id_;  // current box scope, for post-import refresh
 };
 
 }  // namespace fmgr::qt

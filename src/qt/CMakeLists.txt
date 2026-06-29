@@ -32,6 +32,7 @@ add_library(
   BoxServiceClient.cc
   ConfigManager.cc
   GrpcChannel.cc
+  ImportWizardDialog.cc
   LabServiceClient.cc
   LabTreeModel.cc
   LabTreeWidget.cc

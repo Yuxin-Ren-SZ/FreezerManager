@@ -11,6 +11,7 @@
 #include <QTableView>
 #include <QVBoxLayout>
 
+#include "qt/ImportWizardDialog.h"
 #include "qt/SampleSearchBar.h"
 #include "qt/SampleServiceClient.h"
 #include "qt/SampleTableModel.h"
@@ -22,6 +23,11 @@ SampleBrowserWidget::SampleBrowserWidget(SampleServiceClient* client,
     : QWidget(parent), client_(client) {
   model_ = new SampleTableModel(client, this);
   search_bar_ = new SampleSearchBar(this);
+
+  auto* import_button = new QPushButton(QStringLiteral("Import CSV…"), this);
+  import_button->setToolTip(
+      QStringLiteral("Import samples from a CSV file (dry-run validation "
+                     "report, then all-or-nothing commit)"));
 
   auto* export_button = new QPushButton(QStringLiteral("Export CSV…"), this);
   export_button->setToolTip(
@@ -37,6 +43,7 @@ SampleBrowserWidget::SampleBrowserWidget(SampleServiceClient* client,
 
   auto* top = new QHBoxLayout;
   top->addWidget(search_bar_, /*stretch=*/1);
+  top->addWidget(import_button);
   top->addWidget(export_button);
 
   auto* layout = new QVBoxLayout(this);
@@ -48,6 +55,8 @@ SampleBrowserWidget::SampleBrowserWidget(SampleServiceClient* client,
           &SampleTableModel::setScope);
   connect(export_button, &QPushButton::clicked, this,
           &SampleBrowserWidget::exportCsv);
+  connect(import_button, &QPushButton::clicked, this,
+          &SampleBrowserWidget::importCsv);
 }
 
 void SampleBrowserWidget::setToken(const QString& session_token) {
@@ -58,6 +67,7 @@ void SampleBrowserWidget::setToken(const QString& session_token) {
 void SampleBrowserWidget::setScope(const QString& lab_id,
                                    const std::optional<QString>& box_id) {
   lab_id_ = lab_id;
+  box_id_ = box_id;
   SampleFilter base;
   base.lab_id = lab_id;
   base.box_id = box_id;
@@ -82,10 +92,21 @@ void SampleBrowserWidget::exportCsv() {
     return;
   }
   QSaveFile file(path);
-  if (!file.open(QIODevice::WriteOnly) ||
-      file.write(result.csv.toUtf8()) < 0 || !file.commit()) {
+  if (!file.open(QIODevice::WriteOnly) || file.write(result.csv.toUtf8()) < 0 ||
+      !file.commit()) {
     QMessageBox::warning(this, QStringLiteral("Export failed"),
                          QStringLiteral("Could not write %1").arg(path));
+  }
+}
+
+void SampleBrowserWidget::importCsv() {
+  if (lab_id_.isEmpty()) {
+    return;
+  }
+  ImportWizardDialog dialog(client_, token_, lab_id_, this);
+  if (dialog.exec() == QDialog::Accepted) {
+    // A committed import added/changed rows; reload the current scope.
+    setScope(lab_id_, box_id_);
   }
 }
 
