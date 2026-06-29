@@ -20,6 +20,7 @@ coverage/
 
 # Agent / tooling artifacts (not project source)
 .agents/
+.hermes/
 package-lock.json
 skills-lock.json
 
