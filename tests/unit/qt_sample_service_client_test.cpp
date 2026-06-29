@@ -102,6 +102,36 @@ class FakeSampleService final : public fmgr::v1::SampleService::Service {
     return grpc::Status::OK;
   }
 
+  bool fail_checkout = false;
+  std::string seen_checkout_id;
+  fmgr::v1::CheckoutAction seen_checkout_action = fmgr::v1::CHECKOUT_ACTION_UNSPECIFIED;
+
+  grpc::Status CheckoutSample(grpc::ServerContext* /*ctx*/,
+                              const fmgr::v1::CheckoutSampleRequest* req,
+                              fmgr::v1::CheckoutSampleResponse* resp) override {
+    seen_checkout_id = req->sample_id();
+    seen_checkout_action = req->action();
+    if (fail_checkout) {
+      return {grpc::StatusCode::FAILED_PRECONDITION, "already checked out"};
+    }
+    fmgr::v1::Sample* s = resp->mutable_sample();
+    s->set_id(req->sample_id());
+    s->set_status(fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+    return grpc::Status::OK;
+  }
+
+  std::string seen_export_lab;
+  bool seen_export_archived = false;
+
+  grpc::Status ExportSamplesCsv(grpc::ServerContext* /*ctx*/,
+                                const fmgr::v1::ExportSamplesCsvRequest* req,
+                                fmgr::v1::ExportSamplesCsvResponse* resp) override {
+    seen_export_lab = req->lab_id();
+    seen_export_archived = req->include_archived();
+    resp->set_csv_content("id,name\ns-1,Sample 1\n");
+    return grpc::Status::OK;
+  }
+
  private:
   static std::string metadata(grpc::ServerContext* ctx, const char* key) {
     const auto& md = ctx->client_metadata();
@@ -198,6 +228,35 @@ TEST_F(SampleServiceClientTest, ListSamplesFailureCarriesError) {
   EXPECT_FALSE(result.ok);
   EXPECT_EQ(result.error, "denied");
   EXPECT_TRUE(result.samples.empty());
+}
+
+TEST_F(SampleServiceClientTest, CheckoutSamplePassesAction) {
+  auto result = client_->checkoutSample(QStringLiteral("tok-1"),
+                                        QStringLiteral("s-1"),
+                                        fmgr::v1::CHECKOUT_ACTION_CHECKOUT);
+  ASSERT_TRUE(result.ok);
+  EXPECT_EQ(service_.seen_checkout_id, "s-1");
+  EXPECT_EQ(service_.seen_checkout_action, fmgr::v1::CHECKOUT_ACTION_CHECKOUT);
+  EXPECT_EQ(result.sample.status, fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+}
+
+TEST_F(SampleServiceClientTest, CheckoutSampleRejectionCarriesError) {
+  service_.fail_checkout = true;
+  auto result = client_->checkoutSample(QStringLiteral("tok-1"),
+                                        QStringLiteral("s-1"),
+                                        fmgr::v1::CHECKOUT_ACTION_CHECKIN);
+  EXPECT_FALSE(result.ok);
+  EXPECT_EQ(result.error, "already checked out");
+}
+
+TEST_F(SampleServiceClientTest, ExportSamplesCsvMapsContent) {
+  auto result = client_->exportSamplesCsv(QStringLiteral("tok-1"),
+                                          QStringLiteral("lab-1"),
+                                          /*include_archived=*/true);
+  ASSERT_TRUE(result.ok);
+  EXPECT_EQ(service_.seen_export_lab, "lab-1");
+  EXPECT_TRUE(service_.seen_export_archived);
+  EXPECT_EQ(result.csv, QStringLiteral("id,name\ns-1,Sample 1\n"));
 }
 
 TEST_F(SampleServiceClientTest, GetSamplePassesId) {

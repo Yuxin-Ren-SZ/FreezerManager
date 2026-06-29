@@ -128,4 +128,57 @@ SampleServiceClient::GetSampleResult SampleServiceClient::moveSample(
   return result;
 }
 
+SampleServiceClient::GetSampleResult SampleServiceClient::checkoutSample(
+    const QString& session_token, const QString& sample_id,
+    v1::CheckoutAction action, std::optional<double> volume_used,
+    const QString& volume_unit, const QString& reason) {
+  v1::CheckoutSampleRequest req;
+  req.set_sample_id(sample_id.toStdString());
+  req.set_action(action);
+  if (volume_used.has_value()) {
+    req.set_volume_used(*volume_used);
+  }
+  if (!volume_unit.isEmpty()) {
+    req.set_volume_unit(volume_unit.toStdString());
+  }
+  if (!reason.isEmpty()) {
+    req.set_reason(reason.toStdString());
+  }
+
+  grpc::ClientContext ctx;
+  setBearer(&ctx, session_token);
+  v1::CheckoutSampleResponse resp;
+  const grpc::Status status = stub_->CheckoutSample(&ctx, req, &resp);
+
+  GetSampleResult result;
+  if (!status.ok()) {
+    result.error = status.error_message();
+    return result;
+  }
+  result.ok = true;
+  result.sample = toRow(resp.sample());
+  return result;
+}
+
+SampleServiceClient::ExportCsvResult SampleServiceClient::exportSamplesCsv(
+    const QString& session_token, const QString& lab_id, bool include_archived) {
+  v1::ExportSamplesCsvRequest req;
+  req.set_lab_id(lab_id.toStdString());
+  req.set_include_archived(include_archived);
+
+  grpc::ClientContext ctx;
+  setBearer(&ctx, session_token);
+  v1::ExportSamplesCsvResponse resp;
+  const grpc::Status status = stub_->ExportSamplesCsv(&ctx, req, &resp);
+
+  ExportCsvResult result;
+  if (!status.ok()) {
+    result.error = status.error_message();
+    return result;
+  }
+  result.ok = true;
+  result.csv = QString::fromStdString(resp.csv_content());
+  return result;
+}
+
 }  // namespace fmgr::qt
