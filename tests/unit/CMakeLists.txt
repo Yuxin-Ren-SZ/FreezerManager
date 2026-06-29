@@ -138,11 +138,13 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-add_executable(freezermanager_cli_unit_tests cli_test.cpp)
+add_executable(freezermanager_cli_unit_tests cli_test.cpp cli_user_set_password_test.cpp)
 target_link_libraries(
   freezermanager_cli_unit_tests
   PRIVATE
     FreezerManager::cli
+    FreezerManager::auth
+    FreezerManager::storage_sqlite
     GTest::gtest_main
 )
 target_include_directories(
