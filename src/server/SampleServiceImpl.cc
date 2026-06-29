@@ -2,7 +2,9 @@
 
 #include "server/SampleServiceImpl.h"
 
+#include "cli/CsvReader.h"
 #include "cli/SampleCsv.h"
+#include "cli/SampleImport.h"
 #include "core/custom_field_validator.h"
 #include "core/identity.h"
 #include "core/permissions.h"
@@ -21,6 +23,7 @@
 #include <grpcpp/grpcpp.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -276,6 +279,7 @@ namespace fmgr::server {
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/MoveSample", P::SampleWrite);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/CheckoutSample", P::SampleCheckout);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ExportSamplesCsv", P::SampleRead);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ImportSamples", P::SampleWrite);
   }
 
   grpc::Status SampleServiceImpl::ListSamples(grpc::ServerContext* ctx,
@@ -666,6 +670,98 @@ namespace fmgr::server {
       std::ostringstream out;
       cli::write_sample_csv(out, samples, schema_version, lab_id.to_string(), now_iso8601_utc());
       resp->set_csv_content(out.str());
+      return grpc::Status::OK;
+    } catch (...) {
+      return current_exception_to_grpc_status();
+    }
+  }
+
+  grpc::Status SampleServiceImpl::ImportSamples(grpc::ServerContext* ctx,
+                                                const fmgr::v1::ImportSamplesRequest* req,
+                                                fmgr::v1::ImportSamplesResponse* resp) {
+    try {
+      // Authenticate before touching request fields (see ListSamples).
+      const auto bearer = extract_bearer(*ctx);
+      const auto lab_id = core::LabId::parse(req->lab_id());
+      const auto sctx = middleware_.authorize(bearer, core::Permission::SampleWrite, lab_id);
+
+      // Structural validation + row->Sample mapping, reusing the CLI importer core
+      // (compiled into server_lib). lab/actor are server-supplied, never from the
+      // CSV, so an import cannot smuggle rows into another lab or forge authorship.
+      std::istringstream input(req->csv_content());
+      const auto records = cli::parse_csv(input);
+      const cli::ImportContext ictx{
+          .lab_id = lab_id, .actor = sctx.user_id, .now = now_timestamp()};
+      cli::ImportReport report = cli::build_import(records, ictx);
+
+      if (!report.header_error.empty()) {
+        resp->set_header_error(report.header_error);
+        resp->set_committed(false);
+        return grpc::Status::OK;
+      }
+
+      const bool any_structural_error =
+          std::any_of(report.rows.begin(), report.rows.end(),
+                      [](const cli::ImportRowResult& row) { return !row.ok; });
+
+      // Dry-run, or a structural failure on a real import: validate/report only,
+      // persist nothing.
+      if (req->dry_run() || any_structural_error) {
+        int succeeded = 0;
+        int failed = 0;
+        for (const auto& row : report.rows) {
+          auto* out = resp->add_rows();
+          out->set_row_number(static_cast<std::int32_t>(row.row_number));
+          bool ok = row.ok;
+          std::string error = row.error;
+          // Dry-run additionally checks each structurally-ok row against committed
+          // state (FK liveness, occupied position) in its own never-committed
+          // transaction, mirroring `freezerctl sample import --dry-run`.
+          if (req->dry_run() && ok) {
+            try {
+              auto probe = backend_.begin(storage::IsolationLevel::Serializable);
+              rpc::AuthMiddleware::inject_rls_vars(*probe, sctx);
+              probe->repo<core::Sample>().insert(*row.sample,
+                                                 make_ctx(sctx, "import_samples_dryrun"));
+              // Intentionally not committed: the transaction rolls back on scope exit.
+            } catch (const std::exception& e) {
+              ok = false;
+              error = e.what();
+            }
+          }
+          out->set_ok(ok);
+          out->set_error(error);
+          if (ok) {
+            ++succeeded;
+          } else {
+            ++failed;
+          }
+        }
+        resp->set_committed(false);
+        resp->set_succeeded(succeeded);
+        resp->set_failed(failed);
+        return grpc::Status::OK;
+      }
+
+      // Real import, every row structurally valid: all-or-nothing in one
+      // transaction. A storage failure (FK, occupied position, …) rolls the whole
+      // batch back and surfaces as the mapped gRPC status — nothing is persisted.
+      auto txn = backend_.begin(storage::IsolationLevel::Serializable);
+      rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+      for (const auto& row : report.rows) {
+        txn->repo<core::Sample>().insert(*row.sample, make_ctx(sctx, "import_samples"));
+      }
+      txn->commit();
+
+      for (const auto& row : report.rows) {
+        auto* out = resp->add_rows();
+        out->set_row_number(static_cast<std::int32_t>(row.row_number));
+        out->set_ok(true);
+        out->set_sample_id(row.sample->id.to_string());
+      }
+      resp->set_committed(true);
+      resp->set_succeeded(static_cast<std::int32_t>(report.rows.size()));
+      resp->set_failed(0);
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();

@@ -896,6 +896,150 @@ namespace fmgr::test {
       EXPECT_FALSE(resp.csv_content().empty());
     }
 
+    // ---- ImportSamples ----
+
+    TEST_F(SampleServiceTest, ImportSamplesAsAdminCommits) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      const std::string csv =
+          "item_type_id,name\n" + kItemType + ",blood-1\n" + kItemType + ",blood-2\n";
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ImportSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_csv_content(csv);
+      req.set_dry_run(false);
+      fmgr::v1::ImportSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ImportSamples(&ctx, req, &resp).ok());
+
+      EXPECT_TRUE(resp.committed());
+      EXPECT_EQ(resp.succeeded(), 2);
+      EXPECT_EQ(resp.failed(), 0);
+      ASSERT_EQ(resp.rows_size(), 2);
+      EXPECT_TRUE(resp.rows(0).ok());
+      EXPECT_FALSE(resp.rows(0).sample_id().empty());
+
+      grpc::ClientContext lctx;
+      set_bearer(lctx, token);
+      fmgr::v1::ListSamplesRequest lreq;
+      lreq.set_lab_id(kLab1);
+      fmgr::v1::ListSamplesResponse lresp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&lctx, lreq, &lresp).ok());
+      EXPECT_EQ(lresp.samples_size(), 2);
+    }
+
+    TEST_F(SampleServiceTest, ImportSamplesDryRunDoesNotPersist) {
+      const auto token = login(kAdminEmail, kPassword);
+      const std::string csv =
+          "item_type_id,name\n" + kItemType + ",blood-1\n" + kItemType + ",blood-2\n";
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ImportSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_csv_content(csv);
+      req.set_dry_run(true);
+      fmgr::v1::ImportSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ImportSamples(&ctx, req, &resp).ok());
+      EXPECT_FALSE(resp.committed());
+      EXPECT_EQ(resp.succeeded(), 2);
+
+      grpc::ClientContext lctx;
+      set_bearer(lctx, token);
+      fmgr::v1::ListSamplesRequest lreq;
+      lreq.set_lab_id(kLab1);
+      fmgr::v1::ListSamplesResponse lresp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&lctx, lreq, &lresp).ok());
+      EXPECT_EQ(lresp.samples_size(), 0);
+    }
+
+    TEST_F(SampleServiceTest, ImportSamplesMalformedRowReportedNothingPersisted) {
+      const auto token = login(kAdminEmail, kPassword);
+      // Second row is missing the required name → structural failure.
+      const std::string csv = "item_type_id,name\n" + kItemType + ",ok-1\n" + kItemType + ",\n";
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ImportSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_csv_content(csv);
+      req.set_dry_run(false);
+      fmgr::v1::ImportSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ImportSamples(&ctx, req, &resp).ok());
+      EXPECT_FALSE(resp.committed());
+      EXPECT_GE(resp.failed(), 1);
+      ASSERT_EQ(resp.rows_size(), 2);
+      EXPECT_FALSE(resp.rows(1).ok());
+      EXPECT_FALSE(resp.rows(1).error().empty());
+
+      // All-or-nothing: a structural failure persists nothing.
+      grpc::ClientContext lctx;
+      set_bearer(lctx, token);
+      fmgr::v1::ListSamplesRequest lreq;
+      lreq.set_lab_id(kLab1);
+      fmgr::v1::ListSamplesResponse lresp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&lctx, lreq, &lresp).ok());
+      EXPECT_EQ(lresp.samples_size(), 0);
+    }
+
+    TEST_F(SampleServiceTest, ImportSamplesDryRunSurfacesBadItemType) {
+      const auto token = login(kAdminEmail, kPassword);
+      // Well-formed but non-existent item-type UUID: passes structural validation,
+      // fails the dry-run DB probe (foreign key).
+      const std::string kGhostItemType{"30000000-0000-0000-0000-0000000000ff"};
+      const std::string csv = "item_type_id,name\n" + kGhostItemType + ",blood-1\n";
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ImportSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_csv_content(csv);
+      req.set_dry_run(true);
+      fmgr::v1::ImportSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ImportSamples(&ctx, req, &resp).ok());
+      EXPECT_FALSE(resp.committed());
+      ASSERT_EQ(resp.rows_size(), 1);
+      EXPECT_FALSE(resp.rows(0).ok());
+    }
+
+    TEST_F(SampleServiceTest, ImportSamplesRejectsReadOnly) {
+      const auto token = login(kReadonlyEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ImportSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_csv_content("item_type_id,name\n" + kItemType + ",x\n");
+      fmgr::v1::ImportSamplesResponse resp;
+      const auto status = sample_stub_->ImportSamples(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    TEST_F(SampleServiceTest, ImportSamplesCrossLabRejectsOutsider) {
+      const auto token = login(kOutsiderEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ImportSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_csv_content("item_type_id,name\n" + kItemType + ",x\n");
+      fmgr::v1::ImportSamplesResponse resp;
+      const auto status = sample_stub_->ImportSamples(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    TEST_F(SampleServiceTest, ImportSamplesWithoutBearerIsUnauthenticated) {
+      grpc::ClientContext ctx;
+      fmgr::v1::ImportSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_csv_content("item_type_id,name\n" + kItemType + ",x\n");
+      fmgr::v1::ImportSamplesResponse resp;
+      const auto status = sample_stub_->ImportSamples(&ctx, req, &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
     TEST_F(SampleServiceTest, ExportSamplesCsvCrossLabRejectsOutsider) {
       const auto outsider = login(kOutsiderEmail, kPassword);
       grpc::ClientContext ctx;

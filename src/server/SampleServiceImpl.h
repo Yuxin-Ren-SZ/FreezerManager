@@ -47,6 +47,9 @@ namespace fmgr::server {
     grpc::Status ExportSamplesCsv(grpc::ServerContext* ctx,
                                   const fmgr::v1::ExportSamplesCsvRequest* req,
                                   fmgr::v1::ExportSamplesCsvResponse* resp) override;
+    grpc::Status ImportSamples(grpc::ServerContext* ctx,
+                               const fmgr::v1::ImportSamplesRequest* req,
+                               fmgr::v1::ImportSamplesResponse* resp) override;
 
   private:
     auth::IAuthProvider& auth_;

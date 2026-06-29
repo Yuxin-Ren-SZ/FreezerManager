@@ -15,10 +15,12 @@ add_library(freezermanager_server_lib STATIC
   ShareServiceImpl.cc
   BackupScheduler.cc
   FreezerServer.cc
-  # CSV export reused from the CLI: ExportSamplesCsv shares the exact column model
-  # and chain-of-custody header as `freezerctl sample export`.
+  # CSV export/import reused from the CLI: ExportSamplesCsv / ImportSamples share
+  # the exact column model and validation as `freezerctl sample export|import`.
   ${PROJECT_SOURCE_DIR}/src/cli/SampleCsv.cc
   ${PROJECT_SOURCE_DIR}/src/cli/CsvWriter.cc
+  ${PROJECT_SOURCE_DIR}/src/cli/CsvReader.cc
+  ${PROJECT_SOURCE_DIR}/src/cli/SampleImport.cc
 )
 add_library(FreezerManager::server_lib ALIAS freezermanager_server_lib)
 
