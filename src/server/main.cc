@@ -6,6 +6,15 @@
 #include "rest/GatewayStubs.h"
 #include "rest/RestGateway.h"
 #include "server/FreezerServer.h"
+#include "storage/sqlite/AuditRepositories.h"
+#include "storage/sqlite/BoxGeometryRepositories.h"
+#include "storage/sqlite/IdentityRepositories.h"
+#include "storage/sqlite/ItemTypeRepositories.h"
+#include "storage/sqlite/LayoutRepositories.h"
+#include "storage/sqlite/RoleRepositories.h"
+#include "storage/sqlite/SampleRepositories.h"
+#include "storage/sqlite/SessionRepositories.h"
+#include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
 #include <drogon/drogon.h>
@@ -61,6 +70,19 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     auto backend = std::make_unique<fmgr::storage::SqliteBackend>(
         fmgr::storage::SqliteBackendOptions{.database_path = db_path});
+    // Register every domain repository before serving (mirrors the CLI's
+    // BackendFactory). Without this, repo<Entity>() inside an RPC handler throws
+    // "repository is not available for entity type" and every request 500s.
+    fmgr::storage::register_identity_repositories(*backend);
+    fmgr::storage::register_role_repositories(*backend);
+    fmgr::storage::register_layout_repositories(*backend);
+    fmgr::storage::register_box_geometry_repositories(*backend);
+    fmgr::storage::register_box_repositories(*backend);
+    fmgr::storage::register_item_type_repositories(*backend);
+    fmgr::storage::register_sample_repositories(*backend);
+    fmgr::storage::register_session_repositories(*backend);
+    fmgr::storage::register_share_request_repositories(*backend);
+    fmgr::storage::register_audit_repositories(*backend);
     backend->migrate_to_latest();
 
     fmgr::auth::LocalAuthProvider auth(*backend);
