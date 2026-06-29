@@ -16,6 +16,7 @@ service SampleService {
   rpc MoveSample(MoveSampleRequest) returns (MoveSampleResponse);
   rpc CheckoutSample(CheckoutSampleRequest) returns (CheckoutSampleResponse);
   rpc ExportSamplesCsv(ExportSamplesCsvRequest) returns (ExportSamplesCsvResponse);
+  rpc ImportSamples(ImportSamplesRequest) returns (ImportSamplesResponse);
 }
 
 // Mirrors core::SampleStatus exactly so no lifecycle state collapses on the
@@ -142,4 +143,26 @@ message ExportSamplesCsvRequest {
 message ExportSamplesCsvResponse {
   // RFC 4180 CSV with chain-of-custody header (same schema as freezerctl export).
   string csv_content = 1;
+}
+
+message ImportSamplesRequest {
+  string lab_id = 1;
+  string csv_content = 2;  // RFC 4180 CSV; same column schema as the export
+  bool dry_run = 3;        // validate and report only; persist nothing
+}
+message ImportSampleRowResult {
+  int32 row_number = 1;  // 1-based, excludes the header
+  bool ok = 2;
+  string error = 3;       // empty when ok
+  string sample_id = 4;   // set only for a committed (non-dry-run) row
+}
+message ImportSamplesResponse {
+  // True only on a non-dry-run import that validated and wrote every row.
+  bool committed = 1;
+  // Non-empty when the CSV is structurally unusable as a whole (no rows / a
+  // header missing a required column); in that case `rows` is empty.
+  string header_error = 2;
+  int32 succeeded = 3;
+  int32 failed = 4;
+  repeated ImportSampleRowResult rows = 5;
 }

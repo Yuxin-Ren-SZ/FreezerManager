@@ -134,6 +134,8 @@ namespace fmgr::rest {
                CheckoutSampleResponse);
     FMGR_ROUTE("/api/v1/sample/export", sample, ExportSamplesCsv, ExportSamplesCsvRequest,
                ExportSamplesCsvResponse);
+    FMGR_ROUTE("/api/v1/sample/import", sample, ImportSamples, ImportSamplesRequest,
+               ImportSamplesResponse);
 
     // ---- BoxService (layout: freezers, containers, container/box types, boxes) ----
     FMGR_ROUTE("/api/v1/freezer/list", box, ListFreezers, ListFreezersRequest,
