@@ -57,6 +57,12 @@ class SampleServiceClient {
     SampleRow sample;
   };
 
+  struct ExportCsvResult {
+    bool ok = false;
+    std::string error;
+    QString csv;  // RFC 4180 CSV with chain-of-custody header
+  };
+
   explicit SampleServiceClient(
       std::unique_ptr<v1::SampleService::StubInterface> stub);
 
@@ -75,6 +81,20 @@ class SampleServiceClient {
                              const QString& sample_id,
                              const QString& dest_box_id,
                              const QString& dest_position);
+
+  // Check a sample out / in / discard. Optional volume_used (+ unit) records a
+  // draw; optional reason is audited. Returns the updated sample.
+  GetSampleResult checkoutSample(const QString& session_token,
+                                 const QString& sample_id,
+                                 v1::CheckoutAction action,
+                                 std::optional<double> volume_used = std::nullopt,
+                                 const QString& volume_unit = QString(),
+                                 const QString& reason = QString());
+
+  // Export every sample in a lab as RFC 4180 CSV (lab-scoped; no per-box filter).
+  ExportCsvResult exportSamplesCsv(const QString& session_token,
+                                   const QString& lab_id,
+                                   bool include_archived = false);
 
  private:
   std::unique_ptr<v1::SampleService::StubInterface> stub_;

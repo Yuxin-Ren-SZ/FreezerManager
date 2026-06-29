@@ -17,6 +17,8 @@
 #include <QTabWidget>
 
 #include "qt/AuthServiceClient.h"
+#include "qt/BarcodeScanController.h"
+#include "qt/BarcodeScanWidget.h"
 #include "qt/BoxGridModel.h"
 #include "qt/BoxGridWidget.h"
 #include "qt/BoxServiceClient.h"
@@ -155,9 +157,14 @@ void MainWindow::showAuthenticated() {
                                                sample_client_.get());
   grid_model_->setToken(session_.token());
   grid_ = new BoxGridWidget(grid_model_.get());
+  scan_controller_ =
+      std::make_unique<BarcodeScanController>(sample_client_.get());
+  scan_controller_->setToken(session_.token());
+  scan_ = new BarcodeScanWidget(scan_controller_.get());
   auto* tabs = new QTabWidget;
   tabs->addTab(browser_, QStringLiteral("Samples"));
   tabs->addTab(grid_, QStringLiteral("Box Layout"));
+  tabs->addTab(scan_, QStringLiteral("Scan"));
 
   splitter->addWidget(tree_);
   splitter->addWidget(tabs);
@@ -184,6 +191,10 @@ void MainWindow::onNodeSelected(const QString& kind, const QString& id,
                                 const QString& lab_id) {
   if (browser_ == nullptr || lab_id.isEmpty()) {
     return;
+  }
+  // Scope the barcode scanner to the selected lab too.
+  if (scan_controller_ != nullptr) {
+    scan_controller_->setScope(lab_id);
   }
   if (kind == QStringLiteral("box")) {
     browser_->setScope(lab_id, id);
@@ -213,7 +224,9 @@ void MainWindow::showPlaceholder() {
     tree_ = nullptr;
     browser_ = nullptr;
     grid_ = nullptr;
+    scan_ = nullptr;
     grid_model_.reset();
+    scan_controller_.reset();
   }
   if (placeholder_ != nullptr) {
     pages_->setCurrentWidget(placeholder_);

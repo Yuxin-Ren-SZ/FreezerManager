@@ -25,6 +25,8 @@ set(CMAKE_AUTOMOC ON)
 add_library(
   freezermanager_qt_lib
   AuthServiceClient.cc
+  BarcodeScanController.cc
+  BarcodeScanWidget.cc
   BoxGridModel.cc
   BoxGridWidget.cc
   BoxServiceClient.cc

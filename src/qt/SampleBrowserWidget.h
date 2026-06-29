@@ -31,10 +31,17 @@ class SampleBrowserWidget : public QWidget {
   void setScope(const QString& lab_id,
                 const std::optional<QString>& box_id = std::nullopt);
 
+ private slots:
+  // Export the whole current lab to a CSV file (ExportSamplesCsv is lab-scoped).
+  void exportCsv();
+
  private:
+  SampleServiceClient* client_;
   SampleTableModel* model_ = nullptr;
   SampleSearchBar* search_bar_ = nullptr;
   QTableView* table_ = nullptr;
+  QString token_;
+  QString lab_id_;
 };
 
 }  // namespace fmgr::qt

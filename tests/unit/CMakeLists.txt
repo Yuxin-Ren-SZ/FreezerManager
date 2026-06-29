@@ -280,6 +280,7 @@ if(TARGET FreezerManager::qt_lib)
   add_executable(
     freezermanager_qt_unit_tests
     qt_auth_service_client_test.cpp
+    qt_barcode_scan_controller_test.cpp
     qt_box_grid_model_test.cpp
     qt_box_service_client_test.cpp
     qt_config_manager_test.cpp

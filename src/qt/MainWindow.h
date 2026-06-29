@@ -26,6 +26,8 @@ class LabTreeWidget;
 class SampleBrowserWidget;
 class BoxGridModel;
 class BoxGridWidget;
+class BarcodeScanController;
+class BarcodeScanWidget;
 
 // Application shell: menu bar, central stacked widget (one page per module), and
 // a status bar showing connection state. Owns the ConfigManager, GrpcChannel,
@@ -75,6 +77,7 @@ class MainWindow : public QMainWindow {
   std::unique_ptr<BoxServiceClient> box_client_;
   std::unique_ptr<SampleServiceClient> sample_client_;
   std::unique_ptr<BoxGridModel> grid_model_;
+  std::unique_ptr<BarcodeScanController> scan_controller_;
 
   QStackedWidget* pages_ = nullptr;
   QWidget* placeholder_ = nullptr;
@@ -82,6 +85,7 @@ class MainWindow : public QMainWindow {
   LabTreeWidget* tree_ = nullptr;
   SampleBrowserWidget* browser_ = nullptr;
   BoxGridWidget* grid_ = nullptr;
+  BarcodeScanWidget* scan_ = nullptr;
   QLabel* status_label_ = nullptr;
   QAction* logout_action_ = nullptr;
 };
