@@ -19,6 +19,7 @@ add_library(
   KeyCommands.cc
   LabCommands.cc
   NounCommands.cc
+  UserCommands.cc
   UserImport.cc
   SampleCommands.cc
   SampleCsv.cc
@@ -37,6 +38,7 @@ target_link_libraries(
   freezermanager_cli
   PUBLIC
     FreezerManager::core
+    FreezerManager::auth
     FreezerManager::audit
     FreezerManager::backup
     FreezerManager::storage_sqlite

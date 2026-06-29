@@ -16,6 +16,7 @@
 #include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleQuery.h"
+#include "cli/UserCommands.h"
 #include "cli/UserImport.h"
 #include "core/box.h"
 #include "core/enums.h"
@@ -679,11 +680,32 @@ namespace fmgr::cli {
       args.cmd->add_option("file", args.file, "CSV file to import ('-' for stdin)")->required();
     }
 
+    // Parse-time storage for `user set-password`. The password is read from stdin
+    // at dispatch, never taken on argv (it would leak via ps/shell history).
+    struct SetPasswordArgs {
+      std::string sqlite;
+      std::string postgres;
+      std::string email;
+      std::string actor;
+      CLI::App* cmd{nullptr};
+    };
+
+    void add_user_set_password(CLI::App* user_root, SetPasswordArgs& args) {
+      args.cmd = user_root->add_subcommand(
+          "set-password", "Enrol a local password for an existing user (reads it from stdin)");
+      args.cmd->add_option("--sqlite", args.sqlite, "Path to a SQLite database file");
+      args.cmd->add_option("--postgres", args.postgres, "PostgreSQL connection URL");
+      args.cmd->add_option("--email", args.email, "Email of the user to enrol")->required();
+      args.cmd->add_option("--actor", args.actor,
+                           "User UUID recorded as the audit actor (default: the target user)");
+    }
+
     struct ImportNouns {
       ImportArgs item_type;
       ImportArgs box;
       ImportArgs custom_field_def;
       ImportArgs user;
+      SetPasswordArgs user_set_password;
     };
 
     void add_import_nouns(CLI::App& app, const NounSubcommands& box,
@@ -699,6 +721,7 @@ namespace fmgr::cli {
       CLI::App* user_root = app.add_subcommand("user", "user commands");
       user_root->require_subcommand(1);
       add_import_noun(user_root, "user", nouns.user);
+      add_user_set_password(user_root, nouns.user_set_password);
     }
 
     // Run one parsed import: open the backend, then stream the file (or stdin on
@@ -936,6 +959,17 @@ namespace fmgr::cli {
       }
       if (const auto code = dispatch_import_nouns(import_nouns, out)) {
         return *code;
+      }
+      if (import_nouns.user_set_password.cmd->parsed()) {
+        const auto& args = import_nouns.user_set_password;
+        auto backend = open_backend(backend_options_from(args.sqlite, args.postgres));
+        // Read the password from stdin (one line); never accept it on argv.
+        std::string password;
+        std::getline(std::cin, password);
+        const std::optional<core::UserId> actor =
+            args.actor.empty() ? std::nullopt
+                               : std::optional<core::UserId>(core::UserId::parse(args.actor));
+        return run_user_set_password(*backend, args.email, password, actor, out, err);
       }
       if (const auto code = dispatch_backup(backup_noun, out, err)) {
         return *code;
