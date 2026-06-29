@@ -9,15 +9,30 @@
 
 #include "qt/ConfigManager.h"
 #include "qt/GrpcChannel.h"
+#include "qt/SessionManager.h"
 
+class QAction;
 class QLabel;
 class QStackedWidget;
+class QWidget;
 
 namespace fmgr::qt {
 
-// Application shell: menu bar, central stacked widget (one page per future
-// module), and a status bar showing connection state. Owns the ConfigManager
-// and GrpcChannel so child pages can be wired to them in later modules.
+class AuthServiceClient;
+class LabServiceClient;
+class BoxServiceClient;
+class SampleServiceClient;
+class LabTreeWidget;
+class SampleBrowserWidget;
+class BoxGridModel;
+class BoxGridWidget;
+
+// Application shell: menu bar, central stacked widget (one page per module), and
+// a status bar showing connection state. Owns the ConfigManager, GrpcChannel,
+// SessionManager and the service clients, and drives the login flow: Connect →
+// LoginDialog → AuthService → SessionManager → swap the stacked page from the
+// placeholder to the authenticated LabTreeWidget. Session end (logout or expiry)
+// swaps back to the placeholder.
 class MainWindow : public QMainWindow {
   Q_OBJECT
 
@@ -32,17 +47,43 @@ class MainWindow : public QMainWindow {
 
  private slots:
   void onConnect();
+  void onLogout();
   void onQuit();
+  // Map a tree selection to a sample-browser scope.
+  void onNodeSelected(const QString& kind, const QString& id,
+                      const QString& lab_id);
 
  private:
   void buildMenus();
   void updateStatus();
 
+  // Run the modal login (+ optional MFA) loop. Returns true once the session is
+  // authenticated; false if the user cancelled.
+  bool runLoginFlow();
+  // Build the service clients + tree page and show it.
+  void showAuthenticated();
+  // Tear down the tree page and return to the placeholder. Slot for
+  // SessionManager::sessionEnded (logout / expiry).
+  void showPlaceholder();
+
   ConfigManager config_;
   GrpcChannel channel_{};
+  SessionManager session_;
+
+  std::unique_ptr<AuthServiceClient> auth_;
+  std::unique_ptr<LabServiceClient> lab_client_;
+  std::unique_ptr<BoxServiceClient> box_client_;
+  std::unique_ptr<SampleServiceClient> sample_client_;
+  std::unique_ptr<BoxGridModel> grid_model_;
 
   QStackedWidget* pages_ = nullptr;
+  QWidget* placeholder_ = nullptr;
+  QWidget* auth_page_ = nullptr;  // splitter: tree | tabs
+  LabTreeWidget* tree_ = nullptr;
+  SampleBrowserWidget* browser_ = nullptr;
+  BoxGridWidget* grid_ = nullptr;
   QLabel* status_label_ = nullptr;
+  QAction* logout_action_ = nullptr;
 };
 
 }  // namespace fmgr::qt

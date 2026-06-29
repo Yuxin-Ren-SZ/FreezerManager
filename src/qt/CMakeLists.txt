@@ -25,10 +25,20 @@ set(CMAKE_AUTOMOC ON)
 add_library(
   freezermanager_qt_lib
   AuthServiceClient.cc
+  BoxGridModel.cc
+  BoxGridWidget.cc
+  BoxServiceClient.cc
   ConfigManager.cc
   GrpcChannel.cc
+  LabServiceClient.cc
+  LabTreeModel.cc
+  LabTreeWidget.cc
   LoginDialog.cc
   MainWindow.cc
+  SampleBrowserWidget.cc
+  SampleSearchBar.cc
+  SampleServiceClient.cc
+  SampleTableModel.cc
   SessionManager.cc
 )
 add_library(FreezerManager::qt_lib ALIAS freezermanager_qt_lib)

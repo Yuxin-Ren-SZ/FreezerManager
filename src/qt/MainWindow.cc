@@ -5,13 +5,26 @@
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
+#include <QDialog>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QString>
+#include <QTabWidget>
+
+#include "qt/AuthServiceClient.h"
+#include "qt/BoxGridModel.h"
+#include "qt/BoxGridWidget.h"
+#include "qt/BoxServiceClient.h"
+#include "qt/LabServiceClient.h"
+#include "qt/LabTreeWidget.h"
+#include "qt/LoginDialog.h"
+#include "qt/SampleBrowserWidget.h"
+#include "qt/SampleServiceClient.h"
 
 namespace fmgr::qt {
 
@@ -19,12 +32,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   setWindowTitle(QStringLiteral("FreezerManager"));
 
   pages_ = new QStackedWidget(this);
-  // Placeholder landing page; later modules push real pages (login, browser,
-  // sample table, box grid) onto this stack.
+  // Placeholder landing page, shown before login and after logout/expiry. The
+  // authenticated LabTreeWidget page is pushed on top once a session starts.
   auto* placeholder = new QLabel(
       QStringLiteral("FreezerManager desktop client\nConnect to begin."),
       pages_);
   placeholder->setAlignment(::Qt::AlignCenter);
+  placeholder_ = placeholder;
   pages_->addWidget(placeholder);
   setCentralWidget(pages_);
 
@@ -32,6 +46,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   statusBar()->addPermanentWidget(status_label_);
 
   buildMenus();
+
+  // Logout and expiry both end the session; return to the placeholder page.
+  connect(&session_, &SessionManager::sessionEnded, this,
+          &MainWindow::showPlaceholder);
 
   const QByteArray geometry = config_.windowGeometry();
   if (!geometry.isEmpty()) {
@@ -55,6 +73,10 @@ void MainWindow::buildMenus() {
   QAction* connect_action = file_menu->addAction(QStringLiteral("&Connect"));
   connect(connect_action, &QAction::triggered, this, &MainWindow::onConnect);
 
+  logout_action_ = file_menu->addAction(QStringLiteral("&Log out"));
+  logout_action_->setEnabled(false);
+  connect(logout_action_, &QAction::triggered, this, &MainWindow::onLogout);
+
   file_menu->addSeparator();
 
   QAction* quit_action = file_menu->addAction(QStringLiteral("&Quit"));
@@ -66,6 +88,147 @@ void MainWindow::onConnect() {
   channel_ = GrpcChannel(config_.serverUrl().toStdString());
   channel_.connect();
   updateStatus();
+
+  auth_ = std::make_unique<AuthServiceClient>(channel_.makeAuthStub());
+  if (runLoginFlow()) {
+    showAuthenticated();
+  }
+}
+
+bool MainWindow::runLoginFlow() {
+  LoginDialog dlg(this);
+  for (;;) {
+    if (dlg.exec() != QDialog::Accepted) {
+      // Cancelled. Drop any half-started (pre-MFA) session.
+      if (session_.hasToken()) {
+        session_.clear();
+      }
+      return false;
+    }
+
+    if (!session_.hasToken()) {
+      // First stage: email + password.
+      const auto result = auth_->login(dlg.email(), dlg.password());
+      if (!result.ok) {
+        dlg.setError(QString::fromStdString(result.error));
+        continue;
+      }
+      session_.startSession(result.session_token, result.session_id,
+                            result.user_id, result.mfa_required);
+      if (!result.mfa_required) {
+        return true;
+      }
+      dlg.showTotpField(
+          QStringLiteral("Enter the 6-digit authenticator code."));
+      continue;
+    }
+
+    // Second stage: a session token is held; complete MFA.
+    const auto result = auth_->submitMfa(session_.token(), dlg.totpCode());
+    if (!result.ok) {
+      dlg.setError(QString::fromStdString(result.error));
+      continue;
+    }
+    session_.markMfaSatisfied();
+    return true;
+  }
+}
+
+void MainWindow::showAuthenticated() {
+  lab_client_ = std::make_unique<LabServiceClient>(channel_.makeLabStub());
+  box_client_ = std::make_unique<BoxServiceClient>(channel_.makeBoxStub());
+  sample_client_ =
+      std::make_unique<SampleServiceClient>(channel_.makeSampleStub());
+
+  // Recreate the page so it binds to the current clients (a re-login mints new
+  // stubs).
+  if (auth_page_ != nullptr) {
+    pages_->removeWidget(auth_page_);
+    delete auth_page_;
+  }
+  auto* splitter = new QSplitter(::Qt::Horizontal);
+  tree_ = new LabTreeWidget(lab_client_.get(), box_client_.get());
+
+  // Right pane: a tab over the sample table and the box layout grid.
+  browser_ = new SampleBrowserWidget(sample_client_.get());
+  grid_model_ = std::make_unique<BoxGridModel>(box_client_.get(),
+                                               sample_client_.get());
+  grid_model_->setToken(session_.token());
+  grid_ = new BoxGridWidget(grid_model_.get());
+  auto* tabs = new QTabWidget;
+  tabs->addTab(browser_, QStringLiteral("Samples"));
+  tabs->addTab(grid_, QStringLiteral("Box Layout"));
+
+  splitter->addWidget(tree_);
+  splitter->addWidget(tabs);
+  splitter->setStretchFactor(0, 1);
+  splitter->setStretchFactor(1, 3);
+  auth_page_ = splitter;
+
+  connect(tree_, &LabTreeWidget::nodeSelected, this,
+          &MainWindow::onNodeSelected);
+
+  tree_->setToken(session_.token());
+  browser_->setToken(session_.token());
+  tree_->reload();
+
+  pages_->addWidget(auth_page_);
+  pages_->setCurrentWidget(auth_page_);
+
+  if (logout_action_ != nullptr) {
+    logout_action_->setEnabled(true);
+  }
+}
+
+void MainWindow::onNodeSelected(const QString& kind, const QString& id,
+                                const QString& lab_id) {
+  if (browser_ == nullptr || lab_id.isEmpty()) {
+    return;
+  }
+  if (kind == QStringLiteral("box")) {
+    browser_->setScope(lab_id, id);
+    if (grid_model_ != nullptr) {
+      grid_model_->setBox(lab_id, id);
+    }
+    // Surface the box layout (the grid lives next to the table in the right
+    // pane's tab).
+    if (grid_ != nullptr) {
+      auto* tabs = qobject_cast<QTabWidget*>(grid_->parentWidget());
+      if (tabs != nullptr) {
+        tabs->setCurrentWidget(grid_);
+      }
+    }
+  } else {
+    // lab / freezer / container → lab-wide (ListSamples scopes by box, not
+    // container).
+    browser_->setScope(lab_id);
+  }
+}
+
+void MainWindow::showPlaceholder() {
+  if (auth_page_ != nullptr) {
+    pages_->removeWidget(auth_page_);
+    delete auth_page_;
+    auth_page_ = nullptr;
+    tree_ = nullptr;
+    browser_ = nullptr;
+    grid_ = nullptr;
+    grid_model_.reset();
+  }
+  if (placeholder_ != nullptr) {
+    pages_->setCurrentWidget(placeholder_);
+  }
+  if (logout_action_ != nullptr) {
+    logout_action_->setEnabled(false);
+  }
+}
+
+void MainWindow::onLogout() {
+  if (session_.hasToken() && auth_ != nullptr) {
+    auth_->logout(session_.token());
+  }
+  // Emits sessionEnded(), which is wired to showPlaceholder().
+  session_.clear();
 }
 
 void MainWindow::onQuit() { close(); }
