@@ -64,8 +64,8 @@ bool BoxGridModel::rebuildOccupants() {
   if (samples.ok) {
     for (const auto& sample : samples.samples) {
       if (!sample.position_label.isEmpty()) {
-        by_position.insert(sample.position_label, Occupant{sample.id,
-                                                           sample.name});
+        by_position.insert(sample.position_label,
+                           Occupant{sample.id, sample.name});
       }
     }
   }

@@ -1,0 +1,18 @@
+# The Qt desktop client was written a month after the root .clang-format landed,
+# against the Google C++ house style (flush namespaces, 80-column, indented case
+# labels, return type kept on the declaration line) rather than the root's
+# 100-column LLVM-derived namespace-indented style. Every file under src/qt/
+# follows it consistently, so rather than reflow the whole module we pin the
+# established convention here and let the CI format gate pass.
+#
+# DerivePointerAlignment is forced off (Google leaves it on) to keep the
+# project-wide "Type* name" left-aligned pointer rule from the root config.
+BasedOnStyle: Google
+ColumnLimit: 80
+DerivePointerAlignment: false
+PointerAlignment: Left
+# Keep the hand-curated include grouping (system / Qt / project blocks separated
+# by blank lines) instead of Google's automatic regroup.
+IncludeBlocks: Preserve
+# Leave prose comments as authored; do not rewrap to the column limit.
+ReflowComments: false

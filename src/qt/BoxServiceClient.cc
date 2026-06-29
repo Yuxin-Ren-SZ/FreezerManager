@@ -29,8 +29,7 @@ BoxServiceClient::BoxRow toRow(const v1::Box& box) {
   row.id = QString::fromStdString(box.id());
   row.lab_id = QString::fromStdString(box.lab_id());
   row.box_type_id = QString::fromStdString(box.box_type_id());
-  row.storage_container_id =
-      QString::fromStdString(box.storage_container_id());
+  row.storage_container_id = QString::fromStdString(box.storage_container_id());
   row.label = QString::fromStdString(box.label());
   return row;
 }

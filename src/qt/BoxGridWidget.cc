@@ -46,11 +46,10 @@ void BoxGridWidget::rebuildScene() {
     auto* rect = scene_->addRect(x, y, kCell, kCell);
     rect->setPen(QPen(::Qt::darkGray));
     const bool occupied = cell.occupant.has_value();
-    rect->setBrush(QBrush(occupied ? QColor(0x9b, 0xc9, 0xff)
-                                   : QColor(0xf0, 0xf0, 0xf0)));
+    rect->setBrush(
+        QBrush(occupied ? QColor(0x9b, 0xc9, 0xff) : QColor(0xf0, 0xf0, 0xf0)));
     rect->setData(kRoleLabel, cell.position_label);
-    rect->setData(kRoleSample,
-                  occupied ? cell.occupant->sample_id : QString());
+    rect->setData(kRoleSample, occupied ? cell.occupant->sample_id : QString());
 
     auto* label = new QGraphicsSimpleTextItem(cell.position_label, rect);
     label->setPos(x + 4, y + 4);

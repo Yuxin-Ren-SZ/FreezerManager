@@ -26,8 +26,7 @@ std::vector<TreeNode> buildContainers(BoxServiceClient& boxes,
     node.kind = QStringLiteral("container");
     node.id = container.id;
     node.lab_id = lab_id;
-    node.label =
-        container.label.isEmpty() ? container.name : container.label;
+    node.label = container.label.isEmpty() ? container.name : container.label;
     node.children = buildContainers(boxes, token, lab_id, container.id);
 
     const auto boxes_in = boxes.listBoxes(token, lab_id, container.id);

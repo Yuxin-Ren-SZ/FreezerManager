@@ -22,8 +22,7 @@ ConfigManager::ConfigManager(const QString& ini_path) {
                                             QLatin1String(kOrganization),
                                             QLatin1String(kApplication));
   } else {
-    settings_ =
-        std::make_unique<QSettings>(ini_path, QSettings::IniFormat);
+    settings_ = std::make_unique<QSettings>(ini_path, QSettings::IniFormat);
   }
 }
 

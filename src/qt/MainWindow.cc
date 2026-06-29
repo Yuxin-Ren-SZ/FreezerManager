@@ -153,8 +153,8 @@ void MainWindow::showAuthenticated() {
 
   // Right pane: a tab over the sample table and the box layout grid.
   browser_ = new SampleBrowserWidget(sample_client_.get());
-  grid_model_ = std::make_unique<BoxGridModel>(box_client_.get(),
-                                               sample_client_.get());
+  grid_model_ =
+      std::make_unique<BoxGridModel>(box_client_.get(), sample_client_.get());
   grid_model_->setToken(session_.token());
   grid_ = new BoxGridWidget(grid_model_.get());
   scan_controller_ =

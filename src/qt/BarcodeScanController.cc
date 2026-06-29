@@ -23,7 +23,7 @@ QString actionVerb(v1::CheckoutAction action) {
 }  // namespace
 
 BarcodeScanController::BarcodeScanController(SampleServiceClient* client,
-                                            QObject* parent)
+                                             QObject* parent)
     : QObject(parent), client_(client) {}
 
 BarcodeScanController::ScanResult BarcodeScanController::processScan(
@@ -56,15 +56,15 @@ BarcodeScanController::ScanResult BarcodeScanController::processScan(
   result.sample_id = sample.id;
   const auto outcome = client_->checkoutSample(token_, sample.id, action_);
   if (!outcome.ok) {
-    result.message = QStringLiteral("%1: %2")
-                         .arg(code, QString::fromStdString(outcome.error));
+    result.message = QStringLiteral("%1: %2").arg(
+        code, QString::fromStdString(outcome.error));
     emit scanned(result);
     return result;
   }
 
   result.ok = true;
-  result.message = QStringLiteral("%1 %2 (%3)")
-                       .arg(sample.name, actionVerb(action_), code);
+  result.message =
+      QStringLiteral("%1 %2 (%3)").arg(sample.name, actionVerb(action_), code);
   emit scanned(result);
   return result;
 }

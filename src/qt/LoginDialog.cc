@@ -18,7 +18,7 @@ LoginDialog::Validation LoginDialog::validate(const QString& email,
                                               bool totp_required) {
   // A plausible email: non-empty and contains '@' with text on both sides. Full
   // RFC validation lives on the server; this only catches obvious mistakes.
-  const int at = email.indexOf(QLatin1Char('@'));
+  const qsizetype at = email.indexOf(QLatin1Char('@'));
   if (email.isEmpty() || at <= 0 || at == email.size() - 1) {
     return {false, QStringLiteral("Enter a valid email address.")};
   }
@@ -60,9 +60,8 @@ LoginDialog::LoginDialog(QWidget* parent) : QDialog(parent) {
   error_label_->setStyleSheet(QStringLiteral("color: #b00020;"));
   error_label_->setVisible(false);
 
-  auto* buttons =
-      new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
-                           this);
+  auto* buttons = new QDialogButtonBox(
+      QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
   submit_button_ = buttons->button(QDialogButtonBox::Ok);
   submit_button_->setText(QStringLiteral("Sign in"));
   submit_button_->setDefault(true);
@@ -74,12 +73,10 @@ LoginDialog::LoginDialog(QWidget* parent) : QDialog(parent) {
   layout->addWidget(error_label_);
   layout->addWidget(buttons);
 
-  connect(email_edit_, &QLineEdit::textChanged, this,
-          &LoginDialog::revalidate);
+  connect(email_edit_, &QLineEdit::textChanged, this, &LoginDialog::revalidate);
   connect(password_edit_, &QLineEdit::textChanged, this,
           &LoginDialog::revalidate);
-  connect(totp_edit_, &QLineEdit::textChanged, this,
-          &LoginDialog::revalidate);
+  connect(totp_edit_, &QLineEdit::textChanged, this, &LoginDialog::revalidate);
 
   revalidate();
 }
@@ -107,10 +104,10 @@ void LoginDialog::setError(const QString& message) {
 }
 
 void LoginDialog::revalidate() {
-  const Validation v = validate(email_edit_->text().trimmed(),
-                                password_edit_->text(),
-                                totp_edit_->text().trimmed(), totp_visible_);
-  if (submit_button_) {
+  const Validation v =
+      validate(email_edit_->text().trimmed(), password_edit_->text(),
+               totp_edit_->text().trimmed(), totp_visible_);
+  if (submit_button_ != nullptr) {
     submit_button_->setEnabled(v.valid);
   }
 }

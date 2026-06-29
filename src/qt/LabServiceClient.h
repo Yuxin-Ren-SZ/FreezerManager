@@ -38,7 +38,8 @@ class LabServiceClient {
     LabRow lab;
   };
 
-  explicit LabServiceClient(std::unique_ptr<v1::LabService::StubInterface> stub);
+  explicit LabServiceClient(
+      std::unique_ptr<v1::LabService::StubInterface> stub);
 
   // List the labs visible to the authenticated caller.
   ListLabsResult listLabs(const QString& session_token);

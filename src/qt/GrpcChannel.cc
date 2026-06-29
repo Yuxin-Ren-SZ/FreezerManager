@@ -12,8 +12,7 @@ namespace fmgr::qt {
 GrpcChannel::GrpcChannel(std::string target) : target_(std::move(target)) {}
 
 bool GrpcChannel::connect() {
-  channel_ =
-      grpc::CreateChannel(target_, grpc::InsecureChannelCredentials());
+  channel_ = grpc::CreateChannel(target_, grpc::InsecureChannelCredentials());
   return channel_ != nullptr;
 }
 

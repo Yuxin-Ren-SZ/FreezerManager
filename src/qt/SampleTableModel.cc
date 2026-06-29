@@ -4,8 +4,7 @@
 
 namespace fmgr::qt {
 
-SampleTableModel::SampleTableModel(SampleServiceClient* client,
-                                   QObject* parent)
+SampleTableModel::SampleTableModel(SampleServiceClient* client, QObject* parent)
     : QAbstractTableModel(parent), client_(client) {}
 
 QString SampleTableModel::statusToString(v1::SampleStatus status) {

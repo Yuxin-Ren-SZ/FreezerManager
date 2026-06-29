@@ -31,7 +31,8 @@ BarcodeScanWidget::BarcodeScanWidget(BarcodeScanController* controller,
   form->addRow(QStringLiteral("Action"), action_combo_);
 
   input_ = new QLineEdit(this);
-  input_->setPlaceholderText(QStringLiteral("Scan or type a barcode, then Enter"));
+  input_->setPlaceholderText(
+      QStringLiteral("Scan or type a barcode, then Enter"));
   form->addRow(QStringLiteral("Barcode"), input_);
 
   log_ = new QListWidget(this);
@@ -50,7 +51,7 @@ BarcodeScanWidget::BarcodeScanWidget(BarcodeScanController* controller,
           [this](const BarcodeScanController::ScanResult& result) {
             auto* item = new QListWidgetItem(result.message, log_);
             item->setForeground(QBrush(result.ok ? QColor(0x0a, 0x7d, 0x33)
-                                                  : QColor(0xb0, 0x00, 0x20)));
+                                                 : QColor(0xb0, 0x00, 0x20)));
             log_->addItem(item);
             log_->scrollToBottom();
           });

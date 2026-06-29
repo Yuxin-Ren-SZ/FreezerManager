@@ -22,8 +22,8 @@ class AuthServiceClient {
  public:
   struct LoginResult {
     bool ok = false;
-    std::string error;       // human-readable gRPC status message when !ok
-    QString session_token;   // bearer for subsequent RPCs
+    std::string error;      // human-readable gRPC status message when !ok
+    QString session_token;  // bearer for subsequent RPCs
     QString session_id;
     QString user_id;
     bool mfa_required = false;

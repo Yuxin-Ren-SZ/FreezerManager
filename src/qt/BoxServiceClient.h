@@ -90,7 +90,8 @@ class BoxServiceClient {
     std::vector<BoxTypeRow> box_types;
   };
 
-  explicit BoxServiceClient(std::unique_ptr<v1::BoxService::StubInterface> stub);
+  explicit BoxServiceClient(
+      std::unique_ptr<v1::BoxService::StubInterface> stub);
 
   // List the freezers in a lab.
   ListFreezersResult listFreezers(const QString& session_token,
