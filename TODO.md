@@ -1632,18 +1632,29 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
       `/metrics` (Prometheus). Both unauthenticated; `/metrics` SHOULD
       be bound to localhost or behind reverse-proxy ACL by default.
 
-- [ ] **F6. Qt 6 desktop client** (`src/qt/`). gRPC client.
-  - [ ] **F6.1.** Login screen + TOTP prompt + session keychain storage.
-  - [ ] **F6.2.** Sample browser (full-text + structured + custom-field
-        filter), virtualized table for 100k+ rows.
-  - [ ] **F6.3.** Box view: drag-and-drop placement; rejection from
-        server surfaces as a clear "size mismatch" toast.
-  - [ ] **F6.4.** Bulk check-in/check-out with barcode-scanner focus
-        mode (the focused field accepts HID keyboard input and
-        auto-submits on Enter or after a configurable inactivity gap).
-  - [ ] **F6.5.** CSV import wizard (dry-run first; show validation
-        report; confirm; import).
-  - [ ] **F6.6.** CSV export from any list view.
+- [~] **F6. Qt 6 desktop client** (`src/qt/`). gRPC client. Built as modules
+      M0–M5; headless logic (service clients + table/tree/grid models +
+      scan controller) is unit-tested without a QApplication, GUI widgets are
+      thin glue covered by manual e2e.
+  - [x] **F6.1.** Login screen + TOTP prompt + session manager (wired into the
+        app shell; Connect → LoginDialog → AuthService → SessionManager →
+        authenticated splitter). Keychain persistence still 🔲.
+  - [x] **F6.2.** Sample browser — virtualized `QTableView` with cursor paging
+        (`fetchMore`) for 100k+ rows + structured filters (status / box /
+        item-type / barcode). Full-text + custom-field filter 🔲 (needs server
+        `ListSamples` support, L10).
+  - [x] **F6.3.** Box view — `QGraphicsView` grid; drag-and-drop placement via
+        `MoveSample`; server rejection surfaces as a "size mismatch" toast.
+  - [x] **F6.4.** Bulk check-in/out with barcode-scanner focus mode (HID field
+        auto-submits on Enter; `ListSamples(barcode)` → `CheckoutSample`).
+        Configurable inactivity-gap auto-submit still 🔲.
+  - [ ] **F6.5.** CSV import wizard (dry-run first; show validation report;
+        confirm; import). **Server side done** — `SampleService.ImportSamples`
+        RPC (gRPC + REST `/api/v1/sample/import`), transactional + dry-run,
+        reuses the CLI importer core. Remaining: the Qt wizard
+        (`SampleServiceClient::importSamples` + file picker → dry-run report →
+        confirm).
+  - [x] **F6.6.** CSV export from the sample list view (`ExportSamplesCsv`).
 
 - [ ] **F7. Live updates over streaming RPCs.** Push sample-list deltas
       within an open freezer view; push admin audit feed in real time;
