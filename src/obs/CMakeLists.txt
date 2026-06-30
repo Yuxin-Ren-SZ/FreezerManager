@@ -2,8 +2,9 @@
 
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(fmt CONFIG REQUIRED)
 
-add_library(freezermanager_obs STATIC Log.cc Health.cc)
+add_library(freezermanager_obs STATIC Log.cc Health.cc Metrics.cc)
 add_library(FreezerManager::obs ALIAS freezermanager_obs)
 
 target_include_directories(
@@ -18,4 +19,6 @@ target_link_libraries(
   PUBLIC
     spdlog::spdlog
     nlohmann_json::nlohmann_json
+  PRIVATE
+    fmt::fmt
 )

@@ -37,6 +37,11 @@ namespace fmgr::rest {
     // symmetry with register_routes().
     static void register_health(obs::HealthProbe probe);
 
+    // Register the unauthenticated GET /metrics endpoint serving the process-wide
+    // obs::metrics() registry in Prometheus text format. Bind behind a
+    // reverse-proxy ACL or to localhost in production (PRD §17, TODO F5).
+    static void register_metrics();
+
   private:
     GatewayStubs& stubs_;
   };

@@ -3,6 +3,7 @@
 #include "rest/RestGateway.h"
 
 #include "core/uuid.h"
+#include "obs/Metrics.h"
 #include "rest/JsonProtoMapping.h"
 #include "rest/RestErrorTranslation.h"
 #include "rest/SseBridge.h"
@@ -348,6 +349,21 @@ namespace fmgr::rest {
     auto& app = drogon::app();
     app.registerHandler("/api/v1/health", make_handler(), {drogon::Get});
     app.registerHandler("/healthz", make_handler(), {drogon::Get});
+  }
+
+  void RestGateway::register_metrics() {
+    drogon::app().registerHandler(
+        "/metrics",
+        [](const drogon::HttpRequestPtr&,
+           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+          auto resp = drogon::HttpResponse::newHttpResponse();
+          resp->setStatusCode(drogon::k200OK);
+          // Prometheus text exposition format 0.0.4.
+          resp->setContentTypeString("text/plain; version=0.0.4; charset=utf-8");
+          resp->setBody(obs::metrics().render());
+          callback(resp);
+        },
+        {drogon::Get});
   }
 
 } // namespace fmgr::rest

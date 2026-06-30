@@ -5,10 +5,13 @@
 #include "kms/KmsFactory.h"
 #include "obs/Log.h"
 #include "server/BackupScheduler.h"
+#include "server/MetricsInterceptor.h"
 
 #include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
+
+#include <vector>
 
 #include <memory>
 #include <stdexcept>
@@ -62,6 +65,13 @@ namespace fmgr::server {
     grpc::EnableDefaultHealthCheckService(true);
 
     grpc::ServerBuilder builder;
+
+    // Per-RPC metrics (count by method+code, unary latency histogram) feed the
+    // process-wide obs::metrics() registry exposed at /metrics (PRD §17).
+    std::vector<std::unique_ptr<grpc::experimental::ServerInterceptorFactoryInterface>>
+        interceptor_creators;
+    interceptor_creators.push_back(std::make_unique<MetricsInterceptorFactory>());
+    builder.experimental().SetInterceptorCreators(std::move(interceptor_creators));
 
     if (opts_.tls_cert_path.empty()) {
       builder.AddListeningPort(opts_.listen_address, grpc::InsecureServerCredentials(),

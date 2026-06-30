@@ -130,6 +130,7 @@ namespace fmgr::test {
             .kms = [] { return obs::DepStatus::disabled("no KEK in test"); },
             .backup = [] { return obs::DepStatus::disabled("no backup dir in test"); },
         });
+        gateway_->register_metrics();
 
         port_ = find_free_port();
         drogon::app().addListener("127.0.0.1", port_);
@@ -727,6 +728,38 @@ namespace fmgr::test {
     TEST(RestGatewayHealth, HealthNeedsNoBearer) {
       const auto res = get("/api/v1/health");
       EXPECT_EQ(res.status, 200) << res.raw;
+    }
+
+    // ---- /metrics (PRD §17) ----
+
+    // The Prometheus endpoint is unauthenticated and serves text exposition with
+    // the expected content type.
+    TEST(RestGatewayMetrics, MetricsReturnsPrometheusText) {
+      auto* env = RestGatewayEnv::instance;
+      auto client = drogon::HttpClient::newHttpClient(env->base_url());
+      auto req = drogon::HttpRequest::newHttpRequest();
+      req->setMethod(drogon::Get);
+      req->setPath("/metrics");
+      auto [result, resp] = client->sendRequest(req, 10.0);
+      ASSERT_EQ(result, drogon::ReqResult::Ok);
+      ASSERT_EQ(resp->getStatusCode(), 200);
+      EXPECT_NE(resp->getHeader("content-type").find("text/plain"), std::string::npos);
+    }
+
+    // Driving an RPC through the gateway increments the gRPC interceptor's
+    // per-method counter, observable on the next scrape.
+    TEST(RestGatewayMetrics, RpcCounterIncrementsAfterCall) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json body{{"name", "Metrics Lab"}, {"contact", "pi@metrics.example"}};
+      ASSERT_EQ(post("/api/v1/lab/create", body.dump(), token).status, 200);
+
+      const auto res = get("/metrics");
+      ASSERT_EQ(res.status, 200);
+      EXPECT_NE(res.raw.find("rpc_requests_total"), std::string::npos) << res.raw;
+      EXPECT_NE(res.raw.find("/fmgr.v1.LabService/CreateLab"), std::string::npos) << res.raw;
+      EXPECT_NE(res.raw.find("rpc_latency_seconds_bucket"), std::string::npos) << res.raw;
     }
 
   } // namespace

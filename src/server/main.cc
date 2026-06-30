@@ -214,6 +214,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
         .backup = [health_backup_dir] { return probe_backup(health_backup_dir); },
     });
 
+    // Unauthenticated Prometheus scrape endpoint (PRD §17). Bind behind a
+    // reverse-proxy ACL or to localhost in production.
+    fmgr::rest::RestGateway::register_metrics();
+
     const char* rest_env = std::getenv("FMGR_REST_LISTEN");
     const std::string rest_listen = rest_env != nullptr ? rest_env : "0.0.0.0:8080";
     const auto [rest_host, rest_port] = parse_listen(rest_listen, 8080);
