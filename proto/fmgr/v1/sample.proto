@@ -17,6 +17,14 @@ service SampleService {
   rpc CheckoutSample(CheckoutSampleRequest) returns (CheckoutSampleResponse);
   rpc ExportSamplesCsv(ExportSamplesCsvRequest) returns (ExportSamplesCsvResponse);
   rpc ImportSamples(ImportSamplesRequest) returns (ImportSamplesResponse);
+  // Server-streaming live sample feed. Emits each sample whose last_modified_at
+  // is at/after `since` (default: changes after the stream opens) in
+  // (last_modified_at, id) order, then tails newly-changed rows until the client
+  // disconnects. Tombstoned rows are included so a soft-delete arrives as a
+  // SAMPLE_STATUS_TOMBSTONED row the client can remove. Requires sample.read for
+  // the lab (held by every Member/ReadOnly). PHI is never disclosed on this
+  // stream; a caller needing PHI calls GetSample.
+  rpc WatchSampleList(WatchSampleListRequest) returns (stream Sample);
 }
 
 // Mirrors core::SampleStatus exactly so no lifecycle state collapses on the
@@ -69,6 +77,16 @@ message ListSamplesRequest {
 message ListSamplesResponse {
   repeated Sample samples = 1;
   fmgr.v1.common.PageResponse page = 2;
+}
+
+message WatchSampleListRequest {
+  string lab_id = 1;  // required; the feed is always lab-scoped
+  optional string box_id = 2;
+  optional string item_type_id = 3;
+  // Resume cursor: emit samples whose last_modified_at is at/after this
+  // timestamp. When unset the feed starts from "now" and only streams changes
+  // appended after it opens.
+  optional fmgr.v1.common.Timestamp since = 4;
 }
 
 message GetSampleRequest {

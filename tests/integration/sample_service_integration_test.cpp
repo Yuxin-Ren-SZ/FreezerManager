@@ -34,6 +34,8 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -1050,6 +1052,157 @@ namespace fmgr::test {
       const auto status = sample_stub_->ExportSamplesCsv(&ctx, req, &resp);
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    // =====================================================================
+    // WatchSampleList (server-streaming live feed)
+    // =====================================================================
+
+    [[nodiscard]] std::int64_t now_micros() {
+      return std::chrono::duration_cast<std::chrono::microseconds>(
+                 std::chrono::system_clock::now().time_since_epoch())
+          .count();
+    }
+
+    // A Member (holds sample.read, not audit.read) can open the feed; a sample
+    // created after the stream opens is streamed live. This is the property the
+    // audit feed cannot provide for ordinary members.
+    TEST_F(SampleServiceTest, WatchSampleListStreamsNewSampleForMember) {
+      const auto token = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+      fmgr::v1::WatchSampleListRequest req;
+      req.set_lab_id(kLab1);
+      req.mutable_since()->set_unix_micros(now_micros());
+      auto reader = sample_stub_->WatchSampleList(&ctx, req);
+
+      std::thread creator([this, &token] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        std::string id;
+        ASSERT_TRUE(create_sample({.token = token, .name = "watch-marker"}, &id).ok());
+      });
+
+      fmgr::v1::Sample sample;
+      const bool got = reader->Read(&sample);
+      creator.join();
+
+      ASSERT_TRUE(got) << "no sample streamed within deadline";
+      EXPECT_EQ(sample.lab_id(), kLab1);
+      EXPECT_EQ(sample.name(), "watch-marker");
+
+      ctx.TryCancel();
+      reader->Finish();
+    }
+
+    // A soft-delete propagates as a SAMPLE_STATUS_TOMBSTONED row so the client
+    // can remove it from a live view.
+    TEST_F(SampleServiceTest, WatchSampleListStreamsTombstoneOnSoftDelete) {
+      const auto token = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "to-delete"}, &id).ok());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+      fmgr::v1::WatchSampleListRequest req;
+      req.set_lab_id(kLab1);
+      req.mutable_since()->set_unix_micros(now_micros());
+      auto reader = sample_stub_->WatchSampleList(&ctx, req);
+
+      std::thread deleter([this, &token, &id] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        grpc::ClientContext del_ctx;
+        set_bearer(del_ctx, token);
+        fmgr::v1::SoftDeleteSampleRequest del_req;
+        del_req.set_sample_id(id);
+        fmgr::v1::SoftDeleteSampleResponse del_resp;
+        ASSERT_TRUE(sample_stub_->SoftDeleteSample(&del_ctx, del_req, &del_resp).ok());
+      });
+
+      fmgr::v1::Sample sample;
+      const bool got = reader->Read(&sample);
+      deleter.join();
+
+      ASSERT_TRUE(got) << "no tombstone streamed within deadline";
+      EXPECT_EQ(sample.id(), id);
+      EXPECT_EQ(sample.status(), fmgr::v1::SAMPLE_STATUS_TOMBSTONED);
+
+      ctx.TryCancel();
+      reader->Finish();
+    }
+
+    // The box_id filter narrows the feed: an unplaced sample created after the
+    // stream opens is excluded; only the sample placed in the watched box flows.
+    TEST_F(SampleServiceTest, WatchSampleListFiltersByBox) {
+      const auto token = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(15));
+      fmgr::v1::WatchSampleListRequest req;
+      req.set_lab_id(kLab1);
+      req.set_box_id(kBox);
+      req.mutable_since()->set_unix_micros(now_micros());
+      auto reader = sample_stub_->WatchSampleList(&ctx, req);
+
+      std::thread creator([this, &token] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        std::string unplaced_id;
+        ASSERT_TRUE(create_sample({.token = token, .name = "unplaced"}, &unplaced_id).ok());
+        std::string placed_id;
+        ASSERT_TRUE(create_sample({.token = token,
+                                   .name = "placed",
+                                   .position = "A1",
+                                   .container_type = kContainerType},
+                                  &placed_id)
+                        .ok());
+      });
+
+      fmgr::v1::Sample sample;
+      const bool got = reader->Read(&sample);
+      creator.join();
+
+      ASSERT_TRUE(got) << "no in-box sample streamed within deadline";
+      EXPECT_EQ(sample.name(), "placed");
+      EXPECT_EQ(sample.box_id(), kBox);
+
+      ctx.TryCancel();
+      reader->Finish();
+    }
+
+    // A SystemAdmin of lab2 holds nothing for lab1; the cross-lab feed is denied
+    // at stream-open.
+    TEST_F(SampleServiceTest, WatchSampleListRejectsOutsider) {
+      const auto token = login(kOutsiderEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+      fmgr::v1::WatchSampleListRequest req;
+      req.set_lab_id(kLab1);
+      auto reader = sample_stub_->WatchSampleList(&ctx, req);
+
+      fmgr::v1::Sample sample;
+      EXPECT_FALSE(reader->Read(&sample));
+      EXPECT_EQ(reader->Finish().error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    // No bearer → unauthenticated, even before any sample would stream.
+    TEST_F(SampleServiceTest, WatchSampleListWithoutBearerIsUnauthenticated) {
+      grpc::ClientContext ctx;
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
+      fmgr::v1::WatchSampleListRequest req;
+      req.set_lab_id(kLab1);
+      auto reader = sample_stub_->WatchSampleList(&ctx, req);
+
+      fmgr::v1::Sample sample;
+      EXPECT_FALSE(reader->Read(&sample));
+      EXPECT_EQ(reader->Finish().error_code(), grpc::StatusCode::UNAUTHENTICATED);
     }
 
   } // namespace

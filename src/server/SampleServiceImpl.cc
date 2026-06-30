@@ -34,6 +34,8 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace fmgr::server {
@@ -55,6 +57,15 @@ namespace fmgr::server {
                               .count();
       return core::Timestamp::from_unix_micros(static_cast<std::int64_t>(micros));
     }
+
+    [[nodiscard]] std::int64_t now_unix_micros() {
+      return now_timestamp().unix_micros();
+    }
+
+    // WatchSampleList poll cadence: tail the table once per interval but wake
+    // every slice so cancellation is observed promptly. Mirrors WatchAuditFeed.
+    constexpr std::chrono::milliseconds k_watch_poll_slice{100};
+    constexpr int k_watch_poll_slices = 10; // 100ms * 10 = ~1s between polls
 
     [[nodiscard]] std::string now_iso8601_utc() {
       const auto secs = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -264,6 +275,71 @@ namespace fmgr::server {
       return disclosed;
     }
 
+    // Tail query for WatchSampleList: lab scope + the request's box/item-type
+    // filters plus a `last_modified_at >= cursor` lower bound, ordered
+    // (last_modified_at, id) so the cursor advances monotonically. Tombstoned
+    // rows are intentionally included (include_tombstoned) so a soft-delete is
+    // delivered as a SAMPLE_STATUS_TOMBSTONED row the client can remove.
+    [[nodiscard]] storage::Query<core::Sample>
+    build_sample_watch_query(const fmgr::v1::WatchSampleListRequest& req, const core::LabId& lab_id,
+                             std::int64_t cursor_micros) {
+      auto query =
+          storage::Query<core::Sample>::where(storage::field<core::Sample, std::string>(
+                                                  core::Sample::Field::LabId) == lab_id.to_string())
+              .include_tombstoned();
+      if (req.has_box_id()) {
+        query = query.and_where(
+            storage::field<core::Sample, std::string>(core::Sample::Field::BoxId) == req.box_id());
+      }
+      if (req.has_item_type_id()) {
+        query = query.and_where(storage::field<core::Sample, std::string>(
+                                    core::Sample::Field::ItemTypeId) == req.item_type_id());
+      }
+      return query
+          .and_where(storage::greater_or_equal(
+              storage::field<core::Sample, core::Timestamp>(core::Sample::Field::LastModifiedAt),
+              core::Timestamp::from_unix_micros(cursor_micros)))
+          .order_by(
+              storage::field<core::Sample, core::Timestamp>(core::Sample::Field::LastModifiedAt),
+              storage::SortDirection::Ascending)
+          .order_by(storage::field<core::Sample, std::string>(core::Sample::Field::Id),
+                    storage::SortDirection::Ascending);
+    }
+
+    // Write rows newer than the cursor, suppressing ids already delivered at the
+    // exact cursor microsecond (the lower bound is `>=`, so a same-micro row can
+    // reappear). Advances the cursor and rebuilds the dedup set. Returns false
+    // when the client has hung up (Write failed). PHI is never disclosed here.
+    [[nodiscard]] bool emit_new_samples(grpc::ServerWriter<fmgr::v1::Sample>& writer,
+                                        const std::vector<core::Sample>& samples,
+                                        std::int64_t& cursor_micros,
+                                        std::unordered_set<std::string>& sent_at_cursor) {
+      std::int64_t max_at = cursor_micros;
+      for (const auto& sample : samples) {
+        const std::int64_t sample_at = sample.last_modified_at.unix_micros();
+        const std::string id = sample.id.to_string();
+        if (sample_at == cursor_micros && sent_at_cursor.contains(id)) {
+          continue;
+        }
+        fmgr::v1::Sample out;
+        fill_sample(&out, sample);
+        if (!writer.Write(out)) {
+          return false;
+        }
+        max_at = std::max(max_at, sample_at);
+      }
+      if (max_at > cursor_micros) {
+        cursor_micros = max_at;
+        sent_at_cursor.clear();
+      }
+      for (const auto& sample : samples) {
+        if (sample.last_modified_at.unix_micros() == cursor_micros) {
+          sent_at_cursor.insert(sample.id.to_string());
+        }
+      }
+      return true;
+    }
+
   } // namespace
 
   SampleServiceImpl::SampleServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend,
@@ -280,6 +356,7 @@ namespace fmgr::server {
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/CheckoutSample", P::SampleCheckout);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ExportSamplesCsv", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ImportSamples", P::SampleWrite);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/WatchSampleList", P::SampleRead);
   }
 
   grpc::Status SampleServiceImpl::ListSamples(grpc::ServerContext* ctx,
@@ -762,6 +839,47 @@ namespace fmgr::server {
       resp->set_committed(true);
       resp->set_succeeded(static_cast<std::int32_t>(report.rows.size()));
       resp->set_failed(0);
+      return grpc::Status::OK;
+    } catch (...) {
+      return current_exception_to_grpc_status();
+    }
+  }
+
+  grpc::Status SampleServiceImpl::WatchSampleList(grpc::ServerContext* ctx,
+                                                  const fmgr::v1::WatchSampleListRequest* req,
+                                                  grpc::ServerWriter<fmgr::v1::Sample>* writer) {
+    try {
+      // Authorize once at stream-open: a sample feed is always lab-scoped and
+      // gates on SampleRead for that lab (held by every Member/ReadOnly), so a
+      // missing/invalid token surfaces as UNAUTHENTICATED before parsing lab_id.
+      const auto bearer = extract_bearer(*ctx);
+      const auto lab_id = core::LabId::parse(req->lab_id());
+      const auto sctx = middleware_.authorize(bearer, core::Permission::SampleRead, lab_id);
+
+      // Poll-tail cursor on last_modified_at. Re-query rows with
+      // last_modified_at >= cursor each cycle (>= not > so newly-changed rows
+      // sharing the cursor microsecond are not missed) and suppress ids already
+      // emitted at that microsecond via `sent_at_cursor`. No LISTEN/NOTIFY yet —
+      // this stays portable across SQLite and Postgres. PHI is never disclosed.
+      std::int64_t cursor_micros =
+          req->has_since() ? req->since().unix_micros() : now_unix_micros();
+      std::unordered_set<std::string> sent_at_cursor;
+
+      while (!ctx->IsCancelled()) {
+        auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
+        rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+        const auto samples =
+            txn->repo<core::Sample>().query(build_sample_watch_query(*req, lab_id, cursor_micros));
+        txn->commit();
+
+        if (!emit_new_samples(*writer, samples, cursor_micros, sent_at_cursor)) {
+          return grpc::Status::OK; // client/gateway hung up
+        }
+
+        for (int i = 0; i < k_watch_poll_slices && !ctx->IsCancelled(); ++i) {
+          std::this_thread::sleep_for(k_watch_poll_slice);
+        }
+      }
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();
