@@ -303,6 +303,7 @@ if(TARGET FreezerManager::qt_lib)
     qt_grpc_channel_test.cpp
     qt_lab_service_client_test.cpp
     qt_lab_tree_model_test.cpp
+    qt_location_path_resolver_test.cpp
     qt_sample_service_client_test.cpp
     qt_sample_table_model_test.cpp
     qt_sample_watch_subscriber_test.cpp
@@ -319,6 +320,30 @@ if(TARGET FreezerManager::qt_lib)
     PRIVATE
       ${CMAKE_SOURCE_DIR}/tests
   )
+
+  # Widget tests need a live QApplication (created in qt_widget_test_main.cc) and
+  # the offscreen platform, so they get their own executable with a custom main
+  # rather than gtest_main. Qt6::Test supplies QSignalSpy.
+  find_package(Qt6 QUIET COMPONENTS Test)
+  if(Qt6Test_FOUND)
+    add_executable(
+      freezermanager_qt_widget_tests
+      qt_widget_test_main.cc
+      qt_sample_lookup_widget_test.cpp
+    )
+    target_link_libraries(
+      freezermanager_qt_widget_tests
+      PRIVATE
+        FreezerManager::qt_lib
+        GTest::gtest
+        Qt6::Test
+    )
+    target_include_directories(
+      freezermanager_qt_widget_tests
+      PRIVATE
+        ${CMAKE_SOURCE_DIR}/tests
+    )
+  endif()
 endif()
 
 include(GoogleTest)
@@ -327,6 +352,9 @@ gtest_discover_tests(freezermanager_backup_unit_tests)
 gtest_discover_tests(freezermanager_backup_scheduler_tests)
 if(TARGET freezermanager_qt_unit_tests)
   gtest_discover_tests(freezermanager_qt_unit_tests)
+endif()
+if(TARGET freezermanager_qt_widget_tests)
+  gtest_discover_tests(freezermanager_qt_widget_tests)
 endif()
 gtest_discover_tests(freezermanager_kms_unit_tests)
 gtest_discover_tests(freezermanager_crypto_unit_tests)

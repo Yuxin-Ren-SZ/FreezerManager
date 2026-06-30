@@ -25,6 +25,7 @@ class SampleServiceClient;
 class SampleWatchSubscriber;
 class LabTreeWidget;
 class SampleBrowserWidget;
+class SampleLookupWidget;
 class BoxGridModel;
 class BoxGridWidget;
 class BarcodeScanController;
@@ -86,10 +87,14 @@ class MainWindow : public QMainWindow {
   QWidget* auth_page_ = nullptr;  // splitter: tree | tabs
   LabTreeWidget* tree_ = nullptr;
   SampleBrowserWidget* browser_ = nullptr;
+  SampleLookupWidget* lookup_ = nullptr;
   BoxGridWidget* grid_ = nullptr;
   BarcodeScanWidget* scan_ = nullptr;
   QLabel* status_label_ = nullptr;
   QAction* logout_action_ = nullptr;
+
+  // Focus the single-handed lookup input (Ctrl+L); no-op until authenticated.
+  void focusLookup();
 };
 
 }  // namespace fmgr::qt

@@ -26,6 +26,7 @@
 #include "qt/LabTreeWidget.h"
 #include "qt/LoginDialog.h"
 #include "qt/SampleBrowserWidget.h"
+#include "qt/SampleLookupWidget.h"
 #include "qt/SampleServiceClient.h"
 #include "qt/SampleWatchSubscriber.h"
 
@@ -79,6 +80,15 @@ void MainWindow::buildMenus() {
   logout_action_ = file_menu->addAction(QStringLiteral("&Log out"));
   logout_action_->setEnabled(false);
   connect(logout_action_, &QAction::triggered, this, &MainWindow::onLogout);
+
+  file_menu->addSeparator();
+
+  // Global shortcut to jump to the single-handed lookup input. Lives on the menu
+  // so it fires regardless of which page/tab holds focus.
+  QAction* lookup_action =
+      file_menu->addAction(QStringLiteral("Sample &Lookup"));
+  lookup_action->setShortcut(QKeySequence(QStringLiteral("Ctrl+L")));
+  connect(lookup_action, &QAction::triggered, this, &MainWindow::focusLookup);
 
   file_menu->addSeparator();
 
@@ -167,7 +177,11 @@ void MainWindow::showAuthenticated() {
       std::make_unique<BarcodeScanController>(sample_client_.get());
   scan_controller_->setToken(session_.token());
   scan_ = new BarcodeScanWidget(scan_controller_.get());
+  // Single-handed lookup is the primary landing tab (PRD §9 #1 daily op).
+  lookup_ = new SampleLookupWidget(sample_client_.get(), box_client_.get());
+  lookup_->setToken(session_.token());
   auto* tabs = new QTabWidget;
+  tabs->addTab(lookup_, QStringLiteral("Lookup"));
   tabs->addTab(browser_, QStringLiteral("Samples"));
   tabs->addTab(grid_, QStringLiteral("Box Layout"));
   tabs->addTab(scan_, QStringLiteral("Scan"));
@@ -203,6 +217,10 @@ void MainWindow::onNodeSelected(const QString& kind, const QString& id,
   if (scan_controller_ != nullptr) {
     scan_controller_->setScope(lab_id);
   }
+  // Scope the single-handed lookup to the selected lab.
+  if (lookup_ != nullptr) {
+    lookup_->setScope(lab_id);
+  }
   if (kind == QStringLiteral("box")) {
     browser_->setScope(lab_id, id);
     if (grid_model_ != nullptr) {
@@ -233,6 +251,7 @@ void MainWindow::showPlaceholder() {
     auth_page_ = nullptr;
     tree_ = nullptr;
     browser_ = nullptr;
+    lookup_ = nullptr;
     grid_ = nullptr;
     scan_ = nullptr;
     grid_model_.reset();
@@ -244,6 +263,18 @@ void MainWindow::showPlaceholder() {
   if (logout_action_ != nullptr) {
     logout_action_->setEnabled(false);
   }
+}
+
+void MainWindow::focusLookup() {
+  if (lookup_ == nullptr) {
+    return;
+  }
+  // Surface the lookup tab and hand it keyboard focus.
+  auto* tabs = qobject_cast<QTabWidget*>(lookup_->parentWidget());
+  if (tabs != nullptr) {
+    tabs->setCurrentWidget(lookup_);
+  }
+  lookup_->setFocus();
 }
 
 void MainWindow::onLogout() {

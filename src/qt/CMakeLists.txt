@@ -36,9 +36,11 @@ add_library(
   LabServiceClient.cc
   LabTreeModel.cc
   LabTreeWidget.cc
+  LocationPathResolver.cc
   LoginDialog.cc
   MainWindow.cc
   SampleBrowserWidget.cc
+  SampleLookupWidget.cc
   SampleSearchBar.cc
   SampleServiceClient.cc
   SampleTableModel.cc
