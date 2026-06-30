@@ -180,6 +180,19 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
+add_executable(freezermanager_obs_unit_tests obs_log_test.cpp)
+target_link_libraries(
+  freezermanager_obs_unit_tests
+  PRIVATE
+    FreezerManager::obs
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_obs_unit_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
 add_executable(freezermanager_transaction_resilience_tests transaction_resilience_test.cpp)
 target_link_libraries(
   freezermanager_transaction_resilience_tests
@@ -323,6 +336,7 @@ gtest_discover_tests(freezermanager_audit_unit_tests)
 gtest_discover_tests(freezermanager_custom_field_resolver_tests)
 gtest_discover_tests(freezermanager_error_translation_tests
   PROPERTIES LABELS "grpc_integration")
+gtest_discover_tests(freezermanager_obs_unit_tests)
 gtest_discover_tests(freezermanager_transaction_resilience_tests)
 # The Postgres parameter of these tests DROPs/CREATEs the shared public schema;
 # serialize against every other Postgres-touching suite with one resource lock.

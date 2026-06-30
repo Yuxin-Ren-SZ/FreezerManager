@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/LabServiceImpl.h"
+#include "server/RequestId.h"
 
 #include "core/enums.h"
 #include "core/identity.h"
@@ -24,12 +25,13 @@
 namespace fmgr::server {
   namespace {
 
-    [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
+    [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
+                                                    const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
           .actor_user_id = sctx.user_id,
           .actor_session_id = sctx.session_id.to_string(),
-          .request_id = "",
+          .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
     }
@@ -169,7 +171,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      const auto mut = make_ctx(sctx, "create_lab");
+      const auto mut = make_ctx(*ctx, sctx, "create_lab");
       txn->repo<core::Lab>().insert(lab, mut);
       txn->repo<core::LabMembership>().insert(membership, mut);
       txn->commit();
@@ -203,7 +205,7 @@ namespace fmgr::server {
       if (!req->lab().settings_json().empty()) {
         existing->settings_json = nlohmann::json::parse(req->lab().settings_json());
       }
-      txn->repo<core::Lab>().update(*existing, make_ctx(sctx, "update_lab"));
+      txn->repo<core::Lab>().update(*existing, make_ctx(*ctx, sctx, "update_lab"));
       txn->commit();
 
       fill_lab(resp->mutable_lab(), *existing);
@@ -229,7 +231,7 @@ namespace fmgr::server {
         return {grpc::StatusCode::NOT_FOUND, "lab not found"};
       }
       existing->is_phi_enabled = true;
-      txn->repo<core::Lab>().update(*existing, make_ctx(sctx, "enable_phi"));
+      txn->repo<core::Lab>().update(*existing, make_ctx(*ctx, sctx, "enable_phi"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {
@@ -277,7 +279,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      const auto mut = make_ctx(sctx, "invite_member");
+      const auto mut = make_ctx(*ctx, sctx, "invite_member");
 
       // Reuse an existing global User if the email is already known (including
       // disabled/invited accounts), otherwise create a pending one. No credential
@@ -334,7 +336,7 @@ namespace fmgr::server {
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
       txn->repo<core::LabMembership>().soft_delete(
           core::LabMembershipId{.user_id = user_id, .lab_id = lab_id},
-          make_ctx(sctx, "revoke_membership"));
+          make_ctx(*ctx, sctx, "revoke_membership"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {

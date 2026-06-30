@@ -3,11 +3,12 @@
 #define FMGR_SERVER_GRPCERRORTRANSLATION_H
 
 #include "auth/AuthTypes.h"
+#include "obs/Log.h"
 #include "storage/IStorageBackend.h"
 
+#include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
 #include <nlohmann/json.hpp>
-#include <spdlog/spdlog.h>
 
 #include <exception>
 #include <optional>
@@ -104,10 +105,13 @@ namespace fmgr::server {
       // client. Log the real error server-side; return a generic status. spdlog's
       // async sink keeps this off the RPC thread's hot path, unlike unbuffered
       // std::cerr which serializes a write() syscall per error (audit H-3).
-      spdlog::error("grpc: unhandled internal error: {}", e.what());
+      obs::log_lifecycle(obs::Level::Error,
+                         fmt::format("grpc: unhandled internal error: {}", e.what()),
+                         "grpc.internal_error");
       return {grpc::StatusCode::INTERNAL, "internal server error"};
     } catch (...) {
-      spdlog::error("grpc: unhandled non-std exception");
+      obs::log_lifecycle(obs::Level::Error, "grpc: unhandled non-std exception",
+                         "grpc.internal_error");
       return {grpc::StatusCode::INTERNAL, "internal server error"};
     }
   }

@@ -1,4 +1,5 @@
 add_subdirectory(core)
+add_subdirectory(obs)
 add_subdirectory(storage)
 add_subdirectory(auth)
 add_subdirectory(kms)

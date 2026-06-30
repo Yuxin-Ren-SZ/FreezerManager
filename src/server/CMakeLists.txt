@@ -41,6 +41,7 @@ target_link_libraries(
     FreezerManager::backup
     FreezerManager::kms
     FreezerManager::crypto
+    FreezerManager::obs
     gRPC::grpc++
     spdlog::spdlog
 )

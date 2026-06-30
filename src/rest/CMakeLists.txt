@@ -25,5 +25,6 @@ target_link_libraries(
     Drogon::Drogon
     gRPC::grpc++
   PRIVATE
+    FreezerManager::core
     nlohmann_json::nlohmann_json
 )

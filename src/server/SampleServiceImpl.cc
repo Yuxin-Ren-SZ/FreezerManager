@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/SampleServiceImpl.h"
+#include "server/RequestId.h"
 
 #include "cli/CsvReader.h"
 #include "cli/SampleCsv.h"
@@ -41,12 +42,13 @@
 namespace fmgr::server {
   namespace {
 
-    [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
+    [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
+                                                    const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
           .actor_user_id = sctx.user_id,
           .actor_session_id = sctx.session_id.to_string(),
-          .request_id = "",
+          .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
     }
@@ -414,9 +416,9 @@ namespace fmgr::server {
         fill_sample(out, sample);
         const auto disclosed = reveal_phi(out, sample, sctx, kms_);
         if (!disclosed.empty()) {
-          auto ctx = make_ctx(sctx, "list_samples");
-          ctx.lab_id = sample.lab_id.to_string();
-          txn->note_phi_read("sample", sample.id.to_string(), ctx, disclosed);
+          auto mut = make_ctx(*ctx, sctx, "list_samples");
+          mut.lab_id = sample.lab_id.to_string();
+          txn->note_phi_read("sample", sample.id.to_string(), mut, disclosed);
         }
       }
       txn->commit();
@@ -455,9 +457,9 @@ namespace fmgr::server {
       fill_sample(out, *sample);
       const auto disclosed = reveal_phi(out, *sample, sctx, kms_);
       if (!disclosed.empty()) {
-        auto ctx = make_ctx(sctx, "get_sample");
-        ctx.lab_id = sample->lab_id.to_string();
-        txn->note_phi_read("sample", sample->id.to_string(), ctx, disclosed);
+        auto mut = make_ctx(*ctx, sctx, "get_sample");
+        mut.lab_id = sample->lab_id.to_string();
+        txn->note_phi_read("sample", sample->id.to_string(), mut, disclosed);
       }
       txn->commit();
       return grpc::Status::OK;
@@ -527,7 +529,7 @@ namespace fmgr::server {
           prepare_custom_fields(*txn, lab_id, item_type_id, req->custom_fields_json(), kms_);
       sample.custom_fields_json = prepared.custom_fields_json;
       sample.phi_fields_enc_json = prepared.phi_fields_enc_json;
-      txn->repo<core::Sample>().insert(sample, make_ctx(sctx, "create_sample"));
+      txn->repo<core::Sample>().insert(sample, make_ctx(*ctx, sctx, "create_sample"));
       txn->commit();
 
       fill_sample(resp->mutable_sample(), sample);
@@ -600,7 +602,7 @@ namespace fmgr::server {
       existing->last_modified_by = sctx.user_id;
       existing->last_modified_at = now_timestamp();
 
-      txn->repo<core::Sample>().update(*existing, make_ctx(sctx, "update_sample"));
+      txn->repo<core::Sample>().update(*existing, make_ctx(*ctx, sctx, "update_sample"));
       txn->commit();
 
       fill_sample(resp->mutable_sample(), *existing);
@@ -629,7 +631,7 @@ namespace fmgr::server {
       if (!sctx.has_for_lab(existing->lab_id, core::Permission::SampleDeleteSoft)) {
         throw auth::PermissionDenied("sample.delete_soft required for this lab");
       }
-      txn->repo<core::Sample>().soft_delete(sample_id, make_ctx(sctx, "soft_delete_sample"));
+      txn->repo<core::Sample>().soft_delete(sample_id, make_ctx(*ctx, sctx, "soft_delete_sample"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {
@@ -664,7 +666,7 @@ namespace fmgr::server {
                                ? std::optional<std::string>{req->dest_position()}
                                : std::nullopt;
       const auto moved = storage::move_sample(*txn, sample_id, dest_box, std::move(dest_position),
-                                              make_ctx(sctx, "move_sample"));
+                                              make_ctx(*ctx, sctx, "move_sample"));
       txn->commit();
 
       fill_sample(resp->mutable_sample(), moved);
@@ -705,8 +707,8 @@ namespace fmgr::server {
           .event_id = core::CheckoutEventId::parse(generate_uuid_v4()),
           .at = now_timestamp(),
       };
-      const auto updated =
-          storage::apply_checkout(*txn, sample_id, command, make_ctx(sctx, "checkout_sample"));
+      const auto updated = storage::apply_checkout(*txn, sample_id, command,
+                                                   make_ctx(*ctx, sctx, "checkout_sample"));
       txn->commit();
 
       fill_sample(resp->mutable_sample(), updated);
@@ -799,7 +801,7 @@ namespace fmgr::server {
               auto probe = backend_.begin(storage::IsolationLevel::Serializable);
               rpc::AuthMiddleware::inject_rls_vars(*probe, sctx);
               probe->repo<core::Sample>().insert(*row.sample,
-                                                 make_ctx(sctx, "import_samples_dryrun"));
+                                                 make_ctx(*ctx, sctx, "import_samples_dryrun"));
               // Intentionally not committed: the transaction rolls back on scope exit.
             } catch (const std::exception& e) {
               ok = false;
@@ -826,7 +828,7 @@ namespace fmgr::server {
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
       for (const auto& row : report.rows) {
-        txn->repo<core::Sample>().insert(*row.sample, make_ctx(sctx, "import_samples"));
+        txn->repo<core::Sample>().insert(*row.sample, make_ctx(*ctx, sctx, "import_samples"));
       }
       txn->commit();
 

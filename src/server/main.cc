@@ -3,6 +3,7 @@
 #include "auth/LocalAuthProvider.h"
 #include "backup/BackupRunner.h"
 #include "core/ids.h"
+#include "obs/Log.h"
 #include "rest/GatewayStubs.h"
 #include "rest/RestGateway.h"
 #include "server/FreezerServer.h"
@@ -18,8 +19,7 @@
 #include "storage/sqlite/SqliteBackend.h"
 
 #include <drogon/drogon.h>
-#include <spdlog/async.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
 #include <cstddef>
@@ -51,15 +51,10 @@ namespace {
 // FMGR_DB_PATH (default ":memory:") from the environment and starts the server
 // with a SQLite backend. Full configuration via freezerd.toml is deferred.
 int main(int /*argc*/, char* /*argv*/[]) {
-  // Async logger with a bounded queue: log writes never block the gRPC thread
-  // pool, and an error flood drops the oldest lines instead of building up
-  // unbounded memory (audit H-3). Set as the default so spdlog::error() in the
-  // gRPC error funnel routes here.
-  constexpr std::size_t k_log_queue_size = 8192;
-  spdlog::init_thread_pool(k_log_queue_size, 1);
-  auto logger = spdlog::create_async_nb<spdlog::sinks::stderr_color_sink_mt>("freezerd");
-  spdlog::set_default_logger(logger);
-  spdlog::flush_on(spdlog::level::err);
+  // Structured JSON logging (PRD §17): every line is one JSON object with a fixed
+  // schema (ts/level/msg/request_id/actor_user_id/lab_id/event) on an async,
+  // non-blocking sink so log writes never stall the gRPC thread pool.
+  fmgr::obs::init_logging();
 
   try {
     const char* listen_env = std::getenv("FMGR_LISTEN");
@@ -136,7 +131,10 @@ int main(int /*argc*/, char* /*argv*/[]) {
     // gateway then dials the in-process channel; drogon::app().run() blocks the
     // main thread for the lifetime of the process.
     server.build();
-    spdlog::info("freezerd: gRPC listening on {} (SQLite: {})", listen, db_path);
+    fmgr::obs::log_lifecycle(
+        fmgr::obs::Level::Info,
+        fmt::format("freezerd: gRPC listening on {} (SQLite: {})", listen, db_path),
+        "server.grpc_listen");
 
     fmgr::rest::GatewayStubs stubs(server.in_process_channel());
     fmgr::rest::RestGateway gateway(stubs);
@@ -151,14 +149,17 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const bool rest_tls = rest_cert != nullptr && rest_key != nullptr;
     drogon::app().addListener(rest_host, rest_port, rest_tls, rest_cert != nullptr ? rest_cert : "",
                               rest_key != nullptr ? rest_key : "");
-    spdlog::info("freezerd: REST {} listening on {}:{}", rest_tls ? "(TLS)" : "(plaintext)",
-                 rest_host, rest_port);
+    fmgr::obs::log_lifecycle(fmgr::obs::Level::Info,
+                             fmt::format("freezerd: REST {} listening on {}:{}",
+                                         rest_tls ? "(TLS)" : "(plaintext)", rest_host, rest_port),
+                             "server.rest_listen");
 
     drogon::app().run();
     server.shutdown();
     return 0;
   } catch (const std::exception& e) {
-    spdlog::error("freezerd: fatal: {}", e.what());
+    fmgr::obs::log_lifecycle(fmgr::obs::Level::Error, fmt::format("freezerd: fatal: {}", e.what()),
+                             "server.fatal");
     spdlog::shutdown();
     return 1;
   }

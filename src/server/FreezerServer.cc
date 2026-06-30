@@ -3,11 +3,12 @@
 #include "server/FreezerServer.h"
 
 #include "kms/KmsFactory.h"
+#include "obs/Log.h"
 #include "server/BackupScheduler.h"
 
+#include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
-#include <spdlog/spdlog.h>
 
 #include <memory>
 #include <stdexcept>
@@ -21,8 +22,10 @@ namespace {
   std::unique_ptr<fmgr::kms::IKmsProvider> make_kms() {
     auto kms = fmgr::kms::make_default_kms();
     if (kms == nullptr) {
-      spdlog::warn("PHI field encryption disabled: no master KEK configured "
-                   "(set CREDENTIALS_DIRECTORY/master_kek or FMGR_MASTER_KEK)");
+      fmgr::obs::log_lifecycle(fmgr::obs::Level::Warn,
+                               "PHI field encryption disabled: no master KEK configured "
+                               "(set CREDENTIALS_DIRECTORY/master_kek or FMGR_MASTER_KEK)",
+                               "kms.disabled");
     }
     return kms;
   }
@@ -90,13 +93,18 @@ namespace fmgr::server {
     if (opts_.backup_schedule.has_value()) {
       auto backup_kms = kms::make_backup_kms();
       if (backup_kms == nullptr) {
-        spdlog::warn("scheduled backups disabled: no backup KEK configured "
-                     "(set CREDENTIALS_DIRECTORY/backup_kek or FMGR_BACKUP_KEK)");
+        fmgr::obs::log_lifecycle(fmgr::obs::Level::Warn,
+                                 "scheduled backups disabled: no backup KEK configured "
+                                 "(set CREDENTIALS_DIRECTORY/backup_kek or FMGR_BACKUP_KEK)",
+                                 "backup.disabled");
       } else {
         backup_scheduler_ = std::make_unique<BackupScheduler>(backend_, std::move(backup_kms),
                                                               opts_.backup_schedule.value());
         backup_scheduler_->start();
-        spdlog::info("scheduled backups enabled: dir={}", opts_.backup_schedule->backup_dir);
+        fmgr::obs::log_lifecycle(
+            fmgr::obs::Level::Info,
+            fmt::format("scheduled backups enabled: dir={}", opts_.backup_schedule->backup_dir),
+            "backup.enabled");
       }
     }
   }

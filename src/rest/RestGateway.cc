@@ -2,6 +2,7 @@
 
 #include "rest/RestGateway.h"
 
+#include "core/uuid.h"
 #include "rest/JsonProtoMapping.h"
 #include "rest/RestErrorTranslation.h"
 #include "rest/SseBridge.h"
@@ -59,14 +60,26 @@ namespace fmgr::rest {
         client_ctx.AddMetadata("authorization", authz);
       }
 
+      // Correlation id (C-12, PRD §17): reuse a caller-supplied X-Request-Id, else
+      // mint one, forward it to the gRPC handler so it reaches the audit row, and
+      // echo it back so the client can correlate the response with its logs.
+      const std::string& inbound_rid = req->getHeader("x-request-id");
+      const std::string request_id = !inbound_rid.empty() ? inbound_rid : core::generate_uuid_v4();
+      client_ctx.AddMetadata("x-request-id", request_id);
+
+      const auto respond = [&callback, &request_id](const drogon::HttpResponsePtr& resp) {
+        resp->addHeader("X-Request-Id", request_id);
+        callback(resp);
+      };
+
       RespT response;
       const grpc::Status status = rpc(client_ctx, request, &response);
       if (!status.ok()) {
         const auto err = to_http_error(status);
-        callback(json_response(err.status_code, err.body));
+        respond(json_response(err.status_code, err.body));
         return;
       }
-      callback(json_response(200, message_to_json(response)));
+      respond(json_response(200, message_to_json(response)));
     }
 
   } // namespace
