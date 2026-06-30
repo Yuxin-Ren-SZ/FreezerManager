@@ -42,6 +42,7 @@ add_library(
   SampleSearchBar.cc
   SampleServiceClient.cc
   SampleTableModel.cc
+  SampleWatchSubscriber.cc
   SessionManager.cc
 )
 add_library(FreezerManager::qt_lib ALIAS freezermanager_qt_lib)
