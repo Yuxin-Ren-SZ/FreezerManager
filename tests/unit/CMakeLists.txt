@@ -329,6 +329,8 @@ if(TARGET FreezerManager::qt_lib)
     add_executable(
       freezermanager_qt_widget_tests
       qt_widget_test_main.cc
+      qt_box_map_pdf_test.cpp
+      qt_label_pdf_test.cpp
       qt_sample_lookup_widget_test.cpp
     )
     target_link_libraries(

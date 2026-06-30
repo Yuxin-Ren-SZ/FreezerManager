@@ -58,6 +58,12 @@ class BoxGridModel : public QObject {
   int rows() const { return rows_; }
   int cols() const { return cols_; }
 
+  // Identity of the currently-loaded box, for callers (e.g. PDF export) that
+  // need to re-query the same scope. Empty until setBox() succeeds.
+  const QString& labId() const { return lab_id_; }
+  const QString& boxId() const { return box_id_; }
+  const QString& token() const { return token_; }
+
  signals:
   void gridChanged();
 

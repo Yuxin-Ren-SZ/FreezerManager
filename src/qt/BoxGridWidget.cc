@@ -3,15 +3,22 @@
 #include "qt/BoxGridWidget.h"
 
 #include <QBrush>
+#include <QContextMenuEvent>
+#include <QFile>
+#include <QFileDialog>
 #include <QGraphicsRectItem>
 #include <QGraphicsScene>
 #include <QGraphicsSimpleTextItem>
 #include <QLabel>
+#include <QMenu>
+#include <QMessageBox>
 #include <QMouseEvent>
 #include <QPen>
 #include <QTimer>
 
 #include "qt/BoxGridModel.h"
+#include "qt/BoxMapPdf.h"
+#include "qt/LabelPdf.h"
 
 namespace fmgr::qt {
 namespace {
@@ -23,8 +30,9 @@ constexpr int kRoleSample = 1;  // item data: occupying sample id
 
 }  // namespace
 
-BoxGridWidget::BoxGridWidget(BoxGridModel* model, QWidget* parent)
-    : QGraphicsView(parent), model_(model) {
+BoxGridWidget::BoxGridWidget(BoxGridModel* model, BoxMapPdf* box_map,
+                             LabelPdf* labels, QWidget* parent)
+    : QGraphicsView(parent), model_(model), box_map_(box_map), labels_(labels) {
   scene_ = new QGraphicsScene(this);
   setScene(scene_);
 
@@ -119,6 +127,75 @@ void BoxGridWidget::showToast(const QString& message) {
   toast_->setVisible(true);
   toast_->raise();
   QTimer::singleShot(3000, toast_, [this]() { toast_->setVisible(false); });
+}
+
+void BoxGridWidget::contextMenuEvent(QContextMenuEvent* event) {
+  QMenu menu(this);
+  QAction* map_action = nullptr;
+  QAction* labels_action = nullptr;
+
+  if (box_map_ != nullptr) {
+    map_action = menu.addAction(QStringLiteral("Print Box &Map…"));
+  }
+  if (labels_ != nullptr) {
+    labels_action = menu.addAction(QStringLiteral("Print Sample &Labels…"));
+  }
+  if (menu.isEmpty()) {
+    return;
+  }
+
+  QAction* chosen = menu.exec(event->globalPos());
+  if (chosen == map_action) {
+    printBoxMap();
+  } else if (chosen == labels_action) {
+    printLabels();
+  }
+}
+
+void BoxGridWidget::printBoxMap() {
+  if (box_map_ == nullptr || model_->boxId().isEmpty()) {
+    return;
+  }
+  const QByteArray pdf =
+      box_map_->generate(model_->labId(), model_->boxId(), model_->token());
+  savePdf(pdf, model_->boxId());
+}
+
+void BoxGridWidget::printLabels() {
+  if (labels_ == nullptr) {
+    return;
+  }
+  std::vector<QString> ids;
+  for (const auto& cell : model_->cells()) {
+    if (cell.occupant.has_value()) {
+      ids.push_back(cell.occupant->sample_id);
+    }
+  }
+  if (ids.empty()) {
+    showToast(QStringLiteral("No samples in this box."));
+    return;
+  }
+  const QByteArray pdf = labels_->generate(ids, model_->token());
+  savePdf(pdf, QStringLiteral("labels-%1").arg(model_->boxId()));
+}
+
+void BoxGridWidget::savePdf(const QByteArray& bytes,
+                            const QString& suggested_name) {
+  const QString path = QFileDialog::getSaveFileName(
+      this, QStringLiteral("Save PDF"), suggested_name + QStringLiteral(".pdf"),
+      QStringLiteral("PDF (*.pdf)"));
+  if (path.isEmpty()) {
+    return;
+  }
+  QFile file(path);
+  if (!file.open(QIODevice::WriteOnly)) {
+    QMessageBox::warning(this, QStringLiteral("Error"),
+                         QStringLiteral("Cannot write to %1").arg(path));
+    return;
+  }
+  file.write(bytes);
+  file.close();
+  showToast(QStringLiteral("PDF saved."));
 }
 
 }  // namespace fmgr::qt

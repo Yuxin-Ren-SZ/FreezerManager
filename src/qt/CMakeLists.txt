@@ -29,10 +29,13 @@ add_library(
   BarcodeScanWidget.cc
   BoxGridModel.cc
   BoxGridWidget.cc
+  BoxMapPdf.cc
   BoxServiceClient.cc
   ConfigManager.cc
   GrpcChannel.cc
   ImportWizardDialog.cc
+  LabelPdf.cc
+  LabelPrinterBridge.h
   LabServiceClient.cc
   LabTreeModel.cc
   LabTreeWidget.cc

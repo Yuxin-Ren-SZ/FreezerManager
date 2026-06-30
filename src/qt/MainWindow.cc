@@ -21,9 +21,11 @@
 #include "qt/BarcodeScanWidget.h"
 #include "qt/BoxGridModel.h"
 #include "qt/BoxGridWidget.h"
+#include "qt/BoxMapPdf.h"
 #include "qt/BoxServiceClient.h"
 #include "qt/LabServiceClient.h"
 #include "qt/LabTreeWidget.h"
+#include "qt/LabelPdf.h"
 #include "qt/LoginDialog.h"
 #include "qt/SampleBrowserWidget.h"
 #include "qt/SampleLookupWidget.h"
@@ -172,7 +174,11 @@ void MainWindow::showAuthenticated() {
   grid_model_ =
       std::make_unique<BoxGridModel>(box_client_.get(), sample_client_.get());
   grid_model_->setToken(session_.token());
-  grid_ = new BoxGridWidget(grid_model_.get());
+  auto* box_map = new BoxMapPdf(box_client_.get(), sample_client_.get());
+  auto* label_pdf = new LabelPdf(sample_client_.get());
+  box_map_.reset(box_map);
+  label_pdf_.reset(label_pdf);
+  grid_ = new BoxGridWidget(grid_model_.get(), box_map, label_pdf);
   scan_controller_ =
       std::make_unique<BarcodeScanController>(sample_client_.get());
   scan_controller_->setToken(session_.token());
@@ -256,6 +262,8 @@ void MainWindow::showPlaceholder() {
     scan_ = nullptr;
     grid_model_.reset();
     scan_controller_.reset();
+    box_map_.reset();
+    label_pdf_.reset();
   }
   if (placeholder_ != nullptr) {
     pages_->setCurrentWidget(placeholder_);

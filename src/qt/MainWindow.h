@@ -23,6 +23,8 @@ class LabServiceClient;
 class BoxServiceClient;
 class SampleServiceClient;
 class SampleWatchSubscriber;
+class BoxMapPdf;
+class LabelPdf;
 class LabTreeWidget;
 class SampleBrowserWidget;
 class SampleLookupWidget;
@@ -81,6 +83,8 @@ class MainWindow : public QMainWindow {
   std::unique_ptr<SampleWatchSubscriber> watch_;
   std::unique_ptr<BoxGridModel> grid_model_;
   std::unique_ptr<BarcodeScanController> scan_controller_;
+  std::unique_ptr<BoxMapPdf> box_map_;
+  std::unique_ptr<LabelPdf> label_pdf_;
 
   QStackedWidget* pages_ = nullptr;
   QWidget* placeholder_ = nullptr;
