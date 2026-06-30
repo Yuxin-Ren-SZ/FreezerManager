@@ -254,6 +254,49 @@ namespace fmgr::rest {
                         },
                         {drogon::Get});
 
+    // Live sample feed (server-streaming → SSE). Same shape as the audit watch
+    // route: GET so browser EventSource can consume it, lab/box/item-type
+    // filters as query params, resume by `since` carried in `Last-Event-ID`
+    // (each frame's `id:` is the sample's last_modified_at micros) or `?since=`.
+    app.registerHandler("/api/v1/sample/watch",
+                        [&s](const drogon::HttpRequestPtr& req, Callback&& callback) {
+                          fmgr::v1::WatchSampleListRequest rpc_req;
+                          if (const auto v = req->getParameter("lab_id"); !v.empty()) {
+                            rpc_req.set_lab_id(v);
+                          }
+                          if (const auto v = req->getParameter("box_id"); !v.empty()) {
+                            rpc_req.set_box_id(v);
+                          }
+                          if (const auto v = req->getParameter("item_type_id"); !v.empty()) {
+                            rpc_req.set_item_type_id(v);
+                          }
+                          std::string since = req->getHeader("last-event-id");
+                          if (since.empty()) {
+                            since = req->getParameter("since");
+                          }
+                          // Parse without exceptions: an unparseable cursor just
+                          // starts the feed from "now".
+                          std::int64_t since_micros = 0;
+                          const char* begin = since.data();
+                          const char* end = begin + since.size();
+                          if (const auto [ptr, ec] = std::from_chars(begin, end, since_micros);
+                              ec == std::errc() && ptr == end && !since.empty()) {
+                            rpc_req.mutable_since()->set_unix_micros(since_micros);
+                          }
+                          auto* sample = s.sample.get();
+                          stream_sse<fmgr::v1::Sample>(
+                              req, std::move(callback),
+                              [sample, rpc_req](grpc::ClientContext& client_ctx) {
+                                return sample->WatchSampleList(&client_ctx, rpc_req);
+                              },
+                              [](const fmgr::v1::Sample& sample) {
+                                return "id: " +
+                                       std::to_string(sample.last_modified_at().unix_micros()) +
+                                       "\ndata: " + message_to_json(sample) + "\n\n";
+                              });
+                        },
+                        {drogon::Get});
+
     // ---- ShareService (cross-lab share-request workflow) ----
     FMGR_ROUTE("/api/v1/share/list", share, ListShareRequests, ListShareRequestsRequest,
                ListShareRequestsResponse);

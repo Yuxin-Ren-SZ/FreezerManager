@@ -628,5 +628,45 @@ namespace fmgr::test {
       EXPECT_NE(out.find("UNAUTHENTICATED"), std::string::npos);
     }
 
+    // Positive: the lab-scoped sample feed streams a freshly-created sample. The
+    // sample's name lands in the proto-JSON `data:` frame.
+    TEST(RestGatewaySse, SampleWatchStreamsNewSample) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+
+      // A sample needs a live item type; create one up front (before the stream).
+      // Unique name — the gateway test env is a process-shared singleton DB and
+      // other tests create their own item types in the same lab.
+      const nlohmann::json it_req{{"lab_id", env->kLabId}, {"name", "sse-watch-itemtype"}};
+      const auto it_res = post("/api/v1/item-type/create", it_req.dump(), token);
+      ASSERT_EQ(it_res.status, 200) << it_res.raw;
+      const auto item_type_id = it_res.body["item_type"].value("id", std::string{});
+      ASSERT_FALSE(item_type_id.empty());
+
+      const std::string sample_name = "SSE Watch Sample Alpha";
+      const auto trigger = [&] {
+        const nlohmann::json req{
+            {"lab_id", env->kLabId}, {"item_type_id", item_type_id}, {"name", sample_name}};
+        (void)post("/api/v1/sample/create", req.dump(), token);
+      };
+
+      const std::string out = sse_read_until("/api/v1/sample/watch?lab_id=" + env->kLabId, token,
+                                             sample_name, trigger, 12.0);
+      EXPECT_NE(out.find("text/event-stream"), std::string::npos) << out.substr(0, 200);
+      EXPECT_NE(out.find("data:"), std::string::npos) << out.substr(0, 400);
+      EXPECT_NE(out.find(sample_name), std::string::npos);
+    }
+
+    // Negative: without a bearer the gRPC gate rejects at stream-open; the
+    // failure surfaces as an `event: error` frame (status already committed).
+    TEST(RestGatewaySse, SampleWatchWithoutBearerStreamsErrorEvent) {
+      auto* env = RestGatewayEnv::instance;
+      const std::string out = sse_read_until("/api/v1/sample/watch?lab_id=" + env->kLabId, "",
+                                             "event: error", nullptr, 8.0);
+      EXPECT_NE(out.find("event: error"), std::string::npos) << out.substr(0, 400);
+      EXPECT_NE(out.find("UNAUTHENTICATED"), std::string::npos);
+    }
+
   } // namespace
 } // namespace fmgr::test
