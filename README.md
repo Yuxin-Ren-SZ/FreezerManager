@@ -158,9 +158,10 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ⚙️ Encrypted backups — SQLite: online `sqlite3_backup` hot copy, stream-encrypted (`crypto_secretstream`) under a separate backup KEK, with a content-hash manifest (`freezerctl backup create` / `restore`). In-server scheduled runner (`BackupScheduler`, enabled by `FMGR_BACKUP_DIR`) + GFS retention (default 30 daily / 12 monthly / 7 yearly) + `freezerctl backup run | list` ✅. PostgreSQL backup 🔲
 - ✅ Separate backup key — `IKmsProvider` backup KEK (`kms::make_backup_kms`: `backup_kek` systemd-cred / `FMGR_BACKUP_KEK`), independent of the master KEK, so loss of the live master key alone does not decrypt backups
 - ✅ Restore-drill — `freezerctl backup verify` decrypts a backup, runs `PRAGMA integrity_check`, and verifies its audit hash chain; never throws on a bad backup (reports FAIL) so it is schedule-safe. Weekly automated drill (random-backup pick, `backup.drill` audit, error-level page on failure) runs inside `BackupScheduler` and on each `backup run`
-- 🔲 Prometheus `/metrics` — RPC latency histograms, error rates, audit append latency, backup status
+- ⚙️ Prometheus `/metrics` — hand-rolled registry (`src/obs/Metrics`) scraped at `GET /metrics`; a gRPC server interceptor records `rpc_requests_total{method,code}` for every RPC and `rpc_latency_seconds{method}` for unary RPCs. Audit-append latency + backup-status gauges 🔲
+- ✅ `/health` readiness endpoint — unauthenticated `GET /api/v1/health` (+ `/healthz`) with per-dependency checks (database reachability, KMS wrap/unwrap round-trip, backup-target writability); 200 healthy / 503 when a dependency is down (`src/obs/Health`)
+- ✅ Structured JSON logs to stdout — `src/obs/Log`; one JSON object per line (`ts`, `level`, `msg`, `request_id`, `actor_user_id`, `lab_id`, `event`) on an async sink; PHI never written (field-type-limited). Caller `x-request-id` propagated into the audit row (C-12)
 - 🔲 OpenTelemetry tracing — opt-in via `FMGR_OTLP_ENDPOINT` env var
-- 🔲 Structured JSON logs to stdout — journald-friendly; PHI never written to logs
 - 🔲 TOML configuration — `/etc/freezerd/freezerd.toml`; env-var overrides; fail-fast validation
 
 ### Developer Experience
