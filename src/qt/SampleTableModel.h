@@ -43,6 +43,11 @@ class SampleTableModel : public QAbstractTableModel {
   // Set the active filter; clears existing rows and loads the first page.
   void setScope(const SampleFilter& filter);
 
+  // Re-run the current filter from the first page (clears accumulated rows).
+  // Used to refresh the view in place when a live update arrives, without
+  // changing the scope or restarting any subscription.
+  void reload();
+
   // Human-readable label for a sample status (used by the Status column).
   static QString statusToString(v1::SampleStatus status);
 

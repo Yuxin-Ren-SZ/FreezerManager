@@ -27,6 +27,7 @@
 #include "qt/LoginDialog.h"
 #include "qt/SampleBrowserWidget.h"
 #include "qt/SampleServiceClient.h"
+#include "qt/SampleWatchSubscriber.h"
 
 namespace fmgr::qt {
 
@@ -141,6 +142,11 @@ void MainWindow::showAuthenticated() {
   box_client_ = std::make_unique<BoxServiceClient>(channel_.makeBoxStub());
   sample_client_ =
       std::make_unique<SampleServiceClient>(channel_.makeSampleStub());
+  // Live sample feed rides its own stub (a server-stream must not share the
+  // unary client's blocking calls). Token set here; scope is driven per
+  // selection in onNodeSelected via the browser.
+  watch_ = std::make_unique<SampleWatchSubscriber>(channel_.makeSampleStub());
+  watch_->setToken(session_.token());
 
   // Recreate the page so it binds to the current clients (a re-login mints new
   // stubs).
@@ -177,6 +183,7 @@ void MainWindow::showAuthenticated() {
 
   tree_->setToken(session_.token());
   browser_->setToken(session_.token());
+  browser_->setWatchSubscriber(watch_.get());
   tree_->reload();
 
   pages_->addWidget(auth_page_);
@@ -217,6 +224,9 @@ void MainWindow::onNodeSelected(const QString& kind, const QString& id,
 }
 
 void MainWindow::showPlaceholder() {
+  // Stop the live feed (joins its worker thread) before the browser that
+  // listens to it is destroyed.
+  watch_.reset();
   if (auth_page_ != nullptr) {
     pages_->removeWidget(auth_page_);
     delete auth_page_;

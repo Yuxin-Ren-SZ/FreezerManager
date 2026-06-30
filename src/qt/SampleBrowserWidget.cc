@@ -9,14 +9,23 @@
 #include <QPushButton>
 #include <QSaveFile>
 #include <QTableView>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include "qt/ImportWizardDialog.h"
 #include "qt/SampleSearchBar.h"
 #include "qt/SampleServiceClient.h"
 #include "qt/SampleTableModel.h"
+#include "qt/SampleWatchSubscriber.h"
 
 namespace fmgr::qt {
+namespace {
+
+// Coalesce a burst of live updates (e.g. a bulk import streams many rows) into
+// one reload. A change resets the timer; the reload fires once it goes quiet.
+constexpr int kRefreshDebounceMs = 400;
+
+}  // namespace
 
 SampleBrowserWidget::SampleBrowserWidget(SampleServiceClient* client,
                                          QWidget* parent)
@@ -50,6 +59,12 @@ SampleBrowserWidget::SampleBrowserWidget(SampleServiceClient* client,
   layout->addLayout(top);
   layout->addWidget(table_);
 
+  // Debounce timer for live updates: a single-shot timer restarted on every
+  // change; its timeout reloads the current scope in place.
+  refresh_timer_ = new QTimer(this);
+  refresh_timer_->setSingleShot(true);
+  refresh_timer_->setInterval(kRefreshDebounceMs);
+
   // The search bar assembles the merged filter; feed it straight to the model.
   connect(search_bar_, &SampleSearchBar::filterChanged, model_,
           &SampleTableModel::setScope);
@@ -57,6 +72,16 @@ SampleBrowserWidget::SampleBrowserWidget(SampleServiceClient* client,
           &SampleBrowserWidget::exportCsv);
   connect(import_button, &QPushButton::clicked, this,
           &SampleBrowserWidget::importCsv);
+  connect(refresh_timer_, &QTimer::timeout, model_, &SampleTableModel::reload);
+}
+
+void SampleBrowserWidget::setWatchSubscriber(SampleWatchSubscriber* watch) {
+  watch_ = watch;
+  if (watch_ != nullptr) {
+    // A live change schedules a debounced reload (coalesces bursts).
+    connect(watch_, &SampleWatchSubscriber::changed, refresh_timer_,
+            qOverload<>(&QTimer::start));
+  }
 }
 
 void SampleBrowserWidget::setToken(const QString& session_token) {
@@ -73,6 +98,12 @@ void SampleBrowserWidget::setScope(const QString& lab_id,
   base.box_id = box_id;
   // Emits filterChanged → model_->setScope, which loads the first page.
   search_bar_->setScope(base);
+  // (Re)subscribe the live feed to the new scope. The status/barcode filters
+  // from the search bar are not forwarded — the feed tails by lab/box and the
+  // debounced reload re-applies the active filter on the model.
+  if (watch_ != nullptr) {
+    watch_->start(base);
+  }
 }
 
 void SampleBrowserWidget::exportCsv() {

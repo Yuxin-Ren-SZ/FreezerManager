@@ -22,6 +22,7 @@ class AuthServiceClient;
 class LabServiceClient;
 class BoxServiceClient;
 class SampleServiceClient;
+class SampleWatchSubscriber;
 class LabTreeWidget;
 class SampleBrowserWidget;
 class BoxGridModel;
@@ -76,6 +77,7 @@ class MainWindow : public QMainWindow {
   std::unique_ptr<LabServiceClient> lab_client_;
   std::unique_ptr<BoxServiceClient> box_client_;
   std::unique_ptr<SampleServiceClient> sample_client_;
+  std::unique_ptr<SampleWatchSubscriber> watch_;
   std::unique_ptr<BoxGridModel> grid_model_;
   std::unique_ptr<BarcodeScanController> scan_controller_;
 

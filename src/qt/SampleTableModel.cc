@@ -25,8 +25,12 @@ QString SampleTableModel::statusToString(v1::SampleStatus status) {
 }
 
 void SampleTableModel::setScope(const SampleFilter& filter) {
-  beginResetModel();
   filter_ = filter;
+  reload();
+}
+
+void SampleTableModel::reload() {
+  beginResetModel();
   rows_.clear();
   next_page_token_.clear();
   has_more_ = false;
