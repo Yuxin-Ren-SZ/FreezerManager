@@ -15,6 +15,7 @@
 #ifndef FMGR_REST_RESTGATEWAY_H
 #define FMGR_REST_RESTGATEWAY_H
 
+#include "obs/Health.h"
 #include "rest/GatewayStubs.h"
 
 namespace fmgr::rest {
@@ -27,6 +28,14 @@ namespace fmgr::rest {
     // before drogon::app().run(). The referenced GatewayStubs must outlive the
     // running app.
     void register_routes();
+
+    // Register the unauthenticated GET /api/v1/health (+ /healthz alias) readiness
+    // endpoint backed by `probe`. The probe is copied and owned by the handler, so
+    // whatever it captures must outlive the running app. 200 when healthy, 503
+    // when a dependency is down (PRD §17). Static — it registers on the global
+    // Drogon app and needs no gateway state; exposed as a member for call-site
+    // symmetry with register_routes().
+    static void register_health(obs::HealthProbe probe);
 
   private:
     GatewayStubs& stubs_;

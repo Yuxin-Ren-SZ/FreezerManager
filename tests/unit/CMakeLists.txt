@@ -180,7 +180,7 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-add_executable(freezermanager_obs_unit_tests obs_log_test.cpp)
+add_executable(freezermanager_obs_unit_tests obs_log_test.cpp obs_health_test.cpp)
 target_link_libraries(
   freezermanager_obs_unit_tests
   PRIVATE

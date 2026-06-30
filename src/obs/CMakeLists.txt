@@ -3,7 +3,7 @@
 find_package(spdlog CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
-add_library(freezermanager_obs STATIC Log.cc)
+add_library(freezermanager_obs STATIC Log.cc Health.cc)
 add_library(FreezerManager::obs ALIAS freezermanager_obs)
 
 target_include_directories(

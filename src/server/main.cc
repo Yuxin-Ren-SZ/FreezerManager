@@ -3,6 +3,9 @@
 #include "auth/LocalAuthProvider.h"
 #include "backup/BackupRunner.h"
 #include "core/ids.h"
+#include "kms/IKmsProvider.h"
+#include "kms/KmsFactory.h"
+#include "obs/Health.h"
 #include "obs/Log.h"
 #include "rest/GatewayStubs.h"
 #include "rest/RestGateway.h"
@@ -22,9 +25,14 @@
 #include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -43,6 +51,59 @@ namespace {
       return {addr, default_port};
     }
     return {addr.substr(0, colon), static_cast<std::uint16_t>(std::stoi(addr.substr(colon + 1)))};
+  }
+
+  // Database readiness: open and immediately roll back a transaction. A reachable
+  // backend completes this cheaply; an unreachable one throws.
+  [[nodiscard]] fmgr::obs::DepStatus probe_database(fmgr::storage::IStorageBackend& backend) {
+    try {
+      auto txn = backend.begin(fmgr::storage::IsolationLevel::ReadCommitted);
+      txn->rollback();
+      return fmgr::obs::DepStatus::ok();
+    } catch (const std::exception& e) {
+      return fmgr::obs::DepStatus::failed(e.what());
+    }
+  }
+
+  // KMS readiness: a wrap → unwrap round-trip under the active KEK. Proves the key
+  // is present AND usable, not merely configured. A null provider means PHI
+  // encryption is off (a valid deployment), reported as disabled.
+  [[nodiscard]] fmgr::obs::DepStatus probe_kms(const fmgr::kms::IKmsProvider* kms) {
+    if (kms == nullptr) {
+      return fmgr::obs::DepStatus::disabled("no master KEK configured");
+    }
+    try {
+      const std::array<std::uint8_t, 32> probe_dek{};
+      const auto wrapped = kms->wrap_dek(probe_dek);
+      const auto recovered = kms->unwrap_dek(wrapped, kms->key_id());
+      if (recovered.size() != probe_dek.size() ||
+          !std::equal(recovered.begin(), recovered.end(), probe_dek.begin())) {
+        return fmgr::obs::DepStatus::failed("KEK round-trip mismatch");
+      }
+      return fmgr::obs::DepStatus::ok("key_id=" + kms->key_id());
+    } catch (const std::exception& e) {
+      return fmgr::obs::DepStatus::failed(e.what());
+    }
+  }
+
+  // Backup-target readiness: the configured directory must exist and be writable.
+  // No target configured is a valid deployment, reported as disabled.
+  [[nodiscard]] fmgr::obs::DepStatus probe_backup(const std::string& backup_dir) {
+    if (backup_dir.empty()) {
+      return fmgr::obs::DepStatus::disabled("FMGR_BACKUP_DIR unset");
+    }
+    std::error_code error;
+    if (!std::filesystem::is_directory(backup_dir, error)) {
+      return fmgr::obs::DepStatus::failed("not a directory: " + backup_dir);
+    }
+    const auto probe_file = std::filesystem::path(backup_dir) / ".freezerd-health-probe";
+    std::ofstream out(probe_file);
+    if (!out) {
+      return fmgr::obs::DepStatus::failed("backup directory not writable: " + backup_dir);
+    }
+    out.close();
+    std::filesystem::remove(probe_file, error);
+    return fmgr::obs::DepStatus::ok();
   }
 
 } // namespace
@@ -139,6 +200,19 @@ int main(int /*argc*/, char* /*argv*/[]) {
     fmgr::rest::GatewayStubs stubs(server.in_process_channel());
     fmgr::rest::RestGateway gateway(stubs);
     gateway.register_routes();
+
+    // Unauthenticated /health for a load-balancer readiness probe (PRD §17): a
+    // structured per-dependency report, 200 when healthy / 503 when a dependency
+    // is down. Bind behind a reverse-proxy ACL or to localhost in production.
+    auto health_kms = std::shared_ptr<fmgr::kms::IKmsProvider>(fmgr::kms::make_default_kms());
+    const char* health_backup_env = std::getenv("FMGR_BACKUP_DIR");
+    const std::string health_backup_dir = health_backup_env != nullptr ? health_backup_env : "";
+    fmgr::storage::IStorageBackend* backend_ptr = backend.get();
+    gateway.register_health(fmgr::obs::HealthProbe{
+        .database = [backend_ptr] { return probe_database(*backend_ptr); },
+        .kms = [health_kms] { return probe_kms(health_kms.get()); },
+        .backup = [health_backup_dir] { return probe_backup(health_backup_dir); },
+    });
 
     const char* rest_env = std::getenv("FMGR_REST_LISTEN");
     const std::string rest_listen = rest_env != nullptr ? rest_env : "0.0.0.0:8080";

@@ -327,4 +327,27 @@ namespace fmgr::rest {
 #undef FMGR_ROUTE
   }
 
+  void RestGateway::register_health(obs::HealthProbe probe) {
+    // The handler outlives this call, so own the probe via a shared_ptr the
+    // lambda copies. Each route gets a fresh handler passed as an rvalue —
+    // drogon binds a reference to an lvalue handler, so a named local would
+    // dangle once this function returns. Drogon dispatches GET; no bearer is
+    // required (LB probe).
+    auto shared = std::make_shared<obs::HealthProbe>(std::move(probe));
+    const auto make_handler = [shared] {
+      return [shared](const drogon::HttpRequestPtr&,
+                      std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+        const auto report = obs::check_health(*shared);
+        auto resp = drogon::HttpResponse::newHttpResponse();
+        resp->setStatusCode(static_cast<drogon::HttpStatusCode>(report.http_status));
+        resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+        resp->setBody(report.json_body);
+        callback(resp);
+      };
+    };
+    auto& app = drogon::app();
+    app.registerHandler("/api/v1/health", make_handler(), {drogon::Get});
+    app.registerHandler("/healthz", make_handler(), {drogon::Get});
+  }
+
 } // namespace fmgr::rest

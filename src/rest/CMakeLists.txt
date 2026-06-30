@@ -22,6 +22,7 @@ target_link_libraries(
   freezermanager_rest
   PUBLIC
     FreezerManager::proto
+    FreezerManager::obs
     Drogon::Drogon
     gRPC::grpc++
   PRIVATE

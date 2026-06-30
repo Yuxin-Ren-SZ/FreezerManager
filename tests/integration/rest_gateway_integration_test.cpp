@@ -112,6 +112,24 @@ namespace fmgr::test {
         stubs_ = std::make_unique<rest::GatewayStubs>(server_->in_process_channel());
         gateway_ = std::make_unique<rest::RestGateway>(*stubs_);
         gateway_->register_routes();
+        // Health probe wired to the real backend (begin/rollback reachability);
+        // KMS + backup report disabled in this harness. Exercises the route end
+        // to end without bringing up a KMS or backup target.
+        storage::IStorageBackend* backend_ptr = backend_.get();
+        gateway_->register_health(obs::HealthProbe{
+            .database =
+                [backend_ptr] {
+                  try {
+                    auto txn = backend_ptr->begin(storage::IsolationLevel::ReadCommitted);
+                    txn->rollback();
+                    return obs::DepStatus::ok();
+                  } catch (const std::exception& e) {
+                    return obs::DepStatus::failed(e.what());
+                  }
+                },
+            .kms = [] { return obs::DepStatus::disabled("no KEK in test"); },
+            .backup = [] { return obs::DepStatus::disabled("no backup dir in test"); },
+        });
 
         port_ = find_free_port();
         drogon::app().addListener("127.0.0.1", port_);
@@ -247,6 +265,21 @@ namespace fmgr::test {
       if (!bearer.empty()) {
         req->addHeader("Authorization", "Bearer " + bearer);
       }
+      auto [result, resp] = client->sendRequest(req, 10.0);
+      EXPECT_EQ(result, drogon::ReqResult::Ok);
+      HttpResult out;
+      out.status = resp ? resp->getStatusCode() : 0;
+      out.raw = resp ? std::string(resp->getBody()) : std::string{};
+      out.body = nlohmann::json::parse(out.raw, nullptr, /*allow_exceptions=*/false);
+      return out;
+    }
+
+    [[nodiscard]] HttpResult get(const std::string& path) {
+      auto* env = RestGatewayEnv::instance;
+      auto client = drogon::HttpClient::newHttpClient(env->base_url());
+      auto req = drogon::HttpRequest::newHttpRequest();
+      req->setMethod(drogon::Get);
+      req->setPath(path);
       auto [result, resp] = client->sendRequest(req, 10.0);
       EXPECT_EQ(result, drogon::ReqResult::Ok);
       HttpResult out;
@@ -666,6 +699,34 @@ namespace fmgr::test {
                                              "event: error", nullptr, 8.0);
       EXPECT_NE(out.find("event: error"), std::string::npos) << out.substr(0, 400);
       EXPECT_NE(out.find("UNAUTHENTICATED"), std::string::npos);
+    }
+
+    // ---- /health (PRD §17) ----
+
+    // Unauthenticated readiness probe: 200 with a per-dependency report when the
+    // database is reachable. KMS + backup are disabled in this harness, which does
+    // not fail the verdict.
+    TEST(RestGatewayHealth, HealthReturns200WithPerDependencyReport) {
+      const auto res = get("/api/v1/health");
+      ASSERT_EQ(res.status, 200) << res.raw;
+      ASSERT_TRUE(res.body.is_object()) << res.raw;
+      EXPECT_EQ(res.body.at("status"), "ok");
+      EXPECT_EQ(res.body.at("checks").at("database").at("status"), "ok");
+      EXPECT_EQ(res.body.at("checks").at("kms").at("status"), "disabled");
+      EXPECT_EQ(res.body.at("checks").at("backup").at("status"), "disabled");
+    }
+
+    // The /healthz alias serves the same probe (k8s/LB convention).
+    TEST(RestGatewayHealth, HealthzAliasReturns200) {
+      const auto res = get("/healthz");
+      EXPECT_EQ(res.status, 200) << res.raw;
+      EXPECT_EQ(res.body.at("status"), "ok");
+    }
+
+    // No bearer required — the probe is reachable without authentication.
+    TEST(RestGatewayHealth, HealthNeedsNoBearer) {
+      const auto res = get("/api/v1/health");
+      EXPECT_EQ(res.status, 200) << res.raw;
     }
 
   } // namespace
