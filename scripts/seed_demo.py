@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Comprehensive demo data seeder for FreezerManager.
 
 Generates a rich demo database with:

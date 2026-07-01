@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
 """Seed an admin user into a FreezerManager SQLite database.
 
 Usage: python3 seed_admin.py [db_path] [email] [password]

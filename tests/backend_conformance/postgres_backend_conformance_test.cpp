@@ -486,7 +486,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
 
         // Each test process gets its own schema (unique across parallel ctest
         // processes) so concurrent fixtures never race on shared `public`.
-        schema_name_ = unique_postgres_schema("pg_conformance");
+        schema_name_ = unique_postgres_schema("fmgr_conformance");
         {
           pqxx::connection setup_conn(*url);
           pqxx::work txn(setup_conn);
@@ -778,7 +778,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
         // Per-process schema (unique across parallel ctest processes) so the RLS
         // fixtures never race on shared `public`. All fixture connections pin
         // their search_path to it via postgres_url_with_schema.
-        schema_name_ = unique_postgres_schema("pg_rls");
+        schema_name_ = unique_postgres_schema("fmgr_rls");
         const auto scoped_url = postgres_url_with_schema(*url, schema_name_);
         {
           pqxx::connection setup_conn(*url);
