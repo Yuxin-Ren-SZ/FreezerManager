@@ -1,5 +1,56 @@
 # TODO — Implementation Backlog
 
+## Quality review — 2026-07-01 (test coverage audit + Claude review)
+
+Full audit: `doc/TEST_COVERAGE_AUDIT_2026-07-01.md`
+
+### Root cause pattern found
+
+All fake gRPC services returned `grpc::Status::OK` unconditionally. Every
+`if (!result.ok)` branch in production code was dead code from a test
+coverage perspective. Tests predominantly tested model layers directly
+rather than through widget wire-up paths. This pattern allowed a
+parameter-swap bug (`93d3b3c`) to pass 1488 tests undetected.
+
+### Fixes applied (12/12 test files)
+
+| File | Commit | What |
+|------|--------|------|
+| `qt_box_service_client_test.cpp` | `d3bc513` | 5 error-path: all RPCs |
+| `qt_sample_lookup_widget_test.cpp` | `d4b7567` | 6: name fallback, disambiguation click, error display, status |
+| `qt_location_path_resolver_test.cpp` | `580ce02` | 7: cycle guard, deep chain, edge cases |
+| `qt_box_grid_model_test.cpp` | `55ad006` | 5: 3 setBox fails + accessors + empty box |
+| `qt_sample_table_model_test.cpp` | `acd8be8` | +16: columns, errors, edge cases |
+| `qt_lab_service_client_test.cpp` | `37e7537` | getLab error |
+| `qt_auth_service_client_test.cpp` | `37e7537` | logout error |
+| `qt_session_manager_test.cpp` | `7f12425` | QTimer auto-logout |
+| `qt_lab_tree_model_test.cpp` | `7f12425` | mid-tree RPC failures |
+| `qt_barcode_scan_controller_test.cpp` | `7f12425` | empty barcode, gRPC error |
+| `qt_sample_service_client_test.cpp` | `7f12425` | getSample/export/checkout errors |
+| `qt_box_map_pdf_test.cpp` + `qt_label_pdf_test.cpp` | `7f12425` | gRPC error paths |
+
+### Remaining gaps (from Claude review)
+
+- 🔴 **LabTreeModel recursion has no cycle guard** — `buildContainers` can
+  infinite-recursively overflow stack. Need depth guard or visited set.
+  Real bug, not just test gap.
+- 🟡 `BoxGridWidget::savePdf()` blocks on `QFileDialog::getSaveFileName()`
+  — not unit-testable without an `ISaveDialog` seam. Accepted limitation.
+- 🟡 `BarcodeScanController::processScan` whitespace-only trim: behavior
+  needs independent assertion.
+- Wire-up path tests (Widget→PDF, Bridge→PDF) — PDF tests still call
+  `buildModel()` directly, not through BoxGridWidget. Deferred to
+  future integration test layer.
+- `QSignalSpy` / `gridChanged` tests — require Qt6::Test linkage not in
+  `qt_unit_tests` target. Deferred until test target restructuring.
+
+### Key lesson for future work
+
+Every fake gRPC service must support **per-RPC error injection flags**. Prefer
+`grpc::StatusCode fail_<method> = grpc::StatusCode::OK` pattern. Never write a
+fake that only returns `grpc::Status::OK` — it creates a false sense of test
+coverage.
+
 ## Security review backlog — 2026-06-28 (senior-engineer code review)
 
 Triaged from `doc/review-senior-engineer-security.md` — a line-level code
