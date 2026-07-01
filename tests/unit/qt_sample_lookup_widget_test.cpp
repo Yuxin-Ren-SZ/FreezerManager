@@ -34,9 +34,15 @@ namespace {
   class FakeSampleService final : public fmgr::v1::SampleService::Service {
   public:
     std::vector<fmgr::v1::Sample> samples;
+    // When set, ListSamples returns this gRPC error instead of OK.
+    grpc::StatusCode fail_list = grpc::StatusCode::OK;
+    std::string fail_message;
 
     grpc::Status ListSamples(grpc::ServerContext* /*ctx*/, const fmgr::v1::ListSamplesRequest* req,
                              fmgr::v1::ListSamplesResponse* resp) override {
+      if (fail_list != grpc::StatusCode::OK) {
+        return {fail_list, "injected ListSamples: " + fail_message};
+      }
       for (const auto& s : samples) {
         if (req->has_barcode() && s.barcode() != req->barcode()) {
           continue;
@@ -51,8 +57,14 @@ namespace {
   // the resolver to produce a non-empty path.
   class FakeBoxService final : public fmgr::v1::BoxService::Service {
   public:
+    grpc::StatusCode fail_get_box = grpc::StatusCode::OK;
+    std::string fail_message;
+
     grpc::Status GetBox(grpc::ServerContext* /*ctx*/, const fmgr::v1::GetBoxRequest* req,
                         fmgr::v1::GetBoxResponse* resp) override {
+      if (fail_get_box != grpc::StatusCode::OK) {
+        return {fail_get_box, "injected GetBox: " + fail_message};
+      }
       auto* box = resp->mutable_box();
       box->set_id(req->box_id());
       box->set_lab_id("lab-1");
@@ -88,12 +100,13 @@ namespace {
 
   fmgr::v1::Sample makeSample(const std::string& id, const std::string& name,
                               const std::string& barcode, const std::string& box_id,
-                              const std::string& pos) {
+                              const std::string& pos,
+                              fmgr::v1::SampleStatus status = fmgr::v1::SAMPLE_STATUS_ACTIVE) {
     fmgr::v1::Sample s;
     s.set_id(id);
     s.set_name(name);
     s.set_barcode(barcode);
-    s.set_status(fmgr::v1::SAMPLE_STATUS_ACTIVE);
+    s.set_status(status);
     if (!box_id.empty()) {
       s.set_box_id(box_id);
       s.set_position_label(pos);
@@ -210,6 +223,101 @@ namespace {
     auto* input = widget_->findChild<QLineEdit*>(QStringLiteral("lookupInput"));
     ASSERT_NE(input, nullptr);
     EXPECT_TRUE(input->hasFocus());
+  }
+
+  // ── Error-path and scenario tests ─────────────────────────────────
+
+  TEST_F(SampleLookupWidgetTest, NameMatchFallbackWhenNoBarcode) {
+    // Barcode-first search returns empty (no barcode match), widget falls back
+    // to a lab-wide unfiltered search and client-side name match.
+    sample_service_.samples.push_back(makeSample("s-nb", "Serum X", "", "box-1", "B3"));
+
+    QSignalSpy spy(widget_.get(), &SampleLookupWidget::sampleSelected);
+    enterQuery(QStringLiteral("Serum X"));
+
+    // Should find via name fallback and emit sampleSelected.
+    ASSERT_EQ(spy.count(), 1);
+    EXPECT_EQ(spy.takeFirst().at(0).toString(), QStringLiteral("s-nb"));
+  }
+
+  TEST_F(SampleLookupWidgetTest, DisambiguationClickShowsFoundPath) {
+    sample_service_.samples.push_back(makeSample("s-a", "Plasma A", "DUP", "box-1", "A1"));
+    sample_service_.samples.push_back(makeSample("s-b", "Plasma B", "DUP", "box-1", "B2"));
+
+    enterQuery(QStringLiteral("DUP"));
+
+    auto* list = widget_->findChild<QListWidget*>(QStringLiteral("matchList"));
+    ASSERT_NE(list, nullptr);
+    ASSERT_EQ(list->count(), 2);
+
+    // Click the first item — should resolve to showFound with the path.
+    QSignalSpy spy(widget_.get(), &SampleLookupWidget::sampleSelected);
+    emit list->itemActivated(list->item(0));
+    // Disambiguation click does NOT emit sampleSelected (only single-match does).
+    EXPECT_EQ(spy.count(), 0);
+
+    auto* path = widget_->findChild<QWidget*>(QStringLiteral("pathView"));
+    ASSERT_NE(path, nullptr);
+    const auto labels = path->findChildren<QLabel*>();
+    bool has_a1 = false;
+    for (auto* l : labels) {
+      if (l->text().contains(QStringLiteral("A1")))
+        has_a1 = true;
+    }
+    EXPECT_TRUE(has_a1);
+  }
+
+  TEST_F(SampleLookupWidgetTest, GetBoxFailureShowsLocationUnavailable) {
+    sample_service_.samples.push_back(makeSample("s-1", "Plasma A", "BC-1", "ghost", "A1"));
+    box_service_.fail_get_box = grpc::StatusCode::NOT_FOUND;
+    box_service_.fail_message = "box deleted";
+
+    enterQuery(QStringLiteral("BC-1"));
+
+    // The found page should show an error label instead of breadcrumb.
+    auto* path = widget_->findChild<QWidget*>(QStringLiteral("pathView"));
+    ASSERT_NE(path, nullptr);
+    const auto labels = path->findChildren<QLabel*>();
+    bool has_error = false;
+    for (auto* l : labels) {
+      if (l->text().contains(QStringLiteral("Location unavailable")))
+        has_error = true;
+    }
+    EXPECT_TRUE(has_error);
+  }
+
+  TEST_F(SampleLookupWidgetTest, UnplacedSampleShowsMessage) {
+    sample_service_.samples.push_back(makeSample("s-up", "Drift Tube", "BC-UP", "", ""));
+
+    enterQuery(QStringLiteral("BC-UP"));
+
+    auto* path = widget_->findChild<QWidget*>(QStringLiteral("pathView"));
+    ASSERT_NE(path, nullptr);
+    const auto labels = path->findChildren<QLabel*>();
+    bool has_unplaced = false;
+    for (auto* l : labels) {
+      if (l->text().contains(QStringLiteral("Unplaced")))
+        has_unplaced = true;
+    }
+    EXPECT_TRUE(has_unplaced);
+  }
+
+  TEST_F(SampleLookupWidgetTest, CheckedOutSampleShowsStatusBadge) {
+    sample_service_.samples.push_back(makeSample("s-co", "Plasma Old", "BC-CO", "box-1", "C3",
+                                                 fmgr::v1::SAMPLE_STATUS_CHECKED_OUT));
+
+    enterQuery(QStringLiteral("BC-CO"));
+
+    auto* badge = widget_->findChild<QLabel*>(QStringLiteral("statusBadge"));
+    ASSERT_NE(badge, nullptr);
+    EXPECT_TRUE(badge->text().contains(QStringLiteral("Checked out")));
+  }
+
+  TEST_F(SampleLookupWidgetTest, EmptyQueryIsNoOp) {
+    QSignalSpy spy(widget_.get(), &SampleLookupWidget::sampleSelected);
+    enterQuery(QString());
+
+    EXPECT_EQ(spy.count(), 0);
   }
 
 } // namespace
