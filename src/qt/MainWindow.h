@@ -14,6 +14,7 @@
 class QAction;
 class QLabel;
 class QStackedWidget;
+class QTabWidget;
 class QWidget;
 
 namespace fmgr::qt {
@@ -94,6 +95,7 @@ class MainWindow : public QMainWindow {
   SampleLookupWidget* lookup_ = nullptr;
   BoxGridWidget* grid_ = nullptr;
   BarcodeScanWidget* scan_ = nullptr;
+  QTabWidget* tabs_ = nullptr;  // right-pane tab host
   QLabel* status_label_ = nullptr;
   QAction* logout_action_ = nullptr;
 

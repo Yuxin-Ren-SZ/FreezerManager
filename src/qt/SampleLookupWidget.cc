@@ -66,6 +66,8 @@ SampleLookupWidget::SampleLookupWidget(SampleServiceClient* sample_client,
       sample_(sample_client),
       box_(box_client),
       resolver_(std::make_unique<LocationPathResolver>(box_client)) {
+  // FIXME: findMatches + resolve block the UI thread on gRPC calls.
+  // For large labs, queue lookup to QtConcurrent + signal back async.
   auto* layout = new QVBoxLayout(this);
 
   input_ = new QLineEdit(this);

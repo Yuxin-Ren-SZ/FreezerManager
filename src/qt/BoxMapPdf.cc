@@ -48,7 +48,7 @@ BoxMapPdf::Model BoxMapPdf::buildModel(const QString& box_id,
   // current occupants — same logic the on-screen grid uses.
   BoxGridModel grid(boxes_, samples_);
   grid.setToken(session_token);
-  if (!grid.setBox(lab_id, box_id) && !grid.cells().empty()) {
+  if (!grid.setBox(lab_id, box_id)) {
     m.error = "failed to resolve box layout";
     return m;
   }
@@ -80,6 +80,9 @@ QByteArray BoxMapPdf::generate(const QString& box_id, const QString& lab_id,
                                const QString& session_token,
                                const QDate& date) {
   const Model m = buildModel(box_id, lab_id, session_token, date);
+  if (!m.ok) {
+    return QByteArray();
+  }
 
   QByteArray bytes;
   QBuffer buffer(&bytes);

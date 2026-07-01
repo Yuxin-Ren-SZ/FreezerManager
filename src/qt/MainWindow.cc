@@ -186,14 +186,14 @@ void MainWindow::showAuthenticated() {
   // Single-handed lookup is the primary landing tab (PRD §9 #1 daily op).
   lookup_ = new SampleLookupWidget(sample_client_.get(), box_client_.get());
   lookup_->setToken(session_.token());
-  auto* tabs = new QTabWidget;
-  tabs->addTab(lookup_, QStringLiteral("Lookup"));
-  tabs->addTab(browser_, QStringLiteral("Samples"));
-  tabs->addTab(grid_, QStringLiteral("Box Layout"));
-  tabs->addTab(scan_, QStringLiteral("Scan"));
+  tabs_ = new QTabWidget;
+  tabs_->addTab(lookup_, QStringLiteral("Lookup"));
+  tabs_->addTab(browser_, QStringLiteral("Samples"));
+  tabs_->addTab(grid_, QStringLiteral("Box Layout"));
+  tabs_->addTab(scan_, QStringLiteral("Scan"));
 
   splitter->addWidget(tree_);
-  splitter->addWidget(tabs);
+  splitter->addWidget(tabs_);
   splitter->setStretchFactor(0, 1);
   splitter->setStretchFactor(1, 3);
   auth_page_ = splitter;
@@ -234,11 +234,8 @@ void MainWindow::onNodeSelected(const QString& kind, const QString& id,
     }
     // Surface the box layout (the grid lives next to the table in the right
     // pane's tab).
-    if (grid_ != nullptr) {
-      auto* tabs = qobject_cast<QTabWidget*>(grid_->parentWidget());
-      if (tabs != nullptr) {
-        tabs->setCurrentWidget(grid_);
-      }
+    if (grid_ != nullptr && tabs_ != nullptr) {
+      tabs_->setCurrentWidget(grid_);
     }
   } else {
     // lab / freezer / container → lab-wide (ListSamples scopes by box, not
@@ -260,6 +257,7 @@ void MainWindow::showPlaceholder() {
     lookup_ = nullptr;
     grid_ = nullptr;
     scan_ = nullptr;
+    tabs_ = nullptr;
     grid_model_.reset();
     scan_controller_.reset();
     box_map_.reset();
@@ -278,9 +276,8 @@ void MainWindow::focusLookup() {
     return;
   }
   // Surface the lookup tab and hand it keyboard focus.
-  auto* tabs = qobject_cast<QTabWidget*>(lookup_->parentWidget());
-  if (tabs != nullptr) {
-    tabs->setCurrentWidget(lookup_);
+  if (tabs_ != nullptr) {
+    tabs_->setCurrentWidget(lookup_);
   }
   lookup_->setFocus();
 }

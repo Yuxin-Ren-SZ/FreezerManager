@@ -157,7 +157,7 @@ void BoxGridWidget::printBoxMap() {
     return;
   }
   const QByteArray pdf =
-      box_map_->generate(model_->labId(), model_->boxId(), model_->token());
+      box_map_->generate(model_->boxId(), model_->labId(), model_->token());
   savePdf(pdf, model_->boxId());
 }
 
