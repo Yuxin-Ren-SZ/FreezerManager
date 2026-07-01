@@ -21,6 +21,7 @@ using fmgr::qt::LabServiceClient;
 class FakeLabService final : public fmgr::v1::LabService::Service {
  public:
   bool fail_list = false;
+  bool fail_get = false;
   std::string seen_list_authorization;
   std::string seen_get_lab_id;
   std::string seen_get_authorization;
@@ -46,6 +47,9 @@ class FakeLabService final : public fmgr::v1::LabService::Service {
   grpc::Status GetLab(grpc::ServerContext* ctx,
                       const fmgr::v1::GetLabRequest* req,
                       fmgr::v1::GetLabResponse* resp) override {
+    if (fail_get) {
+      return {grpc::StatusCode::NOT_FOUND, "no such lab"};
+    }
     seen_get_lab_id = req->lab_id();
     seen_get_authorization = metadata(ctx, "authorization");
     fmgr::v1::Lab* lab = resp->mutable_lab();
@@ -118,6 +122,13 @@ TEST_F(LabServiceClientTest, GetLabPassesIdAndBearer) {
   EXPECT_EQ(service_.seen_get_authorization, "Bearer tok-9");
   EXPECT_EQ(result.lab.id, QStringLiteral("lab-7"));
   EXPECT_EQ(result.lab.name, QStringLiteral("Resolved Lab"));
+}
+
+TEST_F(LabServiceClientTest, GetLabSurfacesGrpcError) {
+  service_.fail_get = true;
+  auto result = client_->getLab(QStringLiteral("tok"), QStringLiteral("ghost"));
+  EXPECT_FALSE(result.ok);
+  EXPECT_NE(result.error.find("no such lab"), std::string::npos);
 }
 
 }  // namespace

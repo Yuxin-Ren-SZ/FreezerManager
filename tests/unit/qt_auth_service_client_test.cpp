@@ -24,6 +24,7 @@ class FakeAuthService final : public fmgr::v1::AuthService::Service {
   bool fail_login = false;
   bool reply_mfa_required = false;
   bool fail_mfa = false;
+  bool fail_logout = false;
 
   // Captured inputs.
   std::string seen_email;
@@ -63,6 +64,9 @@ class FakeAuthService final : public fmgr::v1::AuthService::Service {
   grpc::Status Logout(grpc::ServerContext* ctx,
                       const fmgr::v1::LogoutRequest* /*req*/,
                       fmgr::v1::LogoutResponse* /*resp*/) override {
+    if (fail_logout) {
+      return {grpc::StatusCode::UNAUTHENTICATED, "bad token"};
+    }
     seen_logout_authorization = metadata(ctx, "authorization");
     return grpc::Status::OK;
   }
@@ -155,6 +159,13 @@ TEST_F(AuthServiceClientTest, LogoutSendsBearer) {
   auto result = client_->logout(QStringLiteral("tok-123"));
   ASSERT_TRUE(result.ok);
   EXPECT_EQ(service_.seen_logout_authorization, "Bearer tok-123");
+}
+
+TEST_F(AuthServiceClientTest, LogoutSurfacesGrpcError) {
+  service_.fail_logout = true;
+  auto result = client_->logout(QStringLiteral("tok"));
+  EXPECT_FALSE(result.ok);
+  EXPECT_NE(result.error.find("bad token"), std::string::npos);
 }
 
 }  // namespace
