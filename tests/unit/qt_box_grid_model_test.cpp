@@ -23,9 +23,18 @@ using fmgr::qt::SampleServiceClient;
 // Box layout: box-1 is a BoxType bt-1 with two positions A1(0,0), A2(0,1).
 class FakeBoxService final : public fmgr::v1::BoxService::Service {
  public:
+  grpc::StatusCode fail_get_box = grpc::StatusCode::OK;
+  grpc::StatusCode fail_list_box_types = grpc::StatusCode::OK;
+  // When set, the returned box type id will differ from the box's box_type_id,
+  // testing the "box_type_id not found in list" path.
+  bool mismatch_box_type = false;
+
   grpc::Status GetBox(grpc::ServerContext* /*ctx*/,
                       const fmgr::v1::GetBoxRequest* req,
                       fmgr::v1::GetBoxResponse* resp) override {
+    if (fail_get_box != grpc::StatusCode::OK) {
+      return {fail_get_box, "injected GetBox failure"};
+    }
     fmgr::v1::Box* b = resp->mutable_box();
     b->set_id(req->box_id());
     b->set_lab_id("lab-1");
@@ -36,8 +45,11 @@ class FakeBoxService final : public fmgr::v1::BoxService::Service {
   grpc::Status ListBoxTypes(grpc::ServerContext* /*ctx*/,
                             const fmgr::v1::ListBoxTypesRequest* /*req*/,
                             fmgr::v1::ListBoxTypesResponse* resp) override {
+    if (fail_list_box_types != grpc::StatusCode::OK) {
+      return {fail_list_box_types, "injected ListBoxTypes failure"};
+    }
     fmgr::v1::BoxType* bt = resp->add_box_types();
-    bt->set_id("bt-1");
+    bt->set_id(mismatch_box_type ? "bt-wrong" : "bt-1");
     fmgr::v1::BoxPosition* a1 = bt->add_positions();
     a1->set_label("A1");
     a1->set_row(0);
@@ -55,10 +67,14 @@ class FakeSampleService final : public fmgr::v1::SampleService::Service {
  public:
   bool fail_move = false;
   std::string position = "A1";
+  grpc::StatusCode fail_list = grpc::StatusCode::OK;
 
   grpc::Status ListSamples(grpc::ServerContext* /*ctx*/,
                            const fmgr::v1::ListSamplesRequest* /*req*/,
                            fmgr::v1::ListSamplesResponse* resp) override {
+    if (fail_list != grpc::StatusCode::OK) {
+      return {fail_list, "injected ListSamples failure"};
+    }
     fmgr::v1::Sample* s = resp->add_samples();
     s->set_id("s-1");
     s->set_name("Sample 1");
@@ -164,6 +180,43 @@ TEST_F(BoxGridModelTest, RejectedMoveKeepsGridUnchanged) {
   // Occupant stays at A1.
   ASSERT_TRUE(cell(QStringLiteral("A1"))->occupant.has_value());
   EXPECT_FALSE(cell(QStringLiteral("A2"))->occupant.has_value());
+}
+
+// ── Error-path and edge-case tests ──────────────────────────────────
+
+TEST_F(BoxGridModelTest, SetBoxFailsWhenGetBoxReturnsError) {
+  box_service_.fail_get_box = grpc::StatusCode::NOT_FOUND;
+  EXPECT_FALSE(model_->setBox(QStringLiteral("lab-1"), QStringLiteral("box-1")));
+  EXPECT_TRUE(model_->cells().empty());
+}
+
+TEST_F(BoxGridModelTest, SetBoxFailsWhenListBoxTypesReturnsError) {
+  box_service_.fail_list_box_types = grpc::StatusCode::UNAVAILABLE;
+  EXPECT_FALSE(model_->setBox(QStringLiteral("lab-1"), QStringLiteral("box-1")));
+  EXPECT_TRUE(model_->cells().empty());
+}
+
+TEST_F(BoxGridModelTest, SetBoxFailsWhenBoxTypeIdNotFound) {
+  box_service_.mismatch_box_type = true;
+  EXPECT_FALSE(model_->setBox(QStringLiteral("lab-1"), QStringLiteral("box-1")));
+  EXPECT_TRUE(model_->cells().empty());
+}
+
+TEST_F(BoxGridModelTest, AccessorsReturnCorrectIds) {
+  ASSERT_TRUE(model_->setBox(QStringLiteral("lab-1"), QStringLiteral("box-1")));
+  EXPECT_EQ(model_->labId(), QStringLiteral("lab-1"));
+  EXPECT_EQ(model_->boxId(), QStringLiteral("box-1"));
+  EXPECT_EQ(model_->token(), QStringLiteral("tok"));
+}
+
+TEST_F(BoxGridModelTest, EmptyBoxHasCellsButNoOccupants) {
+  // No samples seeded → every position should be free.
+  sample_service_.position = "NONE";  // no sample will match this position
+  ASSERT_TRUE(model_->setBox(QStringLiteral("lab-1"), QStringLiteral("box-1")));
+  EXPECT_EQ(model_->cells().size(), 2u);
+  for (const auto& c : model_->cells()) {
+    EXPECT_FALSE(c.occupant.has_value());
+  }
 }
 
 }  // namespace
