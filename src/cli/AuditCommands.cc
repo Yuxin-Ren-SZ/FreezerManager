@@ -103,9 +103,8 @@ namespace fmgr::cli {
     // global, lab_id-null events are not attributable to one lab, so a
     // lab-scoped export must exclude them and never leak another lab's rows.
     if (options.lab_id.has_value()) {
-      std::erase_if(events, [&](const core::AuditEvent& event) {
-        return event.lab_id != options.lab_id;
-      });
+      std::erase_if(events,
+                    [&](const core::AuditEvent& event) { return event.lab_id != options.lab_id; });
     }
 
     const std::string lab_filter =

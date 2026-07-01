@@ -30,10 +30,9 @@ namespace fmgr::cli {
     // Mirrors core::to_json(AuditEvent) key order, including the hash-chain
     // columns so an external verifier can re-walk the chain from the CSV alone.
     static const std::vector<std::string> columns = {
-        "id",          "at",          "actor_user_id", "actor_session_id",
-        "lab_id",      "action",      "entity_kind",   "entity_id",
-        "before_json", "after_json",  "request_id",    "prev_hash",
-        "this_hash"};
+        "id",         "at",          "actor_user_id", "actor_session_id", "lab_id",
+        "action",     "entity_kind", "entity_id",     "before_json",      "after_json",
+        "request_id", "prev_hash",   "this_hash"};
     return columns;
   }
 
@@ -49,9 +48,9 @@ namespace fmgr::cli {
 
   // Field order here is the CSV header contract, not accidental.
   // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-  void write_audit_export_header(std::ostream& out, int schema_version,
-                                 std::string_view lab_filter, std::string_view exported_at,
-                                 std::size_t event_count, std::string_view signature) {
+  void write_audit_export_header(std::ostream& out, int schema_version, std::string_view lab_filter,
+                                 std::string_view exported_at, std::size_t event_count,
+                                 std::string_view signature) {
     out << "# freezermanager-audit-export schema_version=" << schema_version << "\r\n";
     out << "# lab_filter=" << lab_filter << " event_count=" << event_count << "\r\n";
     out << "# exported_at=" << exported_at << "\r\n";
