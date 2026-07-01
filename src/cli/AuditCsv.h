@@ -33,9 +33,9 @@ namespace fmgr::cli {
   // Chain-of-custody header comment block (PRD §13), emitted before the CSV
   // header row. `lab_filter` is the lab the export was scoped to, or "all" for a
   // global export. `signature` is "UNSIGNED" until KMS checkpoint signing lands.
-  void write_audit_export_header(std::ostream& out, int schema_version,
-                                 std::string_view lab_filter, std::string_view exported_at,
-                                 std::size_t event_count, std::string_view signature = "UNSIGNED");
+  void write_audit_export_header(std::ostream& out, int schema_version, std::string_view lab_filter,
+                                 std::string_view exported_at, std::size_t event_count,
+                                 std::string_view signature = "UNSIGNED");
 
   // Full export: header comment block, CSV header row, then one row per event.
   void write_audit_csv(std::ostream& out, const std::vector<core::AuditEvent>& events,

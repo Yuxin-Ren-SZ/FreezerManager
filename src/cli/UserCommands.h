@@ -27,9 +27,8 @@ namespace fmgr::cli {
   // Returns 0 on success; 1 (with a message on `err`) if the password is too short
   // or no user has that email.
   int run_user_set_password(storage::IStorageBackend& backend, const std::string& email,
-                            const std::string& password,
-                            const std::optional<core::UserId>& actor, std::ostream& out,
-                            std::ostream& err);
+                            const std::string& password, const std::optional<core::UserId>& actor,
+                            std::ostream& out, std::ostream& err);
 
 } // namespace fmgr::cli
 

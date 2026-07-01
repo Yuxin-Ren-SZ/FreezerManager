@@ -807,9 +807,8 @@ namespace fmgr::cli {
       const std::size_t before = read_audit_events(fixture_->backend()).size();
 
       std::ostringstream out;
-      ASSERT_EQ(run_audit_export(
-                    fixture_->backend(),
-                    AuditExportOptions{.actor = id_from_low<core::UserId>(10)}, out),
+      ASSERT_EQ(run_audit_export(fixture_->backend(),
+                                 AuditExportOptions{.actor = id_from_low<core::UserId>(10)}, out),
                 0);
 
       const auto after = read_audit_events(fixture_->backend());
@@ -820,9 +819,8 @@ namespace fmgr::cli {
 
     TEST_P(CliBackendTest, AuditExportLeavesChainVerifiable) {
       std::ostringstream sink;
-      ASSERT_EQ(run_audit_export(
-                    fixture_->backend(),
-                    AuditExportOptions{.actor = id_from_low<core::UserId>(10)}, sink),
+      ASSERT_EQ(run_audit_export(fixture_->backend(),
+                                 AuditExportOptions{.actor = id_from_low<core::UserId>(10)}, sink),
                 0);
       std::ostringstream verify_out;
       EXPECT_EQ(run_audit_verify(fixture_->backend(), AuditVerifyOptions{}, verify_out), 0)
@@ -1338,7 +1336,7 @@ namespace fmgr::cli {
       std::ostringstream err;
       const std::string sqlite_db = fixture.db_path();
       const std::string actor = id_from_low<core::UserId>(10).to_string();
-      const std::vector<const char*> args = {"freezerctl", "audit",        "export", "--sqlite",
+      const std::vector<const char*> args = {"freezerctl",      "audit",   "export",     "--sqlite",
                                              sqlite_db.c_str(), "--actor", actor.c_str()};
       const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
       EXPECT_EQ(code, 0) << err.str();
@@ -1355,9 +1353,9 @@ namespace fmgr::cli {
       const std::string sqlite_db = fixture.db_path();
       const std::string actor = id_from_low<core::UserId>(10).to_string();
       const std::string file = csv_path.string();
-      const std::vector<const char*> args = {
-          "freezerctl",  "audit",   "export",      "--sqlite", sqlite_db.c_str(),
-          "--actor",     actor.c_str(), "--out",   file.c_str()};
+      const std::vector<const char*> args = {"freezerctl",  "audit",           "export",
+                                             "--sqlite",    sqlite_db.c_str(), "--actor",
+                                             actor.c_str(), "--out",           file.c_str()};
       const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
       EXPECT_EQ(code, 0) << err.str();
       ASSERT_TRUE(std::filesystem::exists(csv_path));
@@ -1375,9 +1373,9 @@ namespace fmgr::cli {
       const std::string sqlite_db = fixture.db_path();
       const std::string lab = fixture.lab_a().to_string();
       const std::string actor = id_from_low<core::UserId>(10).to_string();
-      const std::vector<const char*> args = {
-          "freezerctl", "audit", "export",      "--sqlite", sqlite_db.c_str(),
-          "--lab",      lab.c_str(), "--actor", actor.c_str()};
+      const std::vector<const char*> args = {"freezerctl", "audit",           "export",
+                                             "--sqlite",   sqlite_db.c_str(), "--lab",
+                                             lab.c_str(),  "--actor",         actor.c_str()};
       const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
       EXPECT_EQ(code, 0) << err.str();
       const std::string text = out.str();

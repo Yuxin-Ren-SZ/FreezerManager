@@ -156,8 +156,7 @@ namespace {
               QStringLiteral("Checked out"));
     EXPECT_EQ(SampleTableModel::statusToString(fmgr::v1::SAMPLE_STATUS_DESTROYED),
               QStringLiteral("Destroyed"));
-    EXPECT_EQ(SampleTableModel::statusToString(
-                  fmgr::v1::SAMPLE_STATUS_UNSPECIFIED),
+    EXPECT_EQ(SampleTableModel::statusToString(fmgr::v1::SAMPLE_STATUS_UNSPECIFIED),
               QStringLiteral("Unspecified"));
   }
 
@@ -165,30 +164,29 @@ namespace {
 
   TEST_F(SampleTableModelTest, DataCoversBarcodeColumn) {
     model_->setScope(labScope());
-    EXPECT_EQ(model_->data(model_->index(0, SampleTableModel::kBarcode),
-                           ::Qt::DisplayRole).toString(),
-              QStringLiteral("BC-001"));
+    EXPECT_EQ(
+        model_->data(model_->index(0, SampleTableModel::kBarcode), ::Qt::DisplayRole).toString(),
+        QStringLiteral("BC-001"));
   }
 
   TEST_F(SampleTableModelTest, DataCoversBoxColumn) {
     model_->setScope(labScope());
-    EXPECT_EQ(model_->data(model_->index(0, SampleTableModel::kBox),
-                           ::Qt::DisplayRole).toString(),
+    EXPECT_EQ(model_->data(model_->index(0, SampleTableModel::kBox), ::Qt::DisplayRole).toString(),
               QStringLiteral("box-1"));
   }
 
   TEST_F(SampleTableModelTest, DataCoversPositionColumn) {
     model_->setScope(labScope());
-    EXPECT_EQ(model_->data(model_->index(0, SampleTableModel::kPosition),
-                           ::Qt::DisplayRole).toString(),
-              QStringLiteral("A1"));
+    EXPECT_EQ(
+        model_->data(model_->index(0, SampleTableModel::kPosition), ::Qt::DisplayRole).toString(),
+        QStringLiteral("A1"));
   }
 
   TEST_F(SampleTableModelTest, DataCoversItemTypeColumn) {
     model_->setScope(labScope());
-    EXPECT_EQ(model_->data(model_->index(0, SampleTableModel::kItemType),
-                           ::Qt::DisplayRole).toString(),
-              QStringLiteral("it-plasma"));
+    EXPECT_EQ(
+        model_->data(model_->index(0, SampleTableModel::kItemType), ::Qt::DisplayRole).toString(),
+        QStringLiteral("it-plasma"));
   }
 
   // ── Error-path tests ───────────────────────────────────────────────
@@ -220,15 +218,14 @@ namespace {
 
   TEST_F(SampleTableModelTest, DataNonDisplayRoleReturnsEmpty) {
     model_->setScope(labScope());
-    const QVariant v = model_->data(model_->index(0, SampleTableModel::kName),
-                                    ::Qt::DecorationRole);
+    const QVariant v =
+        model_->data(model_->index(0, SampleTableModel::kName), ::Qt::DecorationRole);
     EXPECT_FALSE(v.isValid());
   }
 
   TEST_F(SampleTableModelTest, DataOutOfBoundsRowReturnsEmpty) {
     model_->setScope(labScope());
-    const QVariant v = model_->data(model_->index(999, SampleTableModel::kName),
-                                    ::Qt::DisplayRole);
+    const QVariant v = model_->data(model_->index(999, SampleTableModel::kName), ::Qt::DisplayRole);
     EXPECT_FALSE(v.isValid());
   }
 
@@ -283,8 +280,7 @@ namespace {
     model_->setScope(labScope());
     model_->fetchMore(QModelIndex());
     EXPECT_EQ(
-        model_->data(model_->index(1, SampleTableModel::kStatus),
-                     ::Qt::DisplayRole).toString(),
+        model_->data(model_->index(1, SampleTableModel::kStatus), ::Qt::DisplayRole).toString(),
         QStringLiteral("Checked out"));
   }
 

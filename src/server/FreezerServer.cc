@@ -85,9 +85,10 @@ namespace fmgr::server {
     // data-tier gate that all authenticated RPCs pass through via AuthMiddleware.
     rate_limiter_ = std::make_unique<RateLimitInterceptor>(opts_.rate_limit);
     if (opts_.rate_limit.enabled) {
-      fmgr::obs::log_lifecycle(fmgr::obs::Level::Info,
+      fmgr::obs::log_lifecycle(
+          fmgr::obs::Level::Info,
           fmt::format("rate limiting enabled: auth_capacity={} data_capacity={}",
-              opts_.rate_limit.auth.capacity, opts_.rate_limit.data.capacity),
+                      opts_.rate_limit.auth.capacity, opts_.rate_limit.data.capacity),
           "ratelimit.enabled");
     }
 

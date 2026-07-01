@@ -49,7 +49,9 @@ namespace fmgr::server {
     RateLimitInterceptor& operator=(RateLimitInterceptor&&) = delete;
 
     // Auth-tier bucket config, handed to AuthServiceImpl's per-IP login limiter.
-    [[nodiscard]] const rpc::RateLimiterConfig& auth_config() const { return opts_.auth; }
+    [[nodiscard]] const rpc::RateLimiterConfig& auth_config() const {
+      return opts_.auth;
+    }
 
     // True for gRPC methods that must never be throttled (health, reflection).
     [[nodiscard]] static bool is_exempt_method(std::string_view method);

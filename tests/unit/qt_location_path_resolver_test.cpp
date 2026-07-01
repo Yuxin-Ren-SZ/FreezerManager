@@ -217,8 +217,7 @@ namespace {
     // The BFS skip-guard deduplicates cross-node cycles (A→B→A) because
     // each container is visited once. Self-loops are the only cycle shape
     // that survives BFS dedup.
-    auto self = makeContainer("self", "self",
-                              fmgr::v1::CONTAINER_KIND_GENERIC, "Loop");
+    auto self = makeContainer("self", "self", fmgr::v1::CONTAINER_KIND_GENERIC, "Loop");
     self.set_parent_id("self");
     service_.roots.push_back(self);
     service_.boxes["box-1"] = makeBox("box-1", "self", "Looped Box");
@@ -237,8 +236,8 @@ namespace {
     f.set_layout_root_id("root-1");
     service_.freezers.push_back(f);
 
-    service_.roots.push_back(makeContainer("root-1", std::nullopt,
-        fmgr::v1::CONTAINER_KIND_GENERIC, "Root"));
+    service_.roots.push_back(
+        makeContainer("root-1", std::nullopt, fmgr::v1::CONTAINER_KIND_GENERIC, "Root"));
     service_.boxes["box-1"] = makeBox("box-1", "root-1", "Box 1");
 
     const auto r = resolve("box-1", "");
@@ -259,8 +258,8 @@ namespace {
     f.set_layout_root_id("root-1");
     service_.freezers.push_back(f);
 
-    auto root = makeContainer("root-1", std::nullopt,
-                              fmgr::v1::CONTAINER_KIND_GENERIC, "SystemName");
+    auto root =
+        makeContainer("root-1", std::nullopt, fmgr::v1::CONTAINER_KIND_GENERIC, "SystemName");
     root.set_label("DisplayLabel");
     service_.roots.push_back(root);
     service_.boxes["box-1"] = makeBox("box-1", "root-1", "Box 1");
@@ -270,7 +269,7 @@ namespace {
     EXPECT_TRUE(r.placed);
     // Root should show "DisplayLabel" (the label), not "SystemName".
     auto it = std::find_if(r.segments.begin(), r.segments.end(),
-        [](const auto& s) { return s.kind == Kind::Container; });
+                           [](const auto& s) { return s.kind == Kind::Container; });
     ASSERT_NE(it, r.segments.end());
     EXPECT_EQ(it->label, QStringLiteral("DisplayLabel"));
   }
@@ -279,8 +278,7 @@ namespace {
     // The container chain reaches a root, but no freezer's layout_root_id
     // matches it. The Freezer segment should be omitted (not an error).
     service_.roots.push_back(
-        makeContainer("orphan-root", std::nullopt,
-                      fmgr::v1::CONTAINER_KIND_GENERIC, "Orphan"));
+        makeContainer("orphan-root", std::nullopt, fmgr::v1::CONTAINER_KIND_GENERIC, "Orphan"));
     service_.boxes["box-1"] = makeBox("box-1", "orphan-root", "Box 1");
 
     const auto r = resolve("box-1", "A1");

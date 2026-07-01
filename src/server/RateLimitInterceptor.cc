@@ -25,8 +25,7 @@ namespace fmgr::server {
   }
 
   bool RateLimitInterceptor::is_exempt_method(std::string_view method) {
-    return method.starts_with("/grpc.health.v1.Health/") ||
-           method.starts_with("/grpc.reflection.");
+    return method.starts_with("/grpc.health.v1.Health/") || method.starts_with("/grpc.reflection.");
   }
 
 } // namespace fmgr::server

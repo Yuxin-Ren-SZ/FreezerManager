@@ -28,9 +28,8 @@ namespace fmgr::cli {
   } // namespace
 
   int run_user_set_password(storage::IStorageBackend& backend, const std::string& email,
-                            const std::string& password,
-                            const std::optional<core::UserId>& actor, std::ostream& out,
-                            std::ostream& err) {
+                            const std::string& password, const std::optional<core::UserId>& actor,
+                            std::ostream& out, std::ostream& err) {
     // authenticate() lowercases the email before lookup, so enrol against the same
     // normalized form to guarantee the password is reachable at login.
     const std::string lower_email = to_lower(email);
@@ -72,7 +71,8 @@ namespace fmgr::cli {
         .actor_session_id = "freezerctl-set-password",
         .request_id = "",
         .reason = "cli_set_password",
-        .lab_id = user.default_lab_id.has_value() ? user.default_lab_id->to_string() : std::string{},
+        .lab_id =
+            user.default_lab_id.has_value() ? user.default_lab_id->to_string() : std::string{},
     };
     txn->repo<core::User>().update(user, ctx);
     txn->commit();

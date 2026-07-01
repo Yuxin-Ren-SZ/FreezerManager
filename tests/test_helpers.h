@@ -27,8 +27,7 @@ namespace fmgr::test {
   // us drop the old shared-`public` DROP/CREATE that raced under CI parallelism.
   [[nodiscard]] inline std::string unique_postgres_schema(std::string_view prefix) {
     static std::atomic<std::uint64_t> counter{0};
-    return std::string(prefix) + "_" +
-           std::to_string(static_cast<long long>(::getpid())) + "_" +
+    return std::string(prefix) + "_" + std::to_string(static_cast<long long>(::getpid())) + "_" +
            std::to_string(counter.fetch_add(1));
   }
 

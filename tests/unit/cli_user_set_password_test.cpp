@@ -118,8 +118,7 @@ namespace fmgr::cli {
     };
 
     TEST_F(UserSetPasswordTest, EnrolThenAuthenticateRoundTrips) {
-      const int rc =
-          run_user_set_password(*backend_, kEmail, "hunter22", std::nullopt, out_, err_);
+      const int rc = run_user_set_password(*backend_, kEmail, "hunter22", std::nullopt, out_, err_);
       EXPECT_EQ(rc, 0);
       EXPECT_TRUE(can_login(kEmail, "hunter22"));
       EXPECT_EQ(local_binding_count(kEmail), 1);
