@@ -484,17 +484,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
           return;
         }
 
-        // Each test run gets a fresh schema by wiping and recreating.
+        // Each test process gets its own schema (unique across parallel ctest
+        // processes) so concurrent fixtures never race on shared `public`.
+        schema_name_ = unique_postgres_schema("pg_conformance");
         {
           pqxx::connection setup_conn(*url);
           pqxx::work txn(setup_conn);
-          txn.exec("DROP SCHEMA public CASCADE");
-          txn.exec("CREATE SCHEMA public");
+          txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+          txn.exec("CREATE SCHEMA " + txn.quote_name(schema_name_));
           txn.commit();
         }
 
         backend_ = std::make_unique<PostgresBackend>(PostgresBackendOptions{
-            .connection_string = *url,
+            .connection_string = postgres_url_with_schema(*url, schema_name_),
             // Must cover the concurrency test's thread count (6, or 20 under
             // FMGR_STORAGE_STRESS); each thread holds one pooled connection for
             // its transaction. Too small -> pool-acquire BackendError escapes a
@@ -508,6 +510,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
         backend_->migrate_to_latest();
       }
 
+      ~PostgresBackendConformanceTest() override {
+        if (schema_name_.empty()) {
+          return;
+        }
+        backend_.reset(); // close pool before dropping the schema
+        try {
+          pqxx::connection conn(postgres_test_url().value());
+          pqxx::work txn(conn);
+          txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+          txn.commit();
+        } catch (...) { // NOLINT(bugprone-empty-catch): best-effort cleanup in dtor
+        }
+      }
+
       void SetUp() override {
         if (!postgres_test_url().has_value()) {
           GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; skipping Postgres conformance tests";
@@ -519,6 +535,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       }
 
     private:
+      std::string schema_name_;
       std::unique_ptr<PostgresBackend> backend_;
     };
 
@@ -758,39 +775,48 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
           return;
         }
 
-        // Fresh schema for each test class instantiation.
+        // Per-process schema (unique across parallel ctest processes) so the RLS
+        // fixtures never race on shared `public`. All fixture connections pin
+        // their search_path to it via postgres_url_with_schema.
+        schema_name_ = unique_postgres_schema("pg_rls");
+        const auto scoped_url = postgres_url_with_schema(*url, schema_name_);
         {
           pqxx::connection setup_conn(*url);
           pqxx::work txn(setup_conn);
-          txn.exec("DROP SCHEMA public CASCADE");
-          txn.exec("CREATE SCHEMA public");
+          txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+          txn.exec("CREATE SCHEMA " + txn.quote_name(schema_name_));
           txn.commit();
         }
 
         backend_ = std::make_unique<PostgresBackend>(
-            PostgresBackendOptions{.connection_string = *url, .pool_size = 2});
+            PostgresBackendOptions{.connection_string = scoped_url, .pool_size = 2});
         backend_->migrate_to_latest();
 
         // Grant the non-superuser role access to the migrated schema.
         // This must happen after migrate_to_latest so the tables exist.
         {
-          pqxx::connection grant_conn(*url);
+          pqxx::connection grant_conn(scoped_url);
           pqxx::work grant_txn(grant_conn);
-          // Create the role idempotently.
+          // Create the shared role idempotently. The pg_roles guard still leaves a
+          // TOCTOU window when parallel RLS processes race, so also swallow the
+          // duplicate_object that the loser would otherwise raise.
           grant_txn.exec(
               "DO $$ BEGIN "
               "  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname='fmgr_rls_tester') THEN "
               "    CREATE ROLE fmgr_rls_tester; "
               "  END IF; "
+              "EXCEPTION WHEN duplicate_object THEN NULL; "
               "END $$");
-          grant_txn.exec("GRANT USAGE ON SCHEMA public TO fmgr_rls_tester");
-          grant_txn.exec("GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA public TO fmgr_rls_tester");
+          const auto schema_id = grant_txn.quote_name(schema_name_);
+          grant_txn.exec("GRANT USAGE ON SCHEMA " + schema_id + " TO fmgr_rls_tester");
+          grant_txn.exec("GRANT SELECT, INSERT ON ALL TABLES IN SCHEMA " + schema_id +
+                         " TO fmgr_rls_tester");
           grant_txn.commit();
         }
 
         // Seed two labs and a storage_container scoped to lab_a_ (superuser bypasses RLS).
         {
-          pqxx::connection seed_conn(*url);
+          pqxx::connection seed_conn(scoped_url);
           pqxx::work seed_txn(seed_conn);
           const auto now = static_cast<std::int64_t>(1'000'000LL);
           seed_txn.exec(
@@ -804,6 +830,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
               "VALUES ($1,$2,'shelf','Shelf A','shelf-a',0,'{}', $3)",
               pqxx::params{container_id_.to_string(), lab_a_.to_string(), now});
           seed_txn.commit();
+        }
+      }
+
+      ~PostgresRlsIntegrationTest() override {
+        if (schema_name_.empty()) {
+          return;
+        }
+        backend_.reset(); // close pool before dropping the schema
+        try {
+          pqxx::connection conn(postgres_test_url().value());
+          pqxx::work txn(conn);
+          txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+          txn.commit();
+        } catch (...) { // NOLINT(bugprone-empty-catch): best-effort cleanup in dtor
         }
       }
 
@@ -831,6 +871,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       const core::StorageContainerId container_id_ = id_from_low<core::StorageContainerId>(30);
 
     private:
+      std::string schema_name_;
       std::unique_ptr<PostgresBackend> backend_;
     };
 

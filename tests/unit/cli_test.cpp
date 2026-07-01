@@ -245,9 +245,20 @@ namespace fmgr::cli {
       }
 
       ~CliFixture() {
-        backend_.reset();
+        backend_.reset(); // close pool before dropping the schema
         if (kind_ == BackendKind::Sqlite) {
           remove_sqlite_files(db_path_);
+          return;
+        }
+        if (schema_name_.empty()) {
+          return;
+        }
+        try {
+          pqxx::connection conn(postgres_test_url().value());
+          pqxx::work txn(conn);
+          txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+          txn.commit();
+        } catch (...) { // NOLINT(bugprone-empty-catch): best-effort cleanup in dtor
         }
       }
 
@@ -269,6 +280,11 @@ namespace fmgr::cli {
       [[nodiscard]] std::string db_path() const {
         return db_path_.string();
       }
+      // Postgres schema this fixture migrated into. Empty for SQLite. Callers that
+      // reopen the backend by raw URL must pin the search_path to it.
+      [[nodiscard]] std::string postgres_schema() const {
+        return schema_name_;
+      }
 
     private:
       BackendOptions make_options() {
@@ -282,14 +298,17 @@ namespace fmgr::cli {
           throw std::logic_error("postgres url required (SetUp must skip when unset)");
         }
         const auto& url = url_opt.value();
-        // Per-test isolation: wipe the shared public schema so open_backend()
-        // migrates from scratch (mirrors RepoBackendHarness).
+        // Per-process isolation: give this fixture its own schema (unique across
+        // parallel ctest processes) and pin the backend's search_path to it, so
+        // open_backend() migrates a private schema instead of racing on the
+        // shared `public` one (mirrors RepoBackendHarness).
+        schema_name_ = unique_postgres_schema("cli_test");
         pqxx::connection setup_conn(url);
         pqxx::work txn(setup_conn);
-        txn.exec("DROP SCHEMA public CASCADE");
-        txn.exec("CREATE SCHEMA public");
+        txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+        txn.exec("CREATE SCHEMA " + txn.quote_name(schema_name_));
         txn.commit();
-        return BackendOptions{.postgres_url = url};
+        return BackendOptions{.postgres_url = postgres_url_with_schema(url, schema_name_)};
       }
 
       static std::filesystem::path unique_path() {
@@ -300,6 +319,7 @@ namespace fmgr::cli {
 
       BackendKind kind_;
       std::filesystem::path db_path_;
+      std::string schema_name_;
       std::unique_ptr<storage::IStorageBackend> backend_;
       core::LabId lab_a_;
       core::LabId lab_b_;
@@ -1559,8 +1579,10 @@ namespace fmgr::cli {
 
       // A fresh backend on the restored database sees the seeded lab and a chain
       // that still verifies. (fixture.backend()'s pooled connections may hold state
-      // invalidated by pg_restore --clean, so do not reuse it here.)
-      auto backend = open_backend(BackendOptions{.postgres_url = url});
+      // invalidated by pg_restore --clean, so do not reuse it here.) The fixture's
+      // data lives in its private schema, so pin the reopen's search_path to it.
+      auto backend = open_backend(
+          BackendOptions{.postgres_url = postgres_url_with_schema(url, fixture.postgres_schema())});
       auto txn = backend->begin(storage::IsolationLevel::Serializable);
       const auto labs = txn->repo<core::Lab>().query(storage::Query<core::Lab>::all());
       txn->commit();

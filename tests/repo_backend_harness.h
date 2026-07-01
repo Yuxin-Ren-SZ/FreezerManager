@@ -50,7 +50,9 @@ namespace fmgr::test {
 
   // Owns a freshly-migrated backend of the requested kind with a caller-supplied
   // set of repositories registered. SQLite uses a unique temp database file;
-  // Postgres wipes and recreates the public schema for per-test isolation.
+  // Postgres creates a per-instance schema (unique across parallel test
+  // processes) and pins the pool's search_path to it, so concurrent fixtures
+  // never collide on the shared `public` schema.
   class RepoBackendHarness {
   public:
     using SqliteRegistrar = std::function<void(storage::SqliteBackend&)>;
@@ -66,16 +68,17 @@ namespace fmgr::test {
         register_sqlite(sqlite_.value());
         sqlite_->migrate_to_latest();
       } else {
-        const auto url = postgres_test_url().value();
+        const auto base_url = postgres_test_url().value();
+        schema_name_ = unique_postgres_schema("repo_harness");
         {
-          pqxx::connection setup_conn(url);
+          pqxx::connection setup_conn(base_url);
           pqxx::work txn(setup_conn);
-          txn.exec("DROP SCHEMA public CASCADE");
-          txn.exec("CREATE SCHEMA public");
+          txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+          txn.exec("CREATE SCHEMA " + txn.quote_name(schema_name_));
           txn.commit();
         }
         postgres_.emplace(storage::PostgresBackendOptions{
-            .connection_string = url,
+            .connection_string = postgres_url_with_schema(base_url, schema_name_),
             .pool_size = 4,
         });
         register_postgres(postgres_.value());
@@ -86,6 +89,17 @@ namespace fmgr::test {
     ~RepoBackendHarness() {
       if (kind_ == BackendKind::Sqlite) {
         remove_sqlite_files(db_path_);
+        return;
+      }
+      // Close the pool before dropping so no connection holds the schema, then
+      // best-effort DROP (a throwing dtor would call std::terminate).
+      postgres_.reset();
+      try {
+        pqxx::connection conn(postgres_test_url().value());
+        pqxx::work txn(conn);
+        txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+        txn.commit();
+      } catch (...) { // NOLINT(bugprone-empty-catch)
       }
     }
 
@@ -125,6 +139,7 @@ namespace fmgr::test {
 
     BackendKind kind_;
     std::filesystem::path db_path_;
+    std::string schema_name_;
     std::optional<storage::SqliteBackend> sqlite_;
     std::optional<storage::PostgresBackend> postgres_;
   };
