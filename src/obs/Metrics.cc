@@ -74,6 +74,17 @@ namespace fmgr::obs {
   }
 
   // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+  void MetricsRegistry::set_gauge(const std::string& name, const std::string& help,
+                                  const Labels& labels, double value) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    auto& family = gauges_[name];
+    if (family.help.empty()) {
+      family.help = help;
+    }
+    family.series[label_key(labels)] = value;
+  }
+
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   void MetricsRegistry::observe_latency(const std::string& name, const std::string& help,
                                         const Labels& labels, double seconds) {
     const std::lock_guard<std::mutex> lock(mutex_);
@@ -116,6 +127,13 @@ namespace fmgr::obs {
 
     for (const auto& [name, family] : counters_) {
       header(name, family.help, "counter");
+      for (const auto& [labels, value] : family.series) {
+        out.append(name).append(braces(labels)).append(" ").append(num(value)).append("\n");
+      }
+    }
+
+    for (const auto& [name, family] : gauges_) {
+      header(name, family.help, "gauge");
       for (const auto& [labels, value] : family.series) {
         out.append(name).append(braces(labels)).append(" ").append(num(value)).append("\n");
       }

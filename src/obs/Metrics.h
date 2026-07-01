@@ -31,11 +31,22 @@ namespace fmgr::obs {
     void observe_latency(const std::string& name, const std::string& help, const Labels& labels,
                          double seconds);
 
+    // Set a gauge series to `value` (last-write-wins). Unlike a counter, a gauge
+    // can go up or down; used for point-in-time facts such as the Unix timestamp
+    // of the last successful backup. `help` is recorded the first time the family
+    // is seen.
+    void set_gauge(const std::string& name, const std::string& help, const Labels& labels,
+                   double value);
+
     // Render the whole registry in Prometheus text-exposition format.
     [[nodiscard]] std::string render() const;
 
   private:
     struct CounterFamily {
+      std::string help;
+      std::map<std::string, double> series; // label-string -> value
+    };
+    struct GaugeFamily {
       std::string help;
       std::map<std::string, double> series; // label-string -> value
     };
@@ -51,6 +62,7 @@ namespace fmgr::obs {
 
     mutable std::mutex mutex_;
     std::map<std::string, CounterFamily> counters_;
+    std::map<std::string, GaugeFamily> gauges_;
     std::map<std::string, HistogramFamily> histograms_;
   };
 

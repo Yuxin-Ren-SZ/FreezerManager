@@ -16,6 +16,7 @@ add_library(freezermanager_server_lib STATIC
   BackupScheduler.cc
   FreezerServer.cc
   MetricsInterceptor.cc
+  RateLimitInterceptor.cc
   # CSV export/import reused from the CLI: ExportSamplesCsv / ImportSamples share
   # the exact column model and validation as `freezerctl sample export|import`.
   ${PROJECT_SOURCE_DIR}/src/cli/SampleCsv.cc

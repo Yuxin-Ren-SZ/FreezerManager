@@ -5,11 +5,14 @@
 #include "kms/KmsFactory.h"
 #include "obs/Log.h"
 #include "server/BackupScheduler.h"
+#include "server/GrpcErrorTranslation.h"
 #include "server/MetricsInterceptor.h"
+#include "server/RateLimitInterceptor.h"
 
 #include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
+#include <grpcpp/resource_quota.h>
 
 #include <vector>
 
@@ -65,6 +68,28 @@ namespace fmgr::server {
     grpc::EnableDefaultHealthCheckService(true);
 
     grpc::ServerBuilder builder;
+
+    // Message-size cap (C-10 DoS): reject oversized frames before buffering.
+    // Paired with a ResourceQuota that bounds the process-wide buffer pool.
+    builder.SetMaxReceiveMessageSize(static_cast<int>(opts_.max_receive_message_bytes));
+    grpc::ResourceQuota quota;
+    quota.SetMaxThreads(static_cast<int>(opts_.max_receive_message_bytes) / 4096);
+    builder.SetResourceQuota(quota);
+
+    // Process-wide error masking (C-11 infoleak): when enabled, INTERNAL errors
+    // return a generic message to clients; real detail logged server-side only.
+    set_mask_internal_errors(opts_.mask_internal_errors);
+
+    // Global request throttle (C-10 DoS). AuthServiceImpl's per-IP login limiter
+    // is handed the auth-tier config separately; this interceptor installs the
+    // data-tier gate that all authenticated RPCs pass through via AuthMiddleware.
+    rate_limiter_ = std::make_unique<RateLimitInterceptor>(opts_.rate_limit);
+    if (opts_.rate_limit.enabled) {
+      fmgr::obs::log_lifecycle(fmgr::obs::Level::Info,
+          fmt::format("rate limiting enabled: auth_capacity={} data_capacity={}",
+              opts_.rate_limit.auth.capacity, opts_.rate_limit.data.capacity),
+          "ratelimit.enabled");
+    }
 
     // Per-RPC metrics (count by method+code, unary latency histogram) feed the
     // process-wide obs::metrics() registry exposed at /metrics (PRD §17).

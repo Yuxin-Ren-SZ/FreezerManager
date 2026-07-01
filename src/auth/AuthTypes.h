@@ -135,6 +135,12 @@ namespace fmgr::auth {
     using AuthError::AuthError;
   };
 
+  // Request rejected by a rate limiter before any work was done (DoS defence).
+  // Maps to gRPC RESOURCE_EXHAUSTED; the client may retry after backing off.
+  struct RateLimited : AuthError {
+    using AuthError::AuthError;
+  };
+
 } // namespace fmgr::auth
 
 #endif // FMGR_AUTH_AUTHTYPES_H
