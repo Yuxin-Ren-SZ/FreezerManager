@@ -51,6 +51,9 @@ namespace {
     std::string fail_freezers_for_lab;
     std::string fail_containers_for_parent;
     std::string fail_boxes_for_container;
+    // When set, ListStorageContainers returns a cyclic adjacency list
+    // (ctr-root → ctr-a → ctr-b → ctr-a …) so the cycle guard can be exercised.
+    bool cyclic_containers = false;
 
     grpc::Status ListFreezers(grpc::ServerContext* /*ctx*/,
                               const fmgr::v1::ListFreezersRequest* req,
@@ -79,6 +82,25 @@ namespace {
       const std::string parent = req->has_parent_id() ? req->parent_id() : "";
       if (!fail_containers_for_parent.empty() && parent == fail_containers_for_parent) {
         return {grpc::StatusCode::UNAVAILABLE, "containers down"};
+      }
+      if (cyclic_containers) {
+        // ctr-root → ctr-a → ctr-b → ctr-a (a back-edge into the ancestry).
+        auto add_container = [&](const char* id, const char* par) {
+          fmgr::v1::StorageContainer* c = resp->add_containers();
+          c->set_id(id);
+          c->set_lab_id("lab-1");
+          c->set_parent_id(par);
+          c->set_kind(fmgr::v1::CONTAINER_KIND_SHELF);
+          c->set_name(id);
+        };
+        if (parent == "ctr-root") {
+          add_container("ctr-a", "ctr-root");
+        } else if (parent == "ctr-a") {
+          add_container("ctr-b", "ctr-a");
+        } else if (parent == "ctr-b") {
+          add_container("ctr-a", "ctr-b"); // back-edge: ctr-a already on path
+        }
+        return grpc::Status::OK;
       }
       if (parent == "ctr-root") {
         fmgr::v1::StorageContainer* c = resp->add_containers();
@@ -234,6 +256,29 @@ namespace {
     const TreeNode& drawer = (*tree)[0].children[0].children[0].children[0];
     EXPECT_EQ(drawer.id, QStringLiteral("ctr-drawer-1"));
     EXPECT_TRUE(drawer.children.empty()); // box leaf skipped, drawer survives
+  }
+
+  // A cyclic container graph (parent points back into its own ancestry) must not
+  // recurse forever. The build terminates, keeps the reachable nodes, and stops
+  // descending at the back-edge so the repeated container has no further
+  // children. frz-1 root "ctr-root" → ctr-a → ctr-b → ctr-a(no descent).
+  TEST_F(LabTreeModelTest, CyclicContainerGraphTerminatesAndBreaksAtBackEdge) {
+    box_service_.cyclic_containers = true;
+    auto tree = fmgr::qt::buildLabTree(*labs_, *boxes_, QStringLiteral("tok"));
+    ASSERT_TRUE(tree.has_value());
+
+    const TreeNode& frz1 = (*tree)[0].children[0];
+    ASSERT_EQ(frz1.children.size(), 1u);
+    const TreeNode& a = frz1.children[0];
+    EXPECT_EQ(a.id, QStringLiteral("ctr-a"));
+    ASSERT_EQ(a.children.size(), 1u);
+    const TreeNode& b = a.children[0];
+    EXPECT_EQ(b.id, QStringLiteral("ctr-b"));
+    // b's child is ctr-a again, but ctr-a is already on the path → no descent.
+    ASSERT_EQ(b.children.size(), 1u);
+    const TreeNode& a_again = b.children[0];
+    EXPECT_EQ(a_again.id, QStringLiteral("ctr-a"));
+    EXPECT_TRUE(a_again.children.empty()); // cycle guard broke the recursion
   }
 
 } // namespace
