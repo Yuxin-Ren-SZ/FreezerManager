@@ -212,4 +212,127 @@ namespace {
     EXPECT_EQ(r.segments.back().kind, Kind::Position);
   }
 
+  TEST_F(LocationPathResolverTest, DetectsCycle) {
+    // Self-loop: a container whose parent_id points to itself.
+    // The BFS skip-guard deduplicates cross-node cycles (A→B→A) because
+    // each container is visited once. Self-loops are the only cycle shape
+    // that survives BFS dedup.
+    auto self = makeContainer("self", "self",
+                              fmgr::v1::CONTAINER_KIND_GENERIC, "Loop");
+    self.set_parent_id("self");
+    service_.roots.push_back(self);
+    service_.boxes["box-1"] = makeBox("box-1", "self", "Looped Box");
+
+    const auto r = resolve("box-1", "A1");
+    ASSERT_TRUE(r.ok);
+    EXPECT_TRUE(r.placed);
+    EXPECT_TRUE(r.partial);
+  }
+
+  TEST_F(LocationPathResolverTest, EmptyPositionLabelOmitsPositionSegment) {
+    fmgr::v1::Freezer f;
+    f.set_id("frz-1");
+    f.set_lab_id("lab-1");
+    f.set_name("Freezer A");
+    f.set_layout_root_id("root-1");
+    service_.freezers.push_back(f);
+
+    service_.roots.push_back(makeContainer("root-1", std::nullopt,
+        fmgr::v1::CONTAINER_KIND_GENERIC, "Root"));
+    service_.boxes["box-1"] = makeBox("box-1", "root-1", "Box 1");
+
+    const auto r = resolve("box-1", "");
+    ASSERT_TRUE(r.ok);
+    EXPECT_TRUE(r.placed);
+    EXPECT_FALSE(r.partial);
+    // Should end with Box, not Position.
+    ASSERT_FALSE(r.segments.isEmpty());
+    EXPECT_EQ(r.segments.back().kind, Kind::Box);
+  }
+
+  TEST_F(LocationPathResolverTest, ContainerLabelPreferredOverName) {
+    // containerLabel() prefers c.label over c.name.
+    fmgr::v1::Freezer f;
+    f.set_id("frz-1");
+    f.set_lab_id("lab-1");
+    f.set_name("Freezer A");
+    f.set_layout_root_id("root-1");
+    service_.freezers.push_back(f);
+
+    auto root = makeContainer("root-1", std::nullopt,
+                              fmgr::v1::CONTAINER_KIND_GENERIC, "SystemName");
+    root.set_label("DisplayLabel");
+    service_.roots.push_back(root);
+    service_.boxes["box-1"] = makeBox("box-1", "root-1", "Box 1");
+
+    const auto r = resolve("box-1", "A1");
+    ASSERT_TRUE(r.ok);
+    EXPECT_TRUE(r.placed);
+    // Root should show "DisplayLabel" (the label), not "SystemName".
+    auto it = std::find_if(r.segments.begin(), r.segments.end(),
+        [](const auto& s) { return s.kind == Kind::Container; });
+    ASSERT_NE(it, r.segments.end());
+    EXPECT_EQ(it->label, QStringLiteral("DisplayLabel"));
+  }
+
+  TEST_F(LocationPathResolverTest, NoFreezerMatchesRootOmitsFreezerSegment) {
+    // The container chain reaches a root, but no freezer's layout_root_id
+    // matches it. The Freezer segment should be omitted (not an error).
+    service_.roots.push_back(
+        makeContainer("orphan-root", std::nullopt,
+                      fmgr::v1::CONTAINER_KIND_GENERIC, "Orphan"));
+    service_.boxes["box-1"] = makeBox("box-1", "orphan-root", "Box 1");
+
+    const auto r = resolve("box-1", "A1");
+    ASSERT_TRUE(r.ok);
+    EXPECT_TRUE(r.placed);
+    EXPECT_FALSE(r.partial);
+    // No Freezer segment — the first segment should be the Container.
+    ASSERT_FALSE(r.segments.isEmpty());
+    EXPECT_NE(r.segments.front().kind, Kind::Freezer);
+  }
+
+  TEST_F(LocationPathResolverTest, DeepChainResolvesAllLevels) {
+    // Freezer F → Compartment → Shelf → Rack → Drawer → Box [A1].
+    fmgr::v1::Freezer f;
+    f.set_id("frz-1");
+    f.set_lab_id("lab-1");
+    f.set_name("Freezer A");
+    f.set_layout_root_id("comp-1");
+    service_.freezers.push_back(f);
+
+    service_.roots.push_back(
+        makeContainer("comp-1", std::nullopt, fmgr::v1::CONTAINER_KIND_TOWER, "Comp"));
+    service_.children["comp-1"].push_back(
+        makeContainer("shelf-1", "comp-1", fmgr::v1::CONTAINER_KIND_SHELF, "S1"));
+    service_.children["shelf-1"].push_back(
+        makeContainer("rack-1", "shelf-1", fmgr::v1::CONTAINER_KIND_RACK, "R1"));
+    service_.children["rack-1"].push_back(
+        makeContainer("drawer-1", "rack-1", fmgr::v1::CONTAINER_KIND_DRAWER, "D1"));
+    service_.boxes["box-1"] = makeBox("box-1", "drawer-1", "Deep Box");
+
+    const auto r = resolve("box-1", "A1");
+    ASSERT_TRUE(r.ok);
+    EXPECT_TRUE(r.placed);
+    EXPECT_FALSE(r.partial);
+    // Freezer + 4 containers + Box + Position = 7 segments.
+    EXPECT_EQ(r.segments.size(), 7);
+  }
+
+  TEST_F(LocationPathResolverTest, ListFreezersGrpcFailureSilentlyOmitsFreezer) {
+    // No freezers registered at all — the listFreezers call returns an empty
+    // list. The code never checks freezers.ok, so it silently iterates over
+    // zero freezers and no Freezer segment is produced.
+    service_.roots.push_back(
+        makeContainer("root-1", std::nullopt, fmgr::v1::CONTAINER_KIND_GENERIC, "Root"));
+    service_.boxes["box-1"] = makeBox("box-1", "root-1", "Box 1");
+
+    const auto r = resolve("box-1", "A1");
+    ASSERT_TRUE(r.ok);
+    EXPECT_TRUE(r.placed);
+    // Freezer segment absent — no freezers to match.
+    ASSERT_FALSE(r.segments.isEmpty());
+    EXPECT_NE(r.segments.front().kind, Kind::Freezer);
+  }
+
 } // namespace
