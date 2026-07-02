@@ -798,8 +798,9 @@ namespace fmgr::server {
           // transaction, mirroring `freezerctl sample import --dry-run`.
           if (req->dry_run() && okay) {
             // row.sample is guaranteed present when row.ok is true
-            if (!row.sample.has_value())
+            if (!row.sample.has_value()) {
               continue;
+            }
             const auto& sample = *row.sample;
             try {
               auto probe = backend_.begin(storage::IsolationLevel::Serializable);
@@ -833,8 +834,9 @@ namespace fmgr::server {
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
       for (const auto& row : report.rows) {
         // row.sample is guaranteed present when row.ok is true
-        if (!row.sample.has_value())
+        if (!row.sample.has_value()) {
           continue;
+        }
         txn->repo<core::Sample>().insert(*row.sample, make_ctx(*ctx, sctx, "import_samples"));
       }
       txn->commit();
