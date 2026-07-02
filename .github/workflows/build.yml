@@ -8,10 +8,19 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Cancel superseded runs on the same ref: every push to a PR otherwise relaunches
+# the full 7-job matrix (each doing a heavy Conan gRPC/abseil/protobuf build).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: ${{ matrix.compiler }} ${{ matrix.preset }}
     runs-on: ubuntu-24.04
+    # Backstop against a hung/OOM/deadlocked build (tsan especially) running to
+    # GitHub's 6h default and burning runner minutes.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
