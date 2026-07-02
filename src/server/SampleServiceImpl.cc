@@ -342,6 +342,77 @@ namespace fmgr::server {
       return true;
     }
 
+    // Dry-run, or a structural failure on a real import: validate/report only,
+    // persist nothing. Reports one row per record with per-row ok/error.
+    void report_import_validation(storage::IStorageBackend& backend, grpc::ServerContext* ctx,
+                                  const auth::SessionContext& sctx, const cli::ImportReport& report,
+                                  bool dry_run, fmgr::v1::ImportSamplesResponse* resp) {
+      int succeeded = 0;
+      int failed = 0;
+      for (const auto& row : report.rows) {
+        auto* out = resp->add_rows();
+        out->set_row_number(static_cast<std::int32_t>(row.row_number));
+        bool okay = row.ok;
+        std::string error = row.error;
+        // Dry-run additionally checks each structurally-ok row against committed
+        // state (FK liveness, occupied position) in its own never-committed
+        // transaction, mirroring `freezerctl sample import --dry-run`.
+        if (dry_run && okay && row.sample.has_value()) {
+          const auto& sample = *row.sample;
+          try {
+            auto probe = backend.begin(storage::IsolationLevel::Serializable);
+            rpc::AuthMiddleware::inject_rls_vars(*probe, sctx);
+            probe->repo<core::Sample>().insert(sample,
+                                               make_ctx(*ctx, sctx, "import_samples_dryrun"));
+            // Intentionally not committed: the transaction rolls back on scope exit.
+          } catch (const std::exception& e) {
+            okay = false;
+            error = e.what();
+          }
+        }
+        out->set_ok(okay);
+        out->set_error(error);
+        if (okay) {
+          ++succeeded;
+        } else {
+          ++failed;
+        }
+      }
+      resp->set_committed(false);
+      resp->set_succeeded(succeeded);
+      resp->set_failed(failed);
+    }
+
+    // Real import, every row structurally valid: all-or-nothing in one
+    // transaction. A storage failure (FK, occupied position, …) rolls the whole
+    // batch back and surfaces as the mapped gRPC status — nothing is persisted.
+    void commit_import(storage::IStorageBackend& backend, grpc::ServerContext* ctx,
+                       const auth::SessionContext& sctx, const cli::ImportReport& report,
+                       fmgr::v1::ImportSamplesResponse* resp) {
+      auto txn = backend.begin(storage::IsolationLevel::Serializable);
+      rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+      for (const auto& row : report.rows) {
+        // row.sample is guaranteed present when row.ok is true
+        if (row.sample.has_value()) {
+          txn->repo<core::Sample>().insert(*row.sample, make_ctx(*ctx, sctx, "import_samples"));
+        }
+      }
+      txn->commit();
+
+      for (const auto& row : report.rows) {
+        auto* out = resp->add_rows();
+        out->set_row_number(static_cast<std::int32_t>(row.row_number));
+        out->set_ok(true);
+        // row.sample is guaranteed present when row.ok is true
+        if (row.sample.has_value()) {
+          out->set_sample_id(row.sample->id.to_string());
+        }
+      }
+      resp->set_committed(true);
+      resp->set_succeeded(static_cast<std::int32_t>(report.rows.size()));
+      resp->set_failed(0);
+    }
+
   } // namespace
 
   SampleServiceImpl::SampleServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend,
@@ -783,76 +854,11 @@ namespace fmgr::server {
           std::any_of(report.rows.begin(), report.rows.end(),
                       [](const cli::ImportRowResult& row) { return !row.ok; });
 
-      // Dry-run, or a structural failure on a real import: validate/report only,
-      // persist nothing.
       if (req->dry_run() || any_structural_error) {
-        int succeeded = 0;
-        int failed = 0;
-        for (const auto& row : report.rows) {
-          auto* out = resp->add_rows();
-          out->set_row_number(static_cast<std::int32_t>(row.row_number));
-          bool okay = row.ok;
-          std::string error = row.error;
-          // Dry-run additionally checks each structurally-ok row against committed
-          // state (FK liveness, occupied position) in its own never-committed
-          // transaction, mirroring `freezerctl sample import --dry-run`.
-          if (req->dry_run() && okay) {
-            // row.sample is guaranteed present when row.ok is true
-            if (!row.sample.has_value()) {
-              continue;
-            }
-            const auto& sample = *row.sample;
-            try {
-              auto probe = backend_.begin(storage::IsolationLevel::Serializable);
-              rpc::AuthMiddleware::inject_rls_vars(*probe, sctx);
-              probe->repo<core::Sample>().insert(sample,
-                                                 make_ctx(*ctx, sctx, "import_samples_dryrun"));
-              // Intentionally not committed: the transaction rolls back on scope exit.
-            } catch (const std::exception& e) {
-              okay = false;
-              error = e.what();
-            }
-          }
-          out->set_ok(okay);
-          out->set_error(error);
-          if (okay) {
-            ++succeeded;
-          } else {
-            ++failed;
-          }
-        }
-        resp->set_committed(false);
-        resp->set_succeeded(succeeded);
-        resp->set_failed(failed);
-        return grpc::Status::OK;
+        report_import_validation(backend_, ctx, sctx, report, req->dry_run(), resp);
+      } else {
+        commit_import(backend_, ctx, sctx, report, resp);
       }
-
-      // Real import, every row structurally valid: all-or-nothing in one
-      // transaction. A storage failure (FK, occupied position, …) rolls the whole
-      // batch back and surfaces as the mapped gRPC status — nothing is persisted.
-      auto txn = backend_.begin(storage::IsolationLevel::Serializable);
-      rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      for (const auto& row : report.rows) {
-        // row.sample is guaranteed present when row.ok is true
-        if (!row.sample.has_value()) {
-          continue;
-        }
-        txn->repo<core::Sample>().insert(*row.sample, make_ctx(*ctx, sctx, "import_samples"));
-      }
-      txn->commit();
-
-      for (const auto& row : report.rows) {
-        auto* out = resp->add_rows();
-        out->set_row_number(static_cast<std::int32_t>(row.row_number));
-        out->set_ok(true);
-        // row.sample is guaranteed present when row.ok is true
-        if (row.sample.has_value()) {
-          out->set_sample_id(row.sample->id.to_string());
-        }
-      }
-      resp->set_committed(true);
-      resp->set_succeeded(static_cast<std::int32_t>(report.rows.size()));
-      resp->set_failed(0);
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();
