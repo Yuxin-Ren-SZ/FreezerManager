@@ -27,6 +27,9 @@ namespace fmgr::cli {
 
   } // namespace
 
+  // email/password are distinct required inputs with unambiguous call sites; a swap
+  // would fail fast (auth hash mismatch), so a strong-typedef wrapper is unwarranted.
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
   int run_user_set_password(storage::IStorageBackend& backend, const std::string& email,
                             const std::string& password, const std::optional<core::UserId>& actor,
                             std::ostream& out, std::ostream& err) {

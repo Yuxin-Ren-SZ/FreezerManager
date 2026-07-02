@@ -208,7 +208,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const char* health_backup_env = std::getenv("FMGR_BACKUP_DIR");
     const std::string health_backup_dir = health_backup_env != nullptr ? health_backup_env : "";
     fmgr::storage::IStorageBackend* backend_ptr = backend.get();
-    gateway.register_health(fmgr::obs::HealthProbe{
+    fmgr::rest::RestGateway::register_health(fmgr::obs::HealthProbe{
         .database = [backend_ptr] { return probe_database(*backend_ptr); },
         .kms = [health_kms] { return probe_kms(health_kms.get()); },
         .backup = [health_backup_dir] { return probe_backup(health_backup_dir); },

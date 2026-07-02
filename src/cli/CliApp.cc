@@ -763,6 +763,87 @@ namespace fmgr::cli {
       return std::nullopt;
     }
 
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<int>
+    dispatch_sample_commands(CLI::App* list, const CommonArgs& list_args, CLI::App* exporter,
+                             const CommonArgs& export_args, const std::string& export_out,
+                             CLI::App* importer, const std::string& import_sqlite,
+                             const std::string& import_postgres, const std::string& import_lab,
+                             const std::string& import_actor, const std::string& import_file,
+                             bool import_dry_run, std::ostream& out, std::ostream& err) {
+      // NOLINTEND(bugprone-easily-swappable-parameters)
+      if (list->parsed()) {
+        auto backend = open_backend(to_backend_options(list_args));
+        run_sample_list(*backend, to_query_options(list_args), out);
+        return 0;
+      }
+      if (exporter->parsed()) {
+        auto backend = open_backend(to_backend_options(export_args));
+        const auto query_options = to_query_options(export_args);
+        if (export_out.empty()) {
+          run_sample_export(*backend, query_options, out);
+        } else {
+          std::ofstream file(export_out, std::ios::binary | std::ios::trunc);
+          if (!file) {
+            err << "error: cannot open output file: " << export_out << '\n';
+            return 1;
+          }
+          run_sample_export(*backend, query_options, file);
+        }
+        return 0;
+      }
+      if (importer->parsed()) {
+        auto backend = open_backend(backend_options_from(import_sqlite, import_postgres));
+        const SampleImportOptions import_opts{.lab_id = core::LabId::parse(import_lab),
+                                              .actor = core::UserId::parse(import_actor),
+                                              .dry_run = import_dry_run};
+        if (import_file == "-") {
+          return run_sample_import(*backend, import_opts, std::cin, out);
+        }
+        std::ifstream file(import_file, std::ios::binary);
+        if (!file) {
+          err << "error: cannot open input file: " << import_file << '\n';
+          return 1;
+        }
+        return run_sample_import(*backend, import_opts, file, out);
+      }
+      return std::nullopt;
+    }
+
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<int> dispatch_audit_commands(
+        CLI::App* verify, const std::string& audit_sqlite, const std::string& audit_postgres,
+        CLI::App* audit_export, const std::string& audit_export_sqlite,
+        const std::string& audit_export_postgres, const std::string& audit_export_lab,
+        const std::string& audit_export_actor, const std::string& audit_export_out,
+        std::ostream& out, std::ostream& err) {
+      // NOLINTEND(bugprone-easily-swappable-parameters)
+      if (verify->parsed()) {
+        auto backend = open_backend(backend_options_from(audit_sqlite, audit_postgres));
+        return run_audit_verify(*backend, AuditVerifyOptions{}, out);
+      }
+      if (audit_export->parsed()) {
+        auto backend =
+            open_backend(backend_options_from(audit_export_sqlite, audit_export_postgres));
+        const AuditExportOptions export_options{
+            .lab_id = audit_export_lab.empty()
+                          ? std::nullopt
+                          : std::optional<core::LabId>(core::LabId::parse(audit_export_lab)),
+            .actor = core::UserId::parse(audit_export_actor),
+        };
+        if (audit_export_out.empty()) {
+          return run_audit_export(*backend, export_options, out);
+        }
+        std::ofstream file(audit_export_out, std::ios::binary | std::ios::trunc);
+        if (!file) {
+          err << "error: cannot open output file: " << audit_export_out << '\n';
+          return 1;
+        }
+        return run_audit_export(*backend, export_options, file);
+      }
+      return std::nullopt;
+    }
+
   } // namespace
 
   // out/err are conventional stream params (mirrors main()); order is unambiguous.
@@ -884,63 +965,16 @@ namespace fmgr::cli {
     }
 
     try {
-      if (list->parsed()) {
-        auto backend = open_backend(to_backend_options(list_args));
-        run_sample_list(*backend, to_query_options(list_args), out);
-        return 0;
+      if (const auto code = dispatch_sample_commands(
+              list, list_args, exporter, export_args, export_out, importer, import_sqlite,
+              import_postgres, import_lab, import_actor, import_file, import_dry_run, out, err)) {
+        return *code;
       }
-      if (exporter->parsed()) {
-        auto backend = open_backend(to_backend_options(export_args));
-        const auto query_options = to_query_options(export_args);
-        if (export_out.empty()) {
-          run_sample_export(*backend, query_options, out);
-        } else {
-          std::ofstream file(export_out, std::ios::binary | std::ios::trunc);
-          if (!file) {
-            err << "error: cannot open output file: " << export_out << '\n';
-            return 1;
-          }
-          run_sample_export(*backend, query_options, file);
-        }
-        return 0;
-      }
-      if (importer->parsed()) {
-        auto backend = open_backend(backend_options_from(import_sqlite, import_postgres));
-        const SampleImportOptions import_opts{.lab_id = core::LabId::parse(import_lab),
-                                              .actor = core::UserId::parse(import_actor),
-                                              .dry_run = import_dry_run};
-        if (import_file == "-") {
-          return run_sample_import(*backend, import_opts, std::cin, out);
-        }
-        std::ifstream file(import_file, std::ios::binary);
-        if (!file) {
-          err << "error: cannot open input file: " << import_file << '\n';
-          return 1;
-        }
-        return run_sample_import(*backend, import_opts, file, out);
-      }
-      if (verify->parsed()) {
-        auto backend = open_backend(backend_options_from(audit_sqlite, audit_postgres));
-        return run_audit_verify(*backend, AuditVerifyOptions{}, out);
-      }
-      if (audit_export->parsed()) {
-        auto backend =
-            open_backend(backend_options_from(audit_export_sqlite, audit_export_postgres));
-        const AuditExportOptions export_options{
-            .lab_id = audit_export_lab.empty()
-                          ? std::nullopt
-                          : std::optional<core::LabId>(core::LabId::parse(audit_export_lab)),
-            .actor = core::UserId::parse(audit_export_actor),
-        };
-        if (audit_export_out.empty()) {
-          return run_audit_export(*backend, export_options, out);
-        }
-        std::ofstream file(audit_export_out, std::ios::binary | std::ios::trunc);
-        if (!file) {
-          err << "error: cannot open output file: " << audit_export_out << '\n';
-          return 1;
-        }
-        return run_audit_export(*backend, export_options, file);
+      if (const auto code =
+              dispatch_audit_commands(verify, audit_sqlite, audit_postgres, audit_export,
+                                      audit_export_sqlite, audit_export_postgres, audit_export_lab,
+                                      audit_export_actor, audit_export_out, out, err)) {
+        return *code;
       }
       if (lab_create->parsed()) {
         auto backend = open_backend(backend_options_from(lab_sqlite, lab_postgres));

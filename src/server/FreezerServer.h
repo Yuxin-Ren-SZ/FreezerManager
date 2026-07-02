@@ -46,7 +46,7 @@ namespace fmgr::server {
     // larger than this is rejected with RESOURCE_EXHAUSTED before the payload is
     // buffered, so a malicious client cannot exhaust server memory. Paired with a
     // grpc::ResourceQuota that bounds the process-wide buffer pool. Default 10 MiB.
-    std::size_t max_receive_message_bytes{10U * 1024U * 1024U};
+    std::size_t max_receive_message_bytes{std::size_t{10} * 1024 * 1024};
     // When true, INTERNAL errors return a generic message to the client and the
     // real detail is only logged server-side (security audit C-11 info leak).
     // Defaults on in release builds, off in debug so developers see detail on the

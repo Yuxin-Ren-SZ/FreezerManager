@@ -791,26 +791,26 @@ namespace fmgr::server {
         for (const auto& row : report.rows) {
           auto* out = resp->add_rows();
           out->set_row_number(static_cast<std::int32_t>(row.row_number));
-          bool ok = row.ok;
+          bool okay = row.ok;
           std::string error = row.error;
           // Dry-run additionally checks each structurally-ok row against committed
           // state (FK liveness, occupied position) in its own never-committed
           // transaction, mirroring `freezerctl sample import --dry-run`.
-          if (req->dry_run() && ok) {
+          if (req->dry_run() && okay) {
             try {
               auto probe = backend_.begin(storage::IsolationLevel::Serializable);
               rpc::AuthMiddleware::inject_rls_vars(*probe, sctx);
-              probe->repo<core::Sample>().insert(*row.sample,
+              probe->repo<core::Sample>().insert(row.sample.value(),
                                                  make_ctx(*ctx, sctx, "import_samples_dryrun"));
               // Intentionally not committed: the transaction rolls back on scope exit.
             } catch (const std::exception& e) {
-              ok = false;
+              okay = false;
               error = e.what();
             }
           }
-          out->set_ok(ok);
+          out->set_ok(okay);
           out->set_error(error);
-          if (ok) {
+          if (okay) {
             ++succeeded;
           } else {
             ++failed;
@@ -828,7 +828,8 @@ namespace fmgr::server {
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
       for (const auto& row : report.rows) {
-        txn->repo<core::Sample>().insert(*row.sample, make_ctx(*ctx, sctx, "import_samples"));
+        txn->repo<core::Sample>().insert(row.sample.value(),
+                                         make_ctx(*ctx, sctx, "import_samples"));
       }
       txn->commit();
 
@@ -836,7 +837,7 @@ namespace fmgr::server {
         auto* out = resp->add_rows();
         out->set_row_number(static_cast<std::int32_t>(row.row_number));
         out->set_ok(true);
-        out->set_sample_id(row.sample->id.to_string());
+        out->set_sample_id(row.sample.value().id.to_string());
       }
       resp->set_committed(true);
       resp->set_succeeded(static_cast<std::int32_t>(report.rows.size()));
