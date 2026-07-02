@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/SampleServiceImpl.h"
+#include "server/RequestId.h"
 
+#include "cli/CsvReader.h"
 #include "cli/SampleCsv.h"
+#include "cli/SampleImport.h"
 #include "core/custom_field_validator.h"
 #include "core/identity.h"
 #include "core/permissions.h"
@@ -21,6 +24,7 @@
 #include <grpcpp/grpcpp.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -31,17 +35,20 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <unordered_set>
 #include <vector>
 
 namespace fmgr::server {
   namespace {
 
-    [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
+    [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
+                                                    const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
           .actor_user_id = sctx.user_id,
           .actor_session_id = sctx.session_id.to_string(),
-          .request_id = "",
+          .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
     }
@@ -52,6 +59,15 @@ namespace fmgr::server {
                               .count();
       return core::Timestamp::from_unix_micros(static_cast<std::int64_t>(micros));
     }
+
+    [[nodiscard]] std::int64_t now_unix_micros() {
+      return now_timestamp().unix_micros();
+    }
+
+    // WatchSampleList poll cadence: tail the table once per interval but wake
+    // every slice so cancellation is observed promptly. Mirrors WatchAuditFeed.
+    constexpr std::chrono::milliseconds k_watch_poll_slice{100};
+    constexpr int k_watch_poll_slices = 10; // 100ms * 10 = ~1s between polls
 
     [[nodiscard]] std::string now_iso8601_utc() {
       const auto secs = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -261,6 +277,142 @@ namespace fmgr::server {
       return disclosed;
     }
 
+    // Tail query for WatchSampleList: lab scope + the request's box/item-type
+    // filters plus a `last_modified_at >= cursor` lower bound, ordered
+    // (last_modified_at, id) so the cursor advances monotonically. Tombstoned
+    // rows are intentionally included (include_tombstoned) so a soft-delete is
+    // delivered as a SAMPLE_STATUS_TOMBSTONED row the client can remove.
+    [[nodiscard]] storage::Query<core::Sample>
+    build_sample_watch_query(const fmgr::v1::WatchSampleListRequest& req, const core::LabId& lab_id,
+                             std::int64_t cursor_micros) {
+      auto query =
+          storage::Query<core::Sample>::where(storage::field<core::Sample, std::string>(
+                                                  core::Sample::Field::LabId) == lab_id.to_string())
+              .include_tombstoned();
+      if (req.has_box_id()) {
+        query = query.and_where(
+            storage::field<core::Sample, std::string>(core::Sample::Field::BoxId) == req.box_id());
+      }
+      if (req.has_item_type_id()) {
+        query = query.and_where(storage::field<core::Sample, std::string>(
+                                    core::Sample::Field::ItemTypeId) == req.item_type_id());
+      }
+      return query
+          .and_where(storage::greater_or_equal(
+              storage::field<core::Sample, core::Timestamp>(core::Sample::Field::LastModifiedAt),
+              core::Timestamp::from_unix_micros(cursor_micros)))
+          .order_by(
+              storage::field<core::Sample, core::Timestamp>(core::Sample::Field::LastModifiedAt),
+              storage::SortDirection::Ascending)
+          .order_by(storage::field<core::Sample, std::string>(core::Sample::Field::Id),
+                    storage::SortDirection::Ascending);
+    }
+
+    // Write rows newer than the cursor, suppressing ids already delivered at the
+    // exact cursor microsecond (the lower bound is `>=`, so a same-micro row can
+    // reappear). Advances the cursor and rebuilds the dedup set. Returns false
+    // when the client has hung up (Write failed). PHI is never disclosed here.
+    [[nodiscard]] bool emit_new_samples(grpc::ServerWriter<fmgr::v1::Sample>& writer,
+                                        const std::vector<core::Sample>& samples,
+                                        std::int64_t& cursor_micros,
+                                        std::unordered_set<std::string>& sent_at_cursor) {
+      std::int64_t max_at = cursor_micros;
+      for (const auto& sample : samples) {
+        const std::int64_t sample_at = sample.last_modified_at.unix_micros();
+        const std::string id = sample.id.to_string();
+        if (sample_at == cursor_micros && sent_at_cursor.contains(id)) {
+          continue;
+        }
+        fmgr::v1::Sample out;
+        fill_sample(&out, sample);
+        if (!writer.Write(out)) {
+          return false;
+        }
+        max_at = std::max(max_at, sample_at);
+      }
+      if (max_at > cursor_micros) {
+        cursor_micros = max_at;
+        sent_at_cursor.clear();
+      }
+      for (const auto& sample : samples) {
+        if (sample.last_modified_at.unix_micros() == cursor_micros) {
+          sent_at_cursor.insert(sample.id.to_string());
+        }
+      }
+      return true;
+    }
+
+    // Dry-run, or a structural failure on a real import: validate/report only,
+    // persist nothing. Reports one row per record with per-row ok/error.
+    void report_import_validation(storage::IStorageBackend& backend, grpc::ServerContext* ctx,
+                                  const auth::SessionContext& sctx, const cli::ImportReport& report,
+                                  bool dry_run, fmgr::v1::ImportSamplesResponse* resp) {
+      int succeeded = 0;
+      int failed = 0;
+      for (const auto& row : report.rows) {
+        auto* out = resp->add_rows();
+        out->set_row_number(static_cast<std::int32_t>(row.row_number));
+        bool okay = row.ok;
+        std::string error = row.error;
+        // Dry-run additionally checks each structurally-ok row against committed
+        // state (FK liveness, occupied position) in its own never-committed
+        // transaction, mirroring `freezerctl sample import --dry-run`.
+        if (dry_run && okay && row.sample.has_value()) {
+          const auto& sample = *row.sample;
+          try {
+            auto probe = backend.begin(storage::IsolationLevel::Serializable);
+            rpc::AuthMiddleware::inject_rls_vars(*probe, sctx);
+            probe->repo<core::Sample>().insert(sample,
+                                               make_ctx(*ctx, sctx, "import_samples_dryrun"));
+            // Intentionally not committed: the transaction rolls back on scope exit.
+          } catch (const std::exception& e) {
+            okay = false;
+            error = e.what();
+          }
+        }
+        out->set_ok(okay);
+        out->set_error(error);
+        if (okay) {
+          ++succeeded;
+        } else {
+          ++failed;
+        }
+      }
+      resp->set_committed(false);
+      resp->set_succeeded(succeeded);
+      resp->set_failed(failed);
+    }
+
+    // Real import, every row structurally valid: all-or-nothing in one
+    // transaction. A storage failure (FK, occupied position, …) rolls the whole
+    // batch back and surfaces as the mapped gRPC status — nothing is persisted.
+    void commit_import(storage::IStorageBackend& backend, grpc::ServerContext* ctx,
+                       const auth::SessionContext& sctx, const cli::ImportReport& report,
+                       fmgr::v1::ImportSamplesResponse* resp) {
+      auto txn = backend.begin(storage::IsolationLevel::Serializable);
+      rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+      for (const auto& row : report.rows) {
+        // row.sample is guaranteed present when row.ok is true
+        if (row.sample.has_value()) {
+          txn->repo<core::Sample>().insert(*row.sample, make_ctx(*ctx, sctx, "import_samples"));
+        }
+      }
+      txn->commit();
+
+      for (const auto& row : report.rows) {
+        auto* out = resp->add_rows();
+        out->set_row_number(static_cast<std::int32_t>(row.row_number));
+        out->set_ok(true);
+        // row.sample is guaranteed present when row.ok is true
+        if (row.sample.has_value()) {
+          out->set_sample_id(row.sample->id.to_string());
+        }
+      }
+      resp->set_committed(true);
+      resp->set_succeeded(static_cast<std::int32_t>(report.rows.size()));
+      resp->set_failed(0);
+    }
+
   } // namespace
 
   SampleServiceImpl::SampleServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend,
@@ -276,6 +428,8 @@ namespace fmgr::server {
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/MoveSample", P::SampleWrite);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/CheckoutSample", P::SampleCheckout);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ExportSamplesCsv", P::SampleRead);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ImportSamples", P::SampleWrite);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/WatchSampleList", P::SampleRead);
   }
 
   grpc::Status SampleServiceImpl::ListSamples(grpc::ServerContext* ctx,
@@ -333,9 +487,9 @@ namespace fmgr::server {
         fill_sample(out, sample);
         const auto disclosed = reveal_phi(out, sample, sctx, kms_);
         if (!disclosed.empty()) {
-          auto ctx = make_ctx(sctx, "list_samples");
-          ctx.lab_id = sample.lab_id.to_string();
-          txn->note_phi_read("sample", sample.id.to_string(), ctx, disclosed);
+          auto mut = make_ctx(*ctx, sctx, "list_samples");
+          mut.lab_id = sample.lab_id.to_string();
+          txn->note_phi_read("sample", sample.id.to_string(), mut, disclosed);
         }
       }
       txn->commit();
@@ -374,9 +528,9 @@ namespace fmgr::server {
       fill_sample(out, *sample);
       const auto disclosed = reveal_phi(out, *sample, sctx, kms_);
       if (!disclosed.empty()) {
-        auto ctx = make_ctx(sctx, "get_sample");
-        ctx.lab_id = sample->lab_id.to_string();
-        txn->note_phi_read("sample", sample->id.to_string(), ctx, disclosed);
+        auto mut = make_ctx(*ctx, sctx, "get_sample");
+        mut.lab_id = sample->lab_id.to_string();
+        txn->note_phi_read("sample", sample->id.to_string(), mut, disclosed);
       }
       txn->commit();
       return grpc::Status::OK;
@@ -446,7 +600,7 @@ namespace fmgr::server {
           prepare_custom_fields(*txn, lab_id, item_type_id, req->custom_fields_json(), kms_);
       sample.custom_fields_json = prepared.custom_fields_json;
       sample.phi_fields_enc_json = prepared.phi_fields_enc_json;
-      txn->repo<core::Sample>().insert(sample, make_ctx(sctx, "create_sample"));
+      txn->repo<core::Sample>().insert(sample, make_ctx(*ctx, sctx, "create_sample"));
       txn->commit();
 
       fill_sample(resp->mutable_sample(), sample);
@@ -519,7 +673,7 @@ namespace fmgr::server {
       existing->last_modified_by = sctx.user_id;
       existing->last_modified_at = now_timestamp();
 
-      txn->repo<core::Sample>().update(*existing, make_ctx(sctx, "update_sample"));
+      txn->repo<core::Sample>().update(*existing, make_ctx(*ctx, sctx, "update_sample"));
       txn->commit();
 
       fill_sample(resp->mutable_sample(), *existing);
@@ -548,7 +702,7 @@ namespace fmgr::server {
       if (!sctx.has_for_lab(existing->lab_id, core::Permission::SampleDeleteSoft)) {
         throw auth::PermissionDenied("sample.delete_soft required for this lab");
       }
-      txn->repo<core::Sample>().soft_delete(sample_id, make_ctx(sctx, "soft_delete_sample"));
+      txn->repo<core::Sample>().soft_delete(sample_id, make_ctx(*ctx, sctx, "soft_delete_sample"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {
@@ -583,7 +737,7 @@ namespace fmgr::server {
                                ? std::optional<std::string>{req->dest_position()}
                                : std::nullopt;
       const auto moved = storage::move_sample(*txn, sample_id, dest_box, std::move(dest_position),
-                                              make_ctx(sctx, "move_sample"));
+                                              make_ctx(*ctx, sctx, "move_sample"));
       txn->commit();
 
       fill_sample(resp->mutable_sample(), moved);
@@ -624,8 +778,8 @@ namespace fmgr::server {
           .event_id = core::CheckoutEventId::parse(generate_uuid_v4()),
           .at = now_timestamp(),
       };
-      const auto updated =
-          storage::apply_checkout(*txn, sample_id, command, make_ctx(sctx, "checkout_sample"));
+      const auto updated = storage::apply_checkout(*txn, sample_id, command,
+                                                   make_ctx(*ctx, sctx, "checkout_sample"));
       txn->commit();
 
       fill_sample(resp->mutable_sample(), updated);
@@ -666,6 +820,86 @@ namespace fmgr::server {
       std::ostringstream out;
       cli::write_sample_csv(out, samples, schema_version, lab_id.to_string(), now_iso8601_utc());
       resp->set_csv_content(out.str());
+      return grpc::Status::OK;
+    } catch (...) {
+      return current_exception_to_grpc_status();
+    }
+  }
+
+  grpc::Status SampleServiceImpl::ImportSamples(grpc::ServerContext* ctx,
+                                                const fmgr::v1::ImportSamplesRequest* req,
+                                                fmgr::v1::ImportSamplesResponse* resp) {
+    try {
+      // Authenticate before touching request fields (see ListSamples).
+      const auto bearer = extract_bearer(*ctx);
+      const auto lab_id = core::LabId::parse(req->lab_id());
+      const auto sctx = middleware_.authorize(bearer, core::Permission::SampleWrite, lab_id);
+
+      // Structural validation + row->Sample mapping, reusing the CLI importer core
+      // (compiled into server_lib). lab/actor are server-supplied, never from the
+      // CSV, so an import cannot smuggle rows into another lab or forge authorship.
+      std::istringstream input(req->csv_content());
+      const auto records = cli::parse_csv(input);
+      const cli::ImportContext ictx{
+          .lab_id = lab_id, .actor = sctx.user_id, .now = now_timestamp()};
+      cli::ImportReport report = cli::build_import(records, ictx);
+
+      if (!report.header_error.empty()) {
+        resp->set_header_error(report.header_error);
+        resp->set_committed(false);
+        return grpc::Status::OK;
+      }
+
+      const bool any_structural_error =
+          std::any_of(report.rows.begin(), report.rows.end(),
+                      [](const cli::ImportRowResult& row) { return !row.ok; });
+
+      if (req->dry_run() || any_structural_error) {
+        report_import_validation(backend_, ctx, sctx, report, req->dry_run(), resp);
+      } else {
+        commit_import(backend_, ctx, sctx, report, resp);
+      }
+      return grpc::Status::OK;
+    } catch (...) {
+      return current_exception_to_grpc_status();
+    }
+  }
+
+  grpc::Status SampleServiceImpl::WatchSampleList(grpc::ServerContext* ctx,
+                                                  const fmgr::v1::WatchSampleListRequest* req,
+                                                  grpc::ServerWriter<fmgr::v1::Sample>* writer) {
+    try {
+      // Authorize once at stream-open: a sample feed is always lab-scoped and
+      // gates on SampleRead for that lab (held by every Member/ReadOnly), so a
+      // missing/invalid token surfaces as UNAUTHENTICATED before parsing lab_id.
+      const auto bearer = extract_bearer(*ctx);
+      const auto lab_id = core::LabId::parse(req->lab_id());
+      const auto sctx = middleware_.authorize(bearer, core::Permission::SampleRead, lab_id);
+
+      // Poll-tail cursor on last_modified_at. Re-query rows with
+      // last_modified_at >= cursor each cycle (>= not > so newly-changed rows
+      // sharing the cursor microsecond are not missed) and suppress ids already
+      // emitted at that microsecond via `sent_at_cursor`. No LISTEN/NOTIFY yet —
+      // this stays portable across SQLite and Postgres. PHI is never disclosed.
+      std::int64_t cursor_micros =
+          req->has_since() ? req->since().unix_micros() : now_unix_micros();
+      std::unordered_set<std::string> sent_at_cursor;
+
+      while (!ctx->IsCancelled()) {
+        auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
+        rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+        const auto samples =
+            txn->repo<core::Sample>().query(build_sample_watch_query(*req, lab_id, cursor_micros));
+        txn->commit();
+
+        if (!emit_new_samples(*writer, samples, cursor_micros, sent_at_cursor)) {
+          return grpc::Status::OK; // client/gateway hung up
+        }
+
+        for (int i = 0; i < k_watch_poll_slices && !ctx->IsCancelled(); ++i) {
+          std::this_thread::sleep_for(k_watch_poll_slice);
+        }
+      }
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();

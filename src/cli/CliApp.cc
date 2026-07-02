@@ -16,6 +16,7 @@
 #include "cli/NounCommands.h"
 #include "cli/SampleCommands.h"
 #include "cli/SampleQuery.h"
+#include "cli/UserCommands.h"
 #include "cli/UserImport.h"
 #include "core/box.h"
 #include "core/enums.h"
@@ -679,11 +680,32 @@ namespace fmgr::cli {
       args.cmd->add_option("file", args.file, "CSV file to import ('-' for stdin)")->required();
     }
 
+    // Parse-time storage for `user set-password`. The password is read from stdin
+    // at dispatch, never taken on argv (it would leak via ps/shell history).
+    struct SetPasswordArgs {
+      std::string sqlite;
+      std::string postgres;
+      std::string email;
+      std::string actor;
+      CLI::App* cmd{nullptr};
+    };
+
+    void add_user_set_password(CLI::App* user_root, SetPasswordArgs& args) {
+      args.cmd = user_root->add_subcommand(
+          "set-password", "Enrol a local password for an existing user (reads it from stdin)");
+      args.cmd->add_option("--sqlite", args.sqlite, "Path to a SQLite database file");
+      args.cmd->add_option("--postgres", args.postgres, "PostgreSQL connection URL");
+      args.cmd->add_option("--email", args.email, "Email of the user to enrol")->required();
+      args.cmd->add_option("--actor", args.actor,
+                           "User UUID recorded as the audit actor (default: the target user)");
+    }
+
     struct ImportNouns {
       ImportArgs item_type;
       ImportArgs box;
       ImportArgs custom_field_def;
       ImportArgs user;
+      SetPasswordArgs user_set_password;
     };
 
     void add_import_nouns(CLI::App& app, const NounSubcommands& box,
@@ -699,6 +721,7 @@ namespace fmgr::cli {
       CLI::App* user_root = app.add_subcommand("user", "user commands");
       user_root->require_subcommand(1);
       add_import_noun(user_root, "user", nouns.user);
+      add_user_set_password(user_root, nouns.user_set_password);
     }
 
     // Run one parsed import: open the backend, then stream the file (or stdin on
@@ -736,6 +759,87 @@ namespace fmgr::cli {
       }
       if (nouns.user.cmd->parsed()) {
         return run_import_arg<core::User>(nouns.user, build_user_import, "user(s)", out);
+      }
+      return std::nullopt;
+    }
+
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<int>
+    dispatch_sample_commands(CLI::App* list, const CommonArgs& list_args, CLI::App* exporter,
+                             const CommonArgs& export_args, const std::string& export_out,
+                             CLI::App* importer, const std::string& import_sqlite,
+                             const std::string& import_postgres, const std::string& import_lab,
+                             const std::string& import_actor, const std::string& import_file,
+                             bool import_dry_run, std::ostream& out, std::ostream& err) {
+      // NOLINTEND(bugprone-easily-swappable-parameters)
+      if (list->parsed()) {
+        auto backend = open_backend(to_backend_options(list_args));
+        run_sample_list(*backend, to_query_options(list_args), out);
+        return 0;
+      }
+      if (exporter->parsed()) {
+        auto backend = open_backend(to_backend_options(export_args));
+        const auto query_options = to_query_options(export_args);
+        if (export_out.empty()) {
+          run_sample_export(*backend, query_options, out);
+        } else {
+          std::ofstream file(export_out, std::ios::binary | std::ios::trunc);
+          if (!file) {
+            err << "error: cannot open output file: " << export_out << '\n';
+            return 1;
+          }
+          run_sample_export(*backend, query_options, file);
+        }
+        return 0;
+      }
+      if (importer->parsed()) {
+        auto backend = open_backend(backend_options_from(import_sqlite, import_postgres));
+        const SampleImportOptions import_opts{.lab_id = core::LabId::parse(import_lab),
+                                              .actor = core::UserId::parse(import_actor),
+                                              .dry_run = import_dry_run};
+        if (import_file == "-") {
+          return run_sample_import(*backend, import_opts, std::cin, out);
+        }
+        std::ifstream file(import_file, std::ios::binary);
+        if (!file) {
+          err << "error: cannot open input file: " << import_file << '\n';
+          return 1;
+        }
+        return run_sample_import(*backend, import_opts, file, out);
+      }
+      return std::nullopt;
+    }
+
+    // NOLINTBEGIN(bugprone-easily-swappable-parameters)
+    [[nodiscard]] std::optional<int> dispatch_audit_commands(
+        CLI::App* verify, const std::string& audit_sqlite, const std::string& audit_postgres,
+        CLI::App* audit_export, const std::string& audit_export_sqlite,
+        const std::string& audit_export_postgres, const std::string& audit_export_lab,
+        const std::string& audit_export_actor, const std::string& audit_export_out,
+        std::ostream& out, std::ostream& err) {
+      // NOLINTEND(bugprone-easily-swappable-parameters)
+      if (verify->parsed()) {
+        auto backend = open_backend(backend_options_from(audit_sqlite, audit_postgres));
+        return run_audit_verify(*backend, AuditVerifyOptions{}, out);
+      }
+      if (audit_export->parsed()) {
+        auto backend =
+            open_backend(backend_options_from(audit_export_sqlite, audit_export_postgres));
+        const AuditExportOptions export_options{
+            .lab_id = audit_export_lab.empty()
+                          ? std::nullopt
+                          : std::optional<core::LabId>(core::LabId::parse(audit_export_lab)),
+            .actor = core::UserId::parse(audit_export_actor),
+        };
+        if (audit_export_out.empty()) {
+          return run_audit_export(*backend, export_options, out);
+        }
+        std::ofstream file(audit_export_out, std::ios::binary | std::ios::trunc);
+        if (!file) {
+          err << "error: cannot open output file: " << audit_export_out << '\n';
+          return 1;
+        }
+        return run_audit_export(*backend, export_options, file);
       }
       return std::nullopt;
     }
@@ -787,6 +891,22 @@ namespace fmgr::cli {
     CLI::App* verify = audit->add_subcommand("verify", "Verify the audit hash chain (global)");
     verify->add_option("--sqlite", audit_sqlite, "Path to a SQLite database file");
     verify->add_option("--postgres", audit_postgres, "PostgreSQL connection URL");
+
+    // audit export: chain-of-custody CSV of the audit log. The export is itself
+    // audited (PRD §7.3), so it needs an --actor; --lab scopes it to one lab.
+    std::string audit_export_sqlite;
+    std::string audit_export_postgres;
+    std::string audit_export_lab;   // optional; empty = all labs (global export)
+    std::string audit_export_actor; // required
+    std::string audit_export_out;   // optional; empty = stdout
+    CLI::App* audit_export =
+        audit->add_subcommand("export", "Export the audit log as chain-of-custody CSV");
+    audit_export->add_option("--sqlite", audit_export_sqlite, "Path to a SQLite database file");
+    audit_export->add_option("--postgres", audit_export_postgres, "PostgreSQL connection URL");
+    audit_export->add_option("--lab", audit_export_lab, "Lab UUID to scope the export to");
+    audit_export->add_option("--actor", audit_export_actor, "User UUID recorded as the exporter")
+        ->required();
+    audit_export->add_option("--out", audit_export_out, "Write CSV to this file instead of stdout");
 
     // lab create: first-run bootstrap. No --lab (it mints one); ids are
     // server-generated. Takes its own backend selector + lab/admin descriptors.
@@ -845,44 +965,16 @@ namespace fmgr::cli {
     }
 
     try {
-      if (list->parsed()) {
-        auto backend = open_backend(to_backend_options(list_args));
-        run_sample_list(*backend, to_query_options(list_args), out);
-        return 0;
+      if (const auto code = dispatch_sample_commands(
+              list, list_args, exporter, export_args, export_out, importer, import_sqlite,
+              import_postgres, import_lab, import_actor, import_file, import_dry_run, out, err)) {
+        return *code;
       }
-      if (exporter->parsed()) {
-        auto backend = open_backend(to_backend_options(export_args));
-        const auto query_options = to_query_options(export_args);
-        if (export_out.empty()) {
-          run_sample_export(*backend, query_options, out);
-        } else {
-          std::ofstream file(export_out, std::ios::binary | std::ios::trunc);
-          if (!file) {
-            err << "error: cannot open output file: " << export_out << '\n';
-            return 1;
-          }
-          run_sample_export(*backend, query_options, file);
-        }
-        return 0;
-      }
-      if (importer->parsed()) {
-        auto backend = open_backend(backend_options_from(import_sqlite, import_postgres));
-        const SampleImportOptions import_opts{.lab_id = core::LabId::parse(import_lab),
-                                              .actor = core::UserId::parse(import_actor),
-                                              .dry_run = import_dry_run};
-        if (import_file == "-") {
-          return run_sample_import(*backend, import_opts, std::cin, out);
-        }
-        std::ifstream file(import_file, std::ios::binary);
-        if (!file) {
-          err << "error: cannot open input file: " << import_file << '\n';
-          return 1;
-        }
-        return run_sample_import(*backend, import_opts, file, out);
-      }
-      if (verify->parsed()) {
-        auto backend = open_backend(backend_options_from(audit_sqlite, audit_postgres));
-        return run_audit_verify(*backend, AuditVerifyOptions{}, out);
+      if (const auto code =
+              dispatch_audit_commands(verify, audit_sqlite, audit_postgres, audit_export,
+                                      audit_export_sqlite, audit_export_postgres, audit_export_lab,
+                                      audit_export_actor, audit_export_out, out, err)) {
+        return *code;
       }
       if (lab_create->parsed()) {
         auto backend = open_backend(backend_options_from(lab_sqlite, lab_postgres));
@@ -901,6 +993,17 @@ namespace fmgr::cli {
       }
       if (const auto code = dispatch_import_nouns(import_nouns, out)) {
         return *code;
+      }
+      if (import_nouns.user_set_password.cmd->parsed()) {
+        const auto& args = import_nouns.user_set_password;
+        auto backend = open_backend(backend_options_from(args.sqlite, args.postgres));
+        // Read the password from stdin (one line); never accept it on argv.
+        std::string password;
+        std::getline(std::cin, password);
+        const std::optional<core::UserId> actor =
+            args.actor.empty() ? std::nullopt
+                               : std::optional<core::UserId>(core::UserId::parse(args.actor));
+        return run_user_set_password(*backend, args.email, password, actor, out, err);
       }
       if (const auto code = dispatch_backup(backup_noun, out, err)) {
         return *code;

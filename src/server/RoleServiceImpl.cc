@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/RoleServiceImpl.h"
+#include "server/RequestId.h"
 
 #include "core/enums.h"
 #include "core/permissions.h"
@@ -23,12 +24,13 @@
 namespace fmgr::server {
   namespace {
 
-    [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
+    [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
+                                                    const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
           .actor_user_id = sctx.user_id,
           .actor_session_id = sctx.session_id.to_string(),
-          .request_id = "",
+          .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
     }
@@ -231,7 +233,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      txn->repo<core::Role>().insert(role, make_ctx(sctx, "create_role"));
+      txn->repo<core::Role>().insert(role, make_ctx(*ctx, sctx, "create_role"));
       txn->commit();
 
       fill_role(resp->mutable_role(), role);
@@ -270,7 +272,7 @@ namespace fmgr::server {
       existing->kind = from_proto_custom_role_kind(req->role().kind());
       existing->name = req->role().name();
       existing->description = req->role().description();
-      txn->repo<core::Role>().update(*existing, make_ctx(sctx, "update_role"));
+      txn->repo<core::Role>().update(*existing, make_ctx(*ctx, sctx, "update_role"));
       txn->commit();
 
       fill_role(resp->mutable_role(), *existing);
@@ -302,7 +304,7 @@ namespace fmgr::server {
       if (!sctx.has_for_lab(*existing->lab_id, core::Permission::UserManageRoles)) {
         throw auth::PermissionDenied("user.manage_roles required for this lab");
       }
-      txn->repo<core::Role>().soft_delete(role_id, make_ctx(sctx, "archive_role"));
+      txn->repo<core::Role>().soft_delete(role_id, make_ctx(*ctx, sctx, "archive_role"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {
@@ -382,7 +384,7 @@ namespace fmgr::server {
       const core::RolePermission grant{.role_id = role_id, .permission = permission};
       // Idempotent: granting an already-held permission is a no-op success.
       if (!txn->repo<core::RolePermission>().find_by_id(grant.id()).has_value()) {
-        txn->repo<core::RolePermission>().insert(grant, make_ctx(sctx, "grant_permission"));
+        txn->repo<core::RolePermission>().insert(grant, make_ctx(*ctx, sctx, "grant_permission"));
       }
       txn->commit();
       return grpc::Status::OK;
@@ -420,7 +422,7 @@ namespace fmgr::server {
       // Idempotent: revoking a permission the role does not hold is a no-op success.
       if (txn->repo<core::RolePermission>().find_by_id(grant_id).has_value()) {
         txn->repo<core::RolePermission>().soft_delete(grant_id,
-                                                      make_ctx(sctx, "revoke_permission"));
+                                                      make_ctx(*ctx, sctx, "revoke_permission"));
       }
       txn->commit();
       return grpc::Status::OK;

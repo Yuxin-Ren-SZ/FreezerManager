@@ -20,5 +20,16 @@ coverage/
 
 # Agent / tooling artifacts (not project source)
 .agents/
+.hermes/
 package-lock.json
 skills-lock.json
+
+# Web build artifacts (src/web)
+src/web/node_modules/
+src/web/*.tsbuildinfo
+
+# Demo / local data
+data/*.db
+data/*.db-wal
+data/*.db-shm
+scripts/__pycache__/

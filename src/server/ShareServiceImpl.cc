@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/ShareServiceImpl.h"
+#include "server/RequestId.h"
 
 #include "core/enums.h"
 #include "core/permissions.h"
@@ -29,12 +30,13 @@
 namespace fmgr::server {
   namespace {
 
-    [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
+    [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
+                                                    const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
           .actor_user_id = sctx.user_id,
           .actor_session_id = sctx.session_id.to_string(),
-          .request_id = "",
+          .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
     }
@@ -142,9 +144,10 @@ namespace fmgr::server {
 
     // Record one approver's signature. Duplicate signatures for the same role
     // surface as ALREADY_EXISTS (the composite PK rejects them).
-    void record_approval(storage::ITransaction& txn, const auth::SessionContext& sctx,
-                         const core::ShareRequestId& request_id, core::ShareApprovalRole role,
-                         const std::optional<std::string>& note, std::string_view reason) {
+    void record_approval(const grpc::ServerContext& ctx, storage::ITransaction& txn,
+                         const auth::SessionContext& sctx, const core::ShareRequestId& request_id,
+                         core::ShareApprovalRole role, const std::optional<std::string>& note,
+                         std::string_view reason) {
       const core::ShareRequestApproval approval{
           .share_request_id = request_id,
           .approver_role = role,
@@ -152,7 +155,7 @@ namespace fmgr::server {
           .decided_at = now_timestamp(),
           .note = note,
       };
-      txn.repo<core::ShareRequestApproval>().insert(approval, make_ctx(sctx, reason));
+      txn.repo<core::ShareRequestApproval>().insert(approval, make_ctx(ctx, sctx, reason));
     }
 
     [[nodiscard]] std::vector<core::ShareRequestApproval>
@@ -232,7 +235,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      txn->repo<core::ShareRequest>().insert(request, make_ctx(sctx, "create_share_request"));
+      txn->repo<core::ShareRequest>().insert(request, make_ctx(*ctx, sctx, "create_share_request"));
       txn->commit();
 
       fill_request(resp->mutable_request(), request);
@@ -389,13 +392,14 @@ namespace fmgr::server {
 
       const std::optional<std::string> note =
           req->has_note() ? std::optional<std::string>(req->note()) : std::nullopt;
-      record_approval(*txn, sctx, request_id, role, note, "approve_share_request");
+      record_approval(*ctx, *txn, sctx, request_id, role, note, "approve_share_request");
 
       // Once every role has signed, the request transitions to approved.
       if (all_roles_signed(*txn, request_id)) {
         request->status = core::ShareRequestStatus::Approved;
         request->decided_at = now_timestamp();
-        txn->repo<core::ShareRequest>().update(*request, make_ctx(sctx, "approve_share_request"));
+        txn->repo<core::ShareRequest>().update(*request,
+                                               make_ctx(*ctx, sctx, "approve_share_request"));
       }
       txn->commit();
       return grpc::Status::OK;
@@ -431,10 +435,11 @@ namespace fmgr::server {
       // move the request to rejected immediately.
       const std::optional<std::string> note =
           req->has_note() ? std::optional<std::string>(req->note()) : std::nullopt;
-      record_approval(*txn, sctx, request_id, role, note, "reject_share_request");
+      record_approval(*ctx, *txn, sctx, request_id, role, note, "reject_share_request");
       request->status = core::ShareRequestStatus::Rejected;
       request->decided_at = now_timestamp();
-      txn->repo<core::ShareRequest>().update(*request, make_ctx(sctx, "reject_share_request"));
+      txn->repo<core::ShareRequest>().update(*request,
+                                             make_ctx(*ctx, sctx, "reject_share_request"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {
@@ -469,7 +474,7 @@ namespace fmgr::server {
         return {grpc::StatusCode::FAILED_PRECONDITION, "share request cannot be revoked"};
       }
       txn->repo<core::ShareRequest>().soft_delete(request_id,
-                                                  make_ctx(sctx, "revoke_share_request"));
+                                                  make_ctx(*ctx, sctx, "revoke_share_request"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {

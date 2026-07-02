@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/BoxServiceImpl.h"
+#include "server/RequestId.h"
 
 #include "core/box.h"
 #include "core/enums.h"
@@ -27,12 +28,13 @@
 namespace fmgr::server {
   namespace {
 
-    [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
+    [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
+                                                    const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
           .actor_user_id = sctx.user_id,
           .actor_session_id = sctx.session_id.to_string(),
-          .request_id = "",
+          .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
     }
@@ -326,7 +328,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      const auto mut = make_ctx(sctx, "create_freezer");
+      const auto mut = make_ctx(*ctx, sctx, "create_freezer");
       txn->repo<core::StorageContainer>().insert(root, mut);
       txn->repo<core::Freezer>().insert(freezer, mut);
       txn->commit();
@@ -361,7 +363,7 @@ namespace fmgr::server {
       existing->temp_target_c = req->freezer().has_temp_target_c()
                                     ? std::optional<double>{req->freezer().temp_target_c()}
                                     : std::nullopt;
-      txn->repo<core::Freezer>().update(*existing, make_ctx(sctx, "update_freezer"));
+      txn->repo<core::Freezer>().update(*existing, make_ctx(*ctx, sctx, "update_freezer"));
       txn->commit();
 
       fill_freezer(resp->mutable_freezer(), *existing);
@@ -391,7 +393,7 @@ namespace fmgr::server {
         throw auth::PermissionDenied("freezer.configure required for this lab");
       }
       // The appliance and its layout root are archived together (Freezer invariant).
-      const auto mut = make_ctx(sctx, "archive_freezer");
+      const auto mut = make_ctx(*ctx, sctx, "archive_freezer");
       txn->repo<core::Freezer>().soft_delete(freezer_id, mut);
       txn->repo<core::StorageContainer>().soft_delete(existing->layout_root_id, mut);
       txn->commit();
@@ -463,7 +465,8 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      txn->repo<core::StorageContainer>().insert(container, make_ctx(sctx, "create_container"));
+      txn->repo<core::StorageContainer>().insert(container,
+                                                 make_ctx(*ctx, sctx, "create_container"));
       txn->commit();
 
       fill_storage_container(resp->mutable_container(), container);
@@ -502,7 +505,8 @@ namespace fmgr::server {
         existing->capacity_hint =
             nlohmann::json::parse(req->container().capacity_hint_json()).get<core::CapacityHint>();
       }
-      txn->repo<core::StorageContainer>().update(*existing, make_ctx(sctx, "update_container"));
+      txn->repo<core::StorageContainer>().update(*existing,
+                                                 make_ctx(*ctx, sctx, "update_container"));
       txn->commit();
 
       fill_storage_container(resp->mutable_container(), *existing);
@@ -533,7 +537,7 @@ namespace fmgr::server {
         throw auth::PermissionDenied("freezer.configure required for this lab");
       }
       txn->repo<core::StorageContainer>().soft_delete(container_id,
-                                                      make_ctx(sctx, "archive_container"));
+                                                      make_ctx(*ctx, sctx, "archive_container"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {
@@ -595,7 +599,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      txn->repo<core::ContainerType>().insert(type, make_ctx(sctx, "create_container_type"));
+      txn->repo<core::ContainerType>().insert(type, make_ctx(*ctx, sctx, "create_container_type"));
       txn->commit();
 
       fill_container_type(resp->mutable_container_type(), type);
@@ -653,7 +657,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      txn->repo<core::BoxType>().insert(box_type, make_ctx(sctx, "create_box_type"));
+      txn->repo<core::BoxType>().insert(box_type, make_ctx(*ctx, sctx, "create_box_type"));
       txn->commit();
 
       fill_box_type(resp->mutable_box_type(), box_type);
@@ -745,7 +749,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      txn->repo<core::Box>().insert(box, make_ctx(sctx, "create_box"));
+      txn->repo<core::Box>().insert(box, make_ctx(*ctx, sctx, "create_box"));
       txn->commit();
 
       fill_box(resp->mutable_box(), box);
@@ -779,7 +783,7 @@ namespace fmgr::server {
       existing->barcode = req->box().has_barcode()
                               ? std::optional<std::string>{req->box().barcode()}
                               : std::nullopt;
-      txn->repo<core::Box>().update(*existing, make_ctx(sctx, "update_box"));
+      txn->repo<core::Box>().update(*existing, make_ctx(*ctx, sctx, "update_box"));
       txn->commit();
 
       fill_box(resp->mutable_box(), *existing);
@@ -808,7 +812,7 @@ namespace fmgr::server {
       if (!sctx.has_for_lab(existing->lab_id, core::Permission::BoxConfigure)) {
         throw auth::PermissionDenied("box.configure required for this lab");
       }
-      txn->repo<core::Box>().soft_delete(box_id, make_ctx(sctx, "archive_box"));
+      txn->repo<core::Box>().soft_delete(box_id, make_ctx(*ctx, sctx, "archive_box"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {

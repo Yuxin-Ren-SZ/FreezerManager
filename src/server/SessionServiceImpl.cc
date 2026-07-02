@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/SessionServiceImpl.h"
+#include "server/RequestId.h"
 
 #include "core/permissions.h"
 #include "core/session.h"
@@ -24,12 +25,13 @@ namespace fmgr::server {
       return sctx;
     }
 
-    [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
+    [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
+                                                    const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
           .actor_user_id = sctx.user_id,
           .actor_session_id = sctx.session_id.to_string(),
-          .request_id = "",
+          .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
     }
@@ -96,7 +98,7 @@ namespace fmgr::server {
     try {
       const auto sctx = validate_authed(auth_, *ctx);
       const auto session_id = core::SessionId::parse(req->session_id());
-      auth_.revoke_session(session_id, make_ctx(sctx, "revoke_session"));
+      auth_.revoke_session(session_id, make_ctx(*ctx, sctx, "revoke_session"));
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();

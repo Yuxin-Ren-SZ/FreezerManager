@@ -45,8 +45,12 @@ server that is fast, correct, and safe to operate — even without a dedicated D
 > backends (SQLite + PostgreSQL), auth foundation, the audit chain, the full
 > gRPC service layer (9 services), the M1 CLI/CSV surface, and the REST/JSON
 > gateway (Drogon front door over the gRPC in-process channel, all 9 services)
-> are complete; security-remediation pass done. Next: SSE streaming +
-> desktop/web/Python clients.
+> are complete; security-remediation pass done. The **Qt 6 desktop client** is
+> now usable end-to-end (login, lab/freezer/box tree, virtualized sample browser,
+> box drag-and-drop grid, barcode scan, CSV export + **CSV import wizard** with a
+> dry-run validation report); local password enrolment
+> (`freezerctl user set-password`) makes login work end-to-end. Next: SSE
+> streaming (live sample list + import progress), web/Python clients.
 > See [`doc/PRD.md`](./doc/PRD.md) for the full product requirements & design
 > document and the [Roadmap](#roadmap) below for current progress.
 
@@ -113,6 +117,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 
 - ✅ `IAuthProvider` interface — `authenticate`, `validate_token`, `verify_totp`, `revoke_session`, `revoke_all_sessions`; 5 pure-virtual methods; mock compiles
 - ✅ `LocalAuthProvider` — Argon2id (64 MiB / 3 iter / 4 parallelism); BLAKE2b-256 session-token hashing; TOTP (RFC 6238 + RFC 4226 HMAC-SHA1 via OpenSSL EVP_MAC); in-memory account lockout (configurable threshold + duration); API-token validation path
+- ✅ Local password enrolment — `freezerctl user set-password` (reads the password from stdin, never argv) writes the `{provider:local, hash}` binding `authenticate` consumes; a password-only user (no TOTP secret) logs straight in. TOTP enrolment 🔲
 - ✅ TOTP helper (`Totp.h`) — `base32_decode`, `totp_generate`, `totp_verify`; ±1-step window; RFC 6238 known-answer test vectors
 - ✅ `Session.mfa_complete` — false until `verify_totp()` succeeds; propagated through `SessionContext`
 - 🔲 `OidcAuthProvider` — OIDC discovery + PKCE; per-lab issuer config
@@ -142,20 +147,21 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ REST / JSON gateway — Drogon HTTP front door at `/api/v1/*`; forwards to the gRPC services over the in-process channel (reuses the RBAC gate + audit + transactions, no logic duplicated); JSON↔proto via proto3 JSON mapping. **All 9 services wired** (Auth/Session/Lab/Sample/Box/ItemType/Role/Audit/Share) with positive/negative authz integration tests. ⚙️ SSE streaming: live audit feed
 (`GET /api/v1/audit/watch`, server-streaming `WatchAuditFeed` bridged to
 `text/event-stream`); live sample list + bulk-import progress 🔲
-- 🔲 Qt 6 desktop client — sample browser, box drag-and-drop grid, barcode-scanner focus mode, CSV import wizard
+- ⚙️ Qt 6 desktop client — ✅ login + session shell, ✅ Lab→Freezer→Container→Box tree, ✅ virtualized sample browser (cursor paging + structured filters), ✅ box drag-and-drop grid (server-validated placement, "size mismatch" toast), ✅ barcode-scanner focus mode (bulk check-in/out), ✅ CSV export from the sample list, ✅ CSV import wizard (file pick → server dry-run report → all-or-nothing commit → list refresh)
 - 🔲 React / TypeScript SPA — feature parity with Qt client; live updates via SSE
 - 🔲 `freezerctl-py` Python client — thin REST wrapper; Jupyter quick-start notebook with example plots
-- ⚙️ CSV import — `freezerctl sample import` (transactional, all-or-nothing; `--dry-run` per-row validation report; RFC 4180 reader skips the export header block). Samples done; remaining entity tables 🔲
-- ✅ CSV export — chain-of-custody `freezerctl sample export` for samples
+- ⚙️ CSV import — `freezerctl sample import` and the `SampleService.ImportSamples` RPC (gRPC + REST `/api/v1/sample/import`): transactional, all-or-nothing; `--dry-run`/`dry_run` per-row validation report (the RPC additionally probes each row against committed state); RFC 4180 reader skips the export header block. Samples done; remaining entity tables 🔲
+- ✅ CSV export — chain-of-custody `freezerctl sample export` + `SampleService.ExportSamplesCsv` (gRPC + REST) for samples
 
 ### Operations
 
 - ⚙️ Encrypted backups — SQLite: online `sqlite3_backup` hot copy, stream-encrypted (`crypto_secretstream`) under a separate backup KEK, with a content-hash manifest (`freezerctl backup create` / `restore`). In-server scheduled runner (`BackupScheduler`, enabled by `FMGR_BACKUP_DIR`) + GFS retention (default 30 daily / 12 monthly / 7 yearly) + `freezerctl backup run | list` ✅. PostgreSQL backup 🔲
 - ✅ Separate backup key — `IKmsProvider` backup KEK (`kms::make_backup_kms`: `backup_kek` systemd-cred / `FMGR_BACKUP_KEK`), independent of the master KEK, so loss of the live master key alone does not decrypt backups
 - ✅ Restore-drill — `freezerctl backup verify` decrypts a backup, runs `PRAGMA integrity_check`, and verifies its audit hash chain; never throws on a bad backup (reports FAIL) so it is schedule-safe. Weekly automated drill (random-backup pick, `backup.drill` audit, error-level page on failure) runs inside `BackupScheduler` and on each `backup run`
-- 🔲 Prometheus `/metrics` — RPC latency histograms, error rates, audit append latency, backup status
+- ⚙️ Prometheus `/metrics` — hand-rolled registry (`src/obs/Metrics`) scraped at `GET /metrics`; a gRPC server interceptor records `rpc_requests_total{method,code}` for every RPC and `rpc_latency_seconds{method}` for unary RPCs. Audit-append latency + backup-status gauges 🔲
+- ✅ `/health` readiness endpoint — unauthenticated `GET /api/v1/health` (+ `/healthz`) with per-dependency checks (database reachability, KMS wrap/unwrap round-trip, backup-target writability); 200 healthy / 503 when a dependency is down (`src/obs/Health`)
+- ✅ Structured JSON logs to stdout — `src/obs/Log`; one JSON object per line (`ts`, `level`, `msg`, `request_id`, `actor_user_id`, `lab_id`, `event`) on an async sink; PHI never written (field-type-limited). Caller `x-request-id` propagated into the audit row (C-12)
 - 🔲 OpenTelemetry tracing — opt-in via `FMGR_OTLP_ENDPOINT` env var
-- 🔲 Structured JSON logs to stdout — journald-friendly; PHI never written to logs
 - 🔲 TOML configuration — `/etc/freezerd/freezerd.toml`; env-var overrides; fail-fast validation
 
 ### Developer Experience
@@ -185,7 +191,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅, freezer/box/item-type `list` + `inspect` ✅, CLI `create` nouns (6 entities) ✅, non-sample CSV import (item-type/box/custom-field-def/user) ✅ | ✅ Complete |
 | **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots | ✅ Complete |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
-| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, SSE streaming — live audit feed ✅ (sample list + import progress 🔲), Qt 6 desktop client 🔲 | ⚙️ In progress |
+| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, `SampleService.ImportSamples` RPC (transactional CSV import + dry-run) ✅, SSE streaming — live audit feed ✅ (sample list + import progress 🔲), Qt 6 desktop client — login + tree + sample browser + box grid + barcode + CSV export ✅ + CSV import wizard ✅ | ⚙️ In progress |
 | **M4 — Web UI** | React / TypeScript SPA, live updates via SSE | 🔲 Planned |
 | **M5 — PHI + KMS + Backups** | Sample PHI field-level encryption ✅, `IKmsProvider` + `EnvVarKms` + `OsKeyringKms` (keyring) ✅, PHI-read audit kind ✅, key rotation (`freezerctl key rotate`) ✅, separate backup KEK ✅, encrypted SQLite backup/restore + restore-drill verify (`freezerctl backup`) ✅, in-server scheduled backups + GFS retention + weekly restore drill (`BackupScheduler`, `freezerctl backup run | list`) ✅; `VaultKms`, Postgres backup 🔲 | ⚙️ In progress |
 | **M6 — Public API & Sharing** | API tokens, `freezerctl-py`, cross-lab share-request workflow | 🔲 Planned |

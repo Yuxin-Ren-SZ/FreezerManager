@@ -5,6 +5,7 @@
 #include "auth/AuthTypes.h"
 #include "core/permissions.h"
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -23,13 +24,33 @@ namespace fmgr::rpc {
       return s_registry;
     }
 
+    // Process-wide data-tier gate. Null unless a server installs one. Atomic so
+    // install/uninstall races with in-flight authorize() calls are well-defined.
+    std::atomic<RateLimiter*>& process_data_limiter() {
+      static std::atomic<RateLimiter*> s_limiter{nullptr};
+      return s_limiter;
+    }
+
   } // namespace
 
   AuthMiddleware::AuthMiddleware(auth::IAuthProvider& auth) : auth_(auth) {}
 
+  void AuthMiddleware::set_process_data_rate_limiter(rpc::RateLimiter* limiter) {
+    process_data_limiter().store(limiter, std::memory_order_release);
+  }
+
   auth::SessionContext AuthMiddleware::authorize(std::string_view bearer_token,
                                                  core::Permission required_perm,
                                                  std::optional<core::LabId> lab_id) const {
+    // Step 0: data-tier rate limit, keyed by the bearer token, before any work
+    // (notably token validation). Throttles authenticated request floods across
+    // every service (audit C-10). Skipped when no gate is installed.
+    if (auto* limiter = process_data_limiter().load(std::memory_order_acquire)) {
+      if (!limiter->try_acquire(std::string(bearer_token), rpc::RateLimiter::Clock::now())) {
+        throw auth::RateLimited("too many requests; slow down");
+      }
+    }
+
     // Step 1: validate token (may throw InvalidCredentials, TokenExpired, etc.)
     auth::SessionContext ctx = auth_.validate_token(bearer_token);
 

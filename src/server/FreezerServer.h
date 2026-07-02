@@ -11,6 +11,7 @@
 #include "server/BoxServiceImpl.h"
 #include "server/ItemTypeServiceImpl.h"
 #include "server/LabServiceImpl.h"
+#include "server/RateLimitInterceptor.h"
 #include "server/RoleServiceImpl.h"
 #include "server/SampleServiceImpl.h"
 #include "server/SessionServiceImpl.h"
@@ -19,6 +20,7 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -40,6 +42,23 @@ namespace fmgr::server {
     // (BackupScheduler) using this config plus a backup KEK from
     // kms::make_backup_kms(). Left empty, no scheduler runs (current behavior).
     std::optional<backup::BackupScheduleConfig> backup_schedule;
+    // Hard cap on a single inbound gRPC message (security audit C-10). A frame
+    // larger than this is rejected with RESOURCE_EXHAUSTED before the payload is
+    // buffered, so a malicious client cannot exhaust server memory. Paired with a
+    // grpc::ResourceQuota that bounds the process-wide buffer pool. Default 10 MiB.
+    std::size_t max_receive_message_bytes{std::size_t{10} * 1024 * 1024};
+    // When true, INTERNAL errors return a generic message to the client and the
+    // real detail is only logged server-side (security audit C-11 info leak).
+    // Defaults on in release builds, off in debug so developers see detail on the
+    // wire. build() applies this to the process-wide error translator.
+#ifdef NDEBUG
+    bool mask_internal_errors{true};
+#else
+    bool mask_internal_errors{false};
+#endif
+    // Two-tier request throttle applied across every service (security audit
+    // C-10 DoS). build() installs it for the server's lifetime.
+    RateLimitOptions rate_limit;
   };
 
   // Owns the gRPC server, all service impls, and manages the lifecycle.
@@ -94,6 +113,9 @@ namespace fmgr::server {
     AuditServiceImpl audit_svc_;
     ShareServiceImpl share_svc_;
     std::unique_ptr<grpc::Server> grpc_server_;
+    // Process-wide request throttle; installed in build(), uninstalled in the
+    // dtor (RAII). Null until build() runs.
+    std::unique_ptr<RateLimitInterceptor> rate_limiter_;
     // In-process scheduled-backup runner; null unless opts_.backup_schedule is set
     // and a backup KEK is configured. Stopped/joined in shutdown() and the dtor.
     std::unique_ptr<BackupScheduler> backup_scheduler_;

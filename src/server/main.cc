@@ -3,19 +3,36 @@
 #include "auth/LocalAuthProvider.h"
 #include "backup/BackupRunner.h"
 #include "core/ids.h"
+#include "kms/IKmsProvider.h"
+#include "kms/KmsFactory.h"
+#include "obs/Health.h"
+#include "obs/Log.h"
 #include "rest/GatewayStubs.h"
 #include "rest/RestGateway.h"
 #include "server/FreezerServer.h"
+#include "storage/sqlite/AuditRepositories.h"
+#include "storage/sqlite/BoxGeometryRepositories.h"
+#include "storage/sqlite/IdentityRepositories.h"
+#include "storage/sqlite/ItemTypeRepositories.h"
+#include "storage/sqlite/LayoutRepositories.h"
+#include "storage/sqlite/RoleRepositories.h"
+#include "storage/sqlite/SampleRepositories.h"
+#include "storage/sqlite/SessionRepositories.h"
+#include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
 #include <drogon/drogon.h>
-#include <spdlog/async.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
+#include <fmt/format.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -36,21 +53,69 @@ namespace {
     return {addr.substr(0, colon), static_cast<std::uint16_t>(std::stoi(addr.substr(colon + 1)))};
   }
 
+  // Database readiness: open and immediately roll back a transaction. A reachable
+  // backend completes this cheaply; an unreachable one throws.
+  [[nodiscard]] fmgr::obs::DepStatus probe_database(fmgr::storage::IStorageBackend& backend) {
+    try {
+      auto txn = backend.begin(fmgr::storage::IsolationLevel::ReadCommitted);
+      txn->rollback();
+      return fmgr::obs::DepStatus::ok();
+    } catch (const std::exception& e) {
+      return fmgr::obs::DepStatus::failed(e.what());
+    }
+  }
+
+  // KMS readiness: a wrap → unwrap round-trip under the active KEK. Proves the key
+  // is present AND usable, not merely configured. A null provider means PHI
+  // encryption is off (a valid deployment), reported as disabled.
+  [[nodiscard]] fmgr::obs::DepStatus probe_kms(const fmgr::kms::IKmsProvider* kms) {
+    if (kms == nullptr) {
+      return fmgr::obs::DepStatus::disabled("no master KEK configured");
+    }
+    try {
+      const std::array<std::uint8_t, 32> probe_dek{};
+      const auto wrapped = kms->wrap_dek(probe_dek);
+      const auto recovered = kms->unwrap_dek(wrapped, kms->key_id());
+      if (recovered.size() != probe_dek.size() ||
+          !std::equal(recovered.begin(), recovered.end(), probe_dek.begin())) {
+        return fmgr::obs::DepStatus::failed("KEK round-trip mismatch");
+      }
+      return fmgr::obs::DepStatus::ok("key_id=" + kms->key_id());
+    } catch (const std::exception& e) {
+      return fmgr::obs::DepStatus::failed(e.what());
+    }
+  }
+
+  // Backup-target readiness: the configured directory must exist and be writable.
+  // No target configured is a valid deployment, reported as disabled.
+  [[nodiscard]] fmgr::obs::DepStatus probe_backup(const std::string& backup_dir) {
+    if (backup_dir.empty()) {
+      return fmgr::obs::DepStatus::disabled("FMGR_BACKUP_DIR unset");
+    }
+    std::error_code error;
+    if (!std::filesystem::is_directory(backup_dir, error)) {
+      return fmgr::obs::DepStatus::failed("not a directory: " + backup_dir);
+    }
+    const auto probe_file = std::filesystem::path(backup_dir) / ".freezerd-health-probe";
+    std::ofstream out(probe_file);
+    if (!out) {
+      return fmgr::obs::DepStatus::failed("backup directory not writable: " + backup_dir);
+    }
+    out.close();
+    std::filesystem::remove(probe_file, error);
+    return fmgr::obs::DepStatus::ok();
+  }
+
 } // namespace
 
 // Minimal entry point: reads FMGR_LISTEN (default "0.0.0.0:50051") and
 // FMGR_DB_PATH (default ":memory:") from the environment and starts the server
 // with a SQLite backend. Full configuration via freezerd.toml is deferred.
 int main(int /*argc*/, char* /*argv*/[]) {
-  // Async logger with a bounded queue: log writes never block the gRPC thread
-  // pool, and an error flood drops the oldest lines instead of building up
-  // unbounded memory (audit H-3). Set as the default so spdlog::error() in the
-  // gRPC error funnel routes here.
-  constexpr std::size_t k_log_queue_size = 8192;
-  spdlog::init_thread_pool(k_log_queue_size, 1);
-  auto logger = spdlog::create_async_nb<spdlog::sinks::stderr_color_sink_mt>("freezerd");
-  spdlog::set_default_logger(logger);
-  spdlog::flush_on(spdlog::level::err);
+  // Structured JSON logging (PRD §17): every line is one JSON object with a fixed
+  // schema (ts/level/msg/request_id/actor_user_id/lab_id/event) on an async,
+  // non-blocking sink so log writes never stall the gRPC thread pool.
+  fmgr::obs::init_logging();
 
   try {
     const char* listen_env = std::getenv("FMGR_LISTEN");
@@ -61,6 +126,19 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     auto backend = std::make_unique<fmgr::storage::SqliteBackend>(
         fmgr::storage::SqliteBackendOptions{.database_path = db_path});
+    // Register every domain repository before serving (mirrors the CLI's
+    // BackendFactory). Without this, repo<Entity>() inside an RPC handler throws
+    // "repository is not available for entity type" and every request 500s.
+    fmgr::storage::register_identity_repositories(*backend);
+    fmgr::storage::register_role_repositories(*backend);
+    fmgr::storage::register_layout_repositories(*backend);
+    fmgr::storage::register_box_geometry_repositories(*backend);
+    fmgr::storage::register_box_repositories(*backend);
+    fmgr::storage::register_item_type_repositories(*backend);
+    fmgr::storage::register_sample_repositories(*backend);
+    fmgr::storage::register_session_repositories(*backend);
+    fmgr::storage::register_share_request_repositories(*backend);
+    fmgr::storage::register_audit_repositories(*backend);
     backend->migrate_to_latest();
 
     fmgr::auth::LocalAuthProvider auth(*backend);
@@ -114,11 +192,31 @@ int main(int /*argc*/, char* /*argv*/[]) {
     // gateway then dials the in-process channel; drogon::app().run() blocks the
     // main thread for the lifetime of the process.
     server.build();
-    spdlog::info("freezerd: gRPC listening on {} (SQLite: {})", listen, db_path);
+    fmgr::obs::log_lifecycle(
+        fmgr::obs::Level::Info,
+        fmt::format("freezerd: gRPC listening on {} (SQLite: {})", listen, db_path),
+        "server.grpc_listen");
 
     fmgr::rest::GatewayStubs stubs(server.in_process_channel());
     fmgr::rest::RestGateway gateway(stubs);
     gateway.register_routes();
+
+    // Unauthenticated /health for a load-balancer readiness probe (PRD §17): a
+    // structured per-dependency report, 200 when healthy / 503 when a dependency
+    // is down. Bind behind a reverse-proxy ACL or to localhost in production.
+    auto health_kms = std::shared_ptr<fmgr::kms::IKmsProvider>(fmgr::kms::make_default_kms());
+    const char* health_backup_env = std::getenv("FMGR_BACKUP_DIR");
+    const std::string health_backup_dir = health_backup_env != nullptr ? health_backup_env : "";
+    fmgr::storage::IStorageBackend* backend_ptr = backend.get();
+    fmgr::rest::RestGateway::register_health(fmgr::obs::HealthProbe{
+        .database = [backend_ptr] { return probe_database(*backend_ptr); },
+        .kms = [health_kms] { return probe_kms(health_kms.get()); },
+        .backup = [health_backup_dir] { return probe_backup(health_backup_dir); },
+    });
+
+    // Unauthenticated Prometheus scrape endpoint (PRD §17). Bind behind a
+    // reverse-proxy ACL or to localhost in production.
+    fmgr::rest::RestGateway::register_metrics();
 
     const char* rest_env = std::getenv("FMGR_REST_LISTEN");
     const std::string rest_listen = rest_env != nullptr ? rest_env : "0.0.0.0:8080";
@@ -129,14 +227,17 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const bool rest_tls = rest_cert != nullptr && rest_key != nullptr;
     drogon::app().addListener(rest_host, rest_port, rest_tls, rest_cert != nullptr ? rest_cert : "",
                               rest_key != nullptr ? rest_key : "");
-    spdlog::info("freezerd: REST {} listening on {}:{}", rest_tls ? "(TLS)" : "(plaintext)",
-                 rest_host, rest_port);
+    fmgr::obs::log_lifecycle(fmgr::obs::Level::Info,
+                             fmt::format("freezerd: REST {} listening on {}:{}",
+                                         rest_tls ? "(TLS)" : "(plaintext)", rest_host, rest_port),
+                             "server.rest_listen");
 
     drogon::app().run();
     server.shutdown();
     return 0;
   } catch (const std::exception& e) {
-    spdlog::error("freezerd: fatal: {}", e.what());
+    fmgr::obs::log_lifecycle(fmgr::obs::Level::Error, fmt::format("freezerd: fatal: {}", e.what()),
+                             "server.fatal");
     spdlog::shutdown();
     return 1;
   }

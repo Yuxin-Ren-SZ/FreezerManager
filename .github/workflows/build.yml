@@ -8,10 +8,19 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+# Cancel superseded runs on the same ref: every push to a PR otherwise relaunches
+# the full 7-job matrix (each doing a heavy Conan gRPC/abseil/protobuf build).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: ${{ matrix.compiler }} ${{ matrix.preset }}
     runs-on: ubuntu-24.04
+    # Backstop against a hung/OOM/deadlocked build (tsan especially) running to
+    # GitHub's 6h default and burning runner minutes.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -139,7 +148,7 @@ jobs:
       - name: Test
         if: ${{ matrix.preset == 'dev' || matrix.preset == 'asan' || matrix.preset == 'ubsan' || matrix.preset == 'tsan' }}
         env:
-          FMGR_TEST_POSTGRES_URL: postgresql://postgres:test@localhost/fmgr_test
+          FMGR_TEST_POSTGRES_URL: postgresql://postgres:test@localhost:5432/fmgr_test
         # The gRPC server integration and e2e tests are excluded under asan/tsan:
         # Conan's gRPC/absl are built without sanitizers, so they emit
         # library-internal false positives across the instrumentation boundary

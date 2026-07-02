@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/AuthServiceImpl.h"
+#include "server/RequestId.h"
 
 #include "core/permissions.h"
 #include "core/session.h"
@@ -43,12 +44,13 @@ namespace fmgr::server {
       return peer.substr(0, last_colon);
     }
 
-    [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
+    [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
+                                                    const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
           .actor_user_id = sctx.user_id,
           .actor_session_id = sctx.session_id.to_string(),
-          .request_id = "",
+          .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
     }
@@ -132,7 +134,7 @@ namespace fmgr::server {
                                        fmgr::v1::LogoutResponse* /*resp*/) {
     try {
       const auto sctx = validate_authed(auth_, *ctx);
-      auth_.revoke_session(sctx.session_id, make_ctx(sctx, "logout"));
+      auth_.revoke_session(sctx.session_id, make_ctx(*ctx, sctx, "logout"));
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();
@@ -159,7 +161,7 @@ namespace fmgr::server {
             now_micros + static_cast<std::int64_t>(req->expires_in_days()) * 86400LL * 1000000LL);
       }
 
-      const auto ctx_mut = make_ctx(sctx, "create_api_token");
+      const auto ctx_mut = make_ctx(*ctx, sctx, "create_api_token");
       const auto result = auth_.create_api_token(sctx.user_id, req->name(), req->scope_json(),
                                                  lab_id, expires_at, ctx_mut);
 
@@ -206,7 +208,7 @@ namespace fmgr::server {
     try {
       const auto sctx = validate_authed(auth_, *ctx);
       const auto api_token_id = core::ApiTokenId::parse(req->api_token_id());
-      auth_.revoke_api_token(api_token_id, make_ctx(sctx, "revoke_api_token"));
+      auth_.revoke_api_token(api_token_id, make_ctx(*ctx, sctx, "revoke_api_token"));
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();

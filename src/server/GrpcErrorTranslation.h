@@ -3,18 +3,36 @@
 #define FMGR_SERVER_GRPCERRORTRANSLATION_H
 
 #include "auth/AuthTypes.h"
+#include "obs/Log.h"
 #include "storage/IStorageBackend.h"
 
+#include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
 #include <nlohmann/json.hpp>
-#include <spdlog/spdlog.h>
 
+#include <atomic>
 #include <exception>
 #include <optional>
 #include <string>
 #include <string_view>
 
 namespace fmgr::server {
+
+  // ---- Internal-error masking (security audit C-11: info leak) ----
+  //
+  // When enabled, INTERNAL failures return a generic message to the client and
+  // the real detail is only logged server-side. Disabled builds surface the
+  // detail in the status message for developer convenience. Default-on is the
+  // safe choice: a deployment that never toggles it cannot leak. The server sets
+  // this from FreezerServerOptions::mask_internal_errors at build().
+  inline std::atomic<bool>& internal_error_masking() {
+    static std::atomic<bool> s_mask{true};
+    return s_mask;
+  }
+
+  inline void set_mask_internal_errors(bool mask) {
+    internal_error_masking().store(mask, std::memory_order_release);
+  }
 
   [[nodiscard]] inline grpc::Status to_grpc_status(const auth::InvalidCredentials& error) {
     return {grpc::StatusCode::UNAUTHENTICATED, error.what()};
@@ -38,6 +56,10 @@ namespace fmgr::server {
 
   [[nodiscard]] inline grpc::Status to_grpc_status(const auth::PermissionDenied& error) {
     return {grpc::StatusCode::PERMISSION_DENIED, error.what()};
+  }
+
+  [[nodiscard]] inline grpc::Status to_grpc_status(const auth::RateLimited& error) {
+    return {grpc::StatusCode::RESOURCE_EXHAUSTED, error.what()};
   }
 
   [[nodiscard]] inline grpc::Status to_grpc_status(const storage::NotFound& error) {
@@ -72,6 +94,8 @@ namespace fmgr::server {
       throw;
     } catch (const auth::MfaRequired& e) {
       return to_grpc_status(e);
+    } catch (const auth::RateLimited& e) {
+      return to_grpc_status(e);
     } catch (const auth::PermissionDenied& e) {
       return to_grpc_status(e);
     } catch (const auth::AccountLocked& e) {
@@ -101,13 +125,21 @@ namespace fmgr::server {
       return {grpc::StatusCode::INVALID_ARGUMENT, "request contained malformed JSON"};
     } catch (const std::exception& e) {
       // Do not leak internal detail (DB messages carry table/column names) to the
-      // client. Log the real error server-side; return a generic status. spdlog's
-      // async sink keeps this off the RPC thread's hot path, unlike unbuffered
-      // std::cerr which serializes a write() syscall per error (audit H-3).
-      spdlog::error("grpc: unhandled internal error: {}", e.what());
-      return {grpc::StatusCode::INTERNAL, "internal server error"};
+      // client when masking is on. Log the real error server-side; return a
+      // generic status. spdlog's async sink keeps this off the RPC thread's hot
+      // path, unlike unbuffered std::cerr which serializes a write() syscall per
+      // error (audit H-3). Masking is toggled off in debug builds so developers
+      // see the real detail on the wire (audit C-11).
+      obs::log_lifecycle(obs::Level::Error,
+                         fmt::format("grpc: unhandled internal error: {}", e.what()),
+                         "grpc.internal_error");
+      if (internal_error_masking().load(std::memory_order_acquire)) {
+        return {grpc::StatusCode::INTERNAL, "internal server error"};
+      }
+      return {grpc::StatusCode::INTERNAL, fmt::format("internal server error: {}", e.what())};
     } catch (...) {
-      spdlog::error("grpc: unhandled non-std exception");
+      obs::log_lifecycle(obs::Level::Error, "grpc: unhandled non-std exception",
+                         "grpc.internal_error");
       return {grpc::StatusCode::INTERNAL, "internal server error"};
     }
   }

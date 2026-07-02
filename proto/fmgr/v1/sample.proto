@@ -16,6 +16,15 @@ service SampleService {
   rpc MoveSample(MoveSampleRequest) returns (MoveSampleResponse);
   rpc CheckoutSample(CheckoutSampleRequest) returns (CheckoutSampleResponse);
   rpc ExportSamplesCsv(ExportSamplesCsvRequest) returns (ExportSamplesCsvResponse);
+  rpc ImportSamples(ImportSamplesRequest) returns (ImportSamplesResponse);
+  // Server-streaming live sample feed. Emits each sample whose last_modified_at
+  // is at/after `since` (default: changes after the stream opens) in
+  // (last_modified_at, id) order, then tails newly-changed rows until the client
+  // disconnects. Tombstoned rows are included so a soft-delete arrives as a
+  // SAMPLE_STATUS_TOMBSTONED row the client can remove. Requires sample.read for
+  // the lab (held by every Member/ReadOnly). PHI is never disclosed on this
+  // stream; a caller needing PHI calls GetSample.
+  rpc WatchSampleList(WatchSampleListRequest) returns (stream Sample);
 }
 
 // Mirrors core::SampleStatus exactly so no lifecycle state collapses on the
@@ -68,6 +77,16 @@ message ListSamplesRequest {
 message ListSamplesResponse {
   repeated Sample samples = 1;
   fmgr.v1.common.PageResponse page = 2;
+}
+
+message WatchSampleListRequest {
+  string lab_id = 1; // required; the feed is always lab-scoped
+  optional string box_id = 2;
+  optional string item_type_id = 3;
+  // Resume cursor: emit samples whose last_modified_at is at/after this
+  // timestamp. When unset the feed starts from "now" and only streams changes
+  // appended after it opens.
+  optional fmgr.v1.common.Timestamp since = 4;
 }
 
 message GetSampleRequest {
@@ -142,4 +161,26 @@ message ExportSamplesCsvRequest {
 message ExportSamplesCsvResponse {
   // RFC 4180 CSV with chain-of-custody header (same schema as freezerctl export).
   string csv_content = 1;
+}
+
+message ImportSamplesRequest {
+  string lab_id = 1;
+  string csv_content = 2; // RFC 4180 CSV; same column schema as the export
+  bool dry_run = 3;       // validate and report only; persist nothing
+}
+message ImportSampleRowResult {
+  int32 row_number = 1; // 1-based, excludes the header
+  bool ok = 2;
+  string error = 3;     // empty when ok
+  string sample_id = 4; // set only for a committed (non-dry-run) row
+}
+message ImportSamplesResponse {
+  // True only on a non-dry-run import that validated and wrote every row.
+  bool committed = 1;
+  // Non-empty when the CSV is structurally unusable as a whole (no rows / a
+  // header missing a required column); in that case `rows` is empty.
+  string header_error = 2;
+  int32 succeeded = 3;
+  int32 failed = 4;
+  repeated ImportSampleRowResult rows = 5;
 }

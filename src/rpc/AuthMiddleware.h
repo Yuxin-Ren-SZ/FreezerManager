@@ -22,6 +22,7 @@
 #include "auth/IAuthProvider.h"
 #include "core/ids.h"
 #include "core/permissions.h"
+#include "rpc/RateLimiter.h"
 #include "storage/IStorageBackend.h"
 
 #include <optional>
@@ -50,6 +51,21 @@ namespace fmgr::rpc {
     [[nodiscard]] auth::SessionContext
     authorize(std::string_view bearer_token, core::Permission required_perm,
               std::optional<core::LabId> lab_id = std::nullopt) const;
+
+    // ---- Global data-tier rate limiting ----
+    //
+    // authorize() is the single choke point every authenticated RPC handler
+    // passes through, so throttling here throttles all data endpoints across
+    // every service without per-handler code (security audit C-10/DoS). The
+    // limiter is a process-wide gate installed by the server for its lifetime;
+    // when unset (the default, e.g. in unit tests), authorize() does not rate
+    // limit. Health/metrics endpoints never reach authorize(), so they are
+    // exempt by construction. Auth endpoints (Login/SubmitMfa) are throttled
+    // separately at a higher burst by AuthServiceImpl's per-IP limiter.
+    //
+    // Installs `limiter` (may be null to uninstall) as the process gate. The
+    // caller owns the limiter and must uninstall (pass nullptr) before it dies.
+    static void set_process_data_rate_limiter(rpc::RateLimiter* limiter);
 
     // Inject Postgres RLS session variables into a transaction.
     // Sets "app.current_user_id" and "app.current_lab_ids" (comma-joined).

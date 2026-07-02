@@ -4,6 +4,7 @@
 #include "backup/PostgresDump.h"
 #include "backup/SqliteBackup.h"
 #include "cli/AuditCommands.h"
+#include "cli/AuditCsv.h"
 #include "cli/BackendFactory.h"
 #include "cli/BoxImport.h"
 #include "cli/CliApp.h"
@@ -244,9 +245,20 @@ namespace fmgr::cli {
       }
 
       ~CliFixture() {
-        backend_.reset();
+        backend_.reset(); // close pool before dropping the schema
         if (kind_ == BackendKind::Sqlite) {
           remove_sqlite_files(db_path_);
+          return;
+        }
+        if (schema_name_.empty()) {
+          return;
+        }
+        try {
+          pqxx::connection conn(postgres_test_url().value());
+          pqxx::work txn(conn);
+          txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+          txn.commit();
+        } catch (...) { // NOLINT(bugprone-empty-catch): best-effort cleanup in dtor
         }
       }
 
@@ -268,6 +280,11 @@ namespace fmgr::cli {
       [[nodiscard]] std::string db_path() const {
         return db_path_.string();
       }
+      // Postgres schema this fixture migrated into. Empty for SQLite. Callers that
+      // reopen the backend by raw URL must pin the search_path to it.
+      [[nodiscard]] std::string postgres_schema() const {
+        return schema_name_;
+      }
 
     private:
       BackendOptions make_options() {
@@ -281,14 +298,17 @@ namespace fmgr::cli {
           throw std::logic_error("postgres url required (SetUp must skip when unset)");
         }
         const auto& url = url_opt.value();
-        // Per-test isolation: wipe the shared public schema so open_backend()
-        // migrates from scratch (mirrors RepoBackendHarness).
+        // Per-process isolation: give this fixture its own schema (unique across
+        // parallel ctest processes) and pin the backend's search_path to it, so
+        // open_backend() migrates a private schema instead of racing on the
+        // shared `public` one (mirrors RepoBackendHarness).
+        schema_name_ = unique_postgres_schema("cli_test");
         pqxx::connection setup_conn(url);
         pqxx::work txn(setup_conn);
-        txn.exec("DROP SCHEMA public CASCADE");
-        txn.exec("CREATE SCHEMA public");
+        txn.exec("DROP SCHEMA IF EXISTS " + txn.quote_name(schema_name_) + " CASCADE");
+        txn.exec("CREATE SCHEMA " + txn.quote_name(schema_name_));
         txn.commit();
-        return BackendOptions{.postgres_url = url};
+        return BackendOptions{.postgres_url = postgres_url_with_schema(url, schema_name_)};
       }
 
       static std::filesystem::path unique_path() {
@@ -299,6 +319,7 @@ namespace fmgr::cli {
 
       BackendKind kind_;
       std::filesystem::path db_path_;
+      std::string schema_name_;
       std::unique_ptr<storage::IStorageBackend> backend_;
       core::LabId lab_a_;
       core::LabId lab_b_;
@@ -740,6 +761,136 @@ namespace fmgr::cli {
       EXPECT_NE(out.str().find("OK:"), std::string::npos);
     }
 
+    // ---- audit export ----
+
+    // Read every audit event from the backend, ordered as the verifier expects.
+    std::vector<core::AuditEvent> read_audit_events(storage::IStorageBackend& backend) {
+      auto txn = backend.begin(storage::IsolationLevel::Serializable);
+      auto events = txn->repo<core::AuditEvent>().query(
+          storage::Query<core::AuditEvent>::all()
+              .order_by(
+                  storage::field<core::AuditEvent, core::Timestamp>(core::AuditEvent::Field::At),
+                  storage::SortDirection::Ascending)
+              .order_by(storage::field<core::AuditEvent, std::string>(core::AuditEvent::Field::Id),
+                        storage::SortDirection::Ascending));
+      txn->commit();
+      return events;
+    }
+
+    // Count the lines terminated by CRLF in a CSV export body.
+    std::size_t crlf_line_count(const std::string& text) {
+      std::size_t count = 0;
+      for (std::size_t pos = text.find("\r\n"); pos != std::string::npos;
+           pos = text.find("\r\n", pos + 2)) {
+        ++count;
+      }
+      return count;
+    }
+
+    TEST_P(CliBackendTest, AuditExportEmitsHeaderAndRowPerEvent) {
+      const std::size_t seeded = read_audit_events(fixture_->backend()).size();
+      ASSERT_GT(seeded, 0U);
+
+      std::ostringstream out;
+      const int code = run_audit_export(
+          fixture_->backend(), AuditExportOptions{.actor = id_from_low<core::UserId>(10)}, out);
+      EXPECT_EQ(code, 0);
+
+      const std::string text = out.str();
+      EXPECT_NE(text.find("# freezermanager-audit-export"), std::string::npos);
+      EXPECT_NE(text.find("event_count=" + std::to_string(seeded)), std::string::npos);
+      // 4 comment lines + 1 csv header + one row per seeded event.
+      EXPECT_EQ(crlf_line_count(text), 4U + 1U + seeded);
+    }
+
+    TEST_P(CliBackendTest, AuditExportIsItselfAudited) {
+      const std::size_t before = read_audit_events(fixture_->backend()).size();
+
+      std::ostringstream out;
+      ASSERT_EQ(run_audit_export(fixture_->backend(),
+                                 AuditExportOptions{.actor = id_from_low<core::UserId>(10)}, out),
+                0);
+
+      const auto after = read_audit_events(fixture_->backend());
+      ASSERT_EQ(after.size(), before + 1U);
+      EXPECT_EQ(after.back().action, "audit.export");
+      EXPECT_EQ(after.back().entity_kind, "audit");
+    }
+
+    TEST_P(CliBackendTest, AuditExportLeavesChainVerifiable) {
+      std::ostringstream sink;
+      ASSERT_EQ(run_audit_export(fixture_->backend(),
+                                 AuditExportOptions{.actor = id_from_low<core::UserId>(10)}, sink),
+                0);
+      std::ostringstream verify_out;
+      EXPECT_EQ(run_audit_verify(fixture_->backend(), AuditVerifyOptions{}, verify_out), 0)
+          << verify_out.str();
+    }
+
+    TEST_P(CliBackendTest, AuditExportFiltersByLab) {
+      std::ostringstream out;
+      ASSERT_EQ(run_audit_export(fixture_->backend(),
+                                 AuditExportOptions{.lab_id = fixture_->lab_a(),
+                                                    .actor = id_from_low<core::UserId>(10)},
+                                 out),
+                0);
+      const std::string text = out.str();
+      // A lab-scoped export must not leak another lab's events.
+      EXPECT_EQ(text.find(fixture_->lab_b().to_string()), std::string::npos);
+      EXPECT_NE(text.find(fixture_->lab_a().to_string()), std::string::npos);
+      EXPECT_NE(text.find("lab_filter=" + fixture_->lab_a().to_string()), std::string::npos);
+    }
+
+    // ---- AuditCsv pure mapping ----
+
+    TEST(AuditCsvTest, ColumnsIncludeHashChain) {
+      const auto& columns = audit_csv_columns();
+      EXPECT_EQ(columns.front(), "id");
+      EXPECT_NE(std::find(columns.begin(), columns.end(), "prev_hash"), columns.end());
+      EXPECT_NE(std::find(columns.begin(), columns.end(), "this_hash"), columns.end());
+    }
+
+    TEST(AuditCsvTest, RowMatchesColumnArityAndRendersScalars) {
+      core::AuditEvent event;
+      event.id = id_from_low<core::AuditEventId>(7);
+      event.at = core::Timestamp::from_unix_micros(1234567);
+      event.actor_user_id = id_from_low<core::UserId>(10);
+      event.actor_session_id = "sess";
+      event.lab_id = std::nullopt;
+      event.action = "insert";
+      event.entity_kind = "lab";
+      event.entity_id = std::nullopt;
+      event.request_id = "req";
+      event.prev_hash = std::string(64, '0');
+      event.this_hash = std::string(64, 'a');
+
+      const auto row = audit_event_to_csv_row(event);
+      ASSERT_EQ(row.size(), audit_csv_columns().size());
+      // `at` renders as raw micros; absent optionals render empty.
+      const auto at_index = static_cast<std::size_t>(
+          std::find(audit_csv_columns().begin(), audit_csv_columns().end(), "at") -
+          audit_csv_columns().begin());
+      EXPECT_EQ(row.at(at_index), "1234567");
+      const auto lab_index = static_cast<std::size_t>(
+          std::find(audit_csv_columns().begin(), audit_csv_columns().end(), "lab_id") -
+          audit_csv_columns().begin());
+      EXPECT_EQ(row.at(lab_index), "");
+    }
+
+    TEST(AuditCsvTest, WriteCsvEmitsHeaderBlockThenRows) {
+      core::AuditEvent event;
+      event.id = id_from_low<core::AuditEventId>(1);
+      event.prev_hash = std::string(64, '0');
+      event.this_hash = std::string(64, 'b');
+      std::ostringstream out;
+      write_audit_csv(out, {event}, 13, "all", "2026-06-21T00:00:00Z");
+      const std::string text = out.str();
+      EXPECT_NE(text.find("# freezermanager-audit-export schema_version=13"), std::string::npos);
+      EXPECT_NE(text.find("lab_filter=all"), std::string::npos);
+      EXPECT_NE(text.find("event_count=1"), std::string::npos);
+      EXPECT_NE(text.find("signature=UNSIGNED"), std::string::npos);
+    }
+
     // ---- key rotate ----
 
     constexpr const char* kOldKekB64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
@@ -1179,6 +1330,72 @@ namespace fmgr::cli {
       EXPECT_NE(out.str().find("# freezermanager-export"), std::string::npos);
     }
 
+    TEST(CliAppTest, AuditExportToStdout) {
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::vector<const char*> args = {"freezerctl",      "audit",   "export",     "--sqlite",
+                                             sqlite_db.c_str(), "--actor", actor.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str();
+      EXPECT_NE(out.str().find("# freezermanager-audit-export"), std::string::npos);
+    }
+
+    TEST(CliAppTest, AuditExportToFile) {
+      CliFixture fixture(BackendKind::Sqlite);
+      const auto csv_path =
+          std::filesystem::temp_directory_path() / "freezermanager-audit-export-test.csv";
+      std::filesystem::remove(csv_path);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::string file = csv_path.string();
+      const std::vector<const char*> args = {"freezerctl",  "audit",           "export",
+                                             "--sqlite",    sqlite_db.c_str(), "--actor",
+                                             actor.c_str(), "--out",           file.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str();
+      ASSERT_TRUE(std::filesystem::exists(csv_path));
+      std::ifstream in(csv_path, std::ios::binary);
+      const std::string text((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+      std::filesystem::remove(csv_path);
+      EXPECT_NE(text.find("# freezermanager-audit-export"), std::string::npos);
+    }
+
+    TEST(CliAppTest, AuditExportLabScopedViaArgv) {
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::string lab = fixture.lab_a().to_string();
+      const std::string actor = id_from_low<core::UserId>(10).to_string();
+      const std::vector<const char*> args = {"freezerctl", "audit",           "export",
+                                             "--sqlite",   sqlite_db.c_str(), "--lab",
+                                             lab.c_str(),  "--actor",         actor.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str();
+      const std::string text = out.str();
+      EXPECT_NE(text.find("lab_filter=" + lab), std::string::npos);
+      // A lab-scoped export must not leak lab B's events.
+      EXPECT_EQ(text.find(fixture.lab_b().to_string()), std::string::npos);
+    }
+
+    TEST(CliAppTest, AuditVerifyViaArgv) {
+      CliFixture fixture(BackendKind::Sqlite);
+      std::ostringstream out;
+      std::ostringstream err;
+      const std::string sqlite_db = fixture.db_path();
+      const std::vector<const char*> args = {"freezerctl", "audit", "verify", "--sqlite",
+                                             sqlite_db.c_str()};
+      const int code = run_cli(static_cast<int>(args.size()), args.data(), out, err);
+      EXPECT_EQ(code, 0) << err.str();
+      EXPECT_NE(out.str().find("OK:"), std::string::npos);
+    }
+
     TEST(CliAppTest, KeyRotateViaEnv) {
       CliFixture fixture(BackendKind::Sqlite);
       const fmgr::kms::EnvVarKms old_kms(old_kek());
@@ -1360,8 +1577,10 @@ namespace fmgr::cli {
 
       // A fresh backend on the restored database sees the seeded lab and a chain
       // that still verifies. (fixture.backend()'s pooled connections may hold state
-      // invalidated by pg_restore --clean, so do not reuse it here.)
-      auto backend = open_backend(BackendOptions{.postgres_url = url});
+      // invalidated by pg_restore --clean, so do not reuse it here.) The fixture's
+      // data lives in its private schema, so pin the reopen's search_path to it.
+      auto backend = open_backend(
+          BackendOptions{.postgres_url = postgres_url_with_schema(url, fixture.postgres_schema())});
       auto txn = backend->begin(storage::IsolationLevel::Serializable);
       const auto labs = txn->repo<core::Lab>().query(storage::Query<core::Lab>::all());
       txn->commit();

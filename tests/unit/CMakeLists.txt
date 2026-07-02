@@ -138,11 +138,13 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-add_executable(freezermanager_cli_unit_tests cli_test.cpp)
+add_executable(freezermanager_cli_unit_tests cli_test.cpp cli_user_set_password_test.cpp)
 target_link_libraries(
   freezermanager_cli_unit_tests
   PRIVATE
     FreezerManager::cli
+    FreezerManager::auth
+    FreezerManager::storage_sqlite
     GTest::gtest_main
 )
 target_include_directories(
@@ -174,6 +176,22 @@ target_link_libraries(
 )
 target_include_directories(
   freezermanager_error_translation_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+
+add_executable(freezermanager_obs_unit_tests
+  obs_log_test.cpp
+  obs_health_test.cpp
+  obs_metrics_test.cpp)
+target_link_libraries(
+  freezermanager_obs_unit_tests
+  PRIVATE
+    FreezerManager::obs
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_obs_unit_tests
   PRIVATE
     ${CMAKE_SOURCE_DIR}/tests
 )
@@ -270,10 +288,76 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
+# Qt desktop-client unit tests. Only built when the Qt client itself was built
+# (the FreezerManager::qt_lib alias exists). Headless: no QApplication, no
+# DISPLAY — ConfigManager uses an isolated INI file and GrpcChannel connects
+# lazily, so neither needs a GUI or a live server.
+if(TARGET FreezerManager::qt_lib)
+  add_executable(
+    freezermanager_qt_unit_tests
+    qt_auth_service_client_test.cpp
+    qt_barcode_scan_controller_test.cpp
+    qt_box_grid_model_test.cpp
+    qt_box_service_client_test.cpp
+    qt_config_manager_test.cpp
+    qt_grpc_channel_test.cpp
+    qt_lab_service_client_test.cpp
+    qt_lab_tree_model_test.cpp
+    qt_location_path_resolver_test.cpp
+    qt_sample_service_client_test.cpp
+    qt_sample_table_model_test.cpp
+    qt_sample_watch_subscriber_test.cpp
+    qt_session_manager_test.cpp
+  )
+  target_link_libraries(
+    freezermanager_qt_unit_tests
+    PRIVATE
+      FreezerManager::qt_lib
+      GTest::gtest_main
+  )
+  target_include_directories(
+    freezermanager_qt_unit_tests
+    PRIVATE
+      ${CMAKE_SOURCE_DIR}/tests
+  )
+
+  # Widget tests need a live QApplication (created in qt_widget_test_main.cc) and
+  # the offscreen platform, so they get their own executable with a custom main
+  # rather than gtest_main. Qt6::Test supplies QSignalSpy.
+  find_package(Qt6 QUIET COMPONENTS Test)
+  if(Qt6Test_FOUND)
+    add_executable(
+      freezermanager_qt_widget_tests
+      qt_widget_test_main.cc
+      qt_box_map_pdf_test.cpp
+      qt_label_pdf_test.cpp
+      qt_sample_lookup_widget_test.cpp
+    )
+    target_link_libraries(
+      freezermanager_qt_widget_tests
+      PRIVATE
+        FreezerManager::qt_lib
+        GTest::gtest
+        Qt6::Test
+    )
+    target_include_directories(
+      freezermanager_qt_widget_tests
+      PRIVATE
+        ${CMAKE_SOURCE_DIR}/tests
+    )
+  endif()
+endif()
+
 include(GoogleTest)
 gtest_discover_tests(freezermanager_core_unit_tests)
 gtest_discover_tests(freezermanager_backup_unit_tests)
 gtest_discover_tests(freezermanager_backup_scheduler_tests)
+if(TARGET freezermanager_qt_unit_tests)
+  gtest_discover_tests(freezermanager_qt_unit_tests)
+endif()
+if(TARGET freezermanager_qt_widget_tests)
+  gtest_discover_tests(freezermanager_qt_widget_tests)
+endif()
 gtest_discover_tests(freezermanager_kms_unit_tests)
 gtest_discover_tests(freezermanager_crypto_unit_tests)
 gtest_discover_tests(freezermanager_rest_unit_tests)
@@ -285,6 +369,7 @@ gtest_discover_tests(freezermanager_audit_unit_tests)
 gtest_discover_tests(freezermanager_custom_field_resolver_tests)
 gtest_discover_tests(freezermanager_error_translation_tests
   PROPERTIES LABELS "grpc_integration")
+gtest_discover_tests(freezermanager_obs_unit_tests)
 gtest_discover_tests(freezermanager_transaction_resilience_tests)
 # The Postgres parameter of these tests DROPs/CREATEs the shared public schema;
 # serialize against every other Postgres-touching suite with one resource lock.

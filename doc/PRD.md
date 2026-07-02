@@ -1,6 +1,8 @@
 # Freezer Manager — Product Requirements & Design Document
 
-**Status:** Pre-alpha — active implementation (design baseline 2026-05-06; last synced 2026-06-15).
+**Status:** Pre-alpha — active implementation (design baseline 2026-05-06; last synced 2026-06-28,
+revised from two end-user perspective reviews — see `doc/review-small-lab-terminal-user.md`
+and `doc/review-institutional-it-manager.md`).
 Core domain, both reference backends (SQLite + PostgreSQL), auth foundation, audit
 chain, and the full gRPC service layer are implemented; security-remediation pass done.
 See the [README Roadmap](../README.md#roadmap) for live, milestone-by-milestone status.
@@ -25,9 +27,18 @@ sensitive (potentially PHI) biospecimen data.
 ### 1.1 Design priorities (in order)
 1. **Data safety** — no silent loss; every mutation is auditable; recoverable.
 2. **Security** — encryption at rest + in transit; least-privilege RBAC; PHI-safe.
-3. **Extensibility** — pluggable storage backend; user-defined schema; pluggable GUI; pluggable hardware.
-4. **Multi-user concurrency** — many users on one shared dataset, simultaneous reads and writes.
-5. **Usability** — Qt desktop GUI + React web GUI + scriptable Python API for analysis.
+3. **Operability** — the service can be run in production without surprises:
+   metrics, structured logging, `/health`, graceful shutdown, configuration
+   validation, backup monitoring, and documented upgrade/migration runbooks.
+4. **Extensibility** — pluggable storage backend; user-defined schema; pluggable GUI; pluggable hardware.
+5. **Multi-user concurrency** — many users on one shared dataset, simultaneous reads and writes.
+6. **Usability** — Qt desktop GUI + React web GUI + scriptable Python API for analysis.
+
+The ordering above is the **multi-lab / institutional baseline**. The weighting
+shifts by deployment profile: for a single small-lab deployment (≤ ~10 users,
+one freezer, no dedicated IT), **Usability rises ahead of Concurrency** — a
+correct system nobody wants to use loses to a spreadsheet. Data safety and
+security remain the top two in every profile.
 
 ### 1.2 Goals
 - Track samples down to position-in-box, with full chain-of-custody.
@@ -52,7 +63,7 @@ sensitive (potentially PHI) biospecimen data.
 | --- | --- |
 | Deployment | Single self-hosted server, **multi-lab on one deployment** with strict isolation |
 | PHI | Designed-for; field-level encryption + stricter audit when PHI mode is on |
-| Default storage backends | **SQLite** (dev/tiny labs) and **PostgreSQL** (production-recommended) |
+| Default storage backends | **SQLite** (dev / small single-lab) and **PostgreSQL** (multi-lab / high-concurrency scale-up) |
 | Storage abstraction | `IStorageBackend` interface; reference impls for SQLite & Postgres |
 | Auth providers | Local (Argon2id + TOTP), OIDC/OAuth2, LDAP/AD, mTLS for machine clients |
 | Authorization | RBAC with per-resource scopes; custom roles inside a lab |
@@ -104,6 +115,15 @@ that are themselves within their lab's scope. Roles can be further restricted by
 
 PHI fields require a separate `phi.read` permission, granted only to users
 explicitly authorized; viewing PHI is logged with a stronger audit event.
+
+**Cross-lab share-approval policy is configurable** by a LabAdmin. The
+conservative default is the full three-signature chain (§4.1), but a deployment
+may relax it for low-risk transfers — e.g. same-department shares require only
+`source_admin` approval, or non-PHI shares require approval-free transfer that is
+still fully logged. The strict three-signature default remains available and is
+the baseline for formal inter-institution biospecimen transfer. The intent is to
+keep informal intra-department sharing inside the system rather than driving it
+to a whiteboard.
 
 ---
 
@@ -189,6 +209,7 @@ CheckoutEvent
 ShareRequest
   id, source_lab_id, target_lab_id, requested_by,
   scope_json (which samples/projects), state (pending|approved|rejected|revoked),
+  required_approvals (resolved from the lab share-approval policy, §3),
   approvals: [source_admin, target_admin, system_admin], created_at, decided_at
 
 AuditEvent
@@ -311,8 +332,19 @@ public:
 - **Streaming RPCs** are used for: live sample-list updates within a freezer view,
   live audit feed for admins, and bulk import progress.
 - All endpoints require auth except `/health` and `/auth/*`.
-- TLS 1.3 only; HSTS; modern cipher suites only. Self-signed cert OK for dev,
-  not for production (deployment doc states this clearly).
+- **TLS:** TLS 1.3 only; HSTS. The gRPC server and the REST gateway share one
+  TLS configuration block. Cipher suites are restricted to the TLS 1.3 AEAD set
+  (`TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`,
+  `TLS_CHACHA20_POLY1305_SHA256`); no TLS ≤ 1.2 fallback. Client-certificate
+  (mTLS) auth is configurable as `off | request | require` for machine clients
+  (see `MtlsAuthProvider`, §7.1). `freezerd` reloads certificates on `SIGHUP`
+  without dropping in-flight connections. Self-signed cert OK for dev, rejected
+  in production mode (deployment doc states this clearly).
+- **Rate limiting / DoS boundary:** the gRPC server and the authentication
+  endpoints are rate-limited independently of the public-API token limits
+  (§11) — a per-IP connection cap plus a per-account/per-IP auth-attempt cap
+  that complements `LocalAuthProvider` account lockout (§7.1). This is a
+  security boundary, not a 1.0 polish item.
 
 ---
 
@@ -321,8 +353,17 @@ public:
 ### 7.1 Authentication
 `IAuthProvider` interface; v1 implementations:
 - `LocalAuthProvider`: Argon2id-hashed passwords; **TOTP required** for
-  `LabAdmin` and `SystemAdmin`, configurable per-lab for `Member`.
+  `LabAdmin` and `SystemAdmin` by default, configurable per-lab for `Member`.
+  In **small-lab deployment mode** the LabAdmin TOTP requirement may be
+  downgraded to *strongly recommended* (the PI/senior-postdoc admin is often the
+  only admin); `SystemAdmin` TOTP stays required in all modes.
 - `OidcAuthProvider`: standard OIDC discovery + PKCE; per-lab issuer config.
+  Supports **auto-provisioning**: a first successful login for an unknown
+  subject creates the user and assigns the configured default role in their lab,
+  so an institutional IdP (Azure AD / Shibboleth / FreeIPA) does not require
+  manual per-member account creation. OIDC ships in the **first
+  production-tagged release** (not deferred to final polish) — institutional
+  adoption depends on central-IdP integration.
 - `LdapAuthProvider`: bind+search; configurable group → role mapping.
 - `MtlsAuthProvider`: client certs for machine clients; cert pinned to a
   service-account user.
@@ -373,9 +414,23 @@ identification.
 - Uses Qt Widgets for dense forms and tables (sample browser, box layout
   grids), and QML for visualization panes (freezer 3D layout, fill heatmaps).
 - Critical UX flows v1:
+  - **Single-handed lookup** — the #1 daily operation. Scan or type a sample
+    name/barcode and immediately see its full location path (freezer → shelf →
+    rack → box → position) with no tree navigation or menus. Optimized for a
+    gloved hand at the freezer with a scanner.
   - Sample search (full-text + structured filter + custom-field filter).
   - Box view: visual grid; drag-and-drop placement; placement-rejection
     surfaces a clear "size mismatch" error from server.
+  - **Printable box-map / label PDF** — export a box's A1…→sample layout (and
+    per-sample labels) as a PDF for use at the freezer without a computer.
+    Bridges the §12 `ILabelPrinter` interface to a no-driver default path.
+  - **Home dashboard** — at-a-glance counts (active / checked-out / depleted)
+    and low-free-space boxes, plus open check-outs for chain-of-custody.
+  - **Batch aliquot creation** — from one parent: specify count + starting
+    position, system generates children and assigns positions sequentially.
+  - **Quick-add / draft samples** — a low-friction path to drop several samples
+    into positions now and fill required details later (draft state), without
+    abandoning schema validation at commit.
   - Bulk check-in/check-out with barcode scanner focus mode.
   - CSV import wizard with dry-run validation report.
   - CSV export for any list view.
@@ -403,7 +458,9 @@ identification.
 - Per-user, per-scope, expiring tokens. Tokens created in the UI; one-time
   display; revocable.
 - Server enforces same RBAC as a UI session, plus rate limits configurable per
-  role (default 60 req/min for `Member`-token, higher for `LabAdmin`).
+  role (default 60 req/min for `Member`-token, higher for `LabAdmin`). These
+  per-token limits are in addition to the transport-level rate limits on the
+  gRPC server and the authentication endpoints described in §6.
 - A small reference Python client (`freezerctl-py`) wraps the API and ships
   with a Jupyter quick-start notebook showing how to plot freezer fill
   histograms, sample age distributions, etc.
@@ -501,12 +558,46 @@ CI gates: all of the above + clang-tidy + ASan + UBSan + TSan builds.
 
 ## 17. Logging & Observability
 
-- Structured JSON logs to stdout (journald-friendly).
-- Prometheus `/metrics` endpoint (RPC latency histograms, error rates, audit
-  append latency, backup status).
-- OpenTelemetry tracing optional via env-var configuration.
+Observability is a **Day-0 server requirement**, not 1.0 polish: a service that
+cannot be monitored cannot be operated. Metrics and the health endpoint land
+with the gRPC server milestone (see §19, M3.5).
+
+- Prometheus `/metrics` endpoint: RPC latency histograms (p50/p95/p99), error
+  rate by endpoint, audit-append latency, DB connection-pool utilization, and
+  backup job status/success/failure.
+- `/health` endpoint with **dependency checks** (database reachable, KMS
+  reachable, backup target writable) returning a structured per-dependency
+  status, suitable for a load-balancer probe and for alerting.
+- **Structured JSON logs** to stdout (journald-friendly) with a documented
+  schema contract: every line carries `ts`, `level`, `msg`, `request_id`,
+  `actor_user_id` (nullable), `lab_id` (nullable), and `event`. Level semantics
+  are defined — `ERROR` = operator action required, `WARN` = degraded/retried,
+  `INFO` = normal lifecycle — so a log pipeline (Loki / Elasticsearch / Splunk)
+  can parse, index, and alert reliably.
+- OpenTelemetry tracing optional via env-var configuration (M7).
 - No PHI ever written to logs (enforced by a `redact()` wrapper around
   request-logging middleware; tested).
+
+### 17.1 Operability & SLOs
+
+- **SLO framework** (v1 may set aspirational targets; the framework must exist
+  so monitoring and capacity can be designed against it): RPC latency p50/p95/p99
+  targets, an availability target, and recovery objectives (**RTO** restore-time,
+  **RPO** acceptable data-loss window backed by the §14 backup schedule).
+- **Availability model — single server by design.** v1 is a single `freezerd`
+  process (§2); the audit chain is single-writer. This is an **explicit
+  limitation**, not an accident: there is no active-active HA in v1. Postgres
+  streaming replication (§14) provides DR, not hot failover. Multi-writer / HA
+  is out of scope for v1 and called out so operators can plan maintenance
+  windows accordingly.
+- **Upgrade / migration procedure (version N → N+1):** documented runbook
+  stating server↔previous-client backward-compatibility expectations, whether a
+  migration blocks writes, how to roll back a failed migration (paired with the
+  §15 up+down migration tests), and representative migration durations so a
+  maintenance window can be sized.
+- **Capacity planning:** rough, documented sizing numbers — baseline memory
+  plus per-connection memory, and the maximum CSV import size before the server
+  applies back-pressure — so a VM/container can be provisioned with confidence.
 
 ---
 
@@ -550,9 +641,20 @@ First end-to-end usable product. All gRPC services (Auth, Session, Lab, Box,
 ItemType, Sample, Role, Audit, Share) implemented. REST/JSON gateway (`src/rest/`,
 Drogon over the gRPC in-process channel) fans out to **all 9 services** with
 positive/negative authz tests. SSE streaming and the online-only desktop client
-still to come.
+still to come. The small-lab daily-driver UX flows added to §9 (single-handed
+lookup, box-map/label PDF, dashboard, batch aliquot, quick-add/draft) land with
+the Qt client here and the Web UI at M4.
 
-**M4 — Web UI (weeks 15–18). 🔲 Planned.** REST gateway, React SPA covering core flows.
+**M3.5 — Operability. 🔲 Planned (new — promoted from M7 per review).** Before
+the first adopter deployment: Prometheus `/metrics`, `/health` with dependency
+checks, the structured-log schema contract, transport-level rate limiting
+(gRPC + auth), the SLO doc, and the version N→N+1 upgrade/migration runbook
+(§17.1). Observability is a Day-0 operational requirement, not 1.0 polish.
+
+**M4 — Web UI + OIDC (weeks 15–18). 🔲 Planned.** REST gateway, React SPA
+covering core flows. **`OidcAuthProvider` with auto-provisioning lands here**
+(moved up from M7): institutional adoption depends on central-IdP integration,
+so it ships in the first production-tagged release rather than final polish.
 
 **M5 — PHI mode + KMS + backups (weeks 19–22). 🔲 Planned.** Field-level encryption,
 KMS adapters, backup/restore, restore drills.
@@ -560,8 +662,8 @@ KMS adapters, backup/restore, restore drills.
 **M6 — Public Python API & sharing (weeks 23–26). 🔲 Planned.** External API tokens,
 `freezerctl-py`, cross-lab share-request workflow.
 
-**M7 — Polish & 1.0 (weeks 27–30). 🔲 Planned.** OIDC + LDAP auth, packaging, docs,
-security review.
+**M7 — Polish & 1.0 (weeks 27–30). 🔲 Planned.** LDAP + mTLS auth (OIDC moved to
+M4), OpenTelemetry tracing, packaging, docs, external security review.
 
 ---
 
@@ -574,7 +676,8 @@ security review.
 | Concurrent placement double-booking a position | DB-level unique constraint on (box_id, position_label) WHERE status active; concurrency stress test. |
 | AGPL scaring off academic IT | Clear documentation that internal academic use is fine; commercial license available for industry partners. |
 | Abstraction layer leaking SQL dialects | All higher-level code uses typed query DSL; raw SQL banned by code review checklist. |
-| SQLite single-writer surprise in production | Docs + first-run wizard warn if concurrent users > 5 on SQLite and recommend Postgres. |
+| SQLite single-writer surprise in production | First-run wizard **refuses** production mode on SQLite unless an explicit `--i-understand-sqlite-is-not-for-production` flag is passed; the dashboard shows a persistent amber banner once active sessions exceed a configured threshold; docs recommend Postgres for multi-user. |
+| Single-maintainer / bus-factor (one owner + CLA) | Material for a 5–10 yr institutional lifespan: mitigated by AGPLv3 source availability (the deployer always has the code), standard C++20 + Conan/CMake tooling (any C++ contractor can maintain it), and a stated intent to grow a multi-maintainer governance model over time. Documented honestly in an "Institutional Adoption Considerations" note. |
 
 ---
 
@@ -604,3 +707,16 @@ When code is later written, the following must all be true before tagging 1.0:
 - Real-time IoT temperature monitoring (interface yes, drivers no).
 - Translations beyond English.
 - Built-in plate (96/384-well) workflows beyond modeling them as a BoxType.
+
+**Acknowledged-but-deferred small-lab requests** (from
+`doc/review-small-lab-terminal-user.md` — recorded so they are not lost; a v1
+deferral, not a rejection):
+- 2D freezer-occupancy heatmap (per shelf/rack/box fill visualization).
+- Manual temperature logging + threshold alerts (no IoT hardware).
+- Sample/reagent expiration / use-by tracking with dashboard warnings.
+- Instrument measurement-append import (Nanodrop/Qubit/plate-reader CSV linked
+  to existing samples, not new-entity creation as in §13).
+- Location-keyed batch operations (move/export by shelf/rack in UI + CLI).
+- Emergency freezer-failure relocation mode (batch-move with relaxed
+  position-validation, recorded as an emergency event).
+- Built-in opt-in sample-type templates (cell line / DNA / tissue / bacteria).

@@ -7,6 +7,7 @@ find_package(CLI11 CONFIG REQUIRED)
 add_library(
   freezermanager_cli
   AuditCommands.cc
+  AuditCsv.cc
   BackendFactory.cc
   CliApp.cc
   BoxImport.cc
@@ -18,6 +19,7 @@ add_library(
   KeyCommands.cc
   LabCommands.cc
   NounCommands.cc
+  UserCommands.cc
   UserImport.cc
   SampleCommands.cc
   SampleCsv.cc
@@ -36,6 +38,7 @@ target_link_libraries(
   freezermanager_cli
   PUBLIC
     FreezerManager::core
+    FreezerManager::auth
     FreezerManager::audit
     FreezerManager::backup
     FreezerManager::storage_sqlite

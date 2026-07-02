@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/ItemTypeServiceImpl.h"
+#include "server/RequestId.h"
 
 #include "core/custom_field_validator.h"
 #include "core/item_type.h"
@@ -24,12 +25,13 @@
 namespace fmgr::server {
   namespace {
 
-    [[nodiscard]] storage::MutationContext make_ctx(const auth::SessionContext& sctx,
+    [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
+                                                    const auth::SessionContext& sctx,
                                                     std::string_view reason) {
       return storage::MutationContext{
           .actor_user_id = sctx.user_id,
           .actor_session_id = sctx.session_id.to_string(),
-          .request_id = "",
+          .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
     }
@@ -277,7 +279,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      txn->repo<core::ItemType>().insert(item_type, make_ctx(sctx, "create_item_type"));
+      txn->repo<core::ItemType>().insert(item_type, make_ctx(*ctx, sctx, "create_item_type"));
       txn->commit();
 
       fill_item_type(resp->mutable_item_type(), item_type);
@@ -308,7 +310,7 @@ namespace fmgr::server {
                                       req->item_type().parent_id())}
                                 : std::nullopt;
       existing->name = req->item_type().name();
-      txn->repo<core::ItemType>().update(*existing, make_ctx(sctx, "update_item_type"));
+      txn->repo<core::ItemType>().update(*existing, make_ctx(*ctx, sctx, "update_item_type"));
       txn->commit();
 
       fill_item_type(resp->mutable_item_type(), *existing);
@@ -337,7 +339,8 @@ namespace fmgr::server {
       if (!sctx.has_for_lab(existing->lab_id, core::Permission::ItemTypeDefine)) {
         throw auth::PermissionDenied("item_type.define required for this lab");
       }
-      txn->repo<core::ItemType>().soft_delete(item_type_id, make_ctx(sctx, "archive_item_type"));
+      txn->repo<core::ItemType>().soft_delete(item_type_id,
+                                              make_ctx(*ctx, sctx, "archive_item_type"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {
@@ -428,7 +431,7 @@ namespace fmgr::server {
             "custom field limit reached: an entity may have at most " +
             std::to_string(core::k_max_custom_fields_per_entity) + " custom fields");
       }
-      txn->repo<core::CustomFieldDefinition>().insert(cfd, make_ctx(sctx, "create_cfd"));
+      txn->repo<core::CustomFieldDefinition>().insert(cfd, make_ctx(*ctx, sctx, "create_cfd"));
       txn->commit();
 
       fill_cfd(resp->mutable_cfd(), cfd);
@@ -469,7 +472,8 @@ namespace fmgr::server {
       existing->indexed = wire.indexed();
       existing->is_phi = wire.is_phi();
       reject_indexed_phi(*existing);
-      txn->repo<core::CustomFieldDefinition>().update(*existing, make_ctx(sctx, "update_cfd"));
+      txn->repo<core::CustomFieldDefinition>().update(*existing,
+                                                      make_ctx(*ctx, sctx, "update_cfd"));
       txn->commit();
 
       fill_cfd(resp->mutable_cfd(), *existing);
@@ -499,7 +503,8 @@ namespace fmgr::server {
       if (!sctx.has_for_lab(existing->lab_id, core::Permission::CustomFieldDefine)) {
         throw auth::PermissionDenied("custom_field.define required for this lab");
       }
-      txn->repo<core::CustomFieldDefinition>().soft_delete(cfd_id, make_ctx(sctx, "archive_cfd"));
+      txn->repo<core::CustomFieldDefinition>().soft_delete(cfd_id,
+                                                           make_ctx(*ctx, sctx, "archive_cfd"));
       txn->commit();
       return grpc::Status::OK;
     } catch (...) {

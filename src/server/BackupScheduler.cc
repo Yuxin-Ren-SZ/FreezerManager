@@ -2,7 +2,9 @@
 
 #include "server/BackupScheduler.h"
 
-#include <spdlog/spdlog.h>
+#include "obs/Log.h"
+
+#include <fmt/format.h>
 
 #include <chrono>
 #include <cstdint>
@@ -79,20 +81,32 @@ namespace fmgr::server {
       const auto result =
           backup::run_backup_tick(backend_, *backup_kms_, config_, now_micros(), seed, log);
       if (result.backup_made) {
-        spdlog::info("backup scheduler: wrote {}", result.backup_path);
+        obs::log_lifecycle(obs::Level::Info,
+                           fmt::format("backup scheduler: wrote {}", result.backup_path),
+                           "backup.wrote");
       }
       if (result.pruned > 0) {
-        spdlog::info("backup scheduler: pruned {} old backup(s)", result.pruned);
+        obs::log_lifecycle(obs::Level::Info,
+                           fmt::format("backup scheduler: pruned {} old backup(s)", result.pruned),
+                           "backup.pruned");
       }
       if (result.drill_ran && !result.drill_ok) {
         // Page the system admin: a stored backup failed its restore drill.
-        spdlog::error("backup scheduler: RESTORE DRILL FAILED for {} — {}", result.drill_target,
-                      log.str());
+        obs::log_lifecycle(obs::Level::Error,
+                           fmt::format("backup scheduler: RESTORE DRILL FAILED for {} — {}",
+                                       result.drill_target, log.str()),
+                           "backup.drill_failed");
       } else if (result.drill_ran) {
-        spdlog::info("backup scheduler: restore drill passed for {}", result.drill_target);
+        obs::log_lifecycle(
+            obs::Level::Info,
+            fmt::format("backup scheduler: restore drill passed for {}", result.drill_target),
+            "backup.drill_passed");
       }
     } catch (const std::exception& error) {
-      spdlog::error("backup scheduler: tick failed: {} ({})", error.what(), log.str());
+      obs::log_lifecycle(
+          obs::Level::Error,
+          fmt::format("backup scheduler: tick failed: {} ({})", error.what(), log.str()),
+          "backup.tick_failed");
     }
   }
 

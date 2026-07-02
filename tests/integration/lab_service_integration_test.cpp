@@ -18,6 +18,7 @@
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
+#include <fmgr/v1/audit.grpc.pb.h>
 #include <fmgr/v1/auth.grpc.pb.h>
 #include <fmgr/v1/lab.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
@@ -72,6 +73,7 @@ namespace fmgr::test {
         channel_ = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
         auth_stub_ = fmgr::v1::AuthService::NewStub(channel_);
         lab_stub_ = fmgr::v1::LabService::NewStub(channel_);
+        audit_stub_ = fmgr::v1::AuditService::NewStub(channel_);
       }
 
       void TearDown() override {
@@ -118,6 +120,7 @@ namespace fmgr::test {
       std::shared_ptr<grpc::Channel> channel_;
       std::unique_ptr<fmgr::v1::AuthService::Stub> auth_stub_;
       std::unique_ptr<fmgr::v1::LabService::Stub> lab_stub_;
+      std::unique_ptr<fmgr::v1::AuditService::Stub> audit_stub_;
 
     private:
       static void remove_sqlite_files(const std::filesystem::path& path) {
@@ -219,6 +222,69 @@ namespace fmgr::test {
       const auto get_status = lab_stub_->GetLab(&ctx2, get_req, &get_resp);
       EXPECT_TRUE(get_status.ok()) << get_status.error_message();
       EXPECT_EQ(get_resp.lab().name(), "Genomics Lab");
+    }
+
+    // C-12 / PRD §17: a caller-supplied x-request-id is propagated through the
+    // handler into the mutation's audit row, so a request can be correlated across
+    // the log pipeline and the audit chain.
+    TEST_F(LabServiceTest, CreateLabPropagatesRequestIdIntoAuditRow) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      const std::string marker = "req-c12-correlation-0001";
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.AddMetadata("x-request-id", marker);
+      fmgr::v1::CreateLabRequest req;
+      req.set_name("Correlated Lab");
+      fmgr::v1::CreateLabResponse resp;
+      ASSERT_TRUE(lab_stub_->CreateLab(&ctx, req, &resp).ok());
+
+      // The system admin reads the deployment-wide audit feed and finds the lab
+      // creation carrying the supplied request id.
+      grpc::ClientContext audit_ctx;
+      set_bearer(audit_ctx, token);
+      fmgr::v1::ListAuditEventsRequest audit_req; // no lab_id → deployment-wide
+      fmgr::v1::ListAuditEventsResponse audit_resp;
+      ASSERT_TRUE(audit_stub_->ListAuditEvents(&audit_ctx, audit_req, &audit_resp).ok());
+
+      bool found = false;
+      for (const auto& event : audit_resp.events()) {
+        if (event.request_id() == marker) {
+          found = true;
+          break;
+        }
+      }
+      EXPECT_TRUE(found) << "no audit event carried the supplied x-request-id";
+    }
+
+    // With no x-request-id supplied, the server still stamps a non-empty
+    // correlation id (a generated UUID) so every mutation is traceable.
+    TEST_F(LabServiceTest, CreateLabStampsGeneratedRequestIdWhenNoneSupplied) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::CreateLabRequest req;
+      req.set_name("Uncorrelated Lab");
+      fmgr::v1::CreateLabResponse resp;
+      ASSERT_TRUE(lab_stub_->CreateLab(&ctx, req, &resp).ok());
+
+      grpc::ClientContext audit_ctx;
+      set_bearer(audit_ctx, token);
+      fmgr::v1::ListAuditEventsRequest audit_req;
+      fmgr::v1::ListAuditEventsResponse audit_resp;
+      ASSERT_TRUE(audit_stub_->ListAuditEvents(&audit_ctx, audit_req, &audit_resp).ok());
+
+      bool saw_lab_create_with_id = false;
+      for (const auto& event : audit_resp.events()) {
+        if (event.entity_kind() == "lab" && !event.request_id().empty()) {
+          saw_lab_create_with_id = true;
+          break;
+        }
+      }
+      EXPECT_TRUE(saw_lab_create_with_id) << "lab mutation lacked a generated request_id";
     }
 
     TEST_F(LabServiceTest, CreateLabRejectsCallerWithoutLabProvision) {

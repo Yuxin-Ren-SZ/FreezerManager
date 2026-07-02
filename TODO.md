@@ -1,5 +1,120 @@
 # TODO — Implementation Backlog
 
+## Quality review — 2026-07-01 (test coverage audit + Claude review)
+
+Full audit: `doc/TEST_COVERAGE_AUDIT_2026-07-01.md`
+
+### Root cause pattern found
+
+All fake gRPC services returned `grpc::Status::OK` unconditionally. Every
+`if (!result.ok)` branch in production code was dead code from a test
+coverage perspective. Tests predominantly tested model layers directly
+rather than through widget wire-up paths. This pattern allowed a
+parameter-swap bug (`93d3b3c`) to pass 1488 tests undetected.
+
+### Fixes applied (12/12 test files)
+
+| File | Commit | What |
+|------|--------|------|
+| `qt_box_service_client_test.cpp` | `d3bc513` | 5 error-path: all RPCs |
+| `qt_sample_lookup_widget_test.cpp` | `d4b7567` | 6: name fallback, disambiguation click, error display, status |
+| `qt_location_path_resolver_test.cpp` | `580ce02` | 7: cycle guard, deep chain, edge cases |
+| `qt_box_grid_model_test.cpp` | `55ad006` | 5: 3 setBox fails + accessors + empty box |
+| `qt_sample_table_model_test.cpp` | `acd8be8` | +16: columns, errors, edge cases |
+| `qt_lab_service_client_test.cpp` | `37e7537` | getLab error |
+| `qt_auth_service_client_test.cpp` | `37e7537` | logout error |
+| `qt_session_manager_test.cpp` | `7f12425` | QTimer auto-logout |
+| `qt_lab_tree_model_test.cpp` | `7f12425` | mid-tree RPC failures |
+| `qt_barcode_scan_controller_test.cpp` | `7f12425` | empty barcode, gRPC error |
+| `qt_sample_service_client_test.cpp` | `7f12425` | getSample/export/checkout errors |
+| `qt_box_map_pdf_test.cpp` + `qt_label_pdf_test.cpp` | `7f12425` | gRPC error paths |
+
+### Remaining gaps (from Claude review)
+
+- 🔴 **LabTreeModel recursion has no cycle guard** — `buildContainers` can
+  infinite-recursively overflow stack. Need depth guard or visited set.
+  Real bug, not just test gap.
+- 🟡 `BoxGridWidget::savePdf()` blocks on `QFileDialog::getSaveFileName()`
+  — not unit-testable without an `ISaveDialog` seam. Accepted limitation.
+- 🟡 `BarcodeScanController::processScan` whitespace-only trim: behavior
+  needs independent assertion.
+- Wire-up path tests (Widget→PDF, Bridge→PDF) — PDF tests still call
+  `buildModel()` directly, not through BoxGridWidget. Deferred to
+  future integration test layer.
+- `QSignalSpy` / `gridChanged` tests — require Qt6::Test linkage not in
+  `qt_unit_tests` target. Deferred until test target restructuring.
+
+### Key lesson for future work
+
+Every fake gRPC service must support **per-RPC error injection flags**. Prefer
+`grpc::StatusCode fail_<method> = grpc::StatusCode::OK` pattern. Never write a
+fake that only returns `grpc::Status::OK` — it creates a false sense of test
+coverage.
+
+## Security review backlog — 2026-06-28 (senior-engineer code review)
+
+Triaged from `doc/review-senior-engineer-security.md` — a line-level code
+security review of `src/auth/`, `src/kms/`, `src/crypto/`, `src/rpc/`,
+`src/server/`, `src/storage/detail/QuerySqlBuilder.h`, `src/audit/`,
+`src/cli/CsvReader.h` (run against `feat/qt-csv-import-wizard`). Verdict:
+unusually strong baseline; 12 findings, one Critical. The `file:line` anchors and
+top findings were spot-validated against the live tree on triage. No code changed
+in this slice — each row is a future fix slice. **No PRD edit needed**: the
+revised §6 (TLS, rate-limiting) and §17.1 (request-id, operability) already cover
+the intent; these are code-level follow-ups. Full rationale per finding lives in
+the review doc.
+
+| ID | Sev | Area | Anchor | Fix sketch | Target |
+|----|-----|------|--------|-----------|--------|
+| C-9 | **Critical** | Server | `FreezerServer.cc:68` | Implement TLS cert loading (path is an active `throw`, not a stub). **Pre-deployment blocker for any non-loopback bind.** | M5; gate remote deploy |
+| C-1 | High | Auth | `LocalAuthProvider.cc:752` | Lockout map is in-memory, resets on restart → persist failed-attempt state (DB table + TTL) or external limiter. | first prod tag (M3.5/M4) |
+| C-7 | High | Audit | `CanonicalJson.cc:13` | Canonical JSON not RFC 8785; nlohmann version drift can break the audit chain. Pin algorithm + CI golden-vector test, or implement JCS. | before 1.0 (M7) |
+| C-3 | Medium | Auth | `LocalAuthProvider.cc:272` | `totp_secret_enc` stored/used plaintext despite `_enc`. Encrypt under master KEK via existing `FieldCipher`. | M5 |
+| C-10 | Medium | Server | `FreezerServer.cc` build / no cap | No gRPC inbound message cap → set `ResourceQuota`/`MaxReceiveMessageSize` on `ServerBuilder`, configurable via `FreezerServerOptions` (~10 MiB default). | M3.5 (DoS) |
+| C-11 | Medium | Server | `GrpcErrorTranslation.h` | `INTERNAL` may leak raw error text (schema probing). Mask in prod, log real error server-side. | M3.5 |
+| C-12 | Low | Server | `SampleServiceImpl.cc:47` | `request_id = ""`. Extract `x-request-id` from gRPC metadata → `MutationContext::request_id`. | M3.5 (§17 obs) |
+| C-2 | Low | Auth | `validate_token()` | Sessions not IP/UA-bound; no replay detection. Optional IP-binding, off by default (NAT-friendly). | backlog / v2 |
+| C-4 | Low | Auth | `SampleServiceImpl.cc:541` | `SoftDeleteSample` two-phase authz bypasses the RPC-registry test. Register a wildcard perm or add `authorize_entity` middleware. | M3.5 |
+| C-6 | Low | KMS | `KeyringKms.h:43` | Raw KEK bytes in `std::vector`, no mlock. Wrap in `SecureBuffer` (`sodium_mlock`/`memzero`, optional `mprotect`). | M5 |
+| C-8 | Low | Storage | `QuerySqlBuilder.h:216` | Sort direction is the only non-parameterized SQL fragment (enum-gated, safe now). Add `static_assert`/stern comment so a future string-typed sort can't inject. | quick, any slice |
+| C-5 | Info | Auth | `Totp.cc:161` | TOTP code compare `==` not constant-time. Switch to `sodium_memcmp` (robust if digit count grows). | quick, any slice |
+
+## Resolved — 2026-06-28, Qt module clang-format + clang-tidy baseline (option 1)
+
+The whole `src/qt/` desktop client diverged from the repo's root tooling
+configs, so CI's format step and several clang-tidy checks were red on the Qt
+module at baseline. Fixed via the recommended per-directory override (option 1),
+mirroring the existing `tests/.clang-tidy` precedent — **zero method renames,
+no namespace reflow**.
+
+**Root cause (clang-format):** the Qt code is **Google style** (flush
+namespaces, `ColumnLimit: 80`, indented case labels, return type kept on the
+declaration line, 2-space trailing comments), not the root's LLVM-derived
+`NamespaceIndentation: All` / `ColumnLimit: 100`. Earlier "not reproducible"
+finding was a wrong base style, not a version mismatch.
+
+**Fix shipped:**
+- `src/qt/.clang-format` — `BasedOnStyle: Google`, `ColumnLimit: 80`,
+  `DerivePointerAlignment: false` + `PointerAlignment: Left` (keep the
+  project-wide left-aligned pointer rule), `IncludeBlocks: Preserve` (keep the
+  hand-curated include groups), `ReflowComments: false` (leave authored prose
+  comments). The module was then reflowed once with `clang-format-17` so the
+  committed bytes match the pinned CI tool — cosmetic-only (comment padding,
+  wrap shifts), no logic change.
+- `src/qt/.clang-tidy` — `InheritParentConfig: true` and disables five
+  house-style/framework clashes: `readability-identifier-naming` (Qt camelBack
+  API + virtual overrides), `readability-redundant-access-specifiers` (moc-forced
+  `private slots:` + `private:`), `bugprone-easily-swappable-parameters` (RPC
+  wrappers mirror proto signatures of adjacent string ids),
+  `modernize-use-nodiscard` (hits are Qt virtual overrides + trivial UI getters),
+  `readability-identifier-length` (short locals — same as tests).
+- **Genuine defects were FIXED in code, not suppressed:** a `qsizetype→int`
+  narrowing and a `QPushButton*→bool` implicit conversion in `LoginDialog.cc`.
+
+**Verified:** `clang-format-17 --dry-run --Werror` clean on all tracked sources;
+`run-clang-tidy-17 -p out/build/dev` clean across the whole Qt module; 64/64 Qt
+unit tests pass; SPDX + `git diff --check` clean.
+
 ## Handoff note — 2026-06-19, M5 slice 3 (encrypted SQLite backup + restore-drill)
 
 First Backup/DR slice (PRD §14). SQLite path end-to-end: an online hot copy,
@@ -1632,18 +1747,29 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
       `/metrics` (Prometheus). Both unauthenticated; `/metrics` SHOULD
       be bound to localhost or behind reverse-proxy ACL by default.
 
-- [ ] **F6. Qt 6 desktop client** (`src/qt/`). gRPC client.
-  - [ ] **F6.1.** Login screen + TOTP prompt + session keychain storage.
-  - [ ] **F6.2.** Sample browser (full-text + structured + custom-field
-        filter), virtualized table for 100k+ rows.
-  - [ ] **F6.3.** Box view: drag-and-drop placement; rejection from
-        server surfaces as a clear "size mismatch" toast.
-  - [ ] **F6.4.** Bulk check-in/check-out with barcode-scanner focus
-        mode (the focused field accepts HID keyboard input and
-        auto-submits on Enter or after a configurable inactivity gap).
-  - [ ] **F6.5.** CSV import wizard (dry-run first; show validation
-        report; confirm; import).
-  - [ ] **F6.6.** CSV export from any list view.
+- [~] **F6. Qt 6 desktop client** (`src/qt/`). gRPC client. Built as modules
+      M0–M5; headless logic (service clients + table/tree/grid models +
+      scan controller) is unit-tested without a QApplication, GUI widgets are
+      thin glue covered by manual e2e.
+  - [x] **F6.1.** Login screen + TOTP prompt + session manager (wired into the
+        app shell; Connect → LoginDialog → AuthService → SessionManager →
+        authenticated splitter). Keychain persistence still 🔲.
+  - [x] **F6.2.** Sample browser — virtualized `QTableView` with cursor paging
+        (`fetchMore`) for 100k+ rows + structured filters (status / box /
+        item-type / barcode). Full-text + custom-field filter 🔲 (needs server
+        `ListSamples` support, L10).
+  - [x] **F6.3.** Box view — `QGraphicsView` grid; drag-and-drop placement via
+        `MoveSample`; server rejection surfaces as a "size mismatch" toast.
+  - [x] **F6.4.** Bulk check-in/out with barcode-scanner focus mode (HID field
+        auto-submits on Enter; `ListSamples(barcode)` → `CheckoutSample`).
+        Configurable inactivity-gap auto-submit still 🔲.
+  - [ ] **F6.5.** CSV import wizard (dry-run first; show validation report;
+        confirm; import). **Server side done** — `SampleService.ImportSamples`
+        RPC (gRPC + REST `/api/v1/sample/import`), transactional + dry-run,
+        reuses the CLI importer core. Remaining: the Qt wizard
+        (`SampleServiceClient::importSamples` + file picker → dry-run report →
+        confirm).
+  - [x] **F6.6.** CSV export from the sample list view (`ExportSamplesCsv`).
 
 - [ ] **F7. Live updates over streaming RPCs.** Push sample-list deltas
       within an open freezer view; push admin audit feed in real time;
