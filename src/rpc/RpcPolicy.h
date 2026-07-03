@@ -35,7 +35,9 @@ namespace fmgr::rpc {
     std::optional<core::Permission> permission{};
 
     // NOLINTNEXTLINE(readability-identifier-naming) — trailing _ avoids the `public` keyword.
-    [[nodiscard]] static RpcPolicy public_() { return {RpcPolicyKind::Public, std::nullopt}; }
+    [[nodiscard]] static RpcPolicy public_() {
+      return {RpcPolicyKind::Public, std::nullopt};
+    }
     [[nodiscard]] static RpcPolicy self_service() {
       return {RpcPolicyKind::SelfService, std::nullopt};
     }

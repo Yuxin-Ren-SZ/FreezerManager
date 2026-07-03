@@ -470,7 +470,8 @@ namespace fmgr::rpc {
       // SampleRead/SampleWrite are lab-scoped, so for_permission classifies them
       // as LabPermission policies carrying that permission.
       EXPECT_EQ(snapshot.at("e3_test.SnapshotRead"), RpcPolicy::lab(core::Permission::SampleRead));
-      EXPECT_EQ(snapshot.at("e3_test.SnapshotWrite"), RpcPolicy::lab(core::Permission::SampleWrite));
+      EXPECT_EQ(snapshot.at("e3_test.SnapshotWrite"),
+                RpcPolicy::lab(core::Permission::SampleWrite));
     }
 
     TEST_F(AuthMiddlewareTest, RpcRegistryDuplicateRegistrationOverwrites) {
@@ -501,8 +502,7 @@ namespace fmgr::rpc {
       // token validation entirely and returns an unauthenticated context holding
       // no permissions.
       auth::SessionContext ctx;
-      EXPECT_NO_THROW(
-          ctx = do_authorize(*middleware_, "not-a-real-token", RpcPolicy::public_()));
+      EXPECT_NO_THROW(ctx = do_authorize(*middleware_, "not-a-real-token", RpcPolicy::public_()));
       EXPECT_TRUE(ctx.permissions_by_lab.empty());
       EXPECT_FALSE(ctx.has_global(core::Permission::SampleRead));
     }

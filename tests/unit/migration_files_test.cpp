@@ -81,7 +81,8 @@ namespace {
         {"0008_samples", "ae5cacc180a90e16a2645432ea734a65e16daaeaf2c31ec65480a86d68ad6fe3"},
         {"0009_share_requests", "96280bf2b300cc623bb432cb5635bf219220c46f38c6fdadb9a5d9fbb847ba93"},
         {"0010_sessions", "c46510c7e339060f6932019ab49e87476664a0404dbe83141b0d83ba005931e6"},
-        {"0011_audit_events_full", "a55fad9396fcf8a4fcda28f088429d5d9009148a1272c4bce1392be063169053"},
+        {"0011_audit_events_full",
+         "a55fad9396fcf8a4fcda28f088429d5d9009148a1272c4bce1392be063169053"},
         {"0012_sessions_mfa", "e74198fa039a6b101251641ea355150f636f80bcb365b08a2bc6c66c479f9523"},
         {"0013_authz_version", "dd3d82f5bcbcb03dfd5c2f15db84b29a24f60242bd1e485580cb9b68ff0f0220"},
         {"0014_lab_provision", "238d806d5f90513df81df86cf0f9bb04bea868e6a1e6034ec5ead490a93d8493"},
@@ -148,13 +149,11 @@ namespace {
   }
 
   TEST(MigrationFiles, SqliteEmbeddedMatchesSqlFiles) {
-    check_sql_files_match(fmgr::storage::k_sqlite_embedded_migrations,
-                          FMGR_SQLITE_MIGRATIONS_DIR);
+    check_sql_files_match(fmgr::storage::k_sqlite_embedded_migrations, FMGR_SQLITE_MIGRATIONS_DIR);
   }
 
   TEST(MigrationFiles, PostgresEmbeddedMatchesSqlFiles) {
-    check_sql_files_match(fmgr::storage::k_postgres_embedded_migrations,
-                          FMGR_PG_MIGRATIONS_DIR);
+    check_sql_files_match(fmgr::storage::k_postgres_embedded_migrations, FMGR_PG_MIGRATIONS_DIR);
   }
 
 } // namespace

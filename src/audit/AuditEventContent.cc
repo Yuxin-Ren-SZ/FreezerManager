@@ -21,8 +21,8 @@ namespace fmgr::audit {
         {"entity_id", fields.entity_id},
         {"entity_kind", fields.entity_kind},
         {"id", fields.id},
-        {"lab_id", fields.lab_id.has_value() ? nlohmann::json(*fields.lab_id)
-                                             : nlohmann::json(nullptr)},
+        {"lab_id",
+         fields.lab_id.has_value() ? nlohmann::json(*fields.lab_id) : nlohmann::json(nullptr)},
         {"request_id", fields.request_id},
     };
     return canonical_json(content);

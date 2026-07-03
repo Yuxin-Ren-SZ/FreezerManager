@@ -9,9 +9,6 @@
 // authorization test (a caller who may, one who may not, plus missing bearer).
 
 #include "auth/LocalAuthProvider.h"
-#include "support/FastAuth.h"
-#include "support/RegisterRepositories.h"
-#include "support/TempSqliteDb.h"
 #include "core/identity.h"
 #include "core/role.h"
 #include "rest/GatewayStubs.h"
@@ -29,6 +26,9 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
+#include "support/FastAuth.h"
+#include "support/RegisterRepositories.h"
+#include "support/TempSqliteDb.h"
 
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
@@ -54,7 +54,6 @@
 
 namespace fmgr::test {
   namespace {
-
 
     // Ask the OS for a free loopback TCP port, then hand it to Drogon. A tiny
     // race window exists between close() and Drogon's bind(), acceptable here.
@@ -155,8 +154,6 @@ namespace fmgr::test {
       }
 
     private:
-
-
       void seed() {
         const auto hash = provider_->hash_password(kPassword);
         const core::LabId lab_id = core::LabId::parse(kLabId);

@@ -19,7 +19,8 @@ as `constexpr` string views — there is no runtime file I/O, so `:memory:` and
 packaged binaries work unchanged. `default_migrations()` in each backend builds
 its list from the embedded array.
 
-The generated headers are also committed so they are reviewable, and
+The generated headers are build artifacts (git-ignored, regenerated on every CMake
+configure), so the `.sql` files are the reviewable source of truth.
 `tests/unit/migration_files_test.cpp` asserts the embedded bodies match the `.sql`
 files and that every checksum equals a pinned golden value.
 

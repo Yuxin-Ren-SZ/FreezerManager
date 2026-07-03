@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "auth/LocalAuthProvider.h"
-#include "support/FastAuth.h"
-#include "support/RegisterRepositories.h"
-#include "support/TempSqliteDb.h"
 #include "core/identity.h"
 #include "core/role.h"
 #include "server/FreezerServer.h"
@@ -22,6 +19,9 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
+#include "support/FastAuth.h"
+#include "support/RegisterRepositories.h"
+#include "support/TempSqliteDb.h"
 
 #include "rpc/AuthMiddleware.h"
 
@@ -43,8 +43,6 @@
 
 namespace fmgr::test {
   namespace {
-
-
 
     // Fixture that spins up an in-process FreezerServer on a random port.
     class ServerIntegrationTest : public ::testing::Test {
@@ -123,8 +121,6 @@ namespace fmgr::test {
       std::unique_ptr<fmgr::v1::SessionService::Stub> session_stub_;
 
     private:
-
-
       void seed_test_user() {
         const auto password_hash = provider_->hash_password(kPassword);
         const core::UserId uid = core::UserId::parse("10000000-0000-0000-0000-000000000001");
@@ -327,8 +323,8 @@ namespace fmgr::test {
         const auto* service = pool->FindServiceByName(service_name);
         ASSERT_NE(service, nullptr) << "service descriptor not linked: " << service_name;
         for (int i = 0; i < service->method_count(); ++i) {
-          const std::string full = "/" + std::string(service_name) + "/" +
-                                   std::string(service->method(i)->name());
+          const std::string full =
+              "/" + std::string(service_name) + "/" + std::string(service->method(i)->name());
           ++method_total;
           EXPECT_TRUE(registry.contains(full))
               << "gRPC method has no AuthMiddleware policy: " << full;

@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "auth/LocalAuthProvider.h"
-#include "support/FastAuth.h"
-#include "support/RegisterRepositories.h"
-#include "support/TempSqliteDb.h"
 #include "core/identity.h"
 #include "core/role.h"
 #include "server/FreezerServer.h"
@@ -21,6 +18,9 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
+#include "support/FastAuth.h"
+#include "support/RegisterRepositories.h"
+#include "support/TempSqliteDb.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
 #include <fmgr/v1/share.grpc.pb.h>
@@ -34,8 +34,6 @@
 
 namespace fmgr::test {
   namespace {
-
-
 
     // Principals spread across three labs:
     //   - src_admin : LabAdmin in lab1 — ShareRequest + ShareApprove for lab1.
@@ -155,8 +153,6 @@ namespace fmgr::test {
       std::unique_ptr<fmgr::v1::ShareService::Stub> share_stub_;
 
     private:
-
-
       void seed() {
         const auto hash = provider_->hash_password(kPassword);
         const core::LabId lab1 = core::LabId::parse(kLab1);

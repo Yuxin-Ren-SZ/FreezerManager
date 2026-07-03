@@ -361,9 +361,9 @@ namespace fmgr::rest {
     auto shared = std::make_shared<obs::HealthProbe>(std::move(probe));
     auto authz = std::make_shared<OpsAuthorizer>(std::move(authorizer));
     const auto make_handler = [shared, authz, public_readiness] {
-      return [shared, authz, public_readiness](
-                 const drogon::HttpRequestPtr& req,
-                 std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+      return [shared, authz,
+              public_readiness](const drogon::HttpRequestPtr& req,
+                                std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
         if (!ops_endpoint_permitted(public_readiness, *authz, auth_header(req))) {
           callback(json_response(401, R"({"status":"unauthorized"})"));
           return;

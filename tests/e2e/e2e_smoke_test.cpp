@@ -5,9 +5,6 @@
 // end-to-end and catch regressions in service wiring.
 
 #include "auth/LocalAuthProvider.h"
-#include "support/FastAuth.h"
-#include "support/RegisterRepositories.h"
-#include "support/TempSqliteDb.h"
 #include "core/box.h"
 #include "core/identity.h"
 #include "core/item_type.h"
@@ -29,6 +26,9 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
+#include "support/FastAuth.h"
+#include "support/RegisterRepositories.h"
+#include "support/TempSqliteDb.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
 #include <fmgr/v1/sample.grpc.pb.h>
@@ -42,8 +42,6 @@
 
 namespace fmgr::test {
   namespace {
-
-
 
     // Fixture that spins up an in-process FreezerServer with a seeded admin user.
     class E2ESmokeTest : public ::testing::Test {
@@ -117,8 +115,6 @@ namespace fmgr::test {
       core::ItemTypeId item_type_id_;
 
     private:
-
-
       void seed_admin_user() {
         const auto password_hash = provider_->hash_password(kPassword);
         const core::UserId uid = core::UserId::parse("10000000-e2e0-4e2e-8e2e-000000000001");

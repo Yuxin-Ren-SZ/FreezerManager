@@ -15,9 +15,11 @@ namespace {
   using fmgr::server::validate_rest_tls_policy;
 
   RestTlsConfig config(std::string host, bool cert, bool key, bool require_tls) {
-    return RestTlsConfig{
-        .host = std::move(host), .port = 8080, .has_cert = cert, .has_key = key,
-        .require_tls = require_tls};
+    return RestTlsConfig{.host = std::move(host),
+                         .port = 8080,
+                         .has_cert = cert,
+                         .has_key = key,
+                         .require_tls = require_tls};
   }
 
   TEST(RestTlsPolicy, LoopbackHostsRecognized) {
