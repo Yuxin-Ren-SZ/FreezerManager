@@ -4,6 +4,7 @@
 
 #include <openssl/evp.h>
 #include <openssl/params.h>
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
@@ -153,16 +154,24 @@ namespace fmgr::auth {
     const auto key = base32_decode(base32_secret);
     const std::int64_t base_counter = now_unix_seconds / config.step_seconds;
 
+    // Compare every window step with a constant-time memcmp and accumulate the
+    // result instead of returning on first match: an early return would leak,
+    // via timing, which step matched (i.e. the code's age within the window).
+    // sodium_memcmp requires equal-length buffers, so guard on length first (the
+    // code length is fixed by config.digits and not secret).
+    unsigned matched = 0U;
     for (int delta = -config.window_steps; delta <= config.window_steps; ++delta) {
       const std::int64_t counter = base_counter + delta;
       if (counter < 0) {
         continue;
       }
-      if (hotp(key, counter, config.digits) == code) {
-        return true;
+      const std::string candidate = hotp(key, counter, config.digits);
+      if (candidate.size() == code.size() &&
+          sodium_memcmp(candidate.data(), code.data(), code.size()) == 0) {
+        matched = 1U;
       }
     }
-    return false;
+    return matched != 0U;
   }
 
 } // namespace fmgr::auth
