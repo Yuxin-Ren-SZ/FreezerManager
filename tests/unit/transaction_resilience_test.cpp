@@ -9,6 +9,7 @@
 #include "storage/RoleTraits.h"
 #include "storage/SessionTraits.h"
 #include "storage/sqlite/IdentityRepositories.h"
+#include "storage/sqlite/LoginAttemptRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
@@ -46,6 +47,7 @@ namespace fmgr::storage {
         register_identity_repositories(*backend_);
         register_role_repositories(*backend_);
         register_session_repositories(*backend_);
+        register_login_attempt_repositories(*backend_);
         backend_->migrate_to_latest();
       }
 

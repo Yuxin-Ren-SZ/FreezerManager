@@ -66,18 +66,18 @@ the review doc.
 
 | ID | Sev | Area | Anchor | Fix sketch | Target |
 |----|-----|------|--------|-----------|--------|
-| C-9 | **Critical** | Server | `FreezerServer.cc:68` | Implement TLS cert loading (path is an active `throw`, not a stub). **Pre-deployment blocker for any non-loopback bind.** | M5; gate remote deploy |
-| C-1 | High | Auth | `LocalAuthProvider.cc:752` | Lockout map is in-memory, resets on restart → persist failed-attempt state (DB table + TTL) or external limiter. | first prod tag (M3.5/M4) |
+| ~~C-9~~ | ~~**Critical**~~ | Server | `FreezerServer.cc` | **RESOLVED** (`feat/grpc-tls-c9`): gRPC now serves TLS 1.3 via `TlsServerCredentials` + `FileWatcherCertificateProvider` (hot cert reload, no dropped connections); mTLS `off\|request\|require` (`FMGR_MTLS`/`FMGR_TLS_CLIENT_CA`); 6 integration tests. See `doc/TLS.md`. | ✅ done |
+| ~~C-1~~ | ~~High~~ | Auth | `LocalAuthProvider.cc` | **RESOLVED** (`feat/grpc-tls-c9`): lockout state persisted in the new `login_attempt` table (migration 0015, both backends, no RLS) so a lock survives a restart; one active row per email via a partial unique index. Restart-persistence unit test added. | ✅ done |
 | C-7 | High | Audit | `CanonicalJson.cc:13` | Canonical JSON not RFC 8785; nlohmann version drift can break the audit chain. Pin algorithm + CI golden-vector test, or implement JCS. | before 1.0 (M7) |
-| C-3 | Medium | Auth | `LocalAuthProvider.cc:272` | `totp_secret_enc` stored/used plaintext despite `_enc`. Encrypt under master KEK via existing `FieldCipher`. | M5 |
+| ~~C-3~~ | ~~Medium~~ | Auth | `LocalAuthProvider.cc` | **RESOLVED** (`feat/grpc-tls-c9`): `totp_secret_enc` now envelope-encrypted via `FieldCipher` under the master KEK. `LocalAuthProvider` takes an `IKmsProvider*`; new `set_totp_secret` write primitive; verify path decrypts the envelope and still accepts legacy plaintext for transition. | ✅ done |
 | C-10 | Medium | Server | `FreezerServer.cc` build / no cap | No gRPC inbound message cap → set `ResourceQuota`/`MaxReceiveMessageSize` on `ServerBuilder`, configurable via `FreezerServerOptions` (~10 MiB default). | M3.5 (DoS) |
 | C-11 | Medium | Server | `GrpcErrorTranslation.h` | `INTERNAL` may leak raw error text (schema probing). Mask in prod, log real error server-side. | M3.5 |
-| C-12 | Low | Server | `SampleServiceImpl.cc:47` | `request_id = ""`. Extract `x-request-id` from gRPC metadata → `MutationContext::request_id`. | M3.5 (§17 obs) |
+| ~~C-12~~ | ~~Low~~ | Server | `RequestId.h` | **ALREADY DONE / stale anchor**: `request_id_from(ServerContext)` reads `x-request-id` (minting a UUID when absent) and is wired into all mutating impls + the REST gateway (`RestGateway.cc:67-69`). No `request_id = ""` remains. | ✅ done |
 | C-2 | Low | Auth | `validate_token()` | Sessions not IP/UA-bound; no replay detection. Optional IP-binding, off by default (NAT-friendly). | backlog / v2 |
 | C-4 | Low | Auth | `SampleServiceImpl.cc:541` | `SoftDeleteSample` two-phase authz bypasses the RPC-registry test. Register a wildcard perm or add `authorize_entity` middleware. | M3.5 |
 | C-6 | Low | KMS | `KeyringKms.h:43` | Raw KEK bytes in `std::vector`, no mlock. Wrap in `SecureBuffer` (`sodium_mlock`/`memzero`, optional `mprotect`). | M5 |
 | C-8 | Low | Storage | `QuerySqlBuilder.h:216` | Sort direction is the only non-parameterized SQL fragment (enum-gated, safe now). Add `static_assert`/stern comment so a future string-typed sort can't inject. | quick, any slice |
-| C-5 | Info | Auth | `Totp.cc:161` | TOTP code compare `==` not constant-time. Switch to `sodium_memcmp` (robust if digit count grows). | quick, any slice |
+| ~~C-5~~ | ~~Info~~ | Auth | `Totp.cc` | **RESOLVED** (`feat/grpc-tls-c9`): `totp_verify` now compares each window step with a length-guarded `sodium_memcmp` and accumulates the result (no early return), removing both the non-constant-time compare and the per-window-step timing signal. | ✅ done |
 
 ## Resolved — 2026-06-28, Qt module clang-format + clang-tidy baseline (option 1)
 

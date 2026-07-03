@@ -3,11 +3,14 @@
 #include "auth/LocalAuthProvider.h"
 
 #include "core/identity.h"
+#include "core/login_attempt.h"
 #include "core/role.h"
 #include "core/session.h"
 #include "core/uuid.h"
+#include "crypto/FieldCipher.h"
 #include "storage/IStorageBackend.h"
 #include "storage/IdentityTraits.h"
+#include "storage/LoginAttemptTraits.h"
 #include "storage/RoleTraits.h"
 #include "storage/SessionTraits.h"
 
@@ -186,11 +189,55 @@ namespace fmgr::auth {
   // ---- Constructor ----
 
   LocalAuthProvider::LocalAuthProvider(storage::IStorageBackend& backend,
-                                       LocalAuthProviderConfig config)
-      : backend_(backend), config_(config) {
+                                       LocalAuthProviderConfig config, kms::IKmsProvider* kms)
+      : backend_(backend), config_(config), kms_(kms) {
     if (sodium_init() < 0) {
       throw AuthError("libsodium failed to initialize");
     }
+  }
+
+  // ---- Public: set_totp_secret ----
+
+  void LocalAuthProvider::set_totp_secret(const core::UserId& user_id,
+                                          const std::string& base32_secret,
+                                          const storage::MutationContext& ctx) {
+    if (kms_ == nullptr) {
+      throw AuthError("cannot store TOTP secret: no KMS configured");
+    }
+    // Envelope-encrypt the base32 secret with the same FieldCipher used for PHI.
+    const std::string envelope = crypto::encrypt({{"totp", base32_secret}}, *kms_);
+
+    auto txn = backend_.begin(storage::IsolationLevel::Serializable);
+    const auto users = txn->repo<core::User>().query(storage::Query<core::User>::where(
+        storage::field<core::User, std::string>(core::User::Field::Id) == user_id.to_string()));
+    if (users.empty()) {
+      txn->commit();
+      throw storage::NotFound("user not found");
+    }
+    core::User user = users.front();
+    user.totp_secret_enc = envelope;
+    txn->repo<core::User>().update(user, ctx);
+    txn->commit();
+  }
+
+  // ---- Private: resolve_totp_secret ----
+
+  std::string LocalAuthProvider::resolve_totp_secret(const std::string& stored) const {
+    // A FieldCipher envelope is a JSON object carrying a "v" version field; any
+    // value that is not such an object is treated as a legacy plaintext secret.
+    const auto parsed = nlohmann::json::parse(stored, nullptr, /*allow_exceptions=*/false);
+    if (parsed.is_object() && parsed.contains("v")) {
+      if (kms_ == nullptr) {
+        throw AuthError("cannot verify TOTP: secret is encrypted but no KMS configured");
+      }
+      const crypto::PhiFields fields = crypto::decrypt(stored, *kms_);
+      const auto iter = fields.find("totp");
+      if (iter == fields.end() || !iter->second.is_string()) {
+        throw AuthError("malformed TOTP secret envelope");
+      }
+      return iter->second.get<std::string>();
+    }
+    return stored; // legacy plaintext base32 secret
   }
 
   // ---- Public: hash_password ----
@@ -264,7 +311,7 @@ namespace fmgr::auth {
       throw InvalidCredentials("no TOTP secret configured for this user");
     }
 
-    const auto& totp_secret = *user.totp_secret_enc;
+    const std::string totp_secret = resolve_totp_secret(*user.totp_secret_enc);
     const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
                                  std::chrono::system_clock::now().time_since_epoch())
                                  .count();
@@ -709,6 +756,16 @@ namespace fmgr::auth {
     return core::SessionId(core::Uuid(bytes));
   }
 
+  // ---- Private: make_login_attempt_id ----
+
+  core::LoginAttemptId LocalAuthProvider::make_login_attempt_id() {
+    std::array<std::uint8_t, 16> bytes{};
+    randombytes_buf(bytes.data(), bytes.size());
+    bytes.at(6) = static_cast<std::uint8_t>((bytes.at(6) & 0x0FU) | 0x40U); // version 4
+    bytes.at(8) = static_cast<std::uint8_t>((bytes.at(8) & 0x3FU) | 0x80U); // variant 1
+    return core::LoginAttemptId(core::Uuid(bytes));
+  }
+
   // ---- Private: system_ctx ----
 
   // NOLINTNEXTLINE(readability-convert-member-functions-to-static)
@@ -746,67 +803,71 @@ namespace fmgr::auth {
   }
 
   // ---- Private: lockout helpers ----
+  //
+  // Backed by the login_attempt table (C-1): the lockout counter is persisted so
+  // it survives a freezerd restart. One active (cleared_at IS NULL) row per email;
+  // a successful login soft-deletes it, the next failure inserts a fresh row. The
+  // lockout_mutex_ serializes the read-modify-write within one process.
+
+  namespace {
+    [[nodiscard]] storage::Query<core::LoginAttempt>
+    active_attempt_query(const std::string& lower_email) {
+      return storage::Query<core::LoginAttempt>::where(
+          storage::field<core::LoginAttempt, std::string>(core::LoginAttempt::Field::Email) ==
+          lower_email);
+    }
+  } // namespace
 
   void LocalAuthProvider::record_failure(const std::string& lower_email) {
     std::scoped_lock lock(lockout_mutex_);
-    const auto now = now_timestamp();
-    auto& state = lockout_map_[lower_email];
-    ++state.failure_count;
-    state.last_activity = now;
-    if (state.failure_count >= config_.max_failures_before_lockout) {
-      const auto unlock_micros =
-          now.unix_micros() + (config_.lockout_duration_seconds * 1'000'000LL);
-      state.locked_until = core::Timestamp::from_unix_micros(unlock_micros);
-    }
-    evict_stale_lockouts(lower_email, now);
-  }
+    const auto now = now_ts();
+    auto txn = backend_.begin(storage::IsolationLevel::Serializable);
+    auto& repo = txn->repo<core::LoginAttempt>();
+    const auto rows = repo.query(active_attempt_query(lower_email));
 
-  // Bound lockout_map_ memory. Drops entries whose lock has expired and unlocked
-  // entries idle past the lockout window; if still over the configured cap, drops
-  // remaining unlocked entries. Active locks (the security-relevant state) and the
-  // entry just touched are always retained. Caller must hold lockout_mutex_.
-  void LocalAuthProvider::evict_stale_lockouts(const std::string& keep_email, core::Timestamp now) {
-    const std::int64_t window_micros = config_.lockout_duration_seconds * 1'000'000LL;
-    for (auto iter = lockout_map_.begin(); iter != lockout_map_.end();) {
-      const auto& st = iter->second;
-      const bool lock_expired = st.locked_until.has_value() && now >= *st.locked_until;
-      const bool idle = !st.locked_until.has_value() &&
-                        (now.unix_micros() - st.last_activity.unix_micros()) > window_micros;
-      if (iter->first != keep_email && (lock_expired || idle)) {
-        iter = lockout_map_.erase(iter);
-      } else {
-        ++iter;
-      }
+    core::LoginAttempt attempt = rows.empty() ? core::LoginAttempt{.id = make_login_attempt_id(),
+                                                                   .email = lower_email,
+                                                                   .failure_count = 0,
+                                                                   .last_activity = now}
+                                              : rows.front();
+    attempt.failure_count += 1;
+    attempt.last_activity = now;
+    if (attempt.failure_count >= config_.max_failures_before_lockout) {
+      attempt.locked_until = core::Timestamp::from_unix_micros(
+          now.unix_micros() + (config_.lockout_duration_seconds * 1'000'000LL));
     }
-    if (lockout_map_.size() <= config_.max_lockout_entries) {
-      return;
+    if (rows.empty()) {
+      repo.insert(attempt, system_ctx("login_failure"));
+    } else {
+      repo.update(attempt, system_ctx("login_failure"));
     }
-    for (auto iter = lockout_map_.begin();
-         iter != lockout_map_.end() && lockout_map_.size() > config_.max_lockout_entries;) {
-      if (iter->first != keep_email && !iter->second.locked_until.has_value()) {
-        iter = lockout_map_.erase(iter);
-      } else {
-        ++iter;
-      }
-    }
+    txn->commit();
   }
 
   void LocalAuthProvider::record_success(const std::string& lower_email) {
     std::scoped_lock lock(lockout_mutex_);
-    lockout_map_.erase(lower_email);
+    auto txn = backend_.begin(storage::IsolationLevel::Serializable);
+    auto& repo = txn->repo<core::LoginAttempt>();
+    const auto rows = repo.query(active_attempt_query(lower_email));
+    if (!rows.empty()) {
+      repo.soft_delete(rows.front().id, system_ctx("login_success"));
+    }
+    txn->commit();
   }
 
   std::optional<core::Timestamp>
   LocalAuthProvider::check_lockout(const std::string& lower_email) const {
     std::scoped_lock lock(lockout_mutex_);
-    const auto iter = lockout_map_.find(lower_email);
-    if (iter == lockout_map_.end() || !iter->second.locked_until.has_value()) {
+    auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
+    const auto rows = txn->repo<core::LoginAttempt>().query(active_attempt_query(lower_email));
+    txn->commit();
+    if (rows.empty() || !rows.front().locked_until.has_value()) {
       return std::nullopt;
     }
-    // has_value() was checked above; dereference is safe.
+    // has_value() checked above; dereference is safe.
     const core::Timestamp until =
-        iter->second.locked_until.value(); // NOLINT(bugprone-unchecked-optional-access)
-    if (now_timestamp() >= until) {
+        rows.front().locked_until.value(); // NOLINT(bugprone-unchecked-optional-access)
+    if (now_ts() >= until) {
       return std::nullopt;
     }
     return until;

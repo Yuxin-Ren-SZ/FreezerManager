@@ -22,6 +22,7 @@
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/ItemTypeRepositories.h"
 #include "storage/sqlite/LayoutRepositories.h"
+#include "storage/sqlite/LoginAttemptRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
 #include "storage/sqlite/SampleRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
@@ -202,6 +203,7 @@ namespace fmgr::test {
         storage::register_identity_repositories(b);
         storage::register_role_repositories(b);
         storage::register_session_repositories(b);
+        storage::register_login_attempt_repositories(b);
         storage::register_audit_repositories(b);
         storage::register_box_geometry_repositories(b);
         storage::register_box_repositories(b);
