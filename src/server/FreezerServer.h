@@ -27,12 +27,29 @@
 
 namespace fmgr::server {
 
+  // Client-certificate policy for the gRPC listener (PRD §6, mTLS off|request|require).
+  //   Off     — never ask for a client cert (server-auth TLS only).
+  //   Request — ask for and verify a client cert if presented, but do not fail the
+  //             handshake when the client offers none (opportunistic mTLS).
+  //   Require — demand a client cert signed by tls_client_ca_path; reject otherwise.
+  enum class MtlsMode { Off, Request, Require };
+
   struct FreezerServerOptions {
     // Listening address, e.g. "0.0.0.0:50051".
     std::string listen_address{"0.0.0.0:50051"};
-    // If empty, server starts without TLS (dev mode only).
+    // If empty, server starts without TLS (dev mode only). When set, build() serves
+    // TLS 1.3 using a FileWatcherCertificateProvider so a rotated cert/key on disk
+    // is hot-reloaded for new handshakes without dropping in-flight connections.
     std::string tls_cert_path;
     std::string tls_key_path;
+    // Root CA bundle used to verify client certificates when mtls != Off. Ignored
+    // in Off mode. Required (non-empty) when mtls == Require.
+    std::string tls_client_ca_path;
+    // Client-certificate policy (see MtlsMode). Only consulted when TLS is enabled.
+    MtlsMode mtls{MtlsMode::Off};
+    // Poll cadence for the FileWatcherCertificateProvider that hot-reloads the
+    // key/cert/CA files. Lower = faster rotation pickup, more stat() churn.
+    unsigned tls_reload_interval_sec{5};
     // Production safety guard: when true, build() refuses to start a plaintext
     // server. A misconfiguration that drops TLS (missing cert/key paths) then
     // fails loudly at startup instead of silently exposing bearer tokens and
