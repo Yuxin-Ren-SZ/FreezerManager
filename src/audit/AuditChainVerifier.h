@@ -14,6 +14,7 @@
 #ifndef FMGR_AUDIT_AUDITCHAINVERIFIER_H
 #define FMGR_AUDIT_AUDITCHAINVERIFIER_H
 
+#include "audit/AuditEventContent.h"
 #include "audit/CanonicalJson.h"
 #include "core/audit_event.h"
 
@@ -26,10 +27,9 @@
 
 namespace fmgr::audit {
 
-  // Canonical JSON of exactly the fields the backends hash into this_hash — the
-  // 11-key content object, excluding prev_hash/this_hash. Single source of truth
-  // for the hashed representation of an audit row.
-  [[nodiscard]] std::string audit_event_content_json(const core::AuditEvent& event);
+  // The hashed representation of an audit row (audit_event_content_json) is the
+  // single source of truth in audit/AuditEventContent.h, shared by the storage
+  // backends and this verifier.
 
   enum class AuditChainStatus : std::uint8_t {
     Ok,

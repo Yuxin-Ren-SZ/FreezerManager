@@ -2,6 +2,7 @@
 
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "audit/AuditEventContent.h"
 #include "audit/CanonicalJson.h"
 #include "core/timestamp.h"
 
@@ -1103,24 +1104,21 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
           const std::string after_str =
               mutation.snapshot.after.has_value() ? mutation.snapshot.after->dump() : "{}";
 
-          // Build the content JSON (alphabetically sorted; nlohmann uses std::map).
-          const nlohmann::json lab_id_val = mutation.context.lab_id.has_value()
-                                                ? nlohmann::json(*mutation.context.lab_id)
-                                                : nlohmann::json(nullptr);
-          const nlohmann::json content = {
-              {"action", mutation.action},
-              {"actor_session_id", mutation.context.actor_session_id},
-              {"actor_user_id", mutation.context.actor_user_id.to_string()},
-              {"after_json", after_str},
-              {"at", now_micros},
-              {"before_json", before_str},
-              {"entity_id", mutation.entity_id},
-              {"entity_kind", mutation.entity_kind},
-              {"id", event_id},
-              {"lab_id", lab_id_val},
-              {"request_id", mutation.context.request_id},
-          };
-          const auto content_json = audit::canonical_json(content);
+          // Canonical content JSON via the shared audit content builder (single
+          // source of truth for the hashed field set).
+          const auto content_json = audit::audit_event_content_json(audit::AuditEventContentFields{
+              .action = mutation.action,
+              .actor_session_id = mutation.context.actor_session_id,
+              .actor_user_id = mutation.context.actor_user_id.to_string(),
+              .after_json = after_str,
+              .at_micros = now_micros,
+              .before_json = before_str,
+              .entity_id = mutation.entity_id,
+              .entity_kind = mutation.entity_kind,
+              .id = event_id,
+              .lab_id = mutation.context.lab_id,
+              .request_id = mutation.context.request_id,
+          });
           const auto this_hash = audit::compute_audit_hash(prev_hash, content_json);
 
           sqlite3_reset(audit_stmt.get());

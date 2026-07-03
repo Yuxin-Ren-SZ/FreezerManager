@@ -125,11 +125,15 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-add_executable(freezermanager_audit_unit_tests audit_chain_verifier_test.cpp)
+add_executable(freezermanager_audit_unit_tests
+  audit_chain_verifier_test.cpp
+  canonical_json_jcs_test.cpp
+)
 target_link_libraries(
   freezermanager_audit_unit_tests
   PRIVATE
     FreezerManager::audit
+    nlohmann_json::nlohmann_json
     GTest::gtest_main
 )
 target_include_directories(

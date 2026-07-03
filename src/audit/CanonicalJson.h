@@ -2,9 +2,12 @@
 
 // E5.2: Deterministic JSON serialisation (canonical form) and SHA-256 hash chain.
 //
-// canonical_json() produces compact, alphabetically-key-sorted JSON.
-// nlohmann::json uses std::map internally for objects so keys are already sorted;
-// dump(-1) produces compact output with no extra whitespace.
+// canonical_json() implements RFC 8785 (JSON Canonicalization Scheme, JCS):
+// object members are ordered by the UTF-16 code units of their keys, output is
+// compact (no whitespace), strings use minimal escaping, and integers use their
+// exact decimal form. The serializer builds the canonical form explicitly rather
+// than relying on nlohmann's internal key ordering, so the guarantee is a
+// property of this code, not of the JSON library.
 //
 // compute_audit_hash() computes:
 //   SHA-256(prev_hash_bytes || content_json_bytes)
@@ -20,7 +23,13 @@
 
 namespace fmgr::audit {
 
-  // Compact, deterministic JSON: no extra whitespace; object keys sorted.
+  // Version of the canonicalization scheme. v1 == RFC 8785 (JCS). Persist this
+  // alongside future audit checkpoints so a later scheme change is detectable and
+  // migratable; never change canonical_json()'s behavior under a fixed version.
+  inline constexpr int k_canonical_scheme_version = 1;
+
+  // Compact, deterministic JSON per RFC 8785 (JCS): object keys ordered by UTF-16
+  // code units, no whitespace, minimal escaping, exact integers.
   [[nodiscard]] std::string canonical_json(const nlohmann::json& value);
 
   // 64 hex '0' characters — used as prev_hash for the first audit row.

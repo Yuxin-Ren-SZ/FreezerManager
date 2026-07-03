@@ -2,6 +2,7 @@
 
 #include "storage/postgres/PostgresBackend.h"
 
+#include "audit/AuditEventContent.h"
 #include "audit/CanonicalJson.h"
 #include "core/timestamp.h"
 
@@ -856,23 +857,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS login_attempts_email_active_unique
               mutation.snapshot.before.has_value() ? mutation.snapshot.before->dump() : "{}";
           const std::string after_str =
               mutation.snapshot.after.has_value() ? mutation.snapshot.after->dump() : "{}";
-          const nlohmann::json lab_id_val = mutation.context.lab_id.has_value()
-                                                ? nlohmann::json(*mutation.context.lab_id)
-                                                : nlohmann::json(nullptr);
-          const nlohmann::json content = {
-              {"action", mutation.action},
-              {"actor_session_id", mutation.context.actor_session_id},
-              {"actor_user_id", mutation.context.actor_user_id.to_string()},
-              {"after_json", after_str},
-              {"at", now_micros},
-              {"before_json", before_str},
-              {"entity_id", mutation.entity_id},
-              {"entity_kind", mutation.entity_kind},
-              {"id", event_id},
-              {"lab_id", lab_id_val},
-              {"request_id", mutation.context.request_id},
-          };
-          const auto content_json = audit::canonical_json(content);
+          const auto content_json = audit::audit_event_content_json(audit::AuditEventContentFields{
+              .action = mutation.action,
+              .actor_session_id = mutation.context.actor_session_id,
+              .actor_user_id = mutation.context.actor_user_id.to_string(),
+              .after_json = after_str,
+              .at_micros = now_micros,
+              .before_json = before_str,
+              .entity_id = mutation.entity_id,
+              .entity_kind = mutation.entity_kind,
+              .id = event_id,
+              .lab_id = mutation.context.lab_id,
+              .request_id = mutation.context.request_id,
+          });
           const auto this_hash = audit::compute_audit_hash(prev_hash, content_json);
 
           pqxx::params audit_params;
