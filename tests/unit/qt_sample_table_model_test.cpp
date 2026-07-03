@@ -237,8 +237,8 @@ namespace {
 
   TEST_F(SampleTableModelTest, RowCountWithValidParentReturnsZero) {
     model_->setScope(labScope());
-    const QModelIndex parent(/* valid parent creates a non-null index */);
-    EXPECT_EQ(model_->rowCount(model_->index(0, 0)), 0);
+    const QModelIndex parent = model_->index(0, 0);
+    EXPECT_EQ(model_->rowCount(parent), 0);
   }
 
   TEST_F(SampleTableModelTest, CanFetchMoreWithValidParentReturnsFalse) {

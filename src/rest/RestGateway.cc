@@ -328,16 +328,46 @@ namespace fmgr::rest {
 #undef FMGR_ROUTE
   }
 
-  void RestGateway::register_health(obs::HealthProbe probe) {
-    // The handler outlives this call, so own the probe via a shared_ptr the
-    // lambda copies. Each route gets a fresh handler passed as an rvalue —
-    // drogon binds a reference to an lvalue handler, so a named local would
-    // dangle once this function returns. Drogon dispatches GET; no bearer is
-    // required (LB probe).
+  namespace {
+
+    // The inbound Authorization header as an optional string_view (nullopt when
+    // absent), the shape OpsAuthorizer expects. The referenced string is owned by
+    // the request, which outlives the synchronous handler body.
+    [[nodiscard]] std::optional<std::string_view> auth_header(const drogon::HttpRequestPtr& req) {
+      const std::string& value = req->getHeader("authorization");
+      if (value.empty()) {
+        return std::nullopt;
+      }
+      return std::string_view(value);
+    }
+
+  } // namespace
+
+  bool RestGateway::ops_endpoint_permitted(bool is_public, const OpsAuthorizer& authorizer,
+                                           std::optional<std::string_view> header) {
+    if (is_public) {
+      return true;
+    }
+    return static_cast<bool>(authorizer) && authorizer(header);
+  }
+
+  void RestGateway::register_health(obs::HealthProbe probe, bool public_readiness,
+                                    OpsAuthorizer authorizer) {
+    // The handler outlives this call, so own the probe/authorizer via shared_ptrs
+    // the lambda copies. Each route gets a fresh handler passed as an rvalue —
+    // drogon binds a reference to an lvalue handler, so a named local would dangle
+    // once this function returns. When not public, the detailed report (which can
+    // carry operational detail) requires a valid bearer; otherwise 401.
     auto shared = std::make_shared<obs::HealthProbe>(std::move(probe));
-    const auto make_handler = [shared] {
-      return [shared](const drogon::HttpRequestPtr&,
-                      std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+    auto authz = std::make_shared<OpsAuthorizer>(std::move(authorizer));
+    const auto make_handler = [shared, authz, public_readiness] {
+      return [shared, authz, public_readiness](
+                 const drogon::HttpRequestPtr& req,
+                 std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+        if (!ops_endpoint_permitted(public_readiness, *authz, auth_header(req))) {
+          callback(json_response(401, R"({"status":"unauthorized"})"));
+          return;
+        }
         const auto report = obs::check_health(*shared);
         auto resp = drogon::HttpResponse::newHttpResponse();
         resp->setStatusCode(static_cast<drogon::HttpStatusCode>(report.http_status));
@@ -346,16 +376,33 @@ namespace fmgr::rest {
         callback(resp);
       };
     };
-    auto& app = drogon::app();
-    app.registerHandler("/api/v1/health", make_handler(), {drogon::Get});
-    app.registerHandler("/healthz", make_handler(), {drogon::Get});
+    drogon::app().registerHandler("/api/v1/health", make_handler(), {drogon::Get});
   }
 
-  void RestGateway::register_metrics() {
+  void RestGateway::register_liveness() {
+    // Shallow, always-public liveness: no probes, no dependency detail. Safe to
+    // expose regardless of the readiness exposure policy (k8s/LB convention).
+    const auto make_handler = [] {
+      return [](const drogon::HttpRequestPtr&,
+                std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+        callback(json_response(200, R"({"status":"ok"})"));
+      };
+    };
+    auto& app = drogon::app();
+    app.registerHandler("/healthz", make_handler(), {drogon::Get});
+    app.registerHandler("/livez", make_handler(), {drogon::Get});
+  }
+
+  void RestGateway::register_metrics(bool public_metrics, OpsAuthorizer authorizer) {
+    auto authz = std::make_shared<OpsAuthorizer>(std::move(authorizer));
     drogon::app().registerHandler(
         "/metrics",
-        [](const drogon::HttpRequestPtr&,
-           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+        [authz, public_metrics](const drogon::HttpRequestPtr& req,
+                                std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+          if (!ops_endpoint_permitted(public_metrics, *authz, auth_header(req))) {
+            callback(json_response(401, R"({"status":"unauthorized"})"));
+            return;
+          }
           auto resp = drogon::HttpResponse::newHttpResponse();
           resp->setStatusCode(drogon::k200OK);
           // Prometheus text exposition format 0.0.4.

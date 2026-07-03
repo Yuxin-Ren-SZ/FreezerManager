@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "server/SampleServiceImpl.h"
+#include "server/PageToken.h"
 #include "server/RequestId.h"
 
 #include "cli/CsvReader.h"
@@ -467,22 +468,46 @@ namespace fmgr::server {
             std::string(core::to_string(from_proto_status(req->status()))));
       }
 
-      // Page token is a plain integer offset; page size 0 means "no limit".
-      std::size_t offset = 0;
+      std::optional<SamplePageCursor> cursor;
       if (!req->page().page_token().empty()) {
-        offset = static_cast<std::size_t>(std::stoull(req->page().page_token()));
-        query = query.offset(offset);
+        cursor = decode_sample_page_token(req->page().page_token());
+        query = query.and_where(storage::greater_or_equal(
+            storage::field<core::Sample, core::Timestamp>(core::Sample::Field::LastModifiedAt),
+            core::Timestamp::from_unix_micros(cursor->last_modified_at_micros)));
       }
-      const auto page_size = req->page().page_size();
-      if (page_size > 0) {
-        query = query.limit(static_cast<std::size_t>(page_size));
-      }
+      constexpr std::int32_t k_default_page_size = 100;
+      constexpr std::int32_t k_max_page_size = 500;
+      const auto requested_page_size = req->page().page_size();
+      const auto page_size = requested_page_size <= 0
+                                 ? k_default_page_size
+                                 : std::min(requested_page_size, k_max_page_size);
+      query = query
+                  .order_by(storage::field<core::Sample, core::Timestamp>(
+                                core::Sample::Field::LastModifiedAt),
+                            storage::SortDirection::Ascending)
+                  .order_by(storage::field<core::Sample, std::string>(core::Sample::Field::Id),
+                            storage::SortDirection::Ascending)
+                  .limit(static_cast<std::size_t>(page_size) + 1U);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
       const auto samples = txn->repo<core::Sample>().query(query);
 
+      std::vector<core::Sample> page_samples;
+      page_samples.reserve(samples.size());
       for (const auto& sample : samples) {
+        if (cursor.has_value() &&
+            sample.last_modified_at.unix_micros() == cursor->last_modified_at_micros &&
+            sample.id.to_string() <= cursor->id) {
+          continue;
+        }
+        page_samples.push_back(sample);
+        if (page_samples.size() == static_cast<std::size_t>(page_size)) {
+          break;
+        }
+      }
+
+      for (const auto& sample : page_samples) {
         auto* out = resp->add_samples();
         fill_sample(out, sample);
         const auto disclosed = reveal_phi(out, sample, sctx, kms_);
@@ -493,9 +518,12 @@ namespace fmgr::server {
         }
       }
       txn->commit();
-      // A full page implies there may be more; hand back the next offset.
-      if (page_size > 0 && samples.size() == static_cast<std::size_t>(page_size)) {
-        resp->mutable_page()->set_next_page_token(std::to_string(offset + samples.size()));
+      if (samples.size() > page_samples.size() && !page_samples.empty()) {
+        const auto& last = page_samples.back();
+        resp->mutable_page()->set_next_page_token(encode_sample_page_token(SamplePageCursor{
+            .last_modified_at_micros = last.last_modified_at.unix_micros(),
+            .id = last.id.to_string(),
+        }));
       }
       return grpc::Status::OK;
     } catch (...) {

@@ -180,7 +180,7 @@ namespace fmgr::rpc {
         threads.emplace_back([&limiter, &clock, t] {
           for (int i = 0; i < kOpsPerThread; ++i) {
             const auto key = "t" + std::to_string(t) + "-k" + std::to_string(i % 200);
-            limiter.try_acquire(key, clock);
+            [[maybe_unused]] const bool acquired = limiter.try_acquire(key, clock);
             // We can't safely advance clock here (shared mutable) but the
             // invariant is that tracked_keys never exceeds max.
           }
@@ -224,7 +224,7 @@ namespace fmgr::rpc {
       // Either way: must not crash or hang.
       EXPECT_TRUE(limiter.try_acquire("a", now));
       // The second call behavior depends on whether "a" was evicted.
-      limiter.try_acquire("a", now); // must not crash
+      [[maybe_unused]] const bool second_acquired = limiter.try_acquire("a", now); // must not crash
     }
 
     // ---- Break-it: key edge cases ----
@@ -370,7 +370,7 @@ namespace fmgr::rpc {
       const auto now = base();
       // Drain the bucket.
       for (int i = 0; i < 5; ++i) {
-        limiter.try_acquire("ip", now);
+        [[maybe_unused]] const bool acquired = limiter.try_acquire("ip", now);
       }
       // Jump forward 100 years — must refill to capacity, not overflow.
       using namespace std::chrono_literals;
@@ -409,7 +409,8 @@ namespace fmgr::rpc {
         threads.emplace_back([&, t] {
           for (int i = 0; i < 200 && !stop.load(); ++i) {
             if (t % 2 == 0) {
-              limiter.try_acquire("t" + std::to_string(t) + "-k" + std::to_string(i), now);
+              [[maybe_unused]] const bool acquired =
+                  limiter.try_acquire("t" + std::to_string(t) + "-k" + std::to_string(i), now);
             } else {
               (void)limiter.tracked_keys();
               reads.fetch_add(1, std::memory_order_relaxed);

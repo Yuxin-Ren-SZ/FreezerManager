@@ -212,6 +212,7 @@ target_include_directories(
 add_executable(freezermanager_rest_unit_tests
   json_proto_mapping_test.cpp
   rest_error_translation_test.cpp
+  rest_ops_gate_test.cpp
 )
 target_link_libraries(
   freezermanager_rest_unit_tests

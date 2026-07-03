@@ -200,7 +200,7 @@ namespace fmgr::server {
       // and the parse-error detail (which could echo client PHI) is not leaked
       // back to the client (review N-1).
       try {
-        (void)nlohmann::json::parse(R"({"ssn": "123-45-)");
+        [[maybe_unused]] const auto parsed = nlohmann::json::parse(R"({"ssn": "123-45-)");
       } catch (...) {
         const auto status = current_exception_to_grpc_status();
         EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);

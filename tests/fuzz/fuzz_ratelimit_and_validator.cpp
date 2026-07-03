@@ -114,7 +114,7 @@ namespace fmgr::fuzz {
 
       for (int i = 0; i < 500; ++i) {
         const auto key = "ip-" + std::to_string(std::uniform_int_distribution<int>(0, 200)(gen));
-        limiter.try_acquire(key, clock);
+        [[maybe_unused]] const bool acquired = limiter.try_acquire(key, clock);
         clock += 1s;
         EXPECT_LE(limiter.tracked_keys(), kMaxKeys);
       }

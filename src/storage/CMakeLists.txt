@@ -48,3 +48,19 @@ target_link_libraries(
 )
 
 add_subdirectory(postgres)
+
+add_library(freezermanager_storage_backend_factory STATIC BackendFactory.cc)
+add_library(FreezerManager::storage_backend_factory ALIAS freezermanager_storage_backend_factory)
+
+target_include_directories(
+  freezermanager_storage_backend_factory
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+)
+
+target_link_libraries(
+  freezermanager_storage_backend_factory
+  PUBLIC
+    FreezerManager::storage_sqlite
+    FreezerManager::storage_postgres
+)

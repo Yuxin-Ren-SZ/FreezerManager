@@ -10,17 +10,8 @@
 #include "rest/GatewayStubs.h"
 #include "rest/RestGateway.h"
 #include "server/FreezerServer.h"
-#include "storage/sqlite/AuditRepositories.h"
-#include "storage/sqlite/BoxGeometryRepositories.h"
-#include "storage/sqlite/IdentityRepositories.h"
-#include "storage/sqlite/ItemTypeRepositories.h"
-#include "storage/sqlite/LayoutRepositories.h"
-#include "storage/sqlite/LoginAttemptRepositories.h"
-#include "storage/sqlite/RoleRepositories.h"
-#include "storage/sqlite/SampleRepositories.h"
-#include "storage/sqlite/SessionRepositories.h"
-#include "storage/sqlite/ShareRequestRepositories.h"
-#include "storage/sqlite/SqliteBackend.h"
+#include "server/GrpcErrorTranslation.h"
+#include "storage/BackendFactory.h"
 
 #include <drogon/drogon.h>
 #include <fmt/format.h>
@@ -82,7 +73,9 @@ namespace {
           !std::equal(recovered.begin(), recovered.end(), probe_dek.begin())) {
         return fmgr::obs::DepStatus::failed("KEK round-trip mismatch");
       }
-      return fmgr::obs::DepStatus::ok("key_id=" + kms->key_id());
+      // Do not surface the KEK key id: /health can be reachable unauthenticated,
+      // and the active key id is operational detail that helps map the system.
+      return fmgr::obs::DepStatus::ok();
     } catch (const std::exception& e) {
       return fmgr::obs::DepStatus::failed(e.what());
     }
@@ -141,11 +134,52 @@ namespace {
     }
   }
 
+  [[nodiscard]] fmgr::storage::BackendOptions backend_options_from_env(bool production_mode) {
+    const char* sqlite_new = std::getenv("FMGR_SQLITE_PATH");
+    const char* sqlite_legacy = std::getenv("FMGR_DB_PATH");
+    const char* postgres = std::getenv("FMGR_POSTGRES_URL");
+
+    fmgr::storage::BackendOptions options;
+    if (sqlite_new != nullptr && sqlite_legacy != nullptr &&
+        std::string(sqlite_new) != std::string(sqlite_legacy)) {
+      throw fmgr::storage::BackendOptionError(
+          "FMGR_SQLITE_PATH and legacy FMGR_DB_PATH disagree; set only one SQLite path");
+    }
+    if (sqlite_new != nullptr) {
+      options.sqlite_path = sqlite_new;
+    } else if (sqlite_legacy != nullptr) {
+      options.sqlite_path = sqlite_legacy;
+    }
+    if (postgres != nullptr) {
+      options.postgres_url = postgres;
+    }
+    if (!options.sqlite_path.has_value() && !options.postgres_url.has_value()) {
+      if (production_mode) {
+        throw fmgr::storage::BackendOptionError(
+            "production mode requires FMGR_SQLITE_PATH or FMGR_POSTGRES_URL");
+      }
+      options.sqlite_path = ":memory:";
+    }
+    return options;
+  }
+
+  [[nodiscard]] bool using_sqlite_memory(const fmgr::storage::BackendOptions& options) {
+    return options.sqlite_path.has_value() && options.sqlite_path.value() == ":memory:";
+  }
+
+  [[nodiscard]] std::string backend_label(const fmgr::storage::BackendOptions& options) {
+    if (options.sqlite_path.has_value()) {
+      return "SQLite: " + options.sqlite_path.value();
+    }
+    return "PostgreSQL";
+  }
+
 } // namespace
 
-// Minimal entry point: reads FMGR_LISTEN (default "0.0.0.0:50051") and
-// FMGR_DB_PATH (default ":memory:") from the environment and starts the server
-// with a SQLite backend. Full configuration via freezerd.toml is deferred.
+// Minimal entry point: reads env configuration and starts the server. Full TOML
+// configuration via freezerd.toml is still deferred, but the server now shares
+// backend selection with freezerctl: FMGR_SQLITE_PATH/FMGR_DB_PATH or
+// FMGR_POSTGRES_URL, exactly one in production.
 int main(int /*argc*/, char* /*argv*/[]) {
   // Structured JSON logging (PRD §17): every line is one JSON object with a fixed
   // schema (ts/level/msg/request_id/actor_user_id/lab_id/event) on an async,
@@ -156,26 +190,13 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const char* listen_env = std::getenv("FMGR_LISTEN");
     const std::string listen = listen_env != nullptr ? listen_env : "0.0.0.0:50051";
 
-    const char* db_env = std::getenv("FMGR_DB_PATH");
-    const std::string db_path = db_env != nullptr ? db_env : ":memory:";
+    fmgr::server::FreezerServerOptions opts;
+    opts.listen_address = listen;
 
-    auto backend = std::make_unique<fmgr::storage::SqliteBackend>(
-        fmgr::storage::SqliteBackendOptions{.database_path = db_path});
-    // Register every domain repository before serving (mirrors the CLI's
-    // BackendFactory). Without this, repo<Entity>() inside an RPC handler throws
-    // "repository is not available for entity type" and every request 500s.
-    fmgr::storage::register_identity_repositories(*backend);
-    fmgr::storage::register_role_repositories(*backend);
-    fmgr::storage::register_layout_repositories(*backend);
-    fmgr::storage::register_box_geometry_repositories(*backend);
-    fmgr::storage::register_box_repositories(*backend);
-    fmgr::storage::register_item_type_repositories(*backend);
-    fmgr::storage::register_sample_repositories(*backend);
-    fmgr::storage::register_session_repositories(*backend);
-    fmgr::storage::register_login_attempt_repositories(*backend);
-    fmgr::storage::register_share_request_repositories(*backend);
-    fmgr::storage::register_audit_repositories(*backend);
-    backend->migrate_to_latest();
+    apply_tls_env(opts);
+
+    const auto backend_options = backend_options_from_env(opts.require_tls);
+    auto backend = fmgr::storage::open_backend(backend_options);
 
     // Master-KEK provider for TOTP-secret encryption (C-3). Null when no KEK is
     // configured: TOTP enrolment is then unavailable but password login still
@@ -184,15 +205,11 @@ int main(int /*argc*/, char* /*argv*/[]) {
     fmgr::auth::LocalAuthProvider auth(*backend, fmgr::auth::LocalAuthProviderConfig{},
                                        auth_kms.get());
 
-    fmgr::server::FreezerServerOptions opts;
-    opts.listen_address = listen;
-
-    apply_tls_env(opts);
-
     // Optional in-process scheduled backups (PRD §14). Enabled by FMGR_BACKUP_DIR;
     // SQLite-only, so skip an in-memory database (nothing on disk to hot-copy).
     const char* backup_dir_env = std::getenv("FMGR_BACKUP_DIR");
-    if (backup_dir_env != nullptr && db_path != ":memory:") {
+    if (backup_dir_env != nullptr && backend_options.sqlite_path.has_value() &&
+        !using_sqlite_memory(backend_options)) {
       const auto env_double = [](const char* name, double fallback) {
         const char* value = std::getenv(name);
         return value != nullptr ? std::strtod(value, nullptr) : fallback;
@@ -204,7 +221,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
       constexpr double k_micros_per_hour = 3'600.0 * 1'000'000.0;
       const char* actor_env = std::getenv("FMGR_BACKUP_ACTOR");
       fmgr::backup::BackupScheduleConfig schedule;
-      schedule.sqlite_db_path = db_path;
+      schedule.sqlite_db_path = backend_options.sqlite_path.value();
       schedule.backup_dir = backup_dir_env;
       schedule.retention = fmgr::backup::RetentionPolicy{env_int("FMGR_BACKUP_DAILY", 30),
                                                          env_int("FMGR_BACKUP_MONTHLY", 12),
@@ -225,29 +242,63 @@ int main(int /*argc*/, char* /*argv*/[]) {
     server.build();
     fmgr::obs::log_lifecycle(
         fmgr::obs::Level::Info,
-        fmt::format("freezerd: gRPC listening on {} (SQLite: {})", listen, db_path),
+        fmt::format("freezerd: gRPC listening on {} ({})", listen, backend_label(backend_options)),
         "server.grpc_listen");
 
     fmgr::rest::GatewayStubs stubs(server.in_process_channel());
     fmgr::rest::RestGateway gateway(stubs);
     gateway.register_routes();
 
-    // Unauthenticated /health for a load-balancer readiness probe (PRD §17): a
-    // structured per-dependency report, 200 when healthy / 503 when a dependency
-    // is down. Bind behind a reverse-proxy ACL or to localhost in production.
+    // Exposure policy for the operational endpoints. Health readiness defaults to
+    // public (load balancers need it); metrics defaults to private in production
+    // (require_tls) so key/backup/RPC detail is not scrapeable unauthenticated.
+    // When an endpoint is private it requires a valid, MFA-complete bearer.
+    const auto env_bool = [](const char* name, bool fallback) {
+      const char* value = std::getenv(name);
+      if (value == nullptr) {
+        return fallback;
+      }
+      const std::string text = value;
+      return text == "1" || text == "true";
+    };
+    const bool health_public = env_bool("FMGR_HEALTH_PUBLIC", true);
+    const bool metrics_public = env_bool("FMGR_METRICS_PUBLIC", !opts.require_tls);
+
+    // Gate for private operational endpoints: accept any valid, MFA-complete
+    // session token. `auth` outlives drogon::app().run(), so the reference is safe
+    // for the handler's lifetime.
+    fmgr::rest::OpsAuthorizer ops_authorizer =
+        [&auth](std::optional<std::string_view> header) -> bool {
+      try {
+        const std::string token = fmgr::server::parse_bearer(header);
+        return auth.validate_token(token).mfa_complete;
+      } catch (const std::exception&) {
+        return false;
+      }
+    };
+
+    // Always-public shallow liveness (/healthz, /livez): no dependency detail.
+    fmgr::rest::RestGateway::register_liveness();
+
+    // Detailed /health readiness (PRD §17): per-dependency report, 200 when
+    // healthy / 503 when a dependency is down. Public by default; when private
+    // (FMGR_HEALTH_PUBLIC=0) it requires a bearer. Bind behind a reverse-proxy
+    // ACL or to localhost in production regardless.
     auto health_kms = std::shared_ptr<fmgr::kms::IKmsProvider>(fmgr::kms::make_default_kms());
     const char* health_backup_env = std::getenv("FMGR_BACKUP_DIR");
     const std::string health_backup_dir = health_backup_env != nullptr ? health_backup_env : "";
     fmgr::storage::IStorageBackend* backend_ptr = backend.get();
-    fmgr::rest::RestGateway::register_health(fmgr::obs::HealthProbe{
-        .database = [backend_ptr] { return probe_database(*backend_ptr); },
-        .kms = [health_kms] { return probe_kms(health_kms.get()); },
-        .backup = [health_backup_dir] { return probe_backup(health_backup_dir); },
-    });
+    fmgr::rest::RestGateway::register_health(
+        fmgr::obs::HealthProbe{
+            .database = [backend_ptr] { return probe_database(*backend_ptr); },
+            .kms = [health_kms] { return probe_kms(health_kms.get()); },
+            .backup = [health_backup_dir] { return probe_backup(health_backup_dir); },
+        },
+        health_public, ops_authorizer);
 
-    // Unauthenticated Prometheus scrape endpoint (PRD §17). Bind behind a
-    // reverse-proxy ACL or to localhost in production.
-    fmgr::rest::RestGateway::register_metrics();
+    // Prometheus scrape endpoint (PRD §17). Private by default in production; bind
+    // behind a reverse-proxy ACL or to localhost regardless.
+    fmgr::rest::RestGateway::register_metrics(metrics_public, ops_authorizer);
 
     const char* rest_env = std::getenv("FMGR_REST_LISTEN");
     const std::string rest_listen = rest_env != nullptr ? rest_env : "0.0.0.0:8080";
