@@ -838,28 +838,36 @@ Verification run after the slice:
   because `FMGR_TEST_POSTGRES_URL` was not configured.
 - `git diff --check` — PASS.
 
+### Fixed in the second remediation slice (2026-07-03)
+
+- **REST TLS exposure policy (C6):** `fmgr::server::validate_rest_tls_policy`
+  fails fast — under `FMGR_REQUIRE_TLS` a non-loopback REST bind must present
+  `FMGR_REST_TLS_CERT`/`_KEY` or be bound to loopback; a half-configured cert/key
+  pair is rejected in any mode. Unit-tested.
+- **Health/metrics exposure controls (C7):** `probe_kms` no longer emits the KEK
+  key id into the `/health` body; a shallow always-public liveness (`/healthz`,
+  `/livez`) is split from the detailed readiness report; `FMGR_HEALTH_PUBLIC` /
+  `FMGR_METRICS_PUBLIC` gate the detailed endpoints (metrics private by default in
+  production), requiring a valid bearer otherwise.
+- **Explicit RPC auth policy model (C9):** `rpc::RpcPolicy` (Public /
+  SelfService / LabPermission / GlobalPermission) replaces the bare-permission
+  registry and the `SessionRevoke` placeholders on auth/session endpoints; a
+  descriptor-enumeration test asserts every gRPC method has a policy.
+- **Migration maintainability (C8):** migration SQL moved to
+  `src/storage/{sqlite,postgres}/migrations/*.sql`, embedded at build time; a
+  golden-checksum test proves no checksum changed. See `doc/MIGRATIONS.md`.
+- **Audit canonicalization:** `canonical_json` now implements RFC 8785 (JCS) with
+  a scheme-version constant, golden vectors, and a single shared content builder;
+  existing chains verify unchanged.
+- **Docs/status refresh:** README test count, migration ranges, RPC policy, and
+  REST TLS / health-metrics behavior updated.
+
 ### Still open / not fully fixed
 
-- **REST TLS exposure policy:** `FMGR_REQUIRE_TLS` still needs explicit REST
-  listener validation. A production config should not accidentally expose REST
-  bearer-token endpoints as plaintext on a non-loopback bind.
-- **Health/metrics exposure controls:** health and Prometheus metrics still need
-  explicit public/private binding or enablement policy so operational details are
-  not exposed unintentionally.
-- **Explicit RPC auth policy model:** the existing registry coverage remains, but
-  the cleaner Public / AuthenticatedSelfService / LabPermission /
-  GlobalPermission policy model is not implemented yet.
-- **Docs/status refresh:** README/TODO/operator docs still need to be updated to
-  reflect the implemented remediation and the remaining limitations.
 - **PostgreSQL live verification:** Postgres-specific tests were not run because
-  `FMGR_TEST_POSTGRES_URL` was unset. The code now supports server Postgres
-  selection, but it still needs live Postgres verification before claiming that
-  path is production-validated.
-- **Migration maintainability:** SQLite/Postgres migration SQL is still embedded
-  in large backend `.cc` files. Splitting migration definitions remains a
-  maintainability follow-up.
-- **Audit canonicalization:** canonical JSON golden vectors and the RFC 8785/JCS
-  compatibility decision remain open before 1.0.
+  `FMGR_TEST_POSTGRES_URL` was unset. The server Postgres selection path and the
+  Postgres migration split are code-complete but still need live verification
+  against a real `postgres:16` before claiming production-validated.
 
 ## Bottom-line verdict
 
