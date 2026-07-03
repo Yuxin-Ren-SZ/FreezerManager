@@ -24,7 +24,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Backstop against a hung/OOM/deadlocked build (tsan especially) running to
     # GitHub's 6h default and burning runner minutes.
-    timeout-minutes: 60
+    #
+    # Must exceed a COLD-cache run: when the Conan cache is empty (e.g. after
+    # GitHub's 7-day eviction), "Install dependencies" builds gRPC/protobuf/
+    # abseil/drogon from source (~50 min) before our own build even starts. At
+    # 60 min the Build step was cancelled at the timeout, which SKIPS the cache-
+    # save post-step — so the cache never populated and every subsequent run
+    # stayed cold: a permanent failure loop. 120 min lets a cold run finish and
+    # save the cache; warm runs then complete in well under 20 min.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
