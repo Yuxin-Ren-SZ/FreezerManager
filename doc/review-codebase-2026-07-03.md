@@ -861,13 +861,19 @@ Verification run after the slice:
   existing chains verify unchanged.
 - **Docs/status refresh:** README test count, migration ranges, RPC policy, and
   REST TLS / health-metrics behavior updated.
+- **PostgreSQL live verification:** ran the full Postgres-parameterized suite
+  against a live server via `tools/run-postgres-tests.sh` — **425/425 pass**
+  (1 self-skip: `ConcurrentSampleUpdateSerializesConflicts`), including the
+  Postgres migration split, RLS, conformance, and encrypted backup round-trip.
+  Note: the backup round-trip restores a `pg_dump` archive, so the server major
+  version must be >= the host `pg_dump` (a newer `pg_dump` emits GUCs an older
+  server rejects); the script defaults the server image to the host `pg_dump`
+  major version to avoid skew.
 
 ### Still open / not fully fixed
 
-- **PostgreSQL live verification:** Postgres-specific tests were not run because
-  `FMGR_TEST_POSTGRES_URL` was unset. The server Postgres selection path and the
-  Postgres migration split are code-complete but still need live verification
-  against a real `postgres:16` before claiming production-validated.
+- _None from this review._ All critical/medium findings from the original review
+  and both remediation slices are addressed.
 
 ## Bottom-line verdict
 
