@@ -1,16 +1,3 @@
--- SPDX-License-Identifier: AGPL-3.0-or-later
-
--- D3: Freezer + StorageContainer recursive layout.
---
--- `freezers.layout_root_id` and `storage_containers.id` form a mutual
--- reference: a freezer's layout root container exists in the same table as
--- its descendants. The two FKs are DEFERRABLE INITIALLY DEFERRED so a single
--- transaction can insert the root storage_container and the parent freezer
--- in either order before commit.
---
--- Cycle prevention on storage_containers.parent_id is enforced in the
--- application layer (LayoutRepositories), since SQLite cannot express a
--- recursive CHECK across rows.
 
 CREATE TABLE IF NOT EXISTS storage_containers (
   id TEXT PRIMARY KEY,

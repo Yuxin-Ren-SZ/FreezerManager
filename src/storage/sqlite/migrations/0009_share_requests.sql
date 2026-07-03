@@ -1,12 +1,3 @@
--- SPDX-License-Identifier: AGPL-3.0-or-later
--- D8: Cross-lab share-request workflow.
---
--- State machine: pending -> approved | rejected | revoked.
--- Approval requires all three roles: source_admin, target_admin, system_admin.
--- share_request_approvals is append-only; no UPDATE or DELETE paths exist.
--- source_lab_id != target_lab_id enforced by CHECK.
--- All foreign keys are DEFERRABLE so inserts within a transaction can arrive in any order.
--- No ON DELETE CASCADE anywhere — tombstone propagation is application-level.
 
 CREATE TABLE IF NOT EXISTS share_requests (
   id                TEXT    PRIMARY KEY,

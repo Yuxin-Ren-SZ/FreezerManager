@@ -1,9 +1,3 @@
--- SPDX-License-Identifier: AGPL-3.0-or-later
-
--- D4: ContainerType + BoxType + Position geometry.
---
--- Position accepts are stored as child rows so D5 placement checks can
--- join against box geometry without reparsing JSON.
 
 CREATE TABLE IF NOT EXISTS container_types (
   id TEXT PRIMARY KEY,

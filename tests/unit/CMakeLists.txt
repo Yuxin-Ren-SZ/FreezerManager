@@ -125,6 +125,26 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
+add_executable(freezermanager_migration_files_tests migration_files_test.cpp)
+target_link_libraries(
+  freezermanager_migration_files_tests
+  PRIVATE
+    FreezerManager::storage_sqlite
+    FreezerManager::storage_postgres
+    GTest::gtest_main
+)
+target_include_directories(
+  freezermanager_migration_files_tests
+  PRIVATE
+    ${CMAKE_SOURCE_DIR}/tests
+)
+target_compile_definitions(
+  freezermanager_migration_files_tests
+  PRIVATE
+    FMGR_SQLITE_MIGRATIONS_DIR="${CMAKE_SOURCE_DIR}/src/storage/sqlite/migrations"
+    FMGR_PG_MIGRATIONS_DIR="${CMAKE_SOURCE_DIR}/src/storage/postgres/migrations"
+)
+
 add_executable(freezermanager_audit_unit_tests
   audit_chain_verifier_test.cpp
   canonical_json_jcs_test.cpp
@@ -374,6 +394,7 @@ gtest_discover_tests(freezermanager_sqlite_storage_unit_tests)
 gtest_discover_tests(freezermanager_auth_unit_tests)
 gtest_discover_tests(freezermanager_rpc_unit_tests)
 gtest_discover_tests(freezermanager_audit_unit_tests)
+gtest_discover_tests(freezermanager_migration_files_tests)
 gtest_discover_tests(freezermanager_custom_field_resolver_tests)
 gtest_discover_tests(freezermanager_error_translation_tests
   PROPERTIES LABELS "grpc_integration")
