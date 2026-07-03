@@ -59,10 +59,13 @@ namespace fmgr::server {
   SessionServiceImpl::SessionServiceImpl(auth::IAuthProvider& auth,
                                          storage::IStorageBackend& backend)
       : auth_(auth), backend_(backend), middleware_(auth) {
+    // Both act on the caller's own sessions (ListSessions filters by the caller's
+    // user id; RevokeSession revokes by id for the authenticated caller): a
+    // valid, MFA-complete bearer is required, but no specific permission.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SessionService/ListSessions",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcPolicy::self_service());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SessionService/RevokeSession",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcPolicy::self_service());
   }
 
   grpc::Status SessionServiceImpl::ListSessions(grpc::ServerContext* ctx,

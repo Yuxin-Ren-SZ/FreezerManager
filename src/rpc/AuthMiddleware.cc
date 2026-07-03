@@ -16,7 +16,7 @@ namespace fmgr::rpc {
 
     struct RpcRegistry {
       std::mutex mutex;
-      std::unordered_map<std::string, core::Permission> map;
+      std::unordered_map<std::string, RpcPolicy> map;
     };
 
     RpcRegistry& get_registry() {
@@ -71,6 +71,52 @@ namespace fmgr::rpc {
     return ctx;
   }
 
+  auth::SessionContext AuthMiddleware::authorize(std::string_view bearer_token,
+                                                 const RpcPolicy& policy,
+                                                 std::optional<core::LabId> lab_id) const {
+    // Step 0: data-tier rate limit (same choke point as the permission overload).
+    if (auto* limiter = process_data_limiter().load(std::memory_order_acquire)) {
+      if (!limiter->try_acquire(std::string(bearer_token), rpc::RateLimiter::Clock::now())) {
+        throw auth::RateLimited("too many requests; slow down");
+      }
+    }
+
+    // Public: no token validation; the handler (e.g. Login) establishes identity.
+    if (policy.kind == RpcPolicyKind::Public) {
+      return auth::SessionContext{};
+    }
+
+    // Steps 1-2: validate token + MFA gate (all authenticated categories).
+    auth::SessionContext ctx = auth_.validate_token(bearer_token);
+    if (!ctx.mfa_complete) {
+      throw auth::MfaRequired("MFA verification required before accessing this operation");
+    }
+
+    switch (policy.kind) {
+    case RpcPolicyKind::SelfService:
+      return ctx;
+    case RpcPolicyKind::LabPermission:
+      if (!policy.permission.has_value() || !lab_id.has_value()) {
+        throw auth::PermissionDenied("lab-scoped RPC requires a target lab");
+      }
+      if (!ctx.has_for_lab(*lab_id, *policy.permission)) {
+        throw auth::PermissionDenied("caller lacks required permission for target lab");
+      }
+      return ctx;
+    case RpcPolicyKind::GlobalPermission:
+      if (!policy.permission.has_value()) {
+        throw auth::PermissionDenied("global RPC missing permission");
+      }
+      if (!ctx.has_global(*policy.permission)) {
+        throw auth::PermissionDenied("caller lacks required deployment-wide permission");
+      }
+      return ctx;
+    case RpcPolicyKind::Public:
+      break; // handled above
+    }
+    throw auth::PermissionDenied("unknown RPC policy");
+  }
+
   void AuthMiddleware::inject_rls_vars(storage::ITransaction& txn,
                                        const auth::SessionContext& ctx) {
     // Pass bare keys — PostgresTransaction::set_session_var prepends "app." automatically.
@@ -88,10 +134,14 @@ namespace fmgr::rpc {
     txn.set_session_var("current_lab_ids", lab_ids);
   }
 
-  void AuthMiddleware::register_rpc(std::string rpc_name, core::Permission required_perm) {
+  void AuthMiddleware::register_rpc(std::string rpc_name, RpcPolicy policy) {
     auto& reg = get_registry();
     std::scoped_lock lock(reg.mutex);
-    reg.map.insert_or_assign(std::move(rpc_name), required_perm);
+    reg.map.insert_or_assign(std::move(rpc_name), policy);
+  }
+
+  void AuthMiddleware::register_rpc(std::string rpc_name, core::Permission required_perm) {
+    register_rpc(std::move(rpc_name), RpcPolicy::for_permission(required_perm));
   }
 
   bool AuthMiddleware::is_rpc_registered(std::string_view rpc_name) {
@@ -100,7 +150,17 @@ namespace fmgr::rpc {
     return reg.map.contains(std::string(rpc_name));
   }
 
-  std::unordered_map<std::string, core::Permission> AuthMiddleware::registered_rpcs() {
+  std::optional<RpcPolicy> AuthMiddleware::policy_for(std::string_view rpc_name) {
+    auto& reg = get_registry();
+    std::scoped_lock lock(reg.mutex);
+    const auto it = reg.map.find(std::string(rpc_name));
+    if (it == reg.map.end()) {
+      return std::nullopt;
+    }
+    return it->second;
+  }
+
+  std::unordered_map<std::string, RpcPolicy> AuthMiddleware::registered_rpcs() {
     auto& reg = get_registry();
     std::scoped_lock lock(reg.mutex);
     return reg.map;

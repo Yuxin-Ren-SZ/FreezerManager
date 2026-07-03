@@ -23,6 +23,7 @@
 #include "core/ids.h"
 #include "core/permissions.h"
 #include "rpc/RateLimiter.h"
+#include "rpc/RpcPolicy.h"
 #include "storage/IStorageBackend.h"
 
 #include <optional>
@@ -52,6 +53,19 @@ namespace fmgr::rpc {
     authorize(std::string_view bearer_token, core::Permission required_perm,
               std::optional<core::LabId> lab_id = std::nullopt) const;
 
+    // Policy-driven gate. Dispatches on the RpcPolicy category:
+    //   Public           — no token validation; returns an empty SessionContext.
+    //   SelfService      — validates token + MFA; no permission check.
+    //   LabPermission    — validates token + MFA, then requires the policy's
+    //                      permission for `lab_id` (which must be set).
+    //   GlobalPermission — validates token + MFA, then requires the policy's
+    //                      permission deployment-wide.
+    // The data-tier rate limit applies to every category. Throws an AuthError
+    // subclass on failure, as the permission overload does.
+    [[nodiscard]] auth::SessionContext
+    authorize(std::string_view bearer_token, const RpcPolicy& policy,
+              std::optional<core::LabId> lab_id = std::nullopt) const;
+
     // ---- Global data-tier rate limiting ----
     //
     // authorize() is the single choke point every authenticated RPC handler
@@ -73,15 +87,21 @@ namespace fmgr::rpc {
     // Must be called after authorize() and before any repo operations.
     static void inject_rls_vars(storage::ITransaction& txn, const auth::SessionContext& ctx);
 
-    // ---- RPC permission registry ----
+    // ---- RPC policy registry ----
     //
-    // Each RPC handler file registers its RPC name + required permission at
-    // startup.  A CI test (added in F2) asserts that every known gRPC method
-    // name appears in this registry — ensuring nothing bypasses the gate.
+    // Each RPC handler file registers its RPC name + authorization policy at
+    // startup. A CI test enumerates the generated gRPC service descriptors and
+    // asserts every method appears here — nothing reaches a handler without an
+    // explicit, reviewed policy.
+    static void register_rpc(std::string rpc_name, RpcPolicy policy);
+    // Convenience: register a permission-gated RPC, classified into Lab/Global
+    // scope by RpcPolicy::for_permission.
     static void register_rpc(std::string rpc_name, core::Permission required_perm);
     [[nodiscard]] static bool is_rpc_registered(std::string_view rpc_name);
+    // The policy for a registered RPC, or nullopt if unregistered.
+    [[nodiscard]] static std::optional<RpcPolicy> policy_for(std::string_view rpc_name);
     // Returns a snapshot copy of the registry (safe for iteration in tests/CI).
-    [[nodiscard]] static std::unordered_map<std::string, core::Permission> registered_rpcs();
+    [[nodiscard]] static std::unordered_map<std::string, RpcPolicy> registered_rpcs();
 
   private:
     auth::IAuthProvider& auth_;

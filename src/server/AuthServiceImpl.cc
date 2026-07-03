@@ -79,18 +79,20 @@ namespace fmgr::server {
       : auth_(auth), backend_(backend), middleware_(auth),
         login_limiter_(rpc::RateLimiterConfig{.capacity = k_login_rate_capacity,
                                               .refill_per_sec = k_login_rate_refill_per_sec}) {
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Login",
-                                      core::Permission::SessionRevoke);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/SubmitMfa",
-                                      core::Permission::SessionRevoke);
+    // Login/SubmitMfa are pre-authentication: they establish a session, so they
+    // run no bearer/permission gate (throttled separately by login_limiter_).
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Login", rpc::RpcPolicy::public_());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/SubmitMfa", rpc::RpcPolicy::public_());
+    // The rest act on the caller's own session/API tokens: a valid, MFA-complete
+    // bearer is required, but no specific permission.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Logout",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcPolicy::self_service());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/CreateApiToken",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcPolicy::self_service());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/ListApiTokens",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcPolicy::self_service());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/RevokeApiToken",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcPolicy::self_service());
   }
 
   grpc::Status AuthServiceImpl::Login(grpc::ServerContext* ctx, const fmgr::v1::LoginRequest* req,

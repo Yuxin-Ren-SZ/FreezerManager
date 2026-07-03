@@ -27,9 +27,11 @@
 
 #include <fmgr/v1/auth.grpc.pb.h>
 #include <fmgr/v1/session.grpc.pb.h>
+#include <google/protobuf/descriptor.h>
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
 
+#include <array>
 #include <chrono>
 #include <fstream>
 #include <iterator>
@@ -306,15 +308,35 @@ namespace fmgr::test {
     }
 
     TEST_F(ServerIntegrationTest, RpcRegistryCoversAllExpectedMethods) {
-      // Verify that every gRPC method defined in all service stubs is present in
-      // the AuthMiddleware registry. At minimum the count must be >= the number of
-      // stubs registered (auth + session + 7 stub services).
+      // Walk the generated gRPC service descriptors and assert every method has an
+      // explicit AuthMiddleware policy. A newly added RPC (or a whole service)
+      // fails here unless it registers a policy — nothing reaches a handler
+      // ungated by omission. Replaces the previous size>=60 magnitude heuristic.
       const auto registry = rpc::AuthMiddleware::registered_rpcs();
-      // 6 (AuthService) + 2 (SessionService) + 8 (LabService) + 8 (SampleService)
-      // + 19 (BoxService) + 9 (ItemTypeService) + 8 (RoleService) + 4 (AuditService)
-      // + 6 (ShareService) = 70 RPCs
-      EXPECT_GE(registry.size(), 60U) << "RPC registry smaller than expected; "
-                                         "a new service may have been added without registering.";
+
+      static constexpr std::array<const char*, 9> kServices{
+          "fmgr.v1.AuthService",   "fmgr.v1.SessionService", "fmgr.v1.LabService",
+          "fmgr.v1.SampleService", "fmgr.v1.BoxService",     "fmgr.v1.ItemTypeService",
+          "fmgr.v1.RoleService",   "fmgr.v1.AuditService",   "fmgr.v1.ShareService"};
+
+      const auto* pool = google::protobuf::DescriptorPool::generated_pool();
+      ASSERT_NE(pool, nullptr);
+
+      std::size_t method_total = 0;
+      for (const char* service_name : kServices) {
+        const auto* service = pool->FindServiceByName(service_name);
+        ASSERT_NE(service, nullptr) << "service descriptor not linked: " << service_name;
+        for (int i = 0; i < service->method_count(); ++i) {
+          const std::string full = "/" + std::string(service_name) + "/" +
+                                   std::string(service->method(i)->name());
+          ++method_total;
+          EXPECT_TRUE(registry.contains(full))
+              << "gRPC method has no AuthMiddleware policy: " << full;
+        }
+      }
+
+      // Exactness: the registry holds exactly the real RPCs (no stray entries).
+      EXPECT_EQ(registry.size(), method_total);
     }
 
     // Security audit H-1: a burst of Login attempts from one source is throttled

@@ -108,6 +108,12 @@ namespace fmgr::rpc {
       return mw.authorize(bearer, perm, lab);
     }
 
+    auth::SessionContext do_authorize(AuthMiddleware& mw, std::string_view bearer,
+                                      const RpcPolicy& policy,
+                                      std::optional<core::LabId> lab = std::nullopt) {
+      return mw.authorize(bearer, policy, lab);
+    }
+
     // ---- Fixture ----
 
     class AuthMiddlewareTest : public ::testing::Test {
@@ -461,8 +467,10 @@ namespace fmgr::rpc {
 
       const auto snapshot = AuthMiddleware::registered_rpcs();
       EXPECT_GE(snapshot.size(), 2U);
-      EXPECT_EQ(snapshot.at("e3_test.SnapshotRead"), core::Permission::SampleRead);
-      EXPECT_EQ(snapshot.at("e3_test.SnapshotWrite"), core::Permission::SampleWrite);
+      // SampleRead/SampleWrite are lab-scoped, so for_permission classifies them
+      // as LabPermission policies carrying that permission.
+      EXPECT_EQ(snapshot.at("e3_test.SnapshotRead"), RpcPolicy::lab(core::Permission::SampleRead));
+      EXPECT_EQ(snapshot.at("e3_test.SnapshotWrite"), RpcPolicy::lab(core::Permission::SampleWrite));
     }
 
     TEST_F(AuthMiddlewareTest, RpcRegistryDuplicateRegistrationOverwrites) {
@@ -471,7 +479,62 @@ namespace fmgr::rpc {
 
       const auto snapshot = AuthMiddleware::registered_rpcs();
       ASSERT_TRUE(snapshot.contains("e3_test.DupRpc"));
-      EXPECT_EQ(snapshot.at("e3_test.DupRpc"), core::Permission::SampleWrite);
+      EXPECT_EQ(snapshot.at("e3_test.DupRpc"), RpcPolicy::lab(core::Permission::SampleWrite));
+    }
+
+    // for_permission classifies global-only permissions as GlobalPermission.
+    TEST_F(AuthMiddlewareTest, RpcPolicyForPermissionClassifiesScope) {
+      EXPECT_EQ(RpcPolicy::for_permission(core::Permission::SampleRead),
+                RpcPolicy::lab(core::Permission::SampleRead));
+      EXPECT_EQ(RpcPolicy::for_permission(core::Permission::BackupRun),
+                RpcPolicy::global(core::Permission::BackupRun));
+      EXPECT_EQ(RpcPolicy::for_permission(core::Permission::LabProvision),
+                RpcPolicy::global(core::Permission::LabProvision));
+    }
+
+    // ---- Policy-driven authorize() overload ----
+
+    // Public policy: no token validation; even a garbage bearer is accepted and
+    // yields an empty (unauthenticated) context.
+    TEST_F(AuthMiddlewareTest, PolicyPublicSkipsTokenValidation) {
+      // A bogus bearer would throw under any authenticated policy; Public skips
+      // token validation entirely and returns an unauthenticated context holding
+      // no permissions.
+      auth::SessionContext ctx;
+      EXPECT_NO_THROW(
+          ctx = do_authorize(*middleware_, "not-a-real-token", RpcPolicy::public_()));
+      EXPECT_TRUE(ctx.permissions_by_lab.empty());
+      EXPECT_FALSE(ctx.has_global(core::Permission::SampleRead));
+    }
+
+    // SelfService: a valid, MFA-complete bearer passes without any permission.
+    TEST_F(AuthMiddlewareTest, PolicySelfServiceRequiresValidBearer) {
+      EXPECT_THROW(do_authorize(*middleware_, "bogus", RpcPolicy::self_service()), auth::AuthError);
+      auth::SessionContext ctx;
+      EXPECT_NO_THROW(ctx = do_authorize(*middleware_, sysadmin_token_.plaintext_token,
+                                         RpcPolicy::self_service()));
+      EXPECT_TRUE(ctx.mfa_complete);
+    }
+
+    // LabPermission: enforced against the target lab.
+    TEST_F(AuthMiddlewareTest, PolicyLabPermissionEnforced) {
+      EXPECT_NO_THROW(do_authorize(*middleware_, member_token_.plaintext_token,
+                                   RpcPolicy::lab(core::Permission::SampleRead), kLabA));
+      EXPECT_THROW(do_authorize(*middleware_, readonly_token_.plaintext_token,
+                                RpcPolicy::lab(core::Permission::SampleWrite), kLabA),
+                   auth::PermissionDenied);
+      // Missing target lab is rejected.
+      EXPECT_THROW(do_authorize(*middleware_, member_token_.plaintext_token,
+                                RpcPolicy::lab(core::Permission::SampleRead)),
+                   auth::PermissionDenied);
+    }
+
+    // GlobalPermission: checked deployment-wide.
+    TEST_F(AuthMiddlewareTest, PolicyGlobalPermissionEnforced) {
+      // member lacks BackupRun globally.
+      EXPECT_THROW(do_authorize(*middleware_, member_token_.plaintext_token,
+                                RpcPolicy::global(core::Permission::BackupRun)),
+                   auth::PermissionDenied);
     }
 
   } // namespace
