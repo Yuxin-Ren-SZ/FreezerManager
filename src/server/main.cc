@@ -11,6 +11,7 @@
 #include "rest/RestGateway.h"
 #include "server/FreezerServer.h"
 #include "server/GrpcErrorTranslation.h"
+#include "server/RestTlsPolicy.h"
 #include "storage/BackendFactory.h"
 
 #include <drogon/drogon.h>
@@ -306,6 +307,16 @@ int main(int /*argc*/, char* /*argv*/[]) {
 
     const char* rest_cert = std::getenv("FMGR_REST_TLS_CERT");
     const char* rest_key = std::getenv("FMGR_REST_TLS_KEY");
+    // Fail fast (C6): under FMGR_REQUIRE_TLS a non-loopback REST bind must be TLS
+    // (or loopback for a reverse proxy to terminate); reject a half-configured
+    // cert/key pair in any mode. Throws before any port is bound.
+    fmgr::server::validate_rest_tls_policy(fmgr::server::RestTlsConfig{
+        .host = rest_host,
+        .port = rest_port,
+        .has_cert = rest_cert != nullptr,
+        .has_key = rest_key != nullptr,
+        .require_tls = opts.require_tls,
+    });
     const bool rest_tls = rest_cert != nullptr && rest_key != nullptr;
     drogon::app().addListener(rest_host, rest_port, rest_tls, rest_cert != nullptr ? rest_cert : "",
                               rest_key != nullptr ? rest_key : "");

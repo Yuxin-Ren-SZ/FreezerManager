@@ -166,7 +166,10 @@ target_include_directories(
     ${CMAKE_SOURCE_DIR}/tests
 )
 
-add_executable(freezermanager_error_translation_tests error_translation_test.cpp)
+add_executable(freezermanager_error_translation_tests
+  error_translation_test.cpp
+  rest_tls_policy_test.cpp
+)
 target_link_libraries(
   freezermanager_error_translation_tests
   PRIVATE
