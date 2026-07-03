@@ -10,9 +10,13 @@ env:
 
 # Cancel superseded runs on the same ref: every push to a PR otherwise relaunches
 # the full 7-job matrix (each doing a heavy Conan gRPC/abseil/protobuf build).
+# Exception: never cancel runs on main. Re-running failed jobs (or any overlapping
+# run) on main shares this ref-keyed group, and cancel-in-progress would abort the
+# in-flight re-run — the slow dev/asan/tsan jobs get CANCELLED while the fast jobs
+# finish. Keep PR-push cancellation (the runner-minute saver) but protect main.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   build:
@@ -20,7 +24,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Backstop against a hung/OOM/deadlocked build (tsan especially) running to
     # GitHub's 6h default and burning runner minutes.
-    timeout-minutes: 60
+    #
+    # Must exceed a COLD-cache run: when the Conan cache is empty (e.g. after
+    # GitHub's 7-day eviction), "Install dependencies" builds gRPC/protobuf/
+    # abseil/drogon from source (~50 min) before our own build even starts. At
+    # 60 min the Build step was cancelled at the timeout, which SKIPS the cache-
+    # save post-step — so the cache never populated and every subsequent run
+    # stayed cold: a permanent failure loop. 120 min lets a cold run finish and
+    # save the cache; warm runs then complete in well under 20 min.
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -70,8 +82,11 @@ jobs:
           POSTGRES_PASSWORD: test
         ports:
           - 5432:5432
+        # -U/-d so the health probe authenticates as the real role/db instead of
+        # the container's root OS user, which floods the log with
+        # 'FATAL: role "root" does not exist' every interval.
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U postgres -d fmgr_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
