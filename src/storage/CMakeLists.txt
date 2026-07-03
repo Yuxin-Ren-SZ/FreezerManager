@@ -24,6 +24,7 @@ add_library(
   sqlite/IdentityRepositories.cc
   sqlite/ItemTypeRepositories.cc
   sqlite/LayoutRepositories.cc
+  sqlite/LoginAttemptRepositories.cc
   sqlite/RoleRepositories.cc
   sqlite/SampleRepositories.cc
   sqlite/SessionRepositories.cc

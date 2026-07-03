@@ -15,6 +15,7 @@
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/ItemTypeRepositories.h"
 #include "storage/sqlite/LayoutRepositories.h"
+#include "storage/sqlite/LoginAttemptRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
 #include "storage/sqlite/SampleRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
@@ -27,6 +28,7 @@
 
 #include <algorithm>
 #include <array>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -106,6 +108,39 @@ namespace {
     return fmgr::obs::DepStatus::ok();
   }
 
+  // Populate the gRPC TLS/mTLS options from the FMGR_TLS_* environment (PRD §6).
+  // See doc/TLS.md for the full variable reference.
+  void apply_tls_env(fmgr::server::FreezerServerOptions& opts) {
+    if (const char* cert = std::getenv("FMGR_TLS_CERT"); cert != nullptr) {
+      opts.tls_cert_path = cert;
+    }
+    if (const char* key = std::getenv("FMGR_TLS_KEY"); key != nullptr) {
+      opts.tls_key_path = key;
+    }
+    const char* require_tls = std::getenv("FMGR_REQUIRE_TLS");
+    opts.require_tls = require_tls != nullptr &&
+                       (std::string(require_tls) == "1" || std::string(require_tls) == "true");
+
+    if (const char* client_ca = std::getenv("FMGR_TLS_CLIENT_CA"); client_ca != nullptr) {
+      opts.tls_client_ca_path = client_ca;
+    }
+    if (const char* mtls = std::getenv("FMGR_MTLS"); mtls != nullptr) {
+      const std::string mode = mtls;
+      if (mode == "require") {
+        opts.mtls = fmgr::server::MtlsMode::Require;
+      } else if (mode == "request") {
+        opts.mtls = fmgr::server::MtlsMode::Request;
+      } else if (mode == "off") {
+        opts.mtls = fmgr::server::MtlsMode::Off;
+      } else {
+        throw std::invalid_argument("FMGR_MTLS must be one of: off, request, require");
+      }
+    }
+    if (const char* reload = std::getenv("FMGR_TLS_RELOAD_SEC"); reload != nullptr) {
+      opts.tls_reload_interval_sec = static_cast<unsigned>(std::stoul(reload));
+    }
+  }
+
 } // namespace
 
 // Minimal entry point: reads FMGR_LISTEN (default "0.0.0.0:50051") and
@@ -137,26 +172,22 @@ int main(int /*argc*/, char* /*argv*/[]) {
     fmgr::storage::register_item_type_repositories(*backend);
     fmgr::storage::register_sample_repositories(*backend);
     fmgr::storage::register_session_repositories(*backend);
+    fmgr::storage::register_login_attempt_repositories(*backend);
     fmgr::storage::register_share_request_repositories(*backend);
     fmgr::storage::register_audit_repositories(*backend);
     backend->migrate_to_latest();
 
-    fmgr::auth::LocalAuthProvider auth(*backend);
+    // Master-KEK provider for TOTP-secret encryption (C-3). Null when no KEK is
+    // configured: TOTP enrolment is then unavailable but password login still
+    // works. Must outlive `auth`, which borrows it.
+    auto auth_kms = fmgr::kms::make_default_kms();
+    fmgr::auth::LocalAuthProvider auth(*backend, fmgr::auth::LocalAuthProviderConfig{},
+                                       auth_kms.get());
 
     fmgr::server::FreezerServerOptions opts;
     opts.listen_address = listen;
 
-    const char* tls_cert_env = std::getenv("FMGR_TLS_CERT");
-    if (tls_cert_env != nullptr) {
-      opts.tls_cert_path = tls_cert_env;
-    }
-    const char* tls_key_env = std::getenv("FMGR_TLS_KEY");
-    if (tls_key_env != nullptr) {
-      opts.tls_key_path = tls_key_env;
-    }
-    const char* require_tls_env = std::getenv("FMGR_REQUIRE_TLS");
-    opts.require_tls = require_tls_env != nullptr && (std::string(require_tls_env) == "1" ||
-                                                      std::string(require_tls_env) == "true");
+    apply_tls_env(opts);
 
     // Optional in-process scheduled backups (PRD §14). Enabled by FMGR_BACKUP_DIR;
     // SQLite-only, so skip an in-memory database (nothing on disk to hot-copy).
@@ -232,7 +263,21 @@ int main(int /*argc*/, char* /*argv*/[]) {
                                          rest_tls ? "(TLS)" : "(plaintext)", rest_host, rest_port),
                              "server.rest_listen");
 
+    // PRD §6: operators signal a cert rotation with SIGHUP. The gRPC listener uses
+    // a FileWatcherCertificateProvider that polls the cert/key/CA files and
+    // hot-swaps them for new handshakes without dropping in-flight connections, so
+    // a rotation is picked up automatically within FMGR_TLS_RELOAD_SEC. This
+    // handler just makes the documented operator gesture observable in the logs;
+    // it must stay async-signal-safe, so it only sets a flag (no logging here).
+    static volatile std::sig_atomic_t sighup_seen = 0;
+    std::signal(SIGHUP, [](int) { sighup_seen = 1; });
+
     drogon::app().run();
+    if (sighup_seen != 0) {
+      fmgr::obs::log_lifecycle(fmgr::obs::Level::Info,
+                               "SIGHUP received; TLS certificates hot-reload via the file watcher",
+                               "tls.sighup");
+    }
     server.shutdown();
     return 0;
   } catch (const std::exception& e) {

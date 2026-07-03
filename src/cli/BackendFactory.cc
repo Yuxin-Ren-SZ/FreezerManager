@@ -7,6 +7,7 @@
 #include "storage/postgres/IdentityRepositories.h"
 #include "storage/postgres/ItemTypeRepositories.h"
 #include "storage/postgres/LayoutRepositories.h"
+#include "storage/postgres/LoginAttemptRepositories.h"
 #include "storage/postgres/PostgresBackend.h"
 #include "storage/postgres/RoleRepositories.h"
 #include "storage/postgres/SampleRepositories.h"
@@ -17,6 +18,7 @@
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/ItemTypeRepositories.h"
 #include "storage/sqlite/LayoutRepositories.h"
+#include "storage/sqlite/LoginAttemptRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
 #include "storage/sqlite/SampleRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
@@ -61,6 +63,7 @@ namespace fmgr::cli {
       storage::register_item_type_repositories(backend);
       storage::register_sample_repositories(backend);
       storage::register_session_repositories(backend);
+      storage::register_login_attempt_repositories(backend);
       storage::register_share_request_repositories(backend);
       storage::register_audit_repositories(backend);
     }

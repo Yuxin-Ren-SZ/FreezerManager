@@ -5,8 +5,10 @@
 #include "storage/IdentityTraits.h"
 #include "storage/SessionTraits.h"
 #include "storage/postgres/IdentityRepositories.h"
+#include "storage/postgres/LoginAttemptRepositories.h"
 #include "storage/postgres/SessionRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
+#include "storage/sqlite/LoginAttemptRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
 
 #include "repo_backend_harness.h"
@@ -97,10 +99,12 @@ namespace fmgr::storage {
             [](SqliteBackend& b) {
               register_identity_repositories(b);
               register_session_repositories(b);
+              register_login_attempt_repositories(b);
             },
             [](PostgresBackend& b) {
               register_identity_repositories(b);
               register_session_repositories(b);
+              register_login_attempt_repositories(b);
             });
 
         {

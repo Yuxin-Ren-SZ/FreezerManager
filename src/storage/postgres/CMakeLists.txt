@@ -11,6 +11,7 @@ add_library(
   ItemTypeRepositories.cc
   SampleRepositories.cc
   SessionRepositories.cc
+  LoginAttemptRepositories.cc
   ShareRequestRepositories.cc
   AuditRepositories.cc
 )

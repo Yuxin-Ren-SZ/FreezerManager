@@ -116,7 +116,8 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 ### Security & Authentication
 
 - ✅ `IAuthProvider` interface — `authenticate`, `validate_token`, `verify_totp`, `revoke_session`, `revoke_all_sessions`; 5 pure-virtual methods; mock compiles
-- ✅ `LocalAuthProvider` — Argon2id (64 MiB / 3 iter / 4 parallelism); BLAKE2b-256 session-token hashing; TOTP (RFC 6238 + RFC 4226 HMAC-SHA1 via OpenSSL EVP_MAC); in-memory account lockout (configurable threshold + duration); API-token validation path
+- ✅ `LocalAuthProvider` — Argon2id (64 MiB / 3 iter / 4 parallelism); BLAKE2b-256 session-token hashing; TOTP (RFC 6238 + RFC 4226 HMAC-SHA1 via OpenSSL EVP_MAC); **persistent account lockout** — the failed-attempt counter lives in the `login_attempt` table (migration 0015, both backends) so a lock survives a `freezerd` restart instead of being reset by bouncing the process; API-token validation path
+- ✅ TOTP secret encrypted at rest — `totp_secret_enc` is envelope-encrypted with `FieldCipher` under the master KEK (`set_totp_secret` write primitive); the verify path decrypts on read and still accepts legacy plaintext during transition. TOTP code comparison is constant-time (`sodium_memcmp`, accumulated over the window)
 - ✅ Local password enrolment — `freezerctl user set-password` (reads the password from stdin, never argv) writes the `{provider:local, hash}` binding `authenticate` consumes; a password-only user (no TOTP secret) logs straight in. TOTP enrolment 🔲
 - ✅ TOTP helper (`Totp.h`) — `base32_decode`, `totp_generate`, `totp_verify`; ±1-step window; RFC 6238 known-answer test vectors
 - ✅ `Session.mfa_complete` — false until `verify_totp()` succeeds; propagated through `SessionContext`
@@ -128,7 +129,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ⚙️ PHI field-level encryption — Sample PHI custom fields split out of the plaintext blob and AEAD-encrypted (`crypto_secretbox`) with a fresh per-record DEK wrapped by the master KEK; decrypted on read only for callers holding `phi.read`. `is_phi`∧`indexed` rejected at definition time. (Sample done; other entities 🔲)
 - ✅ `IKmsProvider` envelope KMS + keyring — `KeyringKms` holds an active KEK plus retired KEKs (records wrapped under an older KEK still decrypt during rotation); `EnvVarKms` (dev/test, `FMGR_MASTER_KEK` + `FMGR_MASTER_KEK_PREVIOUS`) and `OsKeyringKms` (production, systemd-creds `$CREDENTIALS_DIRECTORY/master_kek`). `VaultKms` 🔲
 - ✅ Key rotation — `freezerctl key rotate` re-wraps every sample's per-record DEK under the active KEK (field ciphertext untouched, no plaintext exposed); idempotent, audited. `key.rotate` permission reserved for a future online RPC
-- 🔲 TLS 1.3 only — HSTS; modern cipher suites; self-signed cert for dev, required for production
+- ✅ TLS 1.3 only (gRPC) — `TlsServerCredentials` pinned to TLS 1.3 (BoringSSL restricts to the AEAD suite set); `FileWatcherCertificateProvider` hot-reloads a rotated cert/key/CA with no dropped connections; mTLS `off｜request｜require` for machine clients (`FMGR_MTLS`); `FMGR_REQUIRE_TLS` refuses a plaintext bind in production. See [`doc/TLS.md`](./doc/TLS.md). REST-gateway TLS via `FMGR_REST_TLS_CERT`/`_KEY`
 
 ### Audit
 

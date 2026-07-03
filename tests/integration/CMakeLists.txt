@@ -15,6 +15,12 @@ target_include_directories(
     ${PROJECT_SOURCE_DIR}/src
 )
 
+target_compile_definitions(
+  freezermanager_server_integration_tests
+  PRIVATE
+    FMGR_TLS_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tests/fixtures/tls"
+)
+
 target_link_libraries(
   freezermanager_server_integration_tests
   PRIVATE

@@ -11,6 +11,7 @@
 
 #include "auth/LocalAuthProvider.h"
 #include "auth/Totp.h"
+#include "kms/EnvVarKms.h"
 
 #include "core/identity.h"
 #include "core/role.h"
@@ -19,6 +20,7 @@
 #include "storage/RoleTraits.h"
 #include "storage/SessionTraits.h"
 #include "storage/sqlite/IdentityRepositories.h"
+#include "storage/sqlite/LoginAttemptRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
@@ -93,6 +95,7 @@ namespace fmgr::auth {
         storage::register_identity_repositories(*backend_);
         storage::register_role_repositories(*backend_);
         storage::register_session_repositories(*backend_);
+        storage::register_login_attempt_repositories(*backend_);
         backend_->migrate_to_latest();
 
         provider_ = std::make_unique<LocalAuthProvider>(*backend_, fast_config());
@@ -304,6 +307,37 @@ namespace fmgr::auth {
           AccountLocked);
     }
 
+    TEST_F(LocalAuthProviderTest, LockoutPersistsAcrossProviderRestart) {
+      // C-1: the lockout counter lives in the login_attempt table, not in process
+      // memory, so a restart (modeled here by destroying the provider and building
+      // a fresh one on the same backend) must NOT reset an active lockout.
+      LocalAuthProviderConfig cfg = fast_config();
+      cfg.max_failures_before_lockout = 3;
+      cfg.lockout_duration_seconds = 3600; // long lock so it does not expire mid-test
+
+      // Lock the account using one provider instance, then let it go out of scope.
+      {
+        auto provider_a = LocalAuthProvider(*backend_, cfg);
+        for (int i = 0; i < 3; ++i) {
+          try {
+            provider_a.authenticate(
+                PasswordCredentials{.email = "nototp@example.com", .password = "bad"},
+                ClientInfo{});
+            // NOLINTNEXTLINE(bugprone-empty-catch): expected auth failure, drives lockout counter
+          } catch (...) {
+          }
+        }
+      }
+
+      // A brand-new provider on the SAME backend has an empty in-memory state; if
+      // it still reports AccountLocked, the lockout was read back from the DB.
+      auto provider_b = LocalAuthProvider(*backend_, cfg);
+      EXPECT_THROW(provider_b.authenticate(
+                       PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"},
+                       ClientInfo{}),
+                   AccountLocked);
+    }
+
     TEST_F(LocalAuthProviderTest, AuthenticateLockRespectedBeforeTimeout) {
       LocalAuthProviderConfig cfg = fast_config();
       cfg.max_failures_before_lockout = 2;
@@ -469,6 +503,47 @@ namespace fmgr::auth {
           PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       ASSERT_TRUE(token.mfa_complete);
       EXPECT_THROW(provider_->verify_totp(token.session_id, "123456"), InvalidCredentials);
+    }
+
+    // ---- set_totp_secret / encrypted TOTP at rest (C-3) ----
+
+    TEST_F(LocalAuthProviderTest, SetTotpSecretStoresEnvelopeAndVerifies) {
+      const std::vector<std::uint8_t> kek(32, 0x42);
+      kms::EnvVarKms kms_provider(kek);
+      LocalAuthProvider kms_auth(*backend_, fast_config(), &kms_provider);
+
+      // Enroll a TOTP secret for the user that previously had none.
+      kms_auth.set_totp_secret(kUserNoTotpId, std::string(kTotpSecret), test_ctx());
+
+      // The persisted value must be a FieldCipher envelope, never the plaintext
+      // base32 secret.
+      auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto users = txn->repo<core::User>().query(storage::Query<core::User>::where(
+          storage::field<core::User, std::string>(core::User::Field::Id) ==
+          kUserNoTotpId.to_string()));
+      txn->commit();
+      ASSERT_FALSE(users.empty());
+      ASSERT_TRUE(users.front().totp_secret_enc.has_value());
+      const std::string stored = users.front().totp_secret_enc.value();
+      EXPECT_NE(stored.find("\"v\""), std::string::npos);     // envelope version marker
+      EXPECT_EQ(stored.find(kTotpSecret), std::string::npos); // no plaintext secret leak
+
+      // A live code still verifies: the provider decrypts the envelope on read.
+      const AuthToken token = kms_auth.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+      ASSERT_FALSE(token.mfa_complete);
+      const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
+      const auto code = totp_generate(kTotpSecret, now_seconds);
+      EXPECT_NO_THROW(kms_auth.verify_totp(token.session_id, code));
+    }
+
+    TEST_F(LocalAuthProviderTest, SetTotpSecretWithoutKmsThrows) {
+      // provider_ was constructed without a KMS: a secret that cannot be
+      // protected must not be persisted.
+      EXPECT_THROW(provider_->set_totp_secret(kUserNoTotpId, std::string(kTotpSecret), test_ctx()),
+                   AuthError);
     }
 
     // ---- revoke_session ----

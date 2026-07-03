@@ -13,6 +13,7 @@
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/ItemTypeRepositories.h"
 #include "storage/sqlite/LayoutRepositories.h"
+#include "storage/sqlite/LoginAttemptRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
 #include "storage/sqlite/SampleRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
@@ -29,6 +30,8 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -141,6 +144,7 @@ namespace fmgr::test {
         storage::register_identity_repositories(b);
         storage::register_role_repositories(b);
         storage::register_session_repositories(b);
+        storage::register_login_attempt_repositories(b);
         storage::register_audit_repositories(b);
         storage::register_box_geometry_repositories(b);
         storage::register_box_repositories(b);
@@ -415,6 +419,207 @@ namespace fmgr::test {
       EXPECT_NO_THROW(server.build());
       EXPECT_GT(server.bound_port(), 0);
       server.shutdown();
+    }
+
+    // ---- TLS transport (security audit C-9) ----
+
+    namespace {
+
+      [[nodiscard]] std::string tls_fixture(const char* name) {
+        return std::string(FMGR_TLS_FIXTURE_DIR) + "/" + name;
+      }
+
+      [[nodiscard]] std::string read_pem(const char* name) {
+        std::ifstream file(tls_fixture(name), std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(file)),
+                           std::istreambuf_iterator<char>());
+      }
+
+      // A TLS-enabled FreezerServer plus its backing store and one seeded
+      // SystemAdmin, all kept alive for the duration of a test. The server runs on
+      // an OS-assigned port and its wait() loop on a background thread.
+      class TlsServerHarness {
+      public:
+        static constexpr const char* kEmail = "admin@example.com";
+        static constexpr const char* kPassword = "hunter22";
+
+        explicit TlsServerHarness(server::MtlsMode mtls) {
+          backend_ = std::make_unique<storage::SqliteBackend>(
+              storage::SqliteBackendOptions{.database_path = ":memory:"});
+          register_repositories(*backend_);
+          backend_->migrate_to_latest();
+          provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_config());
+          seed_admin();
+
+          server::FreezerServerOptions opts;
+          opts.listen_address = "localhost:0";
+          opts.tls_cert_path = tls_fixture("server-cert.pem");
+          opts.tls_key_path = tls_fixture("server-key.pem");
+          opts.tls_client_ca_path = tls_fixture("ca-cert.pem");
+          opts.mtls = mtls;
+          server_ = std::make_unique<server::FreezerServer>(*backend_, *provider_, std::move(opts));
+          server_->build();
+          thread_ = std::thread([this] { server_->wait(); });
+        }
+
+        ~TlsServerHarness() {
+          server_->shutdown();
+          if (thread_.joinable()) {
+            thread_.join();
+          }
+        }
+
+        TlsServerHarness(const TlsServerHarness&) = delete;
+        TlsServerHarness& operator=(const TlsServerHarness&) = delete;
+
+        [[nodiscard]] std::string address() const {
+          return "localhost:" + std::to_string(server_->bound_port());
+        }
+
+      private:
+        static void register_repositories(storage::SqliteBackend& b) {
+          storage::register_identity_repositories(b);
+          storage::register_role_repositories(b);
+          storage::register_session_repositories(b);
+          storage::register_login_attempt_repositories(b);
+          storage::register_audit_repositories(b);
+          storage::register_box_geometry_repositories(b);
+          storage::register_box_repositories(b);
+          storage::register_item_type_repositories(b);
+          storage::register_layout_repositories(b);
+          storage::register_sample_repositories(b);
+          storage::register_share_request_repositories(b);
+        }
+
+        void seed_admin() {
+          const auto password_hash = provider_->hash_password(kPassword);
+          const core::UserId uid = core::UserId::parse("10000000-0000-0000-0000-000000000001");
+          const core::LabId lab_id = core::LabId::parse("20000000-0000-0000-0000-000000000001");
+          const core::User user{
+              .id = uid,
+              .primary_email = kEmail,
+              .display_name = "Test Admin",
+              .status = core::UserStatus::Active,
+              .created_at = core::Timestamp::from_unix_micros(1),
+              .auth_bindings = nlohmann::json::array({
+                  nlohmann::json::object({{"provider", "local"}, {"hash", password_hash}}),
+              }),
+          };
+          const core::Lab lab{
+              .id = lab_id,
+              .name = "Test Lab",
+              .contact = "test@example.com",
+              .created_at = core::Timestamp::from_unix_micros(1),
+              .settings_json = nlohmann::json::object(),
+          };
+          const core::LabMembership membership{
+              .user_id = uid,
+              .lab_id = lab_id,
+              .role_id = core::builtin_role_id(core::RoleKind::SystemAdmin),
+              .scope_filters_json = nlohmann::json::object(),
+              .joined_at = core::Timestamp::from_unix_micros(1),
+          };
+          const storage::MutationContext ctx{
+              .actor_user_id = core::UserId::parse("00000000-0000-0000-0000-000000000000"),
+              .actor_session_id = "seed",
+              .request_id = "seed",
+              .reason = "test setup",
+          };
+          auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+          txn->repo<core::Lab>().insert(lab, ctx);
+          txn->repo<core::User>().insert(user, ctx);
+          txn->repo<core::LabMembership>().insert(membership, ctx);
+          txn->commit();
+        }
+
+        std::unique_ptr<storage::SqliteBackend> backend_;
+        std::unique_ptr<auth::LocalAuthProvider> provider_;
+        std::unique_ptr<server::FreezerServer> server_;
+        std::thread thread_;
+      };
+
+      // Client-side TLS credentials trusting the test CA. When present_client_cert
+      // is true, also present the test client cert/key for mTLS.
+      [[nodiscard]] std::shared_ptr<grpc::ChannelCredentials>
+      tls_client_creds(bool present_client_cert) {
+        grpc::SslCredentialsOptions opts;
+        opts.pem_root_certs = read_pem("ca-cert.pem");
+        if (present_client_cert) {
+          opts.pem_private_key = read_pem("client-key.pem");
+          opts.pem_cert_chain = read_pem("client-cert.pem");
+        }
+        return grpc::SslCredentials(opts);
+      }
+
+      // Attempt a Login and return the resulting gRPC status. A short deadline
+      // keeps a failed handshake from hanging the test.
+      [[nodiscard]] grpc::Status try_login(const std::shared_ptr<grpc::Channel>& channel) {
+        auto stub = fmgr::v1::AuthService::NewStub(channel);
+        grpc::ClientContext ctx;
+        ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+        fmgr::v1::LoginRequest req;
+        req.set_email(TlsServerHarness::kEmail);
+        req.set_password(TlsServerHarness::kPassword);
+        fmgr::v1::LoginResponse resp;
+        return stub->Login(&ctx, req, &resp);
+      }
+
+    } // namespace
+
+    TEST(FreezerServerTls, AcceptsTlsClientAndRoundTripsRpc) {
+      TlsServerHarness harness(server::MtlsMode::Off);
+      auto channel = grpc::CreateChannel(harness.address(), tls_client_creds(false));
+      const auto status = try_login(channel);
+      // Handshake succeeded and the RPC reached the service: valid creds -> OK.
+      EXPECT_TRUE(status.ok()) << status.error_code() << ": " << status.error_message();
+    }
+
+    TEST(FreezerServerTls, RejectsPlaintextClient) {
+      TlsServerHarness harness(server::MtlsMode::Off);
+      auto channel = grpc::CreateChannel(harness.address(), grpc::InsecureChannelCredentials());
+      const auto status = try_login(channel);
+      // A plaintext client cannot complete the TLS handshake: transport failure,
+      // not an application-level UNAUTHENTICATED.
+      EXPECT_FALSE(status.ok());
+      EXPECT_NE(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST(FreezerServerTls, MtlsRequireRejectsClientWithoutCert) {
+      TlsServerHarness harness(server::MtlsMode::Require);
+      auto channel = grpc::CreateChannel(harness.address(), tls_client_creds(false));
+      const auto status = try_login(channel);
+      EXPECT_FALSE(status.ok());
+      EXPECT_NE(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST(FreezerServerTls, MtlsRequireAcceptsClientWithCert) {
+      TlsServerHarness harness(server::MtlsMode::Require);
+      auto channel = grpc::CreateChannel(harness.address(), tls_client_creds(true));
+      const auto status = try_login(channel);
+      EXPECT_TRUE(status.ok()) << status.error_code() << ": " << status.error_message();
+    }
+
+    TEST(FreezerServerTls, MtlsOffIgnoresClientCert) {
+      TlsServerHarness harness(server::MtlsMode::Off);
+      // A plain server-auth TLS client (no client cert) succeeds.
+      auto channel = grpc::CreateChannel(harness.address(), tls_client_creds(false));
+      const auto status = try_login(channel);
+      EXPECT_TRUE(status.ok()) << status.error_code() << ": " << status.error_message();
+    }
+
+    TEST(FreezerServerTls, RequireCaMissingInRequireModeThrows) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      backend.migrate_to_latest();
+      auth::LocalAuthProvider provider(backend, fast_config());
+
+      server::FreezerServerOptions opts;
+      opts.listen_address = "localhost:0";
+      opts.tls_cert_path = tls_fixture("server-cert.pem");
+      opts.tls_key_path = tls_fixture("server-key.pem");
+      opts.mtls = server::MtlsMode::Require; // tls_client_ca_path intentionally empty
+
+      server::FreezerServer server(backend, provider, std::move(opts));
+      EXPECT_THROW(server.build(), std::invalid_argument);
     }
 
   } // namespace

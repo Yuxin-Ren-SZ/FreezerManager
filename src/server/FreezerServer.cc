@@ -10,9 +10,13 @@
 #include "server/RateLimitInterceptor.h"
 
 #include <fmt/format.h>
+#include <grpc/grpc_security_constants.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
 #include <grpcpp/resource_quota.h>
+#include <grpcpp/security/server_credentials.h>
+#include <grpcpp/security/tls_certificate_provider.h>
+#include <grpcpp/security/tls_credentials_options.h>
 
 #include <vector>
 
@@ -34,6 +38,68 @@ namespace {
                                "kms.disabled");
     }
     return kms;
+  }
+
+  // Build the gRPC server credentials from the TLS options.
+  //  - Empty cert path  -> InsecureServerCredentials (dev mode; the require_tls
+  //    guard in build() has already rejected this path for production).
+  //  - Cert path set     -> TLS 1.3 via a FileWatcherCertificateProvider so a
+  //    rotated cert/key/CA on disk is hot-reloaded for new handshakes without
+  //    dropping in-flight connections (PRD §6). mTLS is applied per opts.mtls.
+  std::shared_ptr<grpc::ServerCredentials>
+  make_server_credentials(const fmgr::server::FreezerServerOptions& opts) {
+    if (opts.tls_cert_path.empty()) {
+      return grpc::InsecureServerCredentials();
+    }
+
+    namespace exp = grpc::experimental;
+    using fmgr::server::MtlsMode;
+
+    if (opts.mtls == MtlsMode::Require && opts.tls_client_ca_path.empty()) {
+      throw std::invalid_argument(
+          "mTLS require mode needs tls_client_ca_path to verify client certificates");
+    }
+
+    // FileWatcherCertificateProvider re-reads the files on its poll interval and
+    // hot-swaps the identity/root pairs for subsequent handshakes.
+    auto provider = std::make_shared<exp::FileWatcherCertificateProvider>(
+        opts.tls_key_path, opts.tls_cert_path, opts.tls_client_ca_path,
+        opts.tls_reload_interval_sec);
+
+    exp::TlsServerCredentialsOptions tls_opts(provider);
+    // PRD §6: TLS 1.3 only — no downgrade to 1.2 or below. gRPC/BoringSSL then
+    // restricts the suite set to the TLS 1.3 AEAD ciphers.
+    tls_opts.set_min_tls_version(grpc_tls_version::TLS1_3);
+    tls_opts.set_max_tls_version(grpc_tls_version::TLS1_3);
+    tls_opts.watch_identity_key_cert_pairs();
+
+    switch (opts.mtls) {
+    case MtlsMode::Off:
+      tls_opts.set_cert_request_type(GRPC_SSL_DONT_REQUEST_CLIENT_CERTIFICATE);
+      break;
+    case MtlsMode::Request:
+      tls_opts.watch_root_certs();
+      tls_opts.set_cert_request_type(GRPC_SSL_REQUEST_CLIENT_CERTIFICATE_AND_VERIFY);
+      break;
+    case MtlsMode::Require:
+      tls_opts.watch_root_certs();
+      tls_opts.set_cert_request_type(GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY);
+      break;
+    }
+
+    return exp::TlsServerCredentials(tls_opts);
+  }
+
+  const char* mtls_mode_name(fmgr::server::MtlsMode mode) {
+    switch (mode) {
+    case fmgr::server::MtlsMode::Off:
+      return "off";
+    case fmgr::server::MtlsMode::Request:
+      return "request";
+    case fmgr::server::MtlsMode::Require:
+      return "require";
+    }
+    return "off";
   }
 
 } // namespace
@@ -99,14 +165,14 @@ namespace fmgr::server {
     interceptor_creators.push_back(std::make_unique<MetricsInterceptorFactory>());
     builder.experimental().SetInterceptorCreators(std::move(interceptor_creators));
 
-    if (opts_.tls_cert_path.empty()) {
-      builder.AddListeningPort(opts_.listen_address, grpc::InsecureServerCredentials(),
-                               &bound_port_);
-    } else {
-      // TLS certificate loading is deferred to M5 (KMS phase).
-      throw std::runtime_error(
-          "TLS not yet implemented; run with empty tls_cert_path for dev mode");
+    if (!opts_.tls_cert_path.empty()) {
+      fmgr::obs::log_lifecycle(fmgr::obs::Level::Info,
+                               fmt::format("TLS 1.3 enabled: cert={} mtls={} reload={}s",
+                                           opts_.tls_cert_path, mtls_mode_name(opts_.mtls),
+                                           opts_.tls_reload_interval_sec),
+                               "tls.enabled");
     }
+    builder.AddListeningPort(opts_.listen_address, make_server_credentials(opts_), &bound_port_);
 
     builder.RegisterService(&auth_svc_);
     builder.RegisterService(&session_svc_);

@@ -30,6 +30,7 @@
 #include "auth/IAuthProvider.h"
 #include "auth/Totp.h"
 #include "core/session.h"
+#include "kms/IKmsProvider.h"
 #include "storage/IStorageBackend.h"
 
 #include <chrono>
@@ -87,8 +88,12 @@ namespace fmgr::auth {
 
   class LocalAuthProvider final : public IAuthProvider {
   public:
+    // `kms` (optional) is used to envelope-encrypt the TOTP secret at rest (C-3).
+    // When null, TOTP secrets cannot be stored (set_totp_secret throws) and the
+    // verify path only accepts legacy plaintext secrets; login is unaffected.
     explicit LocalAuthProvider(storage::IStorageBackend& backend,
-                               LocalAuthProviderConfig config = {});
+                               LocalAuthProviderConfig config = {},
+                               kms::IKmsProvider* kms = nullptr);
 
     ~LocalAuthProvider() override = default;
 
@@ -98,6 +103,14 @@ namespace fmgr::auth {
     // Produce an Argon2id hash string suitable for storage in User.auth_bindings.
     // Also used by first-run wizards and test fixtures to create local users.
     [[nodiscard]] std::string hash_password(std::string_view plaintext) const;
+
+    // Enroll (or replace) a user's TOTP secret, storing it envelope-encrypted
+    // (C-3): the base32 secret is sealed with FieldCipher under the KMS master
+    // KEK before it touches the database. Throws if no KMS was configured — a
+    // secret that cannot be protected must not be persisted. This is the write
+    // primitive a future TOTP-enrolment RPC/CLI will call.
+    void set_totp_secret(const core::UserId& user_id, const std::string& base32_secret,
+                         const storage::MutationContext& ctx);
 
     // ---- IAuthProvider ----
 
@@ -118,18 +131,20 @@ namespace fmgr::auth {
   private:
     storage::IStorageBackend& backend_;
     LocalAuthProviderConfig config_;
+    // Optional master-KEK provider for TOTP-secret envelope encryption (C-3).
+    // Null when no KEK is configured; TOTP storage is then unavailable.
+    kms::IKmsProvider* kms_{nullptr};
 
-    struct LockoutState {
-      int failure_count{0};
-      std::optional<core::Timestamp> locked_until;
-      // Last time this email recorded a failure; used to evict stale, unlocked
-      // entries so an attacker spraying random emails cannot grow the map without
-      // bound (see security-audit-2026-06-12 #2).
-      core::Timestamp last_activity{};
-    };
+    // Recover the base32 TOTP secret from the value stored in totp_secret_enc.
+    // Accepts either a FieldCipher envelope (decrypted via kms_) or a legacy
+    // plaintext base32 secret, so pre-C-3 secrets keep working through a
+    // transition. Throws if the value is an envelope but no KMS is configured.
+    [[nodiscard]] std::string resolve_totp_secret(const std::string& stored) const;
 
+    // Serializes the read-modify-write of a login_attempt row within this process
+    // (v1 is single-writer, PRD §17.1, so the DB row is the source of truth and
+    // this mutex only guards concurrent requests inside one freezerd process).
     mutable std::mutex lockout_mutex_;
-    std::unordered_map<std::string, LockoutState> lockout_map_;
 
     // Permission-context cache (D9.3 / E3). Caches the resolve_permissions result
     // keyed by session-id string. MFA flag always comes from the DB session row,
@@ -181,17 +196,19 @@ namespace fmgr::auth {
     // UUID v4 generation for new Session IDs.
     [[nodiscard]] static core::SessionId make_session_id();
 
+    // UUID v4 generation for new login_attempt (lockout) rows.
+    [[nodiscard]] static core::LoginAttemptId make_login_attempt_id();
+
     // Convenience MutationContext for system-initiated auth mutations.
     [[nodiscard]] storage::MutationContext system_ctx(std::string_view reason) const;
 
-    // Account-lockout helpers (all require caller to NOT hold lockout_mutex_).
+    // Account-lockout helpers, backed by the persistent login_attempt table so a
+    // lockout survives a process restart (C-1). All take lockout_mutex_ internally;
+    // callers must NOT hold it.
     void record_failure(const std::string& lower_email);
     void record_success(const std::string& lower_email);
     [[nodiscard]] std::optional<core::Timestamp>
     check_lockout(const std::string& lower_email) const;
-    // Evicts stale/unlocked entries to bound lockout_map_; caller MUST hold
-    // lockout_mutex_. keep_email is never evicted.
-    void evict_stale_lockouts(const std::string& keep_email, core::Timestamp now);
 
     // Current time as a Timestamp.
     [[nodiscard]] static core::Timestamp now_ts();

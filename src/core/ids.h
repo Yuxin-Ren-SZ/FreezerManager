@@ -59,6 +59,7 @@ namespace fmgr::core {
   struct AuditEventIdTag {};
   struct SessionIdTag {};
   struct ApiTokenIdTag {};
+  struct LoginAttemptIdTag {};
 
   using LabId = StrongId<LabIdTag>;
   using UserId = StrongId<UserIdTag>;
@@ -78,6 +79,7 @@ namespace fmgr::core {
   using AuditEventId = StrongId<AuditEventIdTag>;
   using SessionId = StrongId<SessionIdTag>;
   using ApiTokenId = StrongId<ApiTokenIdTag>;
+  using LoginAttemptId = StrongId<LoginAttemptIdTag>;
 
   template <typename Tag> void to_json(nlohmann::json& json, const StrongId<Tag>& strong_id) {
     json = strong_id.to_string();

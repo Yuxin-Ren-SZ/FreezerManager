@@ -13,6 +13,7 @@
 #include "core/uuid.h"
 #include "storage/IdentityTraits.h"
 #include "storage/sqlite/IdentityRepositories.h"
+#include "storage/sqlite/LoginAttemptRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
@@ -53,6 +54,7 @@ namespace fmgr::cli {
         storage::register_identity_repositories(*backend_);
         storage::register_role_repositories(*backend_);
         storage::register_session_repositories(*backend_);
+        storage::register_login_attempt_repositories(*backend_);
         backend_->migrate_to_latest();
 
         seed_user(kEmail);

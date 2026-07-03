@@ -22,8 +22,10 @@ target_link_libraries(
   freezermanager_auth
   PUBLIC
     FreezerManager::core
+    FreezerManager::kms
     FreezerManager::storage
   PRIVATE
+    FreezerManager::crypto
     libsodium::libsodium
     OpenSSL::SSL
     OpenSSL::Crypto
