@@ -236,6 +236,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
       opts.backup_schedule = schedule;
     }
 
+    // Capture before `opts` is moved into the server; still needed below for the
+    // REST TLS guard and the metrics-exposure default.
+    const bool require_tls = opts.require_tls;
     fmgr::server::FreezerServer server(*backend, auth, std::move(opts));
     // build() binds the gRPC port and starts accepting (non-blocking). The REST
     // gateway then dials the in-process channel; drogon::app().run() blocks the
@@ -263,7 +266,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
       return text == "1" || text == "true";
     };
     const bool health_public = env_bool("FMGR_HEALTH_PUBLIC", true);
-    const bool metrics_public = env_bool("FMGR_METRICS_PUBLIC", !opts.require_tls);
+    const bool metrics_public = env_bool("FMGR_METRICS_PUBLIC", !require_tls);
 
     // Gate for private operational endpoints: accept any valid, MFA-complete
     // session token. `auth` outlives drogon::app().run(), so the reference is safe
@@ -315,7 +318,7 @@ int main(int /*argc*/, char* /*argv*/[]) {
         .port = rest_port,
         .has_cert = rest_cert != nullptr,
         .has_key = rest_key != nullptr,
-        .require_tls = opts.require_tls,
+        .require_tls = require_tls,
     });
     const bool rest_tls = rest_cert != nullptr && rest_key != nullptr;
     drogon::app().addListener(rest_host, rest_port, rest_tls, rest_cert != nullptr ? rest_cert : "",

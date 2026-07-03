@@ -24,9 +24,9 @@ namespace fmgr::audit {
     // the transform is required for full compliance.
     [[nodiscard]] std::u16string to_utf16(std::string_view input) {
       std::u16string out;
-      std::size_t i = 0;
-      while (i < input.size()) {
-        const auto byte0 = static_cast<unsigned char>(input[i]);
+      std::size_t pos = 0;
+      while (pos < input.size()) {
+        const auto byte0 = static_cast<unsigned char>(input[pos]);
         char32_t code_point = 0;
         std::size_t len = 1;
         if (byte0 < 0x80) {
@@ -45,10 +45,10 @@ namespace fmgr::audit {
           code_point = 0xFFFD; // invalid lead byte
           len = 1;
         }
-        for (std::size_t k = 1; k < len && i + k < input.size(); ++k) {
-          code_point = (code_point << 6) | (static_cast<unsigned char>(input[i + k]) & 0x3FU);
+        for (std::size_t cont = 1; cont < len && pos + cont < input.size(); ++cont) {
+          code_point = (code_point << 6) | (static_cast<unsigned char>(input[pos + cont]) & 0x3FU);
         }
-        i += len;
+        pos += len;
         if (code_point <= 0xFFFF) {
           out.push_back(static_cast<char16_t>(code_point));
         } else {
@@ -117,15 +117,12 @@ namespace fmgr::audit {
         break;
       case nlohmann::json::value_t::number_integer:
       case nlohmann::json::value_t::number_unsigned:
-        // Integers serialize as their exact decimal form, which is already the
-        // RFC 8785 §3.2.2.3 representation.
-        out += value.dump();
-        break;
       case nlohmann::json::value_t::number_float:
-        // FreezerManager's canonicalized content (audit rows) contains no
-        // floating-point numbers; for any incidental float we emit nlohmann's
-        // shortest round-trip form, which matches ECMAScript for the common
-        // range. Full IEEE-754 edge cases are out of scope for scheme v1.
+        // Integers serialize as their exact decimal form (already the RFC 8785
+        // §3.2.2.3 representation). FreezerManager's canonicalized content (audit
+        // rows) contains no floats; any incidental float uses nlohmann's shortest
+        // round-trip form, which matches ECMAScript for the common range — full
+        // IEEE-754 edge cases are out of scope for scheme v1.
         out += value.dump();
         break;
       case nlohmann::json::value_t::array: {
