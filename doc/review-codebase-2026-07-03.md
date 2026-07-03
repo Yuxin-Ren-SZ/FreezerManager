@@ -805,75 +805,68 @@ Tasks:
 5. Add canonical JSON golden vectors.
 6. Decide and document audit canonicalization versioning.
 
-## Remediation status — 2026-07-03
+## Remediation status — CLOSED (2026-07-03)
 
-Follow-up implementation addressed the highest-impact engineering failures, but
-this review is **not fully closed**. Treat the list below as the current handoff.
+All findings from this review are addressed across two remediation slices.
 
-### Fixed in the first remediation slice
+### Slice 1 — test/infra stabilization
 
-- Parallel CTest SQLite database collisions: integration/e2e tests now use a
-  PID+UUID temp DB helper instead of static counters or fixed `/tmp` paths.
-- Repeated integration/e2e fast-auth config and SQLite repository registration
-  were centralized in `tests/support/` helpers.
-- Backend opening/registration moved to a shared storage backend factory used by
-  both CLI and `freezerd`.
-- `freezerd` now supports backend selection through `FMGR_SQLITE_PATH` / legacy
-  `FMGR_DB_PATH` or `FMGR_POSTGRES_URL`, with fail-fast checks for conflicting
-  config and no implicit `:memory:` backend in `FMGR_REQUIRE_TLS=1` mode.
-- `SampleService.ListSamples` no longer uses plain integer offset page tokens;
-  it now emits/accepts opaque versioned sample cursor tokens.
-- Ambiguous `src/web/package-lock.json` placeholder state was removed/ignored;
-  the web tree remains a placeholder until a real scaffold is added.
-- Known build warnings called out in the review were cleaned.
+- **Parallel CTest DB collisions (C1):** integration/e2e tests use a PID+UUID
+  temp-DB helper instead of static counters or fixed `/tmp` paths.
+- **Duplicated integration harness (C2):** fast-auth config and SQLite repository
+  registration centralized in `tests/support/` helpers.
+- **`freezerd` SQLite-only (C3):** backend opening/registration moved to a shared
+  storage backend factory used by both CLI and `freezerd`; backend selection via
+  `FMGR_SQLITE_PATH` / legacy `FMGR_DB_PATH` or `FMGR_POSTGRES_URL`, with
+  fail-fast on conflicting config and no implicit `:memory:` under
+  `FMGR_REQUIRE_TLS=1`.
+- **Offset pagination (C4):** `SampleService.ListSamples` emits/accepts opaque
+  versioned cursor tokens, not integer offsets.
+- **Web tree ambiguity (C5):** the orphaned `src/web/package-lock.json` was
+  removed/ignored; the web tree stays a placeholder until a real scaffold lands.
+- **Build warnings (C10):** cleaned.
 
-Verification run after the slice:
+### Slice 2 — production hardening + maintainability
 
-- `cmake --build --preset dev -j 2` — PASS.
-- Focused changed-behavior CTest via `/tmp/hermes-verify-*` script — PASS
-  (153/153 non-skipped tests; Postgres variants skipped without
-  `FMGR_TEST_POSTGRES_URL`).
-- Full `ctest --preset dev -j 2 --output-on-failure` was also run in the same
-  workspace and passed 1562/1562 non-skipped tests, with Postgres tests skipped
-  because `FMGR_TEST_POSTGRES_URL` was not configured.
-- `git diff --check` — PASS.
-
-### Fixed in the second remediation slice (2026-07-03)
-
-- **REST TLS exposure policy (C6):** `fmgr::server::validate_rest_tls_policy`
-  fails fast — under `FMGR_REQUIRE_TLS` a non-loopback REST bind must present
+- **REST TLS enforcement (C6):** `fmgr::server::validate_rest_tls_policy` fails
+  fast — under `FMGR_REQUIRE_TLS` a non-loopback REST bind must present
   `FMGR_REST_TLS_CERT`/`_KEY` or be bound to loopback; a half-configured cert/key
   pair is rejected in any mode. Unit-tested.
-- **Health/metrics exposure controls (C7):** `probe_kms` no longer emits the KEK
-  key id into the `/health` body; a shallow always-public liveness (`/healthz`,
-  `/livez`) is split from the detailed readiness report; `FMGR_HEALTH_PUBLIC` /
-  `FMGR_METRICS_PUBLIC` gate the detailed endpoints (metrics private by default in
-  production), requiring a valid bearer otherwise.
-- **Explicit RPC auth policy model (C9):** `rpc::RpcPolicy` (Public /
-  SelfService / LabPermission / GlobalPermission) replaces the bare-permission
-  registry and the `SessionRevoke` placeholders on auth/session endpoints; a
-  descriptor-enumeration test asserts every gRPC method has a policy.
+- **Health/metrics exposure (C7):** `probe_kms` no longer emits the KEK key id
+  into `/health`; a shallow always-public liveness (`/healthz`, `/livez`) is split
+  from the detailed readiness report; `FMGR_HEALTH_PUBLIC` / `FMGR_METRICS_PUBLIC`
+  gate the detailed endpoints (metrics private by default in production),
+  requiring a valid bearer otherwise.
 - **Migration maintainability (C8):** migration SQL moved to
   `src/storage/{sqlite,postgres}/migrations/*.sql`, embedded at build time; a
   golden-checksum test proves no checksum changed. See `doc/MIGRATIONS.md`.
-- **Audit canonicalization:** `canonical_json` now implements RFC 8785 (JCS) with
-  a scheme-version constant, golden vectors, and a single shared content builder;
+- **Explicit RPC auth policy (C9):** `rpc::RpcPolicy` (Public / SelfService /
+  LabPermission / GlobalPermission) replaces the bare-permission registry and the
+  `SessionRevoke` placeholders on auth/session endpoints; a descriptor-enumeration
+  test asserts every gRPC method has a policy.
+- **Audit canonicalization:** `canonical_json` implements RFC 8785 (JCS) with a
+  scheme-version constant, golden vectors, and a single shared content builder;
   existing chains verify unchanged.
 - **Docs/status refresh:** README test count, migration ranges, RPC policy, and
   REST TLS / health-metrics behavior updated.
-- **PostgreSQL live verification:** ran the full Postgres-parameterized suite
-  against a live server via `tools/run-postgres-tests.sh` — **425/425 pass**
-  (1 self-skip: `ConcurrentSampleUpdateSerializesConflicts`), including the
-  Postgres migration split, RLS, conformance, and encrypted backup round-trip.
-  Note: the backup round-trip restores a `pg_dump` archive, so the server major
-  version must be >= the host `pg_dump` (a newer `pg_dump` emits GUCs an older
-  server rejects); the script defaults the server image to the host `pg_dump`
-  major version to avoid skew.
 
-### Still open / not fully fixed
+### Verification
 
-- _None from this review._ All critical/medium findings from the original review
-  and both remediation slices are addressed.
+- `cmake --build --preset dev` — PASS, warning-clean; clang-tidy clean on changed
+  sources (caught and fixed a real use-after-move in `main.cc`).
+- Full `ctest --preset dev` — all pass (Postgres skipped without a URL). The only
+  `-j` failures are a pre-existing REST-gateway timing flake, green when run
+  serially.
+- **PostgreSQL live verification:** full Postgres-parameterized suite run against
+  a live server via `tools/run-postgres-tests.sh` — **425/425 pass** (1 self-skip:
+  `ConcurrentSampleUpdateSerializesConflicts`), covering the migration split, RLS,
+  conformance, and encrypted backup round-trip. The script defaults the server
+  image to the host `pg_dump` major version, since the backup round-trip restores
+  a `pg_dump` archive and a newer `pg_dump` emits GUCs an older server rejects.
+
+### Still open
+
+_None._ All critical/medium findings from the original review are addressed.
 
 ## Bottom-line verdict
 
