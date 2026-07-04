@@ -26,6 +26,9 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
+#include "support/FastAuth.h"
+#include "support/RegisterRepositories.h"
+#include "support/TempSqliteDb.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
 #include <fmgr/v1/sample.grpc.pb.h>
@@ -33,8 +36,6 @@
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
 
-#include <atomic>
-#include <filesystem>
 #include <memory>
 #include <string>
 #include <thread>
@@ -42,33 +43,18 @@
 namespace fmgr::test {
   namespace {
 
-    // Fast Argon2id parameters for tests.
-    [[nodiscard]] auth::LocalAuthProviderConfig fast_config() {
-      auth::LocalAuthProviderConfig cfg;
-      cfg.pwhash_memlimit = 8192;
-      cfg.pwhash_opslimit = 1;
-      return cfg;
-    }
-
-    [[nodiscard]] std::filesystem::path unique_db_path() {
-      static std::atomic<int> counter{0};
-      return std::filesystem::temp_directory_path() /
-             ("fmgr-e2e-" + std::to_string(counter.fetch_add(1)) + ".db");
-    }
-
     // Fixture that spins up an in-process FreezerServer with a seeded admin user.
     class E2ESmokeTest : public ::testing::Test {
     protected:
       void SetUp() override {
-        db_path_ = unique_db_path();
-        remove_sqlite_files(db_path_);
+        db_ = std::make_unique<TempSqliteDb>("fmgr-e2e");
 
         backend_ = std::make_unique<storage::SqliteBackend>(
-            storage::SqliteBackendOptions{.database_path = db_path_.string()});
-        register_all_repositories(*backend_);
+            storage::SqliteBackendOptions{.database_path = db_->string()});
+        register_all_sqlite_repositories(*backend_);
         backend_->migrate_to_latest();
 
-        provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_config());
+        provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_auth_config());
         seed_admin_user();
         seed_item_type();
 
@@ -95,7 +81,7 @@ namespace fmgr::test {
         server_.reset();
         provider_.reset();
         backend_.reset();
-        remove_sqlite_files(db_path_);
+        db_.reset();
       }
 
       // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
@@ -116,7 +102,7 @@ namespace fmgr::test {
       const std::string kEmail{"admin@e2e-test.local"};
       const std::string kPassword{"e2e-password"};
 
-      std::filesystem::path db_path_;
+      std::unique_ptr<TempSqliteDb> db_;
       std::unique_ptr<storage::SqliteBackend> backend_;
       std::unique_ptr<auth::LocalAuthProvider> provider_;
       server::FreezerServerOptions server_opts_;
@@ -129,27 +115,6 @@ namespace fmgr::test {
       core::ItemTypeId item_type_id_;
 
     private:
-      static void remove_sqlite_files(const std::filesystem::path& path) {
-        std::error_code error;
-        std::filesystem::remove(path, error);
-        std::filesystem::remove(std::filesystem::path(path.string() + "-wal"), error);
-        std::filesystem::remove(std::filesystem::path(path.string() + "-shm"), error);
-      }
-
-      static void register_all_repositories(storage::SqliteBackend& b) {
-        storage::register_identity_repositories(b);
-        storage::register_role_repositories(b);
-        storage::register_session_repositories(b);
-        storage::register_login_attempt_repositories(b);
-        storage::register_audit_repositories(b);
-        storage::register_box_geometry_repositories(b);
-        storage::register_box_repositories(b);
-        storage::register_item_type_repositories(b);
-        storage::register_layout_repositories(b);
-        storage::register_sample_repositories(b);
-        storage::register_share_request_repositories(b);
-      }
-
       void seed_admin_user() {
         const auto password_hash = provider_->hash_password(kPassword);
         const core::UserId uid = core::UserId::parse("10000000-e2e0-4e2e-8e2e-000000000001");

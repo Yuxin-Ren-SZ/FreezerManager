@@ -19,17 +19,20 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
+#include "support/FastAuth.h"
+#include "support/RegisterRepositories.h"
+#include "support/TempSqliteDb.h"
 
 #include "rpc/AuthMiddleware.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
 #include <fmgr/v1/session.grpc.pb.h>
+#include <google/protobuf/descriptor.h>
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
 
-#include <atomic>
+#include <array>
 #include <chrono>
-#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -41,33 +44,18 @@
 namespace fmgr::test {
   namespace {
 
-    // Fast Argon2id parameters for tests.
-    [[nodiscard]] auth::LocalAuthProviderConfig fast_config() {
-      auth::LocalAuthProviderConfig cfg;
-      cfg.pwhash_memlimit = 8192;
-      cfg.pwhash_opslimit = 1;
-      return cfg;
-    }
-
-    [[nodiscard]] std::filesystem::path unique_db_path() {
-      static std::atomic<int> counter{0};
-      return std::filesystem::temp_directory_path() /
-             ("fmgr-srv-test-" + std::to_string(counter.fetch_add(1)) + ".db");
-    }
-
     // Fixture that spins up an in-process FreezerServer on a random port.
     class ServerIntegrationTest : public ::testing::Test {
     protected:
       void SetUp() override {
-        db_path_ = unique_db_path();
-        remove_sqlite_files(db_path_);
+        db_ = std::make_unique<TempSqliteDb>("fmgr-srv-test");
 
         backend_ = std::make_unique<storage::SqliteBackend>(
-            storage::SqliteBackendOptions{.database_path = db_path_.string()});
-        register_all_repositories(*backend_);
+            storage::SqliteBackendOptions{.database_path = db_->string()});
+        register_all_sqlite_repositories(*backend_);
         backend_->migrate_to_latest();
 
-        provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_config());
+        provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_auth_config());
 
         seed_test_user();
 
@@ -96,7 +84,7 @@ namespace fmgr::test {
         server_.reset();
         provider_.reset();
         backend_.reset();
-        remove_sqlite_files(db_path_);
+        db_.reset();
       }
 
       // Login and return the bearer token.
@@ -122,7 +110,7 @@ namespace fmgr::test {
       const std::string kEmail{"admin@example.com"};
       const std::string kPassword{"hunter22"};
 
-      std::filesystem::path db_path_;
+      std::unique_ptr<TempSqliteDb> db_;
       std::unique_ptr<storage::SqliteBackend> backend_;
       std::unique_ptr<auth::LocalAuthProvider> provider_;
       server::FreezerServerOptions server_opts_;
@@ -133,27 +121,6 @@ namespace fmgr::test {
       std::unique_ptr<fmgr::v1::SessionService::Stub> session_stub_;
 
     private:
-      static void remove_sqlite_files(const std::filesystem::path& path) {
-        std::error_code error;
-        std::filesystem::remove(path, error);
-        std::filesystem::remove(std::filesystem::path(path.string() + "-wal"), error);
-        std::filesystem::remove(std::filesystem::path(path.string() + "-shm"), error);
-      }
-
-      static void register_all_repositories(storage::SqliteBackend& b) {
-        storage::register_identity_repositories(b);
-        storage::register_role_repositories(b);
-        storage::register_session_repositories(b);
-        storage::register_login_attempt_repositories(b);
-        storage::register_audit_repositories(b);
-        storage::register_box_geometry_repositories(b);
-        storage::register_box_repositories(b);
-        storage::register_item_type_repositories(b);
-        storage::register_layout_repositories(b);
-        storage::register_sample_repositories(b);
-        storage::register_share_request_repositories(b);
-      }
-
       void seed_test_user() {
         const auto password_hash = provider_->hash_password(kPassword);
         const core::UserId uid = core::UserId::parse("10000000-0000-0000-0000-000000000001");
@@ -337,15 +304,35 @@ namespace fmgr::test {
     }
 
     TEST_F(ServerIntegrationTest, RpcRegistryCoversAllExpectedMethods) {
-      // Verify that every gRPC method defined in all service stubs is present in
-      // the AuthMiddleware registry. At minimum the count must be >= the number of
-      // stubs registered (auth + session + 7 stub services).
+      // Walk the generated gRPC service descriptors and assert every method has an
+      // explicit AuthMiddleware policy. A newly added RPC (or a whole service)
+      // fails here unless it registers a policy — nothing reaches a handler
+      // ungated by omission. Replaces the previous size>=60 magnitude heuristic.
       const auto registry = rpc::AuthMiddleware::registered_rpcs();
-      // 6 (AuthService) + 2 (SessionService) + 8 (LabService) + 8 (SampleService)
-      // + 19 (BoxService) + 9 (ItemTypeService) + 8 (RoleService) + 4 (AuditService)
-      // + 6 (ShareService) = 70 RPCs
-      EXPECT_GE(registry.size(), 60U) << "RPC registry smaller than expected; "
-                                         "a new service may have been added without registering.";
+
+      static constexpr std::array<const char*, 9> kServices{
+          "fmgr.v1.AuthService",   "fmgr.v1.SessionService", "fmgr.v1.LabService",
+          "fmgr.v1.SampleService", "fmgr.v1.BoxService",     "fmgr.v1.ItemTypeService",
+          "fmgr.v1.RoleService",   "fmgr.v1.AuditService",   "fmgr.v1.ShareService"};
+
+      const auto* pool = google::protobuf::DescriptorPool::generated_pool();
+      ASSERT_NE(pool, nullptr);
+
+      std::size_t method_total = 0;
+      for (const char* service_name : kServices) {
+        const auto* service = pool->FindServiceByName(service_name);
+        ASSERT_NE(service, nullptr) << "service descriptor not linked: " << service_name;
+        for (int i = 0; i < service->method_count(); ++i) {
+          const std::string full =
+              "/" + std::string(service_name) + "/" + std::string(service->method(i)->name());
+          ++method_total;
+          EXPECT_TRUE(registry.contains(full))
+              << "gRPC method has no AuthMiddleware policy: " << full;
+        }
+      }
+
+      // Exactness: the registry holds exactly the real RPCs (no stray entries).
+      EXPECT_EQ(registry.size(), method_total);
     }
 
     // Security audit H-1: a burst of Login attempts from one source is throttled
@@ -379,7 +366,7 @@ namespace fmgr::test {
     TEST(FreezerServerTlsGuard, RequireTlsWithoutCertThrowsBeforeBinding) {
       storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
       backend.migrate_to_latest();
-      auth::LocalAuthProvider provider(backend, fast_config());
+      auth::LocalAuthProvider provider(backend, fast_auth_config());
 
       server::FreezerServerOptions opts;
       opts.listen_address = "localhost:0";
@@ -409,7 +396,7 @@ namespace fmgr::test {
     TEST(FreezerServerTlsGuard, NoRequireTlsStartsPlaintextInDevMode) {
       storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
       backend.migrate_to_latest();
-      auth::LocalAuthProvider provider(backend, fast_config());
+      auth::LocalAuthProvider provider(backend, fast_auth_config());
 
       server::FreezerServerOptions opts;
       opts.listen_address = "localhost:0";
@@ -431,8 +418,7 @@ namespace fmgr::test {
 
       [[nodiscard]] std::string read_pem(const char* name) {
         std::ifstream file(tls_fixture(name), std::ios::binary);
-        return std::string((std::istreambuf_iterator<char>(file)),
-                           std::istreambuf_iterator<char>());
+        return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
       }
 
       // A TLS-enabled FreezerServer plus its backing store and one seeded
@@ -448,7 +434,7 @@ namespace fmgr::test {
               storage::SqliteBackendOptions{.database_path = ":memory:"});
           register_repositories(*backend_);
           backend_->migrate_to_latest();
-          provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_config());
+          provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_auth_config());
           seed_admin();
 
           server::FreezerServerOptions opts;
@@ -610,7 +596,7 @@ namespace fmgr::test {
     TEST(FreezerServerTls, RequireCaMissingInRequireModeThrows) {
       storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
       backend.migrate_to_latest();
-      auth::LocalAuthProvider provider(backend, fast_config());
+      auth::LocalAuthProvider provider(backend, fast_auth_config());
 
       server::FreezerServerOptions opts;
       opts.listen_address = "localhost:0";

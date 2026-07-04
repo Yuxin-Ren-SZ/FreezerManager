@@ -1,0 +1,1 @@
+SELECT 1; -- no-op: audit_events already has full schema from migration 1

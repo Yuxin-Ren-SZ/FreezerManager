@@ -1,4 +1,3 @@
--- SPDX-License-Identifier: AGPL-3.0-or-later
 
 CREATE TABLE IF NOT EXISTS audit_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

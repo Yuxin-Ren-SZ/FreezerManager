@@ -11,29 +11,6 @@
 
 namespace fmgr::audit {
 
-  std::string audit_event_content_json(const core::AuditEvent& event) {
-    // Mirror exactly the content object the backends hash at insert time
-    // (SqliteBackend::commit / PostgresBackend::commit): the 11 fields below,
-    // excluding prev_hash and this_hash. canonical_json() sorts keys, so the
-    // build order here is irrelevant. entity_id is always a string at insert
-    // (bound even when empty); lab_id is the lab UUID string or JSON null.
-    const nlohmann::json content = {
-        {"action", event.action},
-        {"actor_session_id", event.actor_session_id},
-        {"actor_user_id", event.actor_user_id.to_string()},
-        {"after_json", event.after_json},
-        {"at", event.at.unix_micros()},
-        {"before_json", event.before_json},
-        {"entity_id", event.entity_id.value_or("")},
-        {"entity_kind", event.entity_kind},
-        {"id", event.id.to_string()},
-        {"lab_id", event.lab_id.has_value() ? nlohmann::json(event.lab_id->to_string())
-                                            : nlohmann::json(nullptr)},
-        {"request_id", event.request_id},
-    };
-    return canonical_json(content);
-  }
-
   namespace {
     [[nodiscard]] AuditChainError make_error(std::size_t index, core::AuditEventId id,
                                              AuditChainStatus status, std::string detail) {

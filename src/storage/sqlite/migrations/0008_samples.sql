@@ -1,17 +1,3 @@
--- SPDX-License-Identifier: AGPL-3.0-or-later
--- D7: Sample lifecycle, Project grouping, SampleProject links, CheckoutEvent audit.
---
--- Design notes:
--- * Sample uses status = 'tombstoned' as its soft-delete sentinel (not archived_at_micros).
---   Default queries filter status != 'tombstoned'.
--- * The no-double-booking invariant is enforced by a partial unique index on
---   (box_id, position_label) for active and checked-out samples.
--- * The CHECK on box_id / position_label enforces that both are null or both are non-null.
--- * checkout_events is an append-only audit table; no UPDATE or DELETE paths exist.
--- * sample_projects is hard-deleted when a sample leaves a project (no archived_at).
--- * All foreign keys are DEFERRABLE so inserts within a transaction can arrive in any order.
---   No ON DELETE CASCADE anywhere — tombstone propagation is application-level to preserve
---   audit history of sample locations.
 
 CREATE TABLE IF NOT EXISTS projects (
   id                 TEXT    PRIMARY KEY,
@@ -56,7 +42,6 @@ CREATE INDEX IF NOT EXISTS samples_box_idx    ON samples(box_id);
 CREATE INDEX IF NOT EXISTS samples_parent_idx ON samples(parent_sample_id);
 CREATE INDEX IF NOT EXISTS samples_status_idx ON samples(status);
 
--- Core no-double-booking invariant: at most one active/checked-out sample per position.
 CREATE UNIQUE INDEX IF NOT EXISTS samples_position_unique
   ON samples(box_id, position_label)
   WHERE status IN ('active', 'checked_out') AND box_id IS NOT NULL;

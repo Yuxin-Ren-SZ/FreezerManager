@@ -41,8 +41,7 @@ target_link_libraries(
     FreezerManager::auth
     FreezerManager::audit
     FreezerManager::backup
-    FreezerManager::storage_sqlite
-    FreezerManager::storage_postgres
+    FreezerManager::storage_backend_factory
     FreezerManager::crypto
     FreezerManager::kms
   PRIVATE

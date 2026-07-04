@@ -6,7 +6,7 @@
 [![Platform](https://img.shields.io/badge/platform-Linux-blue?logo=linux)](https://kernel.org)
 [![Build](https://img.shields.io/badge/build-CMake%203.25%2B-blue?logo=cmake)](./README.md#building)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-%232088FF?logo=githubactions)](./.github/workflows)
-[![Tests](https://img.shields.io/badge/tests-1080%2B%20passing-brightgreen)](./tests)
+[![Tests](https://img.shields.io/badge/tests-1580%2B%20passing-brightgreen)](./tests)
 [![Sanitizers](https://img.shields.io/badge/sanitizers-ASan%20%7C%20UBSan%20%7C%20TSan-red)](./README.md#building)
 [![SQL](https://img.shields.io/badge/backends-SQLite%20%7C%20PostgreSQL-blue?logo=postgresql)](./README.md#storage--data-safety)
 
@@ -39,7 +39,7 @@ server that is fast, correct, and safe to operate — even without a dedicated D
 - **Full chain of custody.** Aliquot lineage, check-out/check-in with volume
   tracking, and cross-lab share requests with three-signature approval.
 - **Modern toolchain.** C++20, CMake 3.25+, Conan 2 lockfiles, clang-tidy,
-  sanitizer CI builds, and TDD throughout (1080+ tests).
+  sanitizer CI builds, and TDD throughout (1580+ tests).
 
 > **Status:** Pre-alpha — active implementation. Core domain, both reference
 > backends (SQLite + PostgreSQL), auth foundation, the audit chain, the full
@@ -85,7 +85,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ Typed query DSL — equality, range, IN-list, JSON-path predicates, pagination, soft-delete-aware filters
 - ✅ Rich backend error hierarchy — `UniqueViolation`, `SerializationFailure`, `Unavailable`, etc.
 - ✅ SQLite reference backend (dev / small labs) — WAL mode, busy-timeout, json1 extension
-- ✅ PostgreSQL reference backend (production-recommended) — connection pool, RLS policies, migrations 0001–0013, JSONB, full domain repositories; conformance + repository suites green against a live `postgres:16`
+- ✅ PostgreSQL reference backend (production-recommended) — connection pool, RLS policies, migrations 0001–0015, JSONB, full domain repositories; conformance + repository suites green against a live `postgres:16`
 - ✅ Atomic sample moves — single transaction, either both vacate + place succeed or neither does (`storage::move_sample`)
 - ✅ No-double-booking invariant — partial unique index on `(box_id, position_label)` for active samples; property-tested
 - ✅ Cross-lab referential integrity — sample foreign keys (box, item-type, container-type, parent, project, checkout-event) pinned to the owning lab; parent-lineage cycles rejected
@@ -124,12 +124,12 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - 🔲 `OidcAuthProvider` — OIDC discovery + PKCE; per-lab issuer config
 - 🔲 `LdapAuthProvider` — bind + search; configurable group → role mapping
 - 🔲 `MtlsAuthProvider` — client certs for machine/instrument clients
-- ✅ `AuthMiddleware` — 4-step RBAC gate (token → MFA → permission → lab); per-lab permission resolution; `inject_rls_vars()` sets Postgres session vars; static RPC permission registry; session expiry (12 h idle / 7 d absolute); permission-context cache (5 min TTL, invalidated on revoke **and** on `users.authz_version` bump, so role/membership downgrades take effect next request)
+- ✅ `AuthMiddleware` — 4-step RBAC gate (token → MFA → permission → lab); per-lab permission resolution; `inject_rls_vars()` sets Postgres session vars; explicit per-RPC policy registry (`RpcPolicy`: Public / SelfService / LabPermission / GlobalPermission), with a test that walks the gRPC service descriptors so no method reaches a handler without a policy; session expiry (12 h idle / 7 d absolute); permission-context cache (5 min TTL, invalidated on revoke **and** on `users.authz_version` bump, so role/membership downgrades take effect next request)
 - ✅ API-token scope enforcement — fail-closed scope parsing (`["*"]` = unrestricted); token restricted to its `lab_id`; disabled-user check on every validation
 - ⚙️ PHI field-level encryption — Sample PHI custom fields split out of the plaintext blob and AEAD-encrypted (`crypto_secretbox`) with a fresh per-record DEK wrapped by the master KEK; decrypted on read only for callers holding `phi.read`. `is_phi`∧`indexed` rejected at definition time. (Sample done; other entities 🔲)
 - ✅ `IKmsProvider` envelope KMS + keyring — `KeyringKms` holds an active KEK plus retired KEKs (records wrapped under an older KEK still decrypt during rotation); `EnvVarKms` (dev/test, `FMGR_MASTER_KEK` + `FMGR_MASTER_KEK_PREVIOUS`) and `OsKeyringKms` (production, systemd-creds `$CREDENTIALS_DIRECTORY/master_kek`). `VaultKms` 🔲
 - ✅ Key rotation — `freezerctl key rotate` re-wraps every sample's per-record DEK under the active KEK (field ciphertext untouched, no plaintext exposed); idempotent, audited. `key.rotate` permission reserved for a future online RPC
-- ✅ TLS 1.3 only (gRPC) — `TlsServerCredentials` pinned to TLS 1.3 (BoringSSL restricts to the AEAD suite set); `FileWatcherCertificateProvider` hot-reloads a rotated cert/key/CA with no dropped connections; mTLS `off｜request｜require` for machine clients (`FMGR_MTLS`); `FMGR_REQUIRE_TLS` refuses a plaintext bind in production. See [`doc/TLS.md`](./doc/TLS.md). REST-gateway TLS via `FMGR_REST_TLS_CERT`/`_KEY`
+- ✅ TLS 1.3 only (gRPC) — `TlsServerCredentials` pinned to TLS 1.3 (BoringSSL restricts to the AEAD suite set); `FileWatcherCertificateProvider` hot-reloads a rotated cert/key/CA with no dropped connections; mTLS `off｜request｜require` for machine clients (`FMGR_MTLS`); `FMGR_REQUIRE_TLS` refuses a plaintext bind in production — for **both** the gRPC listener and the REST gateway (a non-loopback REST bind must present `FMGR_REST_TLS_CERT`/`_KEY` or be bound to loopback behind a TLS-terminating proxy). Health/metrics exposure is configurable (`FMGR_HEALTH_PUBLIC`, `FMGR_METRICS_PUBLIC`; metrics private by default in production) and `/health` no longer leaks the KMS key id. See [`doc/TLS.md`](./doc/TLS.md)
 
 ### Audit
 
@@ -188,7 +188,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **D1–D9 — Domain entities** | Lab / User / Role / Freezer / Box / Sample / ShareRequest / Session entities, SQLite backend, 259 tests | ✅ Complete |
 | **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
 | **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3) | ✅ Complete |
-| **C5 — PostgreSQL backend** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0013 + RLS policies + full domain repositories; conformance + repository suites green against live `postgres:16` in CI | ✅ Complete |
+| **C5 — PostgreSQL backend** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0015 + RLS policies + full domain repositories; conformance + repository suites green against live `postgres:16` in CI | ✅ Complete |
 | **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅, freezer/box/item-type `list` + `inspect` ✅, CLI `create` nouns (6 entities) ✅, non-sample CSV import (item-type/box/custom-field-def/user) ✅ | ✅ Complete |
 | **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots | ✅ Complete |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |

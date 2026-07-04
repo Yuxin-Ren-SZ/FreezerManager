@@ -131,7 +131,7 @@ namespace fmgr::core {
         return;
       }
       try {
-        Uuid::parse(value.get<std::string>());
+        [[maybe_unused]] const auto parsed = Uuid::parse(value.get<std::string>());
       } catch (const std::invalid_argument&) {
         errors.push_back({.key = key, .message = "reference value is not a valid UUID"});
       }

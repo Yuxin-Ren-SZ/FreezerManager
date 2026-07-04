@@ -1,9 +1,3 @@
--- SPDX-License-Identifier: AGPL-3.0-or-later
--- D6: ItemType hierarchy + CustomFieldDefinition catalog.
--- ItemType uses an adjacency-list tree per lab; cycle prevention is enforced at the
--- application layer (not via a DB trigger) on the SQLite backend.
--- CustomFieldDefinition key uniqueness is per (lab, scope, item_type_or_global, key);
--- COALESCE(item_type_id, '') treats NULL as a consistent sentinel since '' is not a UUID.
 
 CREATE TABLE IF NOT EXISTS item_types (
   id                 TEXT    PRIMARY KEY,

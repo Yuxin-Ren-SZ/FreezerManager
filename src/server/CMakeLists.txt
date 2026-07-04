@@ -16,6 +16,7 @@ add_library(freezermanager_server_lib STATIC
   BackupScheduler.cc
   FreezerServer.cc
   MetricsInterceptor.cc
+  PageToken.cc
   RateLimitInterceptor.cc
   # CSV export/import reused from the CLI: ExportSamplesCsv / ImportSamples share
   # the exact column model and validation as `freezerctl sample export|import`.
@@ -53,4 +54,4 @@ target_link_libraries(freezerd
   PRIVATE
     FreezerManager::server_lib
     FreezerManager::rest
-    FreezerManager::storage_sqlite)
+    FreezerManager::storage_backend_factory)

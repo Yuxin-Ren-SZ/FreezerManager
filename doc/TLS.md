@@ -17,10 +17,25 @@ document covers the **gRPC** side.
 |----------|---------|---------|
 | `FMGR_TLS_CERT` | Path to the server certificate (PEM). Empty ⇒ plaintext dev mode. | *(empty)* |
 | `FMGR_TLS_KEY` | Path to the server private key (PEM). | *(empty)* |
-| `FMGR_REQUIRE_TLS` | `1`/`true` ⇒ abort startup rather than bind plaintext when cert/key are unset. | off |
+| `FMGR_REQUIRE_TLS` | `1`/`true` ⇒ abort startup rather than bind plaintext. Applies to **both** the gRPC listener and the REST gateway (see below). | off |
 | `FMGR_MTLS` | Client-certificate policy: `off` \| `request` \| `require`. | `off` |
 | `FMGR_TLS_CLIENT_CA` | CA bundle (PEM) used to verify client certs. Required when `FMGR_MTLS=require`. | *(empty)* |
 | `FMGR_TLS_RELOAD_SEC` | Poll interval (seconds) for hot-reloading cert/key/CA from disk. | `5` |
+| `FMGR_REST_TLS_CERT` / `FMGR_REST_TLS_KEY` | REST gateway certificate/key (PEM). Both or neither; setting one alone aborts startup. | *(empty)* |
+| `FMGR_HEALTH_PUBLIC` | `1`/`true` ⇒ the detailed `/api/v1/health` readiness report is served unauthenticated. Shallow liveness (`/healthz`, `/livez`) is always public. | `true` |
+| `FMGR_METRICS_PUBLIC` | `1`/`true` ⇒ `/metrics` is served unauthenticated. | `true` dev / `false` when `FMGR_REQUIRE_TLS` |
+
+### REST TLS enforcement (`FMGR_REQUIRE_TLS`)
+
+Under `FMGR_REQUIRE_TLS`, the REST gateway must not serve bearer-token endpoints
+as plaintext on a public interface. `freezerd` aborts at startup unless one holds:
+
+- `FMGR_REST_TLS_CERT` **and** `FMGR_REST_TLS_KEY` are set (REST serves TLS), or
+- `FMGR_REST_LISTEN` binds a loopback host (`127.0.0.1`, `::1`, `localhost`) — the
+  intended reverse-proxy model, where the proxy terminates TLS.
+
+When an operational endpoint is not public (per the flags above) it requires a
+valid, MFA-complete bearer token, returning `401` otherwise.
 
 ### mTLS modes (`FMGR_MTLS`)
 

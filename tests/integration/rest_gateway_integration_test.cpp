@@ -26,6 +26,9 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
+#include "support/FastAuth.h"
+#include "support/RegisterRepositories.h"
+#include "support/TempSqliteDb.h"
 
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
@@ -43,7 +46,6 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
-#include <filesystem>
 #include <functional>
 #include <memory>
 #include <string>
@@ -52,13 +54,6 @@
 
 namespace fmgr::test {
   namespace {
-
-    [[nodiscard]] auth::LocalAuthProviderConfig fast_config() {
-      auth::LocalAuthProviderConfig cfg;
-      cfg.pwhash_memlimit = 8192;
-      cfg.pwhash_opslimit = 1;
-      return cfg;
-    }
 
     // Ask the OS for a free loopback TCP port, then hand it to Drogon. A tiny
     // race window exists between close() and Drogon's bind(), acceptable here.
@@ -96,14 +91,13 @@ namespace fmgr::test {
 
       void SetUp() override {
         instance = this;
-        db_path_ = std::filesystem::temp_directory_path() / "fmgr-rest-it.db";
-        remove_db();
+        db_ = std::make_unique<TempSqliteDb>("fmgr-rest-it");
 
         backend_ = std::make_unique<storage::SqliteBackend>(
-            storage::SqliteBackendOptions{.database_path = db_path_.string()});
-        register_all_repositories(*backend_);
+            storage::SqliteBackendOptions{.database_path = db_->string()});
+        register_all_sqlite_repositories(*backend_);
         backend_->migrate_to_latest();
-        provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_config());
+        provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_auth_config());
         seed();
 
         server_opts_.listen_address = "localhost:0";
@@ -131,6 +125,7 @@ namespace fmgr::test {
             .kms = [] { return obs::DepStatus::disabled("no KEK in test"); },
             .backup = [] { return obs::DepStatus::disabled("no backup dir in test"); },
         });
+        gateway_->register_liveness();
         gateway_->register_metrics();
 
         port_ = find_free_port();
@@ -155,31 +150,10 @@ namespace fmgr::test {
         server_.reset();
         provider_.reset();
         backend_.reset();
-        remove_db();
+        db_.reset();
       }
 
     private:
-      static void register_all_repositories(storage::SqliteBackend& b) {
-        storage::register_identity_repositories(b);
-        storage::register_role_repositories(b);
-        storage::register_session_repositories(b);
-        storage::register_login_attempt_repositories(b);
-        storage::register_audit_repositories(b);
-        storage::register_box_geometry_repositories(b);
-        storage::register_box_repositories(b);
-        storage::register_item_type_repositories(b);
-        storage::register_layout_repositories(b);
-        storage::register_sample_repositories(b);
-        storage::register_share_request_repositories(b);
-      }
-
-      void remove_db() {
-        std::error_code errc;
-        std::filesystem::remove(db_path_, errc);
-        std::filesystem::remove(std::filesystem::path(db_path_.string() + "-wal"), errc);
-        std::filesystem::remove(std::filesystem::path(db_path_.string() + "-shm"), errc);
-      }
-
       void seed() {
         const auto hash = provider_->hash_password(kPassword);
         const core::LabId lab_id = core::LabId::parse(kLabId);
@@ -230,7 +204,7 @@ namespace fmgr::test {
         txn->commit();
       }
 
-      std::filesystem::path db_path_;
+      std::unique_ptr<TempSqliteDb> db_;
       std::unique_ptr<storage::SqliteBackend> backend_;
       std::unique_ptr<auth::LocalAuthProvider> provider_;
       server::FreezerServerOptions server_opts_;
