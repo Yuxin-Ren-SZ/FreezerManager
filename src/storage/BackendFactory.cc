@@ -33,6 +33,9 @@
 namespace fmgr::storage {
   namespace {
 
+    // Params are distinct and always passed as named locals at the single call
+    // site, so the swappable-parameters lint is a false positive here.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     void verify_under_data_dir(const std::string& sqlite_path, const std::string& data_dir) {
       namespace fs = std::filesystem;
       std::error_code error;

@@ -34,7 +34,7 @@ namespace {
     crypto_generichash(hash.data(), hash.size(),
                        reinterpret_cast<const unsigned char*>(data.data()), data.size(), nullptr,
                        0);
-    static constexpr char k[] = "0123456789abcdef";
+    static constexpr std::string_view k = "0123456789abcdef";
     std::string hex;
     for (unsigned char b : hash) {
       hex.push_back(k[b >> 4]);

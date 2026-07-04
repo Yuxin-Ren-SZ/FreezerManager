@@ -418,8 +418,7 @@ namespace fmgr::test {
 
       [[nodiscard]] std::string read_pem(const char* name) {
         std::ifstream file(tls_fixture(name), std::ios::binary);
-        return std::string((std::istreambuf_iterator<char>(file)),
-                           std::istreambuf_iterator<char>());
+        return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
       }
 
       // A TLS-enabled FreezerServer plus its backing store and one seeded
