@@ -1,5 +1,61 @@
 # TODO — Implementation Backlog
 
+## Handoff note — 2026-07-18, M3.5 slice 1 (gRPC TLS, C-9)
+
+Closes the deployment blocker: `FreezerServer::build()` no longer throws
+"TLS not yet implemented", so the server can bind a non-loopback address
+without putting bearer tokens and PHI on the wire.
+
+**Server (`src/server/`):**
+- `FreezerServer.cc` — `grpc::SslServerCredentials` with the cert/key PEMs;
+  `tls_client_ca_path` switches the listener to
+  `GRPC_SSL_REQUEST_AND_REQUIRE_CLIENT_CERTIFICATE_AND_VERIFY` (mTLS).
+  `read_pem_or_throw` treats missing / unreadable / empty PEM files as fatal.
+  Two new config guards: half-configured TLS (cert without key or vice versa)
+  and a client CA without a server cert both throw `std::invalid_argument`.
+- `FreezerServer.cc` — `build()` now also throws when `bound_port_ == 0` after
+  `BuildAndStart()`. gRPC signals a failed bind that way rather than returning
+  a null server, and **malformed** PEM content fails inside the credentials
+  (not at read time), so this is what turns a corrupt certificate into a
+  startup failure instead of a server listening on nothing.
+- `main.cc` — `FMGR_TLS_CLIENT_CA`; `FMGR_ENV=production` without
+  `FMGR_REQUIRE_TLS=1` logs `tls.production_guard` and exits 1 (PRD F4). Env
+  handling extracted to `apply_tls_env()` to stay under the clang-tidy
+  cognitive-complexity budget for `main`.
+
+**Qt client (`src/qt/`):** `TlsOptions{enabled, rootCaPath}` on `GrpcChannel`;
+empty `rootCaPath` = system trust store. An unreadable CA bundle fails
+`connect()` (returns false, channel left null) instead of downgrading to an
+insecure channel; `MainWindow` surfaces that as an error dialog. Persisted as
+`server/use_tls` + `server/tls_root_ca` in `ConfigManager`.
+
+**Tests:** `tests/integration/grpc_tls_test.cpp` (12) mints a throwaway
+self-signed cert through the OpenSSL API — no fixture files, no `openssl`
+binary on PATH. Covers TLS↔TLS RPC, plaintext↔TLS in both directions,
+missing / empty / corrupt cert, mismatched key, half-config, client-CA
+misconfig, and mTLS accept + reject-without-client-cert.
+`tests/unit/qt_grpc_channel_test.cpp` (+5) covers the client's no-fallback
+behavior.
+
+Verification: `cmake --build --preset dev` clean; `ctest --preset dev -j1` —
+**1577/1577 pass** (the 12 baseline failures quoted in older handoff notes are
+gone); `clang-tidy-17` clean on changed sources; `clang-format-17` clean.
+Manual: `freezerd` with a self-signed cert logs `tls.enabled`,
+`openssl s_client -alpn h2` reports `Verify return code: 0 (ok)`, a
+plaintext HTTP/2 probe fails, and `FMGR_ENV=production` without
+`FMGR_REQUIRE_TLS` refuses to start.
+
+**Known limitations / follow-ups:**
+- REST gateway TLS is configured separately (`main.cc`); with only the gRPC
+  vars set, REST still logs "REST (plaintext) listening". Worth a matching
+  production guard.
+- No explicit TLS-1.3-only / cipher-suite policy yet — gRPC defaults apply.
+- mTLS authenticates the channel only; client-cert identity is not mapped to
+  a user, so bearer tokens remain the caller identity.
+- The Qt desktop client was not driven against a TLS server end-to-end (no
+  display in the dev environment); coverage there is the headless channel
+  tests.
+
 ## Quality review — 2026-07-01 (test coverage audit + Claude review)
 
 Full audit: `doc/TEST_COVERAGE_AUDIT_2026-07-01.md`
@@ -66,7 +122,7 @@ the review doc.
 
 | ID | Sev | Area | Anchor | Fix sketch | Target |
 |----|-----|------|--------|-----------|--------|
-| C-9 | **Critical** | Server | `FreezerServer.cc:102` | Implement TLS cert loading (path is an active `throw`, not a stub). Qt client is also `InsecureChannelCredentials()` (`GrpcChannel.cc:16`). **Pre-deployment blocker for any non-loopback bind.** | M3.5 slice 1; gate remote deploy |
+| C-9 | **Critical** | Server | `FreezerServer.cc:138` | ✅ **Done** — M3.5 slice 1: `SslServerCredentials` + optional mTLS; unreadable/malformed cert material aborts startup, no insecure fallback. Qt client has `TlsOptions`. | — |
 | C-1 | High | Auth | `LocalAuthProvider.cc:752` | Lockout map is in-memory, resets on restart → persist failed-attempt state (DB table + TTL) or external limiter. | first prod tag (M3.5/M4) |
 | C-7 | High | Audit | `CanonicalJson.cc:13` | Canonical JSON not RFC 8785; nlohmann version drift can break the audit chain. Pin algorithm + CI golden-vector test, or implement JCS. | before 1.0 (M7) |
 | C-3 | Medium | Auth | `LocalAuthProvider.cc:272` | `totp_secret_enc` stored/used plaintext despite `_enc`. Encrypt under master KEK via existing `FieldCipher`. | M5 |

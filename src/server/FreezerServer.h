@@ -30,9 +30,16 @@ namespace fmgr::server {
   struct FreezerServerOptions {
     // Listening address, e.g. "0.0.0.0:50051".
     std::string listen_address{"0.0.0.0:50051"};
-    // If empty, server starts without TLS (dev mode only).
+    // If empty, server starts without TLS (dev mode only). Both must be set
+    // together: a cert without a key (or vice versa) is a misconfiguration and
+    // build() throws rather than silently falling back to a plaintext listener.
     std::string tls_cert_path;
     std::string tls_key_path;
+    // Optional mTLS: PEM bundle of CAs trusted to sign *client* certificates.
+    // When set, build() requires and verifies a client certificate on every
+    // connection. Left empty, clients are not authenticated at the TLS layer
+    // (bearer tokens remain the only caller identity).
+    std::string tls_client_ca_path;
     // Production safety guard: when true, build() refuses to start a plaintext
     // server. A misconfiguration that drops TLS (missing cert/key paths) then
     // fails loudly at startup instead of silently exposing bearer tokens and
