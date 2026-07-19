@@ -31,9 +31,9 @@ parameter-swap bug (`93d3b3c`) to pass 1488 tests undetected.
 
 ### Remaining gaps (from Claude review)
 
-- 🔴 **LabTreeModel recursion has no cycle guard** — `buildContainers` can
-  infinite-recursively overflow stack. Need depth guard or visited set.
-  Real bug, not just test gap.
+- ✅ **LabTreeModel recursion cycle guard** — fixed in `2afb49b`: depth limit
+  (`LabTreeModel.cc:34`) + visited set (`LabTreeModel.cc:48-56`); regression
+  tests at `tests/unit/qt_lab_tree_model_test.cpp:55,281`.
 - 🟡 `BoxGridWidget::savePdf()` blocks on `QFileDialog::getSaveFileName()`
   — not unit-testable without an `ISaveDialog` seam. Accepted limitation.
 - 🟡 `BarcodeScanController::processScan` whitespace-only trim: behavior
@@ -66,13 +66,14 @@ the review doc.
 
 | ID | Sev | Area | Anchor | Fix sketch | Target |
 |----|-----|------|--------|-----------|--------|
-| C-9 | **Critical** | Server | `FreezerServer.cc:68` | Implement TLS cert loading (path is an active `throw`, not a stub). **Pre-deployment blocker for any non-loopback bind.** | M5; gate remote deploy |
+| C-9 | **Critical** | Server | `FreezerServer.cc:102` | Implement TLS cert loading (path is an active `throw`, not a stub). Qt client is also `InsecureChannelCredentials()` (`GrpcChannel.cc:16`). **Pre-deployment blocker for any non-loopback bind.** | M3.5 slice 1; gate remote deploy |
 | C-1 | High | Auth | `LocalAuthProvider.cc:752` | Lockout map is in-memory, resets on restart → persist failed-attempt state (DB table + TTL) or external limiter. | first prod tag (M3.5/M4) |
 | C-7 | High | Audit | `CanonicalJson.cc:13` | Canonical JSON not RFC 8785; nlohmann version drift can break the audit chain. Pin algorithm + CI golden-vector test, or implement JCS. | before 1.0 (M7) |
 | C-3 | Medium | Auth | `LocalAuthProvider.cc:272` | `totp_secret_enc` stored/used plaintext despite `_enc`. Encrypt under master KEK via existing `FieldCipher`. | M5 |
-| C-10 | Medium | Server | `FreezerServer.cc` build / no cap | No gRPC inbound message cap → set `ResourceQuota`/`MaxReceiveMessageSize` on `ServerBuilder`, configurable via `FreezerServerOptions` (~10 MiB default). | M3.5 (DoS) |
-| C-11 | Medium | Server | `GrpcErrorTranslation.h` | `INTERNAL` may leak raw error text (schema probing). Mask in prod, log real error server-side. | M3.5 |
-| C-12 | Low | Server | `SampleServiceImpl.cc:47` | `request_id = ""`. Extract `x-request-id` from gRPC metadata → `MutationContext::request_id`. | M3.5 (§17 obs) |
+| C-10 | Medium | Server | `FreezerServer.cc:74` | **Partially done** — `SetMaxReceiveMessageSize` is in place (10 MiB default, `FreezerServer.h:49`). Remaining: `ResourceQuota` misuse (see C-13) and no `SetMaxSendMessageSize`. | M3.5 slice 2 |
+| C-13 | Medium | Server | `FreezerServer.cc:76` | **New.** `quota.SetMaxThreads(max_receive_message_bytes / 4096)` derives a *thread count* from a *byte count* — 10 MiB/4096 = 2560 threads, and the memory pool is never bounded. Use `SetMaxMemorySize` for bytes; add a separate `max_grpc_threads` option. | M3.5 slice 2 |
+| C-11 | Medium | Server | `GrpcErrorTranslation.h` | ✅ **Done** — masking at `GrpcErrorTranslation.h:28-35`, wired via `FreezerServer.cc:81`. | — |
+| C-12 | Low | Server | `SampleServiceImpl.cc:47` | ✅ **Done** — all 9 services call `request_id_from(ctx)` (`RequestId.h:24`). | — |
 | C-2 | Low | Auth | `validate_token()` | Sessions not IP/UA-bound; no replay detection. Optional IP-binding, off by default (NAT-friendly). | backlog / v2 |
 | C-4 | Low | Auth | `SampleServiceImpl.cc:541` | `SoftDeleteSample` two-phase authz bypasses the RPC-registry test. Register a wildcard perm or add `authorize_entity` middleware. | M3.5 |
 | C-6 | Low | KMS | `KeyringKms.h:43` | Raw KEK bytes in `std::vector`, no mlock. Wrap in `SecureBuffer` (`sodium_mlock`/`memzero`, optional `mprotect`). | M5 |
@@ -1841,9 +1842,11 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
       through `PhiString`. CI lint forbids `fmt::format` of `PhiString`.
 
 - [ ] **H5. Backup runner.**
-  - [ ] **H5.1.** Postgres path: `pg_basebackup` baseline + WAL
-        archiving for PITR. Encrypt with backup key (separate from
-        master key) using libsodium streaming API.
+  - [x] **H5.1.** Postgres path: encrypted logical `pg_dump`
+        (`src/backup/PostgresDump.cc`, dispatched at
+        `BackupRunner.cc:97`). Encrypted with the backup key (separate
+        from master key) via the libsodium streaming API. (`pg_basebackup`
+        + WAL archiving for PITR remains a documented-runbook follow-up.)
   - [x] **H5.2.** SQLite path: `sqlite3_backup` hot copy + nightly
         rotation. Same encryption. (In-server `BackupScheduler` thread
         drives `backup::run_backup_tick`: create-if-due + GFS retention
