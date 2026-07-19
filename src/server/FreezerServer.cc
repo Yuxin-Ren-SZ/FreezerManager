@@ -102,11 +102,17 @@ namespace fmgr::server {
 
     grpc::ServerBuilder builder;
 
-    // Message-size cap (C-10 DoS): reject oversized frames before buffering.
-    // Paired with a ResourceQuota that bounds the process-wide buffer pool.
+    // Message-size caps (C-10 DoS): reject oversized frames before buffering,
+    // in both directions.
     builder.SetMaxReceiveMessageSize(static_cast<int>(opts_.max_receive_message_bytes));
+    builder.SetMaxSendMessageSize(static_cast<int>(opts_.max_send_message_bytes));
+
+    // ResourceQuota bounds the process-wide buffer pool (bytes) and the gRPC
+    // thread count (a count) — two independent limits, from two independent
+    // options. See C-13: deriving one from the other is a unit error.
     grpc::ResourceQuota quota;
-    quota.SetMaxThreads(static_cast<int>(opts_.max_receive_message_bytes) / 4096);
+    quota.Resize(static_cast<std::size_t>(opts_.max_grpc_memory_bytes));
+    quota.SetMaxThreads(opts_.max_grpc_threads);
     builder.SetResourceQuota(quota);
 
     // Process-wide error masking (C-11 infoleak): when enabled, INTERNAL errors

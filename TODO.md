@@ -126,8 +126,8 @@ the review doc.
 | C-1 | High | Auth | `LocalAuthProvider.cc:752` | Lockout map is in-memory, resets on restart → persist failed-attempt state (DB table + TTL) or external limiter. | first prod tag (M3.5/M4) |
 | C-7 | High | Audit | `CanonicalJson.cc:13` | Canonical JSON not RFC 8785; nlohmann version drift can break the audit chain. Pin algorithm + CI golden-vector test, or implement JCS. | before 1.0 (M7) |
 | C-3 | Medium | Auth | `LocalAuthProvider.cc:272` | `totp_secret_enc` stored/used plaintext despite `_enc`. Encrypt under master KEK via existing `FieldCipher`. | M5 |
-| C-10 | Medium | Server | `FreezerServer.cc:74` | **Partially done** — `SetMaxReceiveMessageSize` is in place (10 MiB default, `FreezerServer.h:49`). Remaining: `ResourceQuota` misuse (see C-13) and no `SetMaxSendMessageSize`. | M3.5 slice 2 |
-| C-13 | Medium | Server | `FreezerServer.cc:76` | **New.** `quota.SetMaxThreads(max_receive_message_bytes / 4096)` derives a *thread count* from a *byte count* — 10 MiB/4096 = 2560 threads, and the memory pool is never bounded. Use `SetMaxMemorySize` for bytes; add a separate `max_grpc_threads` option. | M3.5 slice 2 |
+| C-10 | Medium | Server | `FreezerServer.cc:105` | ✅ **Done** — M3.5 slice 2: receive **and** send caps (10 MiB each), plus a byte-bounded `ResourceQuota`. | — |
+| C-13 | Medium | Server | `FreezerServer.cc:111` | ✅ **Done** — M3.5 slice 2: `quota.Resize(max_grpc_memory_bytes)` (512 MiB) for the pool, `max_grpc_threads` (64) for threads. Regression test asserts the thread default does not move with the message cap. | — |
 | C-11 | Medium | Server | `GrpcErrorTranslation.h` | ✅ **Done** — masking at `GrpcErrorTranslation.h:28-35`, wired via `FreezerServer.cc:81`. | — |
 | C-12 | Low | Server | `SampleServiceImpl.cc:47` | ✅ **Done** — all 9 services call `request_id_from(ctx)` (`RequestId.h:24`). | — |
 | C-2 | Low | Auth | `validate_token()` | Sessions not IP/UA-bound; no replay detection. Optional IP-binding, off by default (NAT-friendly). | backlog / v2 |

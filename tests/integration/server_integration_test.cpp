@@ -387,6 +387,56 @@ namespace fmgr::test {
       EXPECT_EQ(server.bound_port(), 0);
     }
 
+    // Security audit C-13: the ResourceQuota limits are a byte budget and a
+    // thread budget, and neither may be derived from the other. The thread
+    // default in particular must not move when the message-size cap changes.
+    TEST(FreezerServerResourceLimits, ThreadCountIsIndependentOfMessageSize) {
+      const server::FreezerServerOptions defaults;
+      EXPECT_EQ(defaults.max_grpc_threads, 64);
+
+      server::FreezerServerOptions bigger_messages;
+      bigger_messages.max_receive_message_bytes = std::size_t{64} * 1024 * 1024;
+      EXPECT_EQ(bigger_messages.max_grpc_threads, defaults.max_grpc_threads);
+
+      // The memory pool is bounded, and bounded in bytes.
+      EXPECT_EQ(defaults.max_grpc_memory_bytes, std::size_t{512} * 1024 * 1024);
+      // Both directions are capped, not just receive.
+      EXPECT_EQ(defaults.max_send_message_bytes, defaults.max_receive_message_bytes);
+    }
+
+    // A request larger than the inbound cap is rejected by gRPC itself, before
+    // the payload is buffered or any handler runs.
+    TEST(FreezerServerResourceLimits, OversizedRequestIsRejected) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      backend.migrate_to_latest();
+      auth::LocalAuthProvider provider(backend, fast_config());
+
+      server::FreezerServerOptions opts;
+      opts.listen_address = "localhost:0";
+      opts.max_receive_message_bytes = 4096;
+
+      server::FreezerServer server(backend, provider, std::move(opts));
+      server.build();
+      std::thread server_thread([&server] { server.wait(); });
+
+      const std::string addr = "localhost:" + std::to_string(server.bound_port());
+      auto stub = fmgr::v1::AuthService::NewStub(
+          grpc::CreateChannel(addr, grpc::InsecureChannelCredentials()));
+
+      grpc::ClientContext ctx;
+      fmgr::v1::LoginRequest req;
+      req.set_email(std::string(64 * 1024, 'a') + "@example.com");
+      req.set_password("irrelevant");
+      fmgr::v1::LoginResponse resp;
+      const auto status = stub->Login(&ctx, req, &resp);
+
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED);
+
+      server.shutdown();
+      server_thread.join();
+    }
+
     // Security audit H-3: the error funnel must log internal detail server-side
     // (now via spdlog) but never leak it to the client-facing status message.
     TEST(GrpcErrorTranslation, UnknownExceptionMapsToGenericInternalWithoutLeak) {
