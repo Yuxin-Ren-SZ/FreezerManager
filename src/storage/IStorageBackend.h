@@ -399,7 +399,8 @@ namespace fmgr::storage {
   // sample lookup that accepts either a name fragment or a barcode fragment.
   template <typename Entity>
   [[nodiscard]] Predicate<Entity>
-  contains_ci_any(std::vector<typename EntityTraits<Entity>::Field> fields, std::string_view needle) {
+  contains_ci_any(std::vector<typename EntityTraits<Entity>::Field> fields,
+                  std::string_view needle) {
     if (fields.empty()) {
       throw ConstraintViolation("contains_ci_any requires at least one field");
     }

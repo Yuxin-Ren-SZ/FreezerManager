@@ -238,8 +238,7 @@ namespace fmgr::storage::detail {
           if (index != 0) {
             clause += " OR ";
           }
-          clause +=
-              dialect.contains_ci(column_name(predicate.fields.at(index)), needle, params);
+          clause += dialect.contains_ci(column_name(predicate.fields.at(index)), needle, params);
         }
         if (predicate.fields.size() > 1) {
           clause = "(" + clause + ")";

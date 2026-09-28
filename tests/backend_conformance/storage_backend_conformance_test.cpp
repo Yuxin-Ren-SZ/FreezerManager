@@ -702,7 +702,7 @@ namespace fmgr::storage {
       // in both directions.
       const auto suffix =
           query_repository.query(Query<ConformanceSample>::where(contains_ci(
-              field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "a-")));
+              field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "pha-")));
       ASSERT_EQ(suffix.size(), 1U);
       EXPECT_EQ(suffix.front().name, "Alpha-1");
 
