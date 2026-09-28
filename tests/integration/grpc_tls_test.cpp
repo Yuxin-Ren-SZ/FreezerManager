@@ -72,9 +72,10 @@ namespace fmgr::test {
 
     // Generates a 2048-bit RSA self-signed certificate into `dir`.
     // Time offsets are seconds from now (negative = past, used for expired-cert tests).
-    [[nodiscard]] SelfSignedCert make_self_signed_cert(
-        const std::filesystem::path& dir, const std::string& common_name,
-        long not_before_offset_sec = 0, long not_after_offset_sec = 60L * 60L) {
+    [[nodiscard]] SelfSignedCert make_self_signed_cert(const std::filesystem::path& dir,
+                                                       const std::string& common_name,
+                                                       long not_before_offset_sec = 0,
+                                                       long not_after_offset_sec = 60L * 60L) {
       std::filesystem::create_directories(dir);
       EVP_PKEY* pkey = EVP_RSA_gen(2048);
       if (pkey == nullptr) {
@@ -201,12 +202,14 @@ namespace fmgr::test {
 
       FILE* cert_file = std::fopen(out.cert_path.string().c_str(), "wb");
       const bool cert_ok = cert_file != nullptr && PEM_write_X509(cert_file, cert) == 1;
-      if (cert_file != nullptr) std::fclose(cert_file);
+      if (cert_file != nullptr)
+        std::fclose(cert_file);
       FILE* key_file = std::fopen(out.key_path.string().c_str(), "wb");
       const bool key_ok =
           key_file != nullptr &&
           PEM_write_PrivateKey(key_file, pkey, nullptr, nullptr, 0, nullptr, nullptr) == 1;
-      if (key_file != nullptr) std::fclose(key_file);
+      if (key_file != nullptr)
+        std::fclose(key_file);
 
       X509_free(cert);
       EVP_PKEY_free(pkey);
@@ -485,8 +488,7 @@ namespace fmgr::test {
       const auto target = start_server(std::move(opts));
       // Wait for the handshake to actually fail — Insecure channel to an
       // expired-cert server will eventually get RST or timeout.
-      const auto status =
-          try_login(grpc::CreateChannel(target, client_creds()));
+      const auto status = try_login(grpc::CreateChannel(target, client_creds()));
       EXPECT_FALSE(status.ok()) << "expired cert should be rejected at handshake, got: "
                                 << status.error_message();
     }
@@ -502,8 +504,7 @@ namespace fmgr::test {
 
       grpc::SslCredentialsOptions ssl;
       ssl.pem_root_certs = read_file(wrong.cert_path);
-      const auto status =
-          try_login(grpc::CreateChannel(target, grpc::SslCredentials(ssl)));
+      const auto status = try_login(grpc::CreateChannel(target, grpc::SslCredentials(ssl)));
       EXPECT_FALSE(status.ok());
     }
 
@@ -558,8 +559,7 @@ namespace fmgr::test {
       threads.reserve(kClients);
       for (int i = 0; i < kClients; ++i) {
         threads.emplace_back([this, &target, &successes] {
-          const auto status =
-              try_login(grpc::CreateChannel(target, client_creds()));
+          const auto status = try_login(grpc::CreateChannel(target, client_creds()));
           if (status.ok()) {
             ++successes;
           }
@@ -584,8 +584,7 @@ namespace fmgr::test {
 
       grpc::SslCredentialsOptions ssl;
       ssl.pem_root_certs = read_file(ec.cert_path);
-      const auto status =
-          try_login(grpc::CreateChannel(target, grpc::SslCredentials(ssl)));
+      const auto status = try_login(grpc::CreateChannel(target, grpc::SslCredentials(ssl)));
       EXPECT_TRUE(status.ok()) << status.error_message();
     }
 
@@ -602,13 +601,12 @@ namespace fmgr::test {
       const auto target = start_server(std::move(opts));
 
       grpc::SslCredentialsOptions ssl;
-      ssl.pem_root_certs = read_file(cert_.cert_path);         // verify server
-      ssl.pem_private_key = read_file(unrelated_ca.key_path);  // client cert = CA-B's key
-      ssl.pem_cert_chain = read_file(unrelated_ca.cert_path);  // client cert = CA-B's cert
-      const auto status =
-          try_login(grpc::CreateChannel(target, grpc::SslCredentials(ssl)));
+      ssl.pem_root_certs = read_file(cert_.cert_path);        // verify server
+      ssl.pem_private_key = read_file(unrelated_ca.key_path); // client cert = CA-B's key
+      ssl.pem_cert_chain = read_file(unrelated_ca.cert_path); // client cert = CA-B's cert
+      const auto status = try_login(grpc::CreateChannel(target, grpc::SslCredentials(ssl)));
       EXPECT_FALSE(status.ok());
     }
 
-  }  // namespace
-}  // namespace fmgr::test
+  } // namespace
+} // namespace fmgr::test

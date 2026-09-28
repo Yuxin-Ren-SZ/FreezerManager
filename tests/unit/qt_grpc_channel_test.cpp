@@ -118,8 +118,7 @@ namespace {
   // must work — the failure must not leave the channel in a permanently broken
   // state.  The caller might retry with a corrected config.
   TEST(GrpcChannelTest, PlaintextConnectWorksAfterFailedTls) {
-    const auto missing =
-        std::filesystem::temp_directory_path() / "fmgr-no-such-ca-bundle.2.pem";
+    const auto missing = std::filesystem::temp_directory_path() / "fmgr-no-such-ca-bundle.2.pem";
     std::filesystem::remove(missing);
 
     {
