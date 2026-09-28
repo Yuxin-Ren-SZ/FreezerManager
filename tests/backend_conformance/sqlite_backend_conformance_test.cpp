@@ -764,24 +764,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_sqlite_conformance_sample_active_position
 
       transaction = backend().begin(IsolationLevel::Serializable);
       auto& query_repository = transaction->repo<SqliteConformanceSample>();
-      const auto matches =
-          query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
-              field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
-              "PHa")));
+      const auto matches = query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
+          field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
+          "PHa")));
       ASSERT_EQ(matches.size(), 1U);
       EXPECT_EQ(matches.front().name, "Alpha-1");
 
-      const auto suffix =
-          query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
-              field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
-              "pha-")));
+      const auto suffix = query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
+          field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
+          "pha-")));
       ASSERT_EQ(suffix.size(), 1U);
       EXPECT_EQ(suffix.front().name, "Alpha-1");
 
-      const auto upper =
-          query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
-              field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
-              "gamma")));
+      const auto upper = query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
+          field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
+          "gamma")));
       ASSERT_EQ(upper.size(), 1U);
       EXPECT_EQ(upper.front().name, "GAMMA-3");
     }
@@ -799,16 +796,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_sqlite_conformance_sample_active_position
       auto& query_repository = transaction->repo<SqliteConformanceSample>();
       const auto by_position = query_repository.query(
           Query<SqliteConformanceSample>::where(contains_ci_any<SqliteConformanceSample>(
-              {SqliteConformanceSample::Field::Name,
-               SqliteConformanceSample::Field::PositionLabel},
+              {SqliteConformanceSample::Field::Name, SqliteConformanceSample::Field::PositionLabel},
               "a71")));
       ASSERT_EQ(by_position.size(), 1U);
       EXPECT_EQ(by_position.front().name, "two");
 
       const auto by_name = query_repository.query(
           Query<SqliteConformanceSample>::where(contains_ci_any<SqliteConformanceSample>(
-              {SqliteConformanceSample::Field::Name,
-               SqliteConformanceSample::Field::PositionLabel},
+              {SqliteConformanceSample::Field::Name, SqliteConformanceSample::Field::PositionLabel},
               "ONE")));
       ASSERT_EQ(by_name.size(), 1U);
       EXPECT_EQ(by_name.front().name, "one");

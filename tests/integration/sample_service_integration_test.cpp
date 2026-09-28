@@ -818,8 +818,8 @@ namespace fmgr::test {
 
       // The needle only exists in a custom field and in the PHI-tagged field, so
       // neither the search nor a wider query may surface the row.
-      for (const std::string& needle : {std::string("needle"), std::string("xyz"),
-                                        std::string("abc")}) {
+      for (const std::string& needle :
+           {std::string("needle"), std::string("xyz"), std::string("abc")}) {
         grpc::ClientContext ctx;
         set_bearer(ctx, token);
         fmgr::v1::ListSamplesRequest req;
