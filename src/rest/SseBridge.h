@@ -11,6 +11,13 @@
 // frame) therefore execute serialized on the loop thread; the worker thread
 // only touches the gRPC reader, the (thread-safe) `ClientContext::TryCancel`,
 // and the atomic liveness flag.
+//
+// Shutdown: the worker can outlive the IO loop (a Read parked on a watch
+// stream is only released when the gRPC server shuts down, which freezerd does
+// after drogon::app().run() returns). So the worker never holds the raw loop
+// pointer; it posts through a per-loop SseLoopGuard whose runOnQuit hook
+// disarms it — and cancels and releases every live stream — while the loop
+// still exists.
 #ifndef FMGR_REST_SSEBRIDGE_H
 #define FMGR_REST_SSEBRIDGE_H
 
@@ -23,15 +30,71 @@
 
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace fmgr::rest {
 
   // Keepalive cadence. SSE comment lines keep idle connections (and any
   // intermediary proxies) from timing out while no events are flowing.
   inline constexpr double k_sse_keepalive_seconds = 15.0;
+
+  namespace detail {
+
+    // Shared between the loop thread (sends, timer, cancel-on-disconnect) and
+    // the worker thread (reads). `ctx` lives here so the keepalive timer can
+    // TryCancel a Read that is blocked when the client has gone away. `stream`
+    // is only touched on the loop thread and is reset when the loop quits.
+    struct SseStreamState {
+      std::shared_ptr<drogon::ResponseStream> stream;
+      std::unique_ptr<grpc::ClientContext> ctx;
+      std::atomic<bool> alive{true};
+    };
+
+    // One per IO loop thread. `loop` is nulled (under `mu`) by the loop's
+    // runOnQuit hook, so a worker that finishes after the loop is gone drops
+    // its frames instead of touching freed memory.
+    struct SseLoopGuard {
+      std::mutex mu;
+      trantor::EventLoop* loop = nullptr;
+      std::vector<std::weak_ptr<SseStreamState>> streams; // loop thread only
+
+      template <typename F> void post(F&& fn) {
+        const std::lock_guard<std::mutex> lock(mu);
+        if (loop != nullptr) {
+          loop->queueInLoop(std::forward<F>(fn));
+        }
+      }
+    };
+
+    // Must be called on an IO loop thread.
+    inline std::shared_ptr<SseLoopGuard> sse_guard_for_current_loop() {
+      thread_local std::shared_ptr<SseLoopGuard> guard;
+      if (!guard) {
+        guard = std::make_shared<SseLoopGuard>();
+        guard->loop = trantor::EventLoop::getEventLoopOfCurrentThread();
+        guard->loop->runOnQuit([g = guard] {
+          {
+            const std::lock_guard<std::mutex> lock(g->mu);
+            g->loop = nullptr;
+          }
+          for (const auto& weak : g->streams) {
+            if (auto state = weak.lock()) {
+              state->alive = false;
+              state->ctx->TryCancel(); // release a parked Read so the worker exits
+              state->stream.reset();   // ~ResponseStream closes on this (live) loop
+            }
+          }
+          g->streams.clear();
+        });
+      }
+      return guard;
+    }
+
+  } // namespace detail
 
   // Bridge one gRPC server-streaming call to an SSE response.
   //   open_reader: (grpc::ClientContext&) -> std::unique_ptr<grpc::ClientReader<RespT>>
@@ -51,47 +114,44 @@ namespace fmgr::rest {
       }
     }
 
-    // Shared between the loop thread (sends, timer, cancel-on-disconnect) and
-    // the worker thread (reads). `ctx` lives here so the keepalive timer can
-    // TryCancel a Read that is blocked when the client has gone away.
-    struct StreamState {
-      std::shared_ptr<drogon::ResponseStream> stream;
-      std::unique_ptr<grpc::ClientContext> ctx;
-      std::atomic<bool> alive{true};
-    };
-
     auto resp = drogon::HttpResponse::newAsyncStreamResponse(
         [authz, open_reader, frame_fn](drogon::ResponseStreamPtr raw_stream) {
           auto* loop = trantor::EventLoop::getEventLoopOfCurrentThread();
-          auto state = std::make_shared<StreamState>();
+          auto guard = detail::sse_guard_for_current_loop();
+          auto state = std::make_shared<detail::SseStreamState>();
           state->stream = std::shared_ptr<drogon::ResponseStream>(std::move(raw_stream));
           state->ctx = std::make_unique<grpc::ClientContext>();
           if (!authz.empty()) {
             state->ctx->AddMetadata("authorization", authz);
           }
+          std::erase_if(guard->streams, [](const auto& weak) { return weak.expired(); });
+          guard->streams.push_back(state);
 
           const trantor::TimerId keepalive = loop->runEvery(k_sse_keepalive_seconds, [state] {
-            if (state->alive && !state->stream->send(":keepalive\n\n")) {
+            if (state->alive && state->stream && !state->stream->send(":keepalive\n\n")) {
               state->alive = false;
               state->ctx->TryCancel(); // unblock a parked Read so the worker exits
             }
           });
 
-          std::thread([state, loop, keepalive, open_reader, frame_fn] {
+          std::thread([state, guard, keepalive, open_reader, frame_fn] {
             auto reader = open_reader(*state->ctx);
             RespT message;
             while (state->alive.load() && reader->Read(&message)) {
               std::string frame = frame_fn(message);
-              loop->queueInLoop([state, frame = std::move(frame)] {
-                if (!state->stream->send(frame)) {
+              guard->post([state, frame = std::move(frame)] {
+                if (state->stream && !state->stream->send(frame)) {
                   state->alive = false;
                   state->ctx->TryCancel();
                 }
               });
             }
             const grpc::Status status = reader->Finish();
-            loop->queueInLoop([state, status, loop, keepalive] {
-              loop->invalidateTimer(keepalive);
+            guard->post([state, status, keepalive] {
+              trantor::EventLoop::getEventLoopOfCurrentThread()->invalidateTimer(keepalive);
+              if (!state->stream) {
+                return;
+              }
               if (state->alive && !status.ok()) {
                 const auto err = to_http_error(status);
                 state->stream->send("event: error\ndata: " + err.body + "\n\n");
