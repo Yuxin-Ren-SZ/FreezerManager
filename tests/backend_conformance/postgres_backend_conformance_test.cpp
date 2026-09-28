@@ -272,8 +272,8 @@ namespace fmgr::storage {
               }
               clause += column_name(predicate.fields.at(i)) + " ILIKE $" +
                         std::to_string(param_idx++) + " ESCAPE '\\'";
-              append_json_param(params, detail::like_contains_pattern(
-                                            predicate.value.get<std::string>()));
+              append_json_param(params,
+                                detail::like_contains_pattern(predicate.value.get<std::string>()));
             }
             where_clauses.push_back("(" + clause + ")");
             break;
@@ -635,21 +635,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
 
       transaction = backend().begin(IsolationLevel::Serializable);
       auto& query_repository = transaction->repo<PgConformanceSample>();
-      const auto matches = query_repository.query(
-          Query<PgConformanceSample>::where(contains_ci(
-              field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "PHa")));
+      const auto matches = query_repository.query(Query<PgConformanceSample>::where(contains_ci(
+          field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "PHa")));
       ASSERT_EQ(matches.size(), 1U);
       EXPECT_EQ(matches.front().name, "Alpha-1");
 
-      const auto suffix = query_repository.query(
-          Query<PgConformanceSample>::where(contains_ci(
-              field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "pha-")));
+      const auto suffix = query_repository.query(Query<PgConformanceSample>::where(contains_ci(
+          field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "pha-")));
       ASSERT_EQ(suffix.size(), 1U);
       EXPECT_EQ(suffix.front().name, "Alpha-1");
 
-      const auto upper = query_repository.query(
-          Query<PgConformanceSample>::where(contains_ci(
-              field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "gamma")));
+      const auto upper = query_repository.query(Query<PgConformanceSample>::where(contains_ci(
+          field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "gamma")));
       ASSERT_EQ(upper.size(), 1U);
       EXPECT_EQ(upper.front().name, "GAMMA-3");
     }

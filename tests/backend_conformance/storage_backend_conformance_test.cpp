@@ -179,9 +179,8 @@ namespace fmgr::storage {
     // Locale-free ASCII case folding, mirroring what SQLite's default LIKE and
     // PostgreSQL's ILIKE do for ASCII in a C/POSIX collation.
     [[nodiscard]] constexpr char ascii_lower(char character) {
-      return (character >= 'A' && character <= 'Z')
-                 ? static_cast<char>(character - 'A' + 'a')
-                 : character;
+      return (character >= 'A' && character <= 'Z') ? static_cast<char>(character - 'A' + 'a')
+                                                    : character;
     }
 
     [[nodiscard]] bool contains_case_insensitive(std::string_view haystack,
@@ -692,23 +691,20 @@ namespace fmgr::storage {
 
       transaction = driver().backend().begin(IsolationLevel::Serializable);
       auto& query_repository = transaction->repo<ConformanceSample>();
-      const auto matches =
-          query_repository.query(Query<ConformanceSample>::where(contains_ci(
-              field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "PHa")));
+      const auto matches = query_repository.query(Query<ConformanceSample>::where(contains_ci(
+          field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "PHa")));
       ASSERT_EQ(matches.size(), 1U);
       EXPECT_EQ(matches.front().name, "Alpha-1");
 
       // Matching is a substring test, not a prefix test, and it is case-insensitive
       // in both directions.
-      const auto suffix =
-          query_repository.query(Query<ConformanceSample>::where(contains_ci(
-              field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "pha-")));
+      const auto suffix = query_repository.query(Query<ConformanceSample>::where(contains_ci(
+          field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "pha-")));
       ASSERT_EQ(suffix.size(), 1U);
       EXPECT_EQ(suffix.front().name, "Alpha-1");
 
-      const auto upper =
-          query_repository.query(Query<ConformanceSample>::where(contains_ci(
-              field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "gamma")));
+      const auto upper = query_repository.query(Query<ConformanceSample>::where(contains_ci(
+          field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "gamma")));
       ASSERT_EQ(upper.size(), 1U);
       EXPECT_EQ(upper.front().name, "GAMMA-3");
     }
@@ -726,14 +722,14 @@ namespace fmgr::storage {
 
       transaction = driver().backend().begin(IsolationLevel::Serializable);
       auto& query_repository = transaction->repo<ConformanceSample>();
-      const auto by_position = query_repository.query(
-          Query<ConformanceSample>::where(contains_ci_any<ConformanceSample>(
+      const auto by_position =
+          query_repository.query(Query<ConformanceSample>::where(contains_ci_any<ConformanceSample>(
               {ConformanceSample::Field::Name, ConformanceSample::Field::PositionLabel}, "a71")));
       ASSERT_EQ(by_position.size(), 1U);
       EXPECT_EQ(by_position.front().name, "two");
 
-      const auto by_name = query_repository.query(
-          Query<ConformanceSample>::where(contains_ci_any<ConformanceSample>(
+      const auto by_name =
+          query_repository.query(Query<ConformanceSample>::where(contains_ci_any<ConformanceSample>(
               {ConformanceSample::Field::Name, ConformanceSample::Field::PositionLabel}, "ONE")));
       ASSERT_EQ(by_name.size(), 1U);
       EXPECT_EQ(by_name.front().name, "one");
@@ -742,8 +738,8 @@ namespace fmgr::storage {
     TEST_F(BackendConformanceTest, ContainsCiTreatsWildcardsAndNonAsciiLiterally) {
       auto transaction = driver().backend().begin(IsolationLevel::Serializable);
       auto& repository = transaction->repo<ConformanceSample>();
-      repository.insert(
-          sample(80, R"(50%_x\y)", core::Timestamp::from_unix_micros(100)), mutation_context());
+      repository.insert(sample(80, R"(50%_x\y)", core::Timestamp::from_unix_micros(100)),
+                        mutation_context());
       repository.insert(sample(81, "50abc", core::Timestamp::from_unix_micros(200)),
                         mutation_context());
       repository.insert(sample(82, "样品-Δ", core::Timestamp::from_unix_micros(300)),
