@@ -138,6 +138,7 @@ namespace fmgr::test {
         std::string container_type{}; // empty = none
         std::string custom_fields{};  // empty = {}
         std::int64_t volume_ul{0};    // >0 sets volume_value (µL)
+        std::string barcode{};        // empty = none
       };
       grpc::Status create_sample(const CreateArgs& args, std::string* out_id) {
         grpc::ClientContext ctx;
@@ -146,6 +147,9 @@ namespace fmgr::test {
         req.set_lab_id(args.lab.empty() ? kLab1 : args.lab);
         req.set_item_type_id(kItemType);
         req.set_name(args.name);
+        if (!args.barcode.empty()) {
+          req.set_barcode(args.barcode);
+        }
         if (!args.position.empty()) {
           req.set_box_id(kBox);
           req.set_position_label(args.position);
@@ -663,6 +667,179 @@ namespace fmgr::test {
       const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    // =====================================================================
+    // G0.4: ListSamples `query` (name/barcode search)
+    // =====================================================================
+
+    TEST_F(SampleServiceTest, ListSamplesQueryMatchesNameSubstringCaseInsensitively) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_TRUE(create_sample({.token = token, .name = "Alpha-1"}, nullptr).ok());
+      ASSERT_TRUE(create_sample({.token = token, .name = "beta-2"}, nullptr).ok());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ListSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_query("PHa");
+      fmgr::v1::ListSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&ctx, req, &resp).ok());
+      ASSERT_EQ(resp.samples_size(), 1);
+      EXPECT_EQ(resp.samples(0).name(), "Alpha-1");
+    }
+
+    TEST_F(SampleServiceTest, ListSamplesQueryMatchesBarcodeSubstring) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_TRUE(
+          create_sample({.token = token, .name = "unrelated", .barcode = "BC-9981"}, nullptr).ok());
+      ASSERT_TRUE(
+          create_sample({.token = token, .name = "other", .barcode = "BC-1234"}, nullptr).ok());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ListSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_query("9981");
+      fmgr::v1::ListSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&ctx, req, &resp).ok());
+      ASSERT_EQ(resp.samples_size(), 1);
+      EXPECT_EQ(resp.samples(0).barcode(), "BC-9981");
+    }
+
+    TEST_F(SampleServiceTest, ListSamplesQueryCombinesWithOtherFiltersAndPaginates) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_TRUE(create_sample({.token = token, .name = "zz-1", .barcode = "B1"}, nullptr).ok());
+      ASSERT_TRUE(create_sample({.token = token, .name = "zz-2", .barcode = "B2"}, nullptr).ok());
+      ASSERT_TRUE(create_sample({.token = token, .name = "zz-3", .barcode = "B3"}, nullptr).ok());
+      ASSERT_TRUE(create_sample({.token = token, .name = "other", .barcode = "B4"}, nullptr).ok());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ListSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_query("ZZ");
+      req.set_barcode("B2");
+      fmgr::v1::ListSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&ctx, req, &resp).ok());
+      ASSERT_EQ(resp.samples_size(), 1); // ANDed with the exact barcode filter
+      EXPECT_EQ(resp.samples(0).name(), "zz-2");
+
+      // Pagination: page 1 holds two of the three "zz" rows and hands back a token.
+      grpc::ClientContext page1_ctx;
+      set_bearer(page1_ctx, token);
+      fmgr::v1::ListSamplesRequest page1_req;
+      page1_req.set_lab_id(kLab1);
+      page1_req.set_query("zz");
+      page1_req.mutable_page()->set_page_size(2);
+      fmgr::v1::ListSamplesResponse page1_resp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&page1_ctx, page1_req, &page1_resp).ok());
+      ASSERT_EQ(page1_resp.samples_size(), 2);
+      ASSERT_FALSE(page1_resp.page().next_page_token().empty());
+
+      grpc::ClientContext page2_ctx;
+      set_bearer(page2_ctx, token);
+      fmgr::v1::ListSamplesRequest page2_req;
+      page2_req.set_lab_id(kLab1);
+      page2_req.set_query("zz");
+      page2_req.mutable_page()->set_page_size(2);
+      page2_req.mutable_page()->set_page_token(page1_resp.page().next_page_token());
+      fmgr::v1::ListSamplesResponse page2_resp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&page2_ctx, page2_req, &page2_resp).ok());
+      ASSERT_EQ(page2_resp.samples_size(), 1);
+      EXPECT_EQ(page2_resp.samples(0).name(), "zz-3");
+    }
+
+    TEST_F(SampleServiceTest, ListSamplesQueryUnderTwoCharactersIsInvalidArgument) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_TRUE(create_sample({.token = token, .name = "Alpha-1"}, nullptr).ok());
+
+      for (const std::string& too_short : {std::string("A"), std::string("")}) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSamplesRequest req;
+        req.set_lab_id(kLab1);
+        req.set_query(too_short);
+        fmgr::v1::ListSamplesResponse resp;
+        const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
+        EXPECT_FALSE(status.ok()) << "query='" << too_short << "'";
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      }
+    }
+
+    TEST_F(SampleServiceTest, ListSamplesQueryEscapesLikeWildcards) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_TRUE(create_sample({.token = token, .name = R"(50%_x)"}, nullptr).ok());
+      ASSERT_TRUE(create_sample({.token = token, .name = "50abc"}, nullptr).ok());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ListSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_query("%_"); // literal %, not "match anything"
+      fmgr::v1::ListSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&ctx, req, &resp).ok());
+      ASSERT_EQ(resp.samples_size(), 1);
+      EXPECT_EQ(resp.samples(0).name(), R"(50%_x)");
+    }
+
+    TEST_F(SampleServiceTest, ListSamplesQueryDoesNotSearchCustomFieldsOrPhi) {
+      const auto token = login(kAdminEmail, kPassword);
+      // A plain (non-PHI) sample-scoped custom field, declared before the sample
+      // that uses it so the resolver sees a committed definition.
+      const storage::MutationContext seed_ctx{
+          .actor_user_id = core::UserId::parse("10000000-0000-0000-0000-000000000001"),
+          .actor_session_id = "seed",
+          .request_id = "seed",
+          .reason = "test setup",
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::CustomFieldDefinition>().insert(
+            core::CustomFieldDefinition{
+                .id = core::CustomFieldDefinitionId::parse("80000000-0000-0000-0000-0000000000fe"),
+                .lab_id = core::LabId::parse(kLab1),
+                .scope_kind = core::ScopeKind::Sample,
+                .item_type_id = core::ItemTypeId::parse(kItemType),
+                .key = "project",
+                .label = "Project",
+                .data_type = core::FieldDataType::String,
+                .required = false,
+                .is_phi = false,
+                .created_at = core::Timestamp::from_unix_micros(1)},
+            seed_ctx);
+        txn->commit();
+      }
+      ASSERT_TRUE(create_sample({.token = token,
+                                 .name = "plain",
+                                 .custom_fields = R"({"project":"needle-xyz","mrn":"needle-abc"})"},
+                                nullptr)
+                      .ok());
+
+      // The needle only exists in a custom field and in the PHI-tagged field, so
+      // neither the search nor a wider query may surface the row.
+      for (const std::string& needle : {std::string("needle"), std::string("xyz"),
+                                        std::string("abc")}) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSamplesRequest req;
+        req.set_lab_id(kLab1);
+        req.set_query(needle);
+        fmgr::v1::ListSamplesResponse resp;
+        ASSERT_TRUE(sample_stub_->ListSamples(&ctx, req, &resp).ok()) << needle;
+        EXPECT_EQ(resp.samples_size(), 0) << "needle=" << needle;
+      }
+
+      // Sanity: the sample itself is findable through its name.
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ListSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_query("plai");
+      fmgr::v1::ListSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&ctx, req, &resp).ok());
+      ASSERT_EQ(resp.samples_size(), 1);
+      EXPECT_EQ(resp.samples(0).name(), "plain");
     }
 
     // =====================================================================

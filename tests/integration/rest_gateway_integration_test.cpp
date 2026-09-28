@@ -387,6 +387,55 @@ namespace fmgr::test {
       EXPECT_EQ(res.status, 200) << res.raw;
     }
 
+    // G0.4 through the real HTTP stack: JSON -> proto -> ListSamples -> SQL LIKE,
+    // and back. Proves the `query` field is reachable from a browser client.
+    TEST(RestGatewayTest, ListSamplesQueryFiltersByNameAndBarcodeThroughRest) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+
+      const nlohmann::json item_type_req{{"lab_id", env->kLabId}, {"name", "searchable"}};
+      const auto item_type_res = post("/api/v1/item-type/create", item_type_req.dump(), token);
+      ASSERT_EQ(item_type_res.status, 200) << item_type_res.raw;
+      const auto item_type_id = item_type_res.body["item_type"].value("id", std::string{});
+      ASSERT_FALSE(item_type_id.empty());
+
+      const auto create_sample = [&](const std::string& name, const std::string& barcode) {
+        const nlohmann::json req{{"lab_id", env->kLabId},
+                                 {"item_type_id", item_type_id},
+                                 {"name", name},
+                                 {"barcode", barcode}};
+        const auto res = post("/api/v1/sample/create", req.dump(), token);
+        ASSERT_EQ(res.status, 200) << res.raw;
+      };
+      create_sample("Alpha-1", "BC-0001");
+      create_sample("beta-2", "BC-0002");
+      create_sample("unrelated", "ZZ-9981");
+
+      const auto samples_of = [](const nlohmann::json& body) {
+        return body.contains("samples") ? body.at("samples") : nlohmann::json::array();
+      };
+
+      const nlohmann::json by_name{{"lab_id", env->kLabId}, {"query", "PHa"}};
+      const auto name_res = post("/api/v1/sample/list", by_name.dump(), token);
+      ASSERT_EQ(name_res.status, 200) << name_res.raw;
+      const auto name_samples = samples_of(name_res.body);
+      ASSERT_EQ(name_samples.size(), 1U) << name_res.raw;
+      EXPECT_EQ(name_samples.at(0).value("name", std::string{}), "Alpha-1");
+
+      const nlohmann::json by_barcode{{"lab_id", env->kLabId}, {"query", "9981"}};
+      const auto barcode_res = post("/api/v1/sample/list", by_barcode.dump(), token);
+      ASSERT_EQ(barcode_res.status, 200) << barcode_res.raw;
+      const auto barcode_samples = samples_of(barcode_res.body);
+      ASSERT_EQ(barcode_samples.size(), 1U) << barcode_res.raw;
+      EXPECT_EQ(barcode_samples.at(0).value("barcode", std::string{}), "ZZ-9981");
+
+      const nlohmann::json too_short{{"lab_id", env->kLabId}, {"query", "A"}};
+      const auto short_res = post("/api/v1/sample/list", too_short.dump(), token);
+      EXPECT_EQ(short_res.status, 400) << short_res.raw;
+      EXPECT_EQ(short_res.body.value("code", std::string{}), "INVALID_ARGUMENT");
+    }
+
     TEST(RestGatewayTest, ListSamplesWithoutBearerReturns401) {
       auto* env = RestGatewayEnv::instance;
       const nlohmann::json req{{"lab_id", env->kLabId}};

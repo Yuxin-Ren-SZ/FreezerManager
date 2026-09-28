@@ -176,6 +176,34 @@ namespace fmgr::storage {
       return left.dump() < right.dump();
     }
 
+    // Locale-free ASCII case folding, mirroring what SQLite's default LIKE and
+    // PostgreSQL's ILIKE do for ASCII in a C/POSIX collation.
+    [[nodiscard]] constexpr char ascii_lower(char character) {
+      return (character >= 'A' && character <= 'Z')
+                 ? static_cast<char>(character - 'A' + 'a')
+                 : character;
+    }
+
+    [[nodiscard]] bool contains_case_insensitive(std::string_view haystack,
+                                                 std::string_view needle) {
+      if (needle.empty() || needle.size() > haystack.size()) {
+        return false;
+      }
+      for (std::size_t start = 0; start + needle.size() <= haystack.size(); ++start) {
+        bool matched = true;
+        for (std::size_t offset = 0; offset < needle.size(); ++offset) {
+          if (ascii_lower(haystack.at(start + offset)) != ascii_lower(needle.at(offset))) {
+            matched = false;
+            break;
+          }
+        }
+        if (matched) {
+          return true;
+        }
+      }
+      return false;
+    }
+
     [[nodiscard]] bool matches_predicate(const ConformanceSample& entity,
                                          const Predicate<ConformanceSample>& predicate) {
       if (predicate.op == PredicateOperator::JsonPathEqual) {
@@ -185,6 +213,16 @@ namespace fmgr::storage {
         }
         const auto path_value = json_path_value(json_value.value(), predicate.json_path);
         return path_value.has_value() && path_value.value() == predicate.value;
+      }
+
+      if (predicate.op == PredicateOperator::ContainsCi) {
+        const auto needle = predicate.value.get<std::string>();
+        const auto& fields = predicate.fields;
+        return std::ranges::any_of(fields, [&](ConformanceSample::Field field) {
+          const auto candidate = field_value(entity, field);
+          return candidate.has_value() && candidate->is_string() &&
+                 contains_case_insensitive(candidate->get<std::string>(), needle);
+        });
       }
 
       const auto value = field_value(entity, predicate.field);
@@ -207,6 +245,8 @@ namespace fmgr::storage {
           return value.value() == candidate;
         });
       case PredicateOperator::JsonPathEqual:
+        return false;
+      case PredicateOperator::ContainsCi:
         return false;
       }
       return false;
@@ -633,6 +673,115 @@ namespace fmgr::storage {
 
       ASSERT_EQ(results.size(), 1U);
       EXPECT_EQ(results.front().name, "beta");
+    }
+
+    // G0.4: `contains_ci` is the predicate behind ListSamples' `query` filter. It
+    // must behave identically on SQLite (LIKE ... ESCAPE) and PostgreSQL
+    // (ILIKE ... ESCAPE): ASCII case-insensitive substring match, OR-combined
+    // over every listed field, with the LIKE wildcards matched literally.
+    TEST_F(BackendConformanceTest, ContainsCiMatchesSubstringCaseInsensitively) {
+      auto transaction = driver().backend().begin(IsolationLevel::Serializable);
+      auto& repository = transaction->repo<ConformanceSample>();
+      repository.insert(sample(60, "Alpha-1", core::Timestamp::from_unix_micros(100)),
+                        mutation_context());
+      repository.insert(sample(61, "beta-2", core::Timestamp::from_unix_micros(200)),
+                        mutation_context());
+      repository.insert(sample(62, "GAMMA-3", core::Timestamp::from_unix_micros(300)),
+                        mutation_context());
+      transaction->commit();
+
+      transaction = driver().backend().begin(IsolationLevel::Serializable);
+      auto& query_repository = transaction->repo<ConformanceSample>();
+      const auto matches =
+          query_repository.query(Query<ConformanceSample>::where(contains_ci(
+              field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "PHa")));
+      ASSERT_EQ(matches.size(), 1U);
+      EXPECT_EQ(matches.front().name, "Alpha-1");
+
+      // Matching is a substring test, not a prefix test, and it is case-insensitive
+      // in both directions.
+      const auto suffix =
+          query_repository.query(Query<ConformanceSample>::where(contains_ci(
+              field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "a-")));
+      ASSERT_EQ(suffix.size(), 1U);
+      EXPECT_EQ(suffix.front().name, "Alpha-1");
+
+      const auto upper =
+          query_repository.query(Query<ConformanceSample>::where(contains_ci(
+              field<ConformanceSample, std::string>(ConformanceSample::Field::Name), "gamma")));
+      ASSERT_EQ(upper.size(), 1U);
+      EXPECT_EQ(upper.front().name, "GAMMA-3");
+    }
+
+    TEST_F(BackendConformanceTest, ContainsCiMatchesAnyListedField) {
+      // sample() places entity N at position "AN", so the same row can be found
+      // through either the name or the position label.
+      auto transaction = driver().backend().begin(IsolationLevel::Serializable);
+      auto& repository = transaction->repo<ConformanceSample>();
+      repository.insert(sample(70, "one", core::Timestamp::from_unix_micros(100)),
+                        mutation_context());
+      repository.insert(sample(71, "two", core::Timestamp::from_unix_micros(200)),
+                        mutation_context());
+      transaction->commit();
+
+      transaction = driver().backend().begin(IsolationLevel::Serializable);
+      auto& query_repository = transaction->repo<ConformanceSample>();
+      const auto by_position = query_repository.query(
+          Query<ConformanceSample>::where(contains_ci_any<ConformanceSample>(
+              {ConformanceSample::Field::Name, ConformanceSample::Field::PositionLabel}, "a71")));
+      ASSERT_EQ(by_position.size(), 1U);
+      EXPECT_EQ(by_position.front().name, "two");
+
+      const auto by_name = query_repository.query(
+          Query<ConformanceSample>::where(contains_ci_any<ConformanceSample>(
+              {ConformanceSample::Field::Name, ConformanceSample::Field::PositionLabel}, "ONE")));
+      ASSERT_EQ(by_name.size(), 1U);
+      EXPECT_EQ(by_name.front().name, "one");
+    }
+
+    TEST_F(BackendConformanceTest, ContainsCiTreatsWildcardsAndNonAsciiLiterally) {
+      auto transaction = driver().backend().begin(IsolationLevel::Serializable);
+      auto& repository = transaction->repo<ConformanceSample>();
+      repository.insert(
+          sample(80, R"(50%_x\y)", core::Timestamp::from_unix_micros(100)), mutation_context());
+      repository.insert(sample(81, "50abc", core::Timestamp::from_unix_micros(200)),
+                        mutation_context());
+      repository.insert(sample(82, "样品-Δ", core::Timestamp::from_unix_micros(300)),
+                        mutation_context());
+      transaction->commit();
+
+      transaction = driver().backend().begin(IsolationLevel::Serializable);
+      auto& query_repository = transaction->repo<ConformanceSample>();
+      const auto query_name = [&](std::string_view needle) {
+        return query_repository.query(Query<ConformanceSample>::where(contains_ci(
+            field<ConformanceSample, std::string>(ConformanceSample::Field::Name), needle)));
+      };
+
+      // '%' and '_' are LIKE wildcards; the predicate must escape them so they
+      // only ever match themselves. A query for "e" would otherwise match every
+      // row here.
+      const auto percent_and_underscore = query_name("%_");
+      ASSERT_EQ(percent_and_underscore.size(), 1U);
+      EXPECT_EQ(percent_and_underscore.front().name, R"(50%_x\y)");
+
+      // The escape character itself is escaped too.
+      const auto backslash = query_name(R"(x\y)");
+      ASSERT_EQ(backslash.size(), 1U);
+      EXPECT_EQ(backslash.front().name, R"(50%_x\y)");
+
+      // A bare '%' must not behave as "match everything".
+      const auto lone_percent = query_name("%");
+      ASSERT_EQ(lone_percent.size(), 1U);
+      EXPECT_EQ(lone_percent.front().name, R"(50%_x\y)");
+
+      // Non-ASCII names are matched byte-exactly at their character boundaries.
+      const auto non_ascii = query_name("样品");
+      ASSERT_EQ(non_ascii.size(), 1U);
+      EXPECT_EQ(non_ascii.front().name, "样品-Δ");
+
+      const auto non_ascii_suffix = query_name("-Δ");
+      ASSERT_EQ(non_ascii_suffix.size(), 1U);
+      EXPECT_EQ(non_ascii_suffix.front().name, "样品-Δ");
     }
 
     TEST_F(BackendConformanceTest, SoftDeletedRowsAreHiddenUnlessIncluded) {
