@@ -14,9 +14,19 @@ import tseslint from 'typescript-eslint';
 // that would fight the formatter.
 
 // eslint-plugin-react-hooks ships its flat config under different keys
-// depending on the major version; take whichever one exists.
+// depending on the major version; take whichever one exists. If neither does,
+// fail the config load: spreading `undefined` would silently drop every
+// react-hooks rule while lint still reported success.
 const reactHooksRecommended =
   reactHooks.configs['recommended-latest'] ?? reactHooks.configs.flat?.recommended;
+
+if (Object.keys(reactHooksRecommended?.rules ?? {}).length === 0) {
+  throw new Error(
+    'eslint.config.js: eslint-plugin-react-hooks exposes no flat recommended config ' +
+      '(looked for configs["recommended-latest"] and configs.flat.recommended), so the ' +
+      'react-hooks rules would be zero. Fix the lookup above before relying on this lint run.',
+  );
+}
 
 const I18N_EXCLUDED_ATTRIBUTES = [
   // Technical, never user-visible text.
