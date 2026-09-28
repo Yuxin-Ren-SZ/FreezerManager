@@ -140,7 +140,9 @@ namespace fmgr::storage {
     LessThanOrEqual,
     Between,
     In,
-    JsonPathEqual
+    JsonPathEqual,
+    // Case-insensitive substring match of `value` against any of `fields`.
+    ContainsCi
   };
 
   enum class SortDirection : std::uint8_t { Ascending, Descending };
@@ -159,6 +161,8 @@ namespace fmgr::storage {
 
     [[nodiscard]] Predicate<Entity> between(const Value& lower, const Value& upper) const;
     [[nodiscard]] Predicate<Entity> in(const std::vector<Value>& values) const;
+    // Case-insensitive substring match of `needle` against this field.
+    [[nodiscard]] Predicate<Entity> contains_ci(std::string_view needle) const;
 
   private:
     Field field_;
@@ -194,6 +198,9 @@ namespace fmgr::storage {
     nlohmann::json upper;
     std::vector<nlohmann::json> values;
     std::vector<std::string> json_path;
+    // For ContainsCi: the fields the substring is matched against, OR-combined.
+    // Empty for every other operator, which uses `field` alone.
+    std::vector<Field> fields;
   };
 
   template <typename Entity> struct SortSpec {
@@ -371,6 +378,43 @@ namespace fmgr::storage {
   [[nodiscard]] Predicate<Entity>
   FieldRef<Entity, Value>::in(const std::vector<Value>& values) const {
     return storage::in(*this, values);
+  }
+
+  // Case-insensitive substring match of `needle` against one field. The needle is
+  // literal: the LIKE wildcards % and _ and the escape character \ match only
+  // themselves. Both backends implement it (SQLite LIKE ... ESCAPE, PostgreSQL
+  // ILIKE ... ESCAPE); callers stay on this DSL and never write SQL.
+  template <typename Entity, typename Value>
+  [[nodiscard]] Predicate<Entity> contains_ci(FieldRef<Entity, Value> field_ref,
+                                              std::string_view needle) {
+    return Predicate<Entity>{
+        .field = field_ref.field(),
+        .op = PredicateOperator::ContainsCi,
+        .value = std::string(needle),
+        .fields = {field_ref.field()},
+    };
+  }
+
+  // Case-insensitive substring match of `needle` against any of `fields`, e.g. a
+  // sample lookup that accepts either a name fragment or a barcode fragment.
+  template <typename Entity>
+  [[nodiscard]] Predicate<Entity>
+  contains_ci_any(std::vector<typename EntityTraits<Entity>::Field> fields, std::string_view needle) {
+    if (fields.empty()) {
+      throw ConstraintViolation("contains_ci_any requires at least one field");
+    }
+    return Predicate<Entity>{
+        .field = fields.front(),
+        .op = PredicateOperator::ContainsCi,
+        .value = std::string(needle),
+        .fields = std::move(fields),
+    };
+  }
+
+  template <typename Entity, typename Value>
+  [[nodiscard]] Predicate<Entity>
+  FieldRef<Entity, Value>::contains_ci(std::string_view needle) const {
+    return storage::contains_ci(*this, needle);
   }
 
   class IRepositoryBase {

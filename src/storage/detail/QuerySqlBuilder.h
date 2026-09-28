@@ -20,9 +20,28 @@
 // SQLite and PostgreSQL is delegated to a SqlDialect:
 //   - parameter placeholder syntax (positional "?" vs ordinal "$N"),
 //   - JSON-path equality rendering (json_extract vs jsonb_extract_path_text),
+//   - case-insensitive substring rendering (LIKE vs ILIKE, both with ESCAPE),
 //   - LIMIT/OFFSET rendering.
 // Each backend binds the returned parameters with its own driver.
 namespace fmgr::storage::detail {
+
+  // Wrap `needle` in LIKE wildcards, escaping the wildcards themselves and the
+  // escape character so the needle is matched literally: a user searching for
+  // "50%" must not match every row. Shared by both dialects, which take the same
+  // pattern syntax; only the match operator differs (LIKE vs ILIKE).
+  [[nodiscard]] inline std::string like_contains_pattern(std::string_view needle) {
+    std::string pattern;
+    pattern.reserve(needle.size() + 2);
+    pattern.push_back('%');
+    for (const char character : needle) {
+      if (character == '%' || character == '_' || character == '\\') {
+        pattern.push_back('\\');
+      }
+      pattern.push_back(character);
+    }
+    pattern.push_back('%');
+    return pattern;
+  }
 
   // Dialect strategy. One instance is constructed per query; ordinal dialects
   // (Postgres) keep their own running placeholder counter, so placeholders must
@@ -47,6 +66,13 @@ namespace fmgr::storage::detail {
                                                       const std::vector<std::string>& path,
                                                       const nlohmann::json& value,
                                                       std::vector<nlohmann::json>& params) = 0;
+
+    // Render a case-insensitive "column contains needle" clause, appending the
+    // escaped LIKE pattern to `params` in placeholder order. The escape
+    // character is a backslash in both dialects.
+    [[nodiscard]] virtual std::string contains_ci(const std::string& column,
+                                                  std::string_view needle,
+                                                  std::vector<nlohmann::json>& params) = 0;
 
     // Append LIMIT / OFFSET to `sql`, pushing their bind values onto `params`.
     virtual void append_limit_offset(std::string& sql, std::vector<nlohmann::json>& params,
@@ -75,6 +101,14 @@ namespace fmgr::storage::detail {
       params.emplace_back(json_pointer);
       params.push_back(value);
       return "json_extract(" + column + ", ?) = ?";
+    }
+
+    // SQLite's LIKE folds ASCII case only (there is no ICU in the pinned build),
+    // which is exactly the documented contract of `contains_ci`.
+    [[nodiscard]] std::string contains_ci(const std::string& column, std::string_view needle,
+                                          std::vector<nlohmann::json>& params) override {
+      params.emplace_back(like_contains_pattern(needle));
+      return column + " LIKE " + placeholder() + " ESCAPE '\\'";
     }
 
     void append_limit_offset(std::string& sql, std::vector<nlohmann::json>& params,
@@ -115,6 +149,15 @@ namespace fmgr::storage::detail {
       clause += ") = " + placeholder();
       params.push_back(value);
       return clause;
+    }
+
+    // ILIKE is case-insensitive under the column's collation, which also folds
+    // non-ASCII letters where the database locale does.
+    [[nodiscard]] std::string contains_ci(const std::string& column, std::string_view needle,
+                                          std::vector<nlohmann::json>& params) override {
+      const auto token = placeholder();
+      params.emplace_back(like_contains_pattern(needle));
+      return column + " ILIKE " + token + " ESCAPE '\\'";
     }
 
     void append_limit_offset(std::string& sql, std::vector<nlohmann::json>& params,
@@ -186,6 +229,24 @@ namespace fmgr::storage::detail {
         clauses.push_back(
             dialect.json_path_equal(column, predicate.json_path, predicate.value, params));
         break;
+      case PredicateOperator::ContainsCi: {
+        // One substring match per listed field, OR-combined: a row matches when
+        // any of them contains the needle.
+        const auto needle = predicate.value.template get<std::string>();
+        std::string clause;
+        for (std::size_t index = 0; index < predicate.fields.size(); ++index) {
+          if (index != 0) {
+            clause += " OR ";
+          }
+          clause +=
+              dialect.contains_ci(column_name(predicate.fields.at(index)), needle, params);
+        }
+        if (predicate.fields.size() > 1) {
+          clause = "(" + clause + ")";
+        }
+        clauses.push_back(std::move(clause));
+        break;
+      }
       }
     }
     if (!clauses.empty()) {

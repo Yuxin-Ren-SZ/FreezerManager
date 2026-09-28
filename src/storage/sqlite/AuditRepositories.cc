@@ -54,6 +54,7 @@ namespace fmgr::storage {
       case PredicateOperator::Between:
       case PredicateOperator::In:
       case PredicateOperator::JsonPathEqual:
+      case PredicateOperator::ContainsCi:
         break;
       }
       throw ConstraintViolation("unsupported audit query operator");
