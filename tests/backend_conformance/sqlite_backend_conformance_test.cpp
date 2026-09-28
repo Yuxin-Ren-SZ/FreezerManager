@@ -5,6 +5,7 @@
 #include "core/enums.h"
 #include "core/ids.h"
 #include "core/timestamp.h"
+#include "storage/detail/QuerySqlBuilder.h"
 
 #include "test_helpers.h"
 #include <gtest/gtest.h>
@@ -334,6 +335,21 @@ namespace fmgr::storage {
             parameters.emplace_back(json_path(predicate.json_path));
             parameters.push_back(predicate.value);
             break;
+          case PredicateOperator::ContainsCi: {
+            // OR over every listed field, wildcards escaped. SQLite's default
+            // LIKE folds ASCII case only (no ICU in the pinned build).
+            std::string clause;
+            for (std::size_t index = 0; index < predicate.fields.size(); ++index) {
+              if (index != 0) {
+                clause += " OR ";
+              }
+              clause += column_name(predicate.fields.at(index)) + " LIKE ? ESCAPE '\\'";
+              parameters.emplace_back(
+                  detail::like_contains_pattern(predicate.value.get<std::string>()));
+            }
+            predicates.push_back("(" + clause + ")");
+            break;
+          }
           }
         }
 
@@ -730,6 +746,112 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_sqlite_conformance_sample_active_position
 
       ASSERT_EQ(results.size(), 1U);
       EXPECT_EQ(results.front().name, "beta");
+    }
+
+    // G0.4: ListSamples' `query` filter is rendered on SQLite as
+    // `column LIKE ? ESCAPE '\'` with %, _ and \ escaped. These tests pin the
+    // observable behaviour of that rendering.
+    TEST_F(SqliteBackendConformanceTest, ContainsCiMatchesSubstringCaseInsensitively) {
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      auto& repository = transaction->repo<SqliteConformanceSample>();
+      repository.insert(sample(60, "Alpha-1", core::Timestamp::from_unix_micros(100)),
+                        mutation_context());
+      repository.insert(sample(61, "beta-2", core::Timestamp::from_unix_micros(200)),
+                        mutation_context());
+      repository.insert(sample(62, "GAMMA-3", core::Timestamp::from_unix_micros(300)),
+                        mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      auto& query_repository = transaction->repo<SqliteConformanceSample>();
+      const auto matches =
+          query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
+              field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
+              "PHa")));
+      ASSERT_EQ(matches.size(), 1U);
+      EXPECT_EQ(matches.front().name, "Alpha-1");
+
+      const auto suffix =
+          query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
+              field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
+              "a-")));
+      ASSERT_EQ(suffix.size(), 1U);
+      EXPECT_EQ(suffix.front().name, "Alpha-1");
+
+      const auto upper =
+          query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
+              field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
+              "gamma")));
+      ASSERT_EQ(upper.size(), 1U);
+      EXPECT_EQ(upper.front().name, "GAMMA-3");
+    }
+
+    TEST_F(SqliteBackendConformanceTest, ContainsCiMatchesAnyListedField) {
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      auto& repository = transaction->repo<SqliteConformanceSample>();
+      repository.insert(sample(70, "one", core::Timestamp::from_unix_micros(100)),
+                        mutation_context());
+      repository.insert(sample(71, "two", core::Timestamp::from_unix_micros(200)),
+                        mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      auto& query_repository = transaction->repo<SqliteConformanceSample>();
+      const auto by_position = query_repository.query(
+          Query<SqliteConformanceSample>::where(contains_ci_any<SqliteConformanceSample>(
+              {SqliteConformanceSample::Field::Name,
+               SqliteConformanceSample::Field::PositionLabel},
+              "a71")));
+      ASSERT_EQ(by_position.size(), 1U);
+      EXPECT_EQ(by_position.front().name, "two");
+
+      const auto by_name = query_repository.query(
+          Query<SqliteConformanceSample>::where(contains_ci_any<SqliteConformanceSample>(
+              {SqliteConformanceSample::Field::Name,
+               SqliteConformanceSample::Field::PositionLabel},
+              "ONE")));
+      ASSERT_EQ(by_name.size(), 1U);
+      EXPECT_EQ(by_name.front().name, "one");
+    }
+
+    TEST_F(SqliteBackendConformanceTest, ContainsCiTreatsWildcardsAndNonAsciiLiterally) {
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      auto& repository = transaction->repo<SqliteConformanceSample>();
+      repository.insert(sample(80, R"(50%_x\y)", core::Timestamp::from_unix_micros(100)),
+                        mutation_context());
+      repository.insert(sample(81, "50abc", core::Timestamp::from_unix_micros(200)),
+                        mutation_context());
+      repository.insert(sample(82, "样品-Δ", core::Timestamp::from_unix_micros(300)),
+                        mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      auto& query_repository = transaction->repo<SqliteConformanceSample>();
+      const auto query_name = [&](std::string_view needle) {
+        return query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
+            field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
+            needle)));
+      };
+
+      const auto percent_and_underscore = query_name("%_");
+      ASSERT_EQ(percent_and_underscore.size(), 1U);
+      EXPECT_EQ(percent_and_underscore.front().name, R"(50%_x\y)");
+
+      const auto backslash = query_name(R"(x\y)");
+      ASSERT_EQ(backslash.size(), 1U);
+      EXPECT_EQ(backslash.front().name, R"(50%_x\y)");
+
+      const auto lone_percent = query_name("%");
+      ASSERT_EQ(lone_percent.size(), 1U);
+      EXPECT_EQ(lone_percent.front().name, R"(50%_x\y)");
+
+      const auto non_ascii = query_name("样品");
+      ASSERT_EQ(non_ascii.size(), 1U);
+      EXPECT_EQ(non_ascii.front().name, "样品-Δ");
+
+      const auto non_ascii_suffix = query_name("-Δ");
+      ASSERT_EQ(non_ascii_suffix.size(), 1U);
+      EXPECT_EQ(non_ascii_suffix.front().name, "样品-Δ");
     }
 
     TEST_F(SqliteBackendConformanceTest, SoftDeletedRowsAreHiddenUnlessIncluded) {

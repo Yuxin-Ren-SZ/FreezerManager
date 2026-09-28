@@ -7,6 +7,7 @@
 #include "core/ids.h"
 #include "core/timestamp.h"
 #include "rpc/AuthMiddleware.h"
+#include "storage/detail/QuerySqlBuilder.h"
 
 #include "test_helpers.h"
 #include <gtest/gtest.h>
@@ -261,6 +262,22 @@ namespace fmgr::storage {
             where_clauses.push_back(col + " <= $" + std::to_string(param_idx++));
             append_json_param(params, predicate.value);
             break;
+          case PredicateOperator::ContainsCi: {
+            // OR over every listed field, wildcards escaped. ILIKE is
+            // case-insensitive under the database collation.
+            std::string clause;
+            for (std::size_t i = 0; i < predicate.fields.size(); ++i) {
+              if (i != 0) {
+                clause += " OR ";
+              }
+              clause += column_name(predicate.fields.at(i)) + " ILIKE $" +
+                        std::to_string(param_idx++) + " ESCAPE '\\'";
+              append_json_param(params, detail::like_contains_pattern(
+                                            predicate.value.get<std::string>()));
+            }
+            where_clauses.push_back("(" + clause + ")");
+            break;
+          }
           }
         }
 
@@ -600,6 +617,106 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       const auto results = txn->repo<PgConformanceSample>().query(query);
       ASSERT_EQ(results.size(), 1U);
       EXPECT_EQ(results.front().name, "beta");
+    }
+
+    // G0.4: ListSamples' `query` filter is rendered on PostgreSQL as
+    // `column ILIKE $N ESCAPE '\'` with %, _ and \ escaped. These tests pin the
+    // observable behaviour of that rendering.
+    TEST_F(PostgresBackendConformanceTest, ContainsCiMatchesSubstringCaseInsensitively) {
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      auto& repository = transaction->repo<PgConformanceSample>();
+      repository.insert(sample(60, "Alpha-1", core::Timestamp::from_unix_micros(100)),
+                        mutation_context());
+      repository.insert(sample(61, "beta-2", core::Timestamp::from_unix_micros(200)),
+                        mutation_context());
+      repository.insert(sample(62, "GAMMA-3", core::Timestamp::from_unix_micros(300)),
+                        mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      auto& query_repository = transaction->repo<PgConformanceSample>();
+      const auto matches = query_repository.query(
+          Query<PgConformanceSample>::where(contains_ci(
+              field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "PHa")));
+      ASSERT_EQ(matches.size(), 1U);
+      EXPECT_EQ(matches.front().name, "Alpha-1");
+
+      const auto suffix = query_repository.query(
+          Query<PgConformanceSample>::where(contains_ci(
+              field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "a-")));
+      ASSERT_EQ(suffix.size(), 1U);
+      EXPECT_EQ(suffix.front().name, "Alpha-1");
+
+      const auto upper = query_repository.query(
+          Query<PgConformanceSample>::where(contains_ci(
+              field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "gamma")));
+      ASSERT_EQ(upper.size(), 1U);
+      EXPECT_EQ(upper.front().name, "GAMMA-3");
+    }
+
+    TEST_F(PostgresBackendConformanceTest, ContainsCiMatchesAnyListedField) {
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      auto& repository = transaction->repo<PgConformanceSample>();
+      repository.insert(sample(70, "one", core::Timestamp::from_unix_micros(100)),
+                        mutation_context());
+      repository.insert(sample(71, "two", core::Timestamp::from_unix_micros(200)),
+                        mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      auto& query_repository = transaction->repo<PgConformanceSample>();
+      const auto by_position = query_repository.query(
+          Query<PgConformanceSample>::where(contains_ci_any<PgConformanceSample>(
+              {PgConformanceSample::Field::Name, PgConformanceSample::Field::PositionLabel},
+              "a71")));
+      ASSERT_EQ(by_position.size(), 1U);
+      EXPECT_EQ(by_position.front().name, "two");
+
+      const auto by_name = query_repository.query(
+          Query<PgConformanceSample>::where(contains_ci_any<PgConformanceSample>(
+              {PgConformanceSample::Field::Name, PgConformanceSample::Field::PositionLabel},
+              "ONE")));
+      ASSERT_EQ(by_name.size(), 1U);
+      EXPECT_EQ(by_name.front().name, "one");
+    }
+
+    TEST_F(PostgresBackendConformanceTest, ContainsCiTreatsWildcardsAndNonAsciiLiterally) {
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      auto& repository = transaction->repo<PgConformanceSample>();
+      repository.insert(sample(80, R"(50%_x\y)", core::Timestamp::from_unix_micros(100)),
+                        mutation_context());
+      repository.insert(sample(81, "50abc", core::Timestamp::from_unix_micros(200)),
+                        mutation_context());
+      repository.insert(sample(82, "样品-Δ", core::Timestamp::from_unix_micros(300)),
+                        mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      auto& query_repository = transaction->repo<PgConformanceSample>();
+      const auto query_name = [&](std::string_view needle) {
+        return query_repository.query(Query<PgConformanceSample>::where(contains_ci(
+            field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), needle)));
+      };
+
+      const auto percent_and_underscore = query_name("%_");
+      ASSERT_EQ(percent_and_underscore.size(), 1U);
+      EXPECT_EQ(percent_and_underscore.front().name, R"(50%_x\y)");
+
+      const auto backslash = query_name(R"(x\y)");
+      ASSERT_EQ(backslash.size(), 1U);
+      EXPECT_EQ(backslash.front().name, R"(50%_x\y)");
+
+      const auto lone_percent = query_name("%");
+      ASSERT_EQ(lone_percent.size(), 1U);
+      EXPECT_EQ(lone_percent.front().name, R"(50%_x\y)");
+
+      const auto non_ascii = query_name("样品");
+      ASSERT_EQ(non_ascii.size(), 1U);
+      EXPECT_EQ(non_ascii.front().name, "样品-Δ");
+
+      const auto non_ascii_suffix = query_name("-Δ");
+      ASSERT_EQ(non_ascii_suffix.size(), 1U);
+      EXPECT_EQ(non_ascii_suffix.front().name, "样品-Δ");
     }
 
     TEST_F(PostgresBackendConformanceTest, SoftDeletedRowsAreHiddenUnlessIncluded) {
