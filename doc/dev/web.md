@@ -42,6 +42,13 @@ npm run check          # gen + lint + typecheck + format:check + test + build
 change. `gen` runs before `dev`, `build`, `test` and `typecheck` through npm's
 `pre*` hooks, so the generated directory always exists.
 
+**`NODE_ENV` is set by the scripts, not by your shell.** `build` runs
+`NODE_ENV=production vite build`, `test` runs `NODE_ENV=test vitest run` and
+`dev` runs `NODE_ENV=development vite`. Vite, Vitest and React all change
+behaviour on an inherited `NODE_ENV` (dev React in `dist/`, and React 19 tests
+that fail on `React.act`), so pinning it in `package.json` is what makes a local
+run and CI produce the same artifact and the same results.
+
 **Bundle budget.** `npm run build` runs `scripts/check-bundle-size.mjs`, which
 sums the gzipped size of every JS file `dist/index.html` loads before first
 paint (the entry chunk plus its `modulepreload` dependencies) and fails the
@@ -127,9 +134,11 @@ CORS headers. There is no separate API host to point at.
 
 ## Troubleshooting
 
-- **`npm ci` installs nothing but production packages** — your shell exports
-  `NODE_ENV=production`, which makes npm skip `devDependencies`. Use
-  `NODE_ENV=development npm ci`.
+- **A shell that exports `NODE_ENV=production` breaks `npm ci`** — npm then
+  skips `devDependencies`. Use `NODE_ENV=development npm ci`. The npm scripts
+  themselves pin `NODE_ENV` for `dev`/`test`/`build`, so `npm run check` is safe
+  either way, but the install is not: without devDependencies nothing runs.
+  Verify with `env | grep NODE_ENV` before blaming the code.
 - **`npm` fails with `EPERM` in `~/.npm/_cacache`** — the shared cache has
   root-owned files. Point npm at a private one:
   `npm_config_cache=out/npm-cache npm ci`.
