@@ -45,10 +45,14 @@ export CTEST_PARALLEL_LEVEL=1
 export AGENT_SLOT="${AGENT_SLOT:-0}"
 export FMGR_LISTEN="127.0.0.1:$((50051 + 10 * AGENT_SLOT))"
 export FMGR_REST_LISTEN="127.0.0.1:$((18080 + 10 * AGENT_SLOT))"
+# Vite dev server for src/web (G-arch 12), same slot pattern as the ports above.
+# `vite.config.ts` reads both of these; see doc/dev/web.md.
+export FMGR_WEB_DEV_PORT="$((5173 + 10 * AGENT_SLOT))"
 export FMGR_DB_PATH="${FMGR_DB_PATH:-$_fmgr_top/out/freezer.db}"
 
 echo "FreezerManager env: slot $AGENT_SLOT, worktree $_fmgr_top"
 echo "  CONAN_HOME=${CONAN_HOME:-<default>}  TMPDIR=$TMPDIR"
 echo "  gRPC $FMGR_LISTEN  REST $FMGR_REST_LISTEN  build -j$CMAKE_BUILD_PARALLEL_LEVEL"
+echo "  web dev http://127.0.0.1:$FMGR_WEB_DEV_PORT (proxies /api to $FMGR_REST_LISTEN)"
 
 unset _fmgr_top _fmgr_main
