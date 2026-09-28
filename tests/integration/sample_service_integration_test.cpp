@@ -767,6 +767,26 @@ namespace fmgr::test {
       }
     }
 
+    // The floor is two *bytes*, not two code points: a lone multi-byte character
+    // is already selective (it cannot match ASCII names), so it is accepted. This
+    // pins that contract rather than leaving it implied by the length check.
+    TEST_F(SampleServiceTest, ListSamplesQueryAcceptsALoneMultiByteCharacter) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_TRUE(create_sample({.token = token, .name = "M\xC3\xBCller"}, nullptr).ok());
+      ASSERT_TRUE(create_sample({.token = token, .name = "plain"}, nullptr).ok());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ListSamplesRequest req;
+      req.set_lab_id(kLab1);
+      req.set_query("\xC3\xBC"); // "ü", two bytes in UTF-8
+      ASSERT_EQ(req.query().size(), 2U);
+      fmgr::v1::ListSamplesResponse resp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&ctx, req, &resp).ok());
+      ASSERT_EQ(resp.samples_size(), 1);
+      EXPECT_EQ(resp.samples(0).name(), "M\xC3\xBCller");
+    }
+
     TEST_F(SampleServiceTest, ListSamplesQueryEscapesLikeWildcards) {
       const auto token = login(kAdminEmail, kPassword);
       ASSERT_TRUE(create_sample({.token = token, .name = R"(50%_x)"}, nullptr).ok());

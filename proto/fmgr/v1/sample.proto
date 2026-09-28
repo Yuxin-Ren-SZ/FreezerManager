@@ -74,7 +74,8 @@ message ListSamplesRequest {
   optional SampleStatus status = 7;
   // Case-insensitive substring search over name and barcode: typing part of a
   // name, or scanning part of a barcode, finds the sample (PRD §9). At least 2
-  // characters, otherwise INVALID_ARGUMENT. Custom fields and PHI are never
+  // bytes, otherwise INVALID_ARGUMENT — a single multi-byte character such as
+  // "ü" is already selective and is accepted. Custom fields and PHI are never
   // searched. ANDed with the other filters and paginated as usual.
   optional string query = 8;
 }
