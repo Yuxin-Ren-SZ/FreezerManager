@@ -1,0 +1,21 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-3);
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: var(--fmgr-space-6) var(--fmgr-space-4);
+}
+
+.title {
+  margin: 0;
+  font-size: 1.5rem;
+  line-height: 1.25;
+}
+
+.body {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+}
