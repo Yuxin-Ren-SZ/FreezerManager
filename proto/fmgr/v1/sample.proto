@@ -72,6 +72,11 @@ message ListSamplesRequest {
   optional string item_type_id = 5;
   optional string barcode = 6;
   optional SampleStatus status = 7;
+  // Case-insensitive substring search over name and barcode: typing part of a
+  // name, or scanning part of a barcode, finds the sample (PRD §9). At least 2
+  // characters, otherwise INVALID_ARGUMENT. Custom fields and PHI are never
+  // searched. ANDed with the other filters and paginated as usual.
+  optional string query = 8;
 }
 
 message ListSamplesResponse {

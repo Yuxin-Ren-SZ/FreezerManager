@@ -69,6 +69,12 @@ namespace fmgr::server {
     constexpr std::chrono::milliseconds k_watch_poll_slice{100};
     constexpr int k_watch_poll_slices = 10; // 100ms * 10 = ~1s between polls
 
+    // Shortest accepted ListSamples `query` (PRD §9 lookup). One character would
+    // match a large share of the lab and is almost always a typo or an
+    // over-eager keystroke, so the RPC rejects it instead of scanning. Measured
+    // in bytes: a lone multi-byte character is already selective enough.
+    constexpr std::size_t kMinQueryLength = 2;
+
     [[nodiscard]] std::string now_iso8601_utc() {
       const auto secs = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
       std::tm tm_buf{};
@@ -465,6 +471,19 @@ namespace fmgr::server {
         query = query.and_where(
             storage::field<core::Sample, std::string>(core::Sample::Field::Status) ==
             std::string(core::to_string(from_proto_status(req->status()))));
+      }
+      if (req->has_query()) {
+        // PRD §9 lookup: one box accepts either a name fragment or a barcode
+        // fragment. Validated after authentication so an unauthenticated caller
+        // never learns whether a payload would have been acceptable.
+        if (req->query().size() < kMinQueryLength) {
+          return {grpc::StatusCode::INVALID_ARGUMENT,
+                  "query must be at least " + std::to_string(kMinQueryLength) + " characters"};
+        }
+        // Only name and barcode are searched: custom fields and PHI are
+        // deliberately out of scope.
+        query = query.and_where(storage::contains_ci_any<core::Sample>(
+            {core::Sample::Field::Name, core::Sample::Field::Barcode}, req->query()));
       }
 
       // Page token is a plain integer offset; page size 0 means "no limit".
