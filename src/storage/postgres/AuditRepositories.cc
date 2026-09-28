@@ -87,6 +87,7 @@ namespace fmgr::storage {
           case PredicateOperator::Between:
           case PredicateOperator::In:
           case PredicateOperator::JsonPathEqual:
+          case PredicateOperator::ContainsCi:
             // Only equality and since/until range predicates are built against
             // the audit repository; fail loudly rather than silently mis-render.
             throw ConstraintViolation("unsupported audit query operator");
