@@ -201,3 +201,37 @@ jobs:
         if: ${{ matrix.preset == 'dev' }}
         continue-on-error: true
         run: gcovr --version
+
+  # The SPA in src/web (TODO.md G1.1) is independent of the C++ matrix: it needs
+  # Node, not Conan, and finishes in about a minute. A separate job means a web
+  # failure is reported in minutes instead of hiding behind a 120-minute
+  # sanitizer build, and a C++ failure never blocks the web signal.
+  web:
+    name: web (node from .nvmrc)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: src/web/package-lock.json
+
+      # `npm ci` is the only supported install (G-arch 2): it uses the committed
+      # src/web/package-lock.json and fails if it disagrees with package.json.
+      - name: Install dependencies
+        working-directory: src/web
+        run: npm ci
+
+      # npm run check = gen + lint + typecheck + format:check + test + build,
+      # where build enforces the 250 KiB gzipped initial-JS budget.
+      - name: Check
+        working-directory: src/web
+        run: npm run check
+
+      # Cheap, and it proves the web extensions of the check (G1.1).
+      - name: Check SPDX headers
+        run: tools/check-spdx-headers.sh
