@@ -36,7 +36,8 @@ FreezerManager is a self-hostable freezer / biospecimen manager: a C++20 server
 | `src/obs/` | JSON logging, metrics, health. |
 | `src/cli/` | `freezerctl` and the CSV import/export cores. |
 | `src/qt/` | Qt 6 desktop client (Google style, own `.clang-format`/`.clang-tidy`). Built only if Qt6 is found. |
-| `src/web/`, `src/py/` | Placeholders for the planned SPA and Python client. |
+| `src/web/` | React SPA (Vite + TypeScript). Built with npm, never with CMake — see `doc/dev/web.md`. |
+| `src/py/` | Placeholder for the planned Python client. |
 | `proto/fmgr/v1/` | gRPC API, the source of truth. Never edit generated code. |
 | `tests/` | `unit/`, `property/`, `integration/` (label `grpc_integration`), `e2e/`, `fuzz/`, `backend_conformance/`. |
 | `doc/` | `PRD.md` (spec), `SLO.md`, `UPGRADE.md`, reviews/audits, `handoffs/` (history), `dev/` (tooling notes). |
@@ -141,7 +142,7 @@ label before changing them:
 |---|---|---|
 | `lock:migration` | New schema migrations in `SqliteBackend.cc` + `PostgresBackend.cc` | The lead reserves the version number in the issue (next free: see board). Both backends get the same number. |
 | `lock:proto` | `proto/fmgr/v1/*.proto` | Breaking changes need a new package version (`v2`); additive changes still need the lock. |
-| `lock:deps` | `conanfile.py`, `conan.lock` | Only the holder may run `conan install --build=missing` (it writes the shared Conan cache). |
+| `lock:deps` | `conanfile.py`, `conan.lock`, `src/web/package.json`, `src/web/package-lock.json` | Only the holder may run `conan install --build=missing` (it writes the shared Conan cache), or add/upgrade a web dependency — `npm install` rewrites the committed npm lockfile. |
 | `lock:ci` | `.github/workflows/`, `CMakePresets.json`, top-level `CMakeLists.txt` | Keep build-graph changes serialized. |
 
 `TODO.md`, `README.md` (roadmap table) and the board issue body belong to the
@@ -208,6 +209,22 @@ ctest --preset dev -R '^LabService' # focused
   SPDX check (`tools/check-spdx-headers.sh`) and `run-clang-tidy-17`. **Never
   run clang-tidy above `-j 2`** (it OOMs; see `doc/dev/clang-tidy.md`). If a
   tool isn't installed locally, say so in the PR rather than skipping silently.
+
+**Web UI (`src/web/`)** — Node, not CMake. Node 22 (repo-root `.nvmrc`) and npm
+with the committed `package-lock.json`; `npm ci` is the only supported install:
+
+```sh
+cd src/web
+npm ci                 # installs exactly what the lockfile pins
+npm run check          # gen + lint + typecheck + format:check + test + build
+npm run dev            # Vite on 127.0.0.1:$FMGR_WEB_DEV_PORT, proxies /api
+```
+
+`npm run build` fails when the initial JS bundle exceeds 250 KiB gzipped. The
+full dev loop (start `freezerd` on the slot's ports first), the directory layout
+and the G-arch rules every web task follows are in `doc/dev/web.md`. CI runs the
+same `npm ci && npm run check` in the `web` job, independently of the C++ matrix;
+`src/web/CMakeLists.txt` stays a no-op, so the C++ build never needs Node.
 
 ## 5. Engineering rules
 
