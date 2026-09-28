@@ -4,6 +4,9 @@ FreezerManager is pre-alpha. Contributions should keep the repository ready for
 test-driven C++20 implementation without adding production behavior ahead of the
 design in `doc/PRD.md`.
 
+Coding agents, and humans working alongside them, follow `AGENTS.md`: task
+board, coordination protocol, and worktree rules.
+
 ## Workflow
 
 - Open pull requests against `main`.
