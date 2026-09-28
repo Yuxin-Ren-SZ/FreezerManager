@@ -50,19 +50,24 @@ adds a paginated, case-insensitive substring search both clients can use.
 **Tests:** `tests/backend_conformance/{storage,sqlite,postgres}_backend_conformance_test.cpp`
 (three new cases each: case-insensitive substring, OR over listed fields,
 wildcard/escape/non-ASCII literals), `tests/integration/sample_service_integration_test.cpp`
-(six cases: name, barcode, AND with another filter + pagination,
-`INVALID_ARGUMENT` under two characters, wildcard escaping, custom fields and
-PHI never searched), `tests/integration/rest_gateway_integration_test.cpp`
+(seven cases: name, barcode, AND with another filter + pagination,
+`INVALID_ARGUMENT` under two bytes, a lone multi-byte character being accepted,
+wildcard escaping, custom fields and PHI never searched),
+`tests/integration/rest_gateway_integration_test.cpp`
 (`ListSamplesQueryFiltersByNameAndBarcodeThroughRest`, end to end over HTTP).
 
-- `cmake --build --preset dev` on the red commit `39497e5` → 18 expected
+- `cmake --build --preset dev` on the red commit `9b41f3b` → 18 expected
   compile errors; after the implementation commits, build is clean.
 - `ctest --preset dev -R 'ContainsCi|QueryDsl'` → 8 passed, 4 skipped (Postgres:
   no `FMGR_TEST_POSTGRES_URL` on this machine).
-- `ctest --preset dev -R 'ListSamplesQuery|QueryFiltersByName'` → 7/7 passed.
+- `ctest --preset dev -R 'ListSamplesQuery|QueryFiltersByName'` → 8/8 passed.
 - `ctest --preset dev -R 'SampleServiceTest.ListSamples|RestGatewayTest'` →
   37/37 passed.
-- Full suite, asan and ubsan: see PR #38.
+- `ctest --preset dev` → 99% passed, 1-2 failed out of 1416; the only failures
+  are the flaky `RestGatewaySse.*WatchStreamsNewEvent` SEGFAULTs owned by #29.
+- `ctest --preset {asan,ubsan} -R 'Backend|ContainsCi|Sample' -LE 'grpc_integration|e2e'`
+  → 490/490 each, at `b5aec41`; the two later commits only add a test and a
+  proto comment.
 
 **Known limitations / follow-ups:**
 
@@ -72,7 +77,13 @@ PHI never searched), `tests/integration/rest_gateway_integration_test.cpp`
 - No ranking or fuzzy matching (out of scope per the issue); substring order is
   whatever the backend returns.
 - PostgreSQL conformance runs only with `FMGR_TEST_POSTGRES_URL` set, so on this
-  machine the `ILIKE` branch is compile-checked but not executed.
+  machine the `ILIKE` branch is compile-checked but not executed. CI's
+  `postgres:16` service is what actually retires this: its `FMGR_TEST_POSTGRES_URL`
+  leg runs all three `PostgresBackendConformanceTest.ContainsCi*` cases.
+- The two-byte query floor is measured in bytes, not code points (a lone
+  multi-byte character is accepted). Pinned by
+  `SampleServiceTest.ListSamplesQueryAcceptsALoneMultiByteCharacter`; switch to
+  code points only together with that test.
 - Local sanitizer runs need a manual `CMakeUserPresets.json` fix (the generated
   file includes both `out/conan/dev` and the new folder, and both define
   `conan-debug`); see PR #38.
