@@ -1,0 +1,27 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--fmgr-font-sans);
+  font-size: var(--fmgr-font-size-base);
+  line-height: 1.5;
+  background-color: var(--fmgr-color-bg);
+  color: var(--fmgr-color-text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--fmgr-color-accent);
+  outline-offset: 2px;
+}

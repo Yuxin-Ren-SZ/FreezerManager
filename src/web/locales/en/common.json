@@ -1,0 +1,8 @@
+{
+  "app": {
+    "scaffold": {
+      "title": "Web UI scaffold",
+      "body": "The SPA toolchain is wired up: Vite, React, TypeScript (strict), React Router, TanStack Query, TanStack Table, react-i18next, CSS Modules and Vitest. Feature screens land in src/features/<name>/ from G1.2 on."
+    }
+  }
+}

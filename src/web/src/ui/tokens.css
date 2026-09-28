@@ -1,0 +1,49 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/*
+ * Design tokens (G-arch 1). Everything is a CSS custom property so components
+ * never hard-code a colour, size or radius.
+ *
+ * G1.3 grows this file into the full light/dark set with WCAG AA contrast
+ * (TODO.md G1.3); the seed below is what the G1.1 placeholder page needs.
+ */
+
+:root {
+  color-scheme: light dark;
+
+  /* No hosted web fonts (G-arch 3): system stack only. */
+  --fmgr-font-sans:
+    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --fmgr-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fmgr-font-size-base: 1rem;
+
+  --fmgr-space-1: 0.25rem;
+  --fmgr-space-2: 0.5rem;
+  --fmgr-space-3: 0.75rem;
+  --fmgr-space-4: 1rem;
+  --fmgr-space-6: 1.5rem;
+  --fmgr-space-8: 2rem;
+
+  --fmgr-radius-sm: 0.25rem;
+  --fmgr-radius-md: 0.5rem;
+
+  --fmgr-color-bg: #ffffff;
+  --fmgr-color-surface: #f4f6f8;
+  --fmgr-color-text: #14181d;
+  --fmgr-color-text-muted: #4d5761;
+  --fmgr-color-border: #ccd3db;
+  --fmgr-color-accent: #0b5cad;
+  --fmgr-color-danger: #a4262c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fmgr-color-bg: #14181d;
+    --fmgr-color-surface: #1d2329;
+    --fmgr-color-text: #f2f5f7;
+    --fmgr-color-text-muted: #b3bcc5;
+    --fmgr-color-border: #3a444e;
+    --fmgr-color-accent: #6cb2f2;
+    --fmgr-color-danger: #f08a90;
+  }
+}
