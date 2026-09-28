@@ -28,10 +28,19 @@ while IFS= read -r -d '' file; do
     *.c|*.cc|*.cpp|*.cxx|*.h|*.hh|*.hpp|*.hxx|*.ipp)
       check_file "$file" "// SPDX-License-Identifier: AGPL-3.0-or-later"
       ;;
+    # Web sources (src/web, TODO.md G1.1): JS/TS family uses //, CSS uses a
+    # block comment. *.json and *.html carry no SPDX header.
+    *.ts|*.tsx|*.js|*.mjs|*.cjs)
+      check_file "$file" "// SPDX-License-Identifier: AGPL-3.0-or-later"
+      ;;
+    *.css)
+      check_file "$file" "/* SPDX-License-Identifier: AGPL-3.0-or-later */"
+      ;;
   esac
 done < <(
   git ls-files -z --cached --others --exclude-standard -- \
-    '*.py' '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' '*.ipp'
+    '*.py' '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' '*.ipp' \
+    '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' '*.css'
 )
 
 exit "$status"
