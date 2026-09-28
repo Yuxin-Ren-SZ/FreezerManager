@@ -46,6 +46,16 @@ own `locales/en/<feature>.json` (TODO.md §Section G). PRD §10; this delivers P
   once jsx-a11y supports it.
 - **`i18next/no-literal-string` runs in `jsx-only` mode** with a technical
   attribute exclude list. Widening it to every string literal is a G1.3 call.
+- **`NODE_ENV` is pinned by the npm scripts** (`build` → `production`, `test` →
+  `test`, `dev` → `development`), because Vite/Vitest/React all change behaviour
+  on an inherited value. `NODE_ENV=production npm run check` and
+  `env -u NODE_ENV npm run check` now both pass and produce the **identical**
+  artifact (md5 `12a77112…`); before the pin, dev React leaked into `dist/`
+  (141.7 KiB instead of 81.9 KiB) and two tests failed on `React.act`. The
+  `npm ci` part is still environment-sensitive (npm skips devDependencies under
+  `NODE_ENV=production`), which the Troubleshooting section covers.
+- **The react-hooks config lookup asserts non-empty** in `eslint.config.js`:
+  spreading `undefined` would have dropped all 17 rules while lint still passed.
 - **`npm run check` does not run `dev`** (a server, not a check); the `pre*`
   hooks run `gen` before `dev`/`build`/`test`/`typecheck` so G1.2 only has to
   rewrite `scripts/gen.mjs`.
@@ -61,12 +71,16 @@ own `locales/en/<feature>.json` (TODO.md §Section G). PRD §10; this delivers P
   an unregistered request fails instead of touching the network.
 - `cd src/web && npm ci` → 459 packages, exit 0; `npm run check` → exit 0 (lint
   clean, typecheck clean, Prettier clean, **4/4 tests passed**, initial JS
-  **141.7 KiB gzip** vs the 250 KiB budget); `tools/check-spdx-headers.sh` →
-  exit 0; `git status --short` → empty afterwards.
+  **81.9 KiB gzip** vs the 250 KiB budget), run twice — once with
+  `NODE_ENV=production` exported, once with it unset — with the same result and
+  the same artifact hash; `tools/check-spdx-headers.sh` → exit 0;
+  `git status --short` → empty afterwards.
 - Guards proved to fail, not just pass: `FMGR_WEB_JS_BUDGET_KIB=100 node
   scripts/check-bundle-size.mjs` → exit 1 ("over budget by 41.7 KiB"); a planted
   `src/app/LintProbe.tsx` with JSX text → eslint exit 1 on
-  `i18next/no-literal-string`.
+  `i18next/no-literal-string`; an `eslint.config.js` copy with the react-hooks
+  lookup forced to `undefined` → eslint exits 2 with a message instead of
+  silently running zero react-hooks rules.
 - Dev loop on slot 3: Vite on `http://127.0.0.1:5203/`, `GET /` → 200,
   `/api/v1/healthz` proxied to the stub on `127.0.0.1:18110` with `Host` and
   `Origin` both still `127.0.0.1:5203` (`changeOrigin: false`), and a second
@@ -84,7 +98,9 @@ own `locales/en/<feature>.json` (TODO.md §Section G). PRD §10; this delivers P
   the full light/dark set with WCAG AA contrast is G1.3.
 - `@testing-library/user-event` is installed but not yet used (G1.3+ keyboard
   tests).
-- Local notes: the agent shell exports `NODE_ENV=production` (npm then skips
-  devDependencies) and `~/.npm/_cacache` has root-owned files, so verification
-  used `NODE_ENV=development` and `npm_config_cache=out/npm-cache`. Both are in
-  `doc/dev/web.md` → Troubleshooting.
+- Local notes: the agent shell exports `NODE_ENV=production`, which makes `npm`
+  skip devDependencies at install time (use `NODE_ENV=development npm ci`), and
+  `~/.npm/_cacache` has root-owned files (use
+  `npm_config_cache=out/npm-cache`). `npm run check` itself is immune to the
+  first one now that the scripts pin `NODE_ENV`. Both are in `doc/dev/web.md` →
+  Troubleshooting.
