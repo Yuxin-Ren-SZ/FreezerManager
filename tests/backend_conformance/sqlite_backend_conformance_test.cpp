@@ -774,7 +774,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_sqlite_conformance_sample_active_position
       const auto suffix =
           query_repository.query(Query<SqliteConformanceSample>::where(contains_ci(
               field<SqliteConformanceSample, std::string>(SqliteConformanceSample::Field::Name),
-              "a-")));
+              "pha-")));
       ASSERT_EQ(suffix.size(), 1U);
       EXPECT_EQ(suffix.front().name, "Alpha-1");
 

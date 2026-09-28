@@ -643,7 +643,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
 
       const auto suffix = query_repository.query(
           Query<PgConformanceSample>::where(contains_ci(
-              field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "a-")));
+              field<PgConformanceSample, std::string>(PgConformanceSample::Field::Name), "pha-")));
       ASSERT_EQ(suffix.size(), 1U);
       EXPECT_EQ(suffix.front().name, "Alpha-1");
 
