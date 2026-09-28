@@ -33,3 +33,9 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 scripts/__pycache__/
+
+# Project-local Python venv (conan/cmake/ninja)
+.venv/
+
+# Per-agent git worktrees (scripts/agent/worktree.sh)
+.worktrees/
