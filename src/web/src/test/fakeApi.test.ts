@@ -405,6 +405,44 @@ describe('fakeApi checkout volume contract (#100)', () => {
     expect(lab.checkoutEvents).toEqual([]);
   });
 
+  it('refuses a negative volume_used, which would otherwise add stock (#112)', async () => {
+    const lab = checkedOutLab();
+    server.use(...fakeApi({ lab }));
+
+    const error = (await call('sample/checkout', {
+      sampleId: 'sample-3',
+      action: CheckoutAction.CHECKIN,
+      volumeUsed: -40,
+      volumeUnit: 'µL',
+    }).catch((caught: unknown) => caught)) as ApiError;
+
+    expect(error.code).toBe('INVALID_ARGUMENT');
+    // Refused, not applied in reverse: the subtraction that would have left the
+    // vial holding 140 µL never ran, so nothing is stopped and nothing is logged.
+    expect(sampleById(lab, 'sample-3').status).toBe(SampleStatus.CHECKED_OUT);
+    expect(sampleById(lab, 'sample-3').volumeValue).toBe(100);
+    expect(lab.checkoutEvents).toEqual([]);
+  });
+
+  it('accepts an explicit zero volume, which is not a negative one', async () => {
+    const lab = checkedOutLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('sample/checkout', {
+      sampleId: 'sample-3',
+      action: CheckoutAction.CHECKIN,
+      volumeUsed: 0,
+      volumeUnit: 'µL',
+    });
+
+    // The boundary: zero is a recorded no-op (`volumeDelta: 0`), distinct from
+    // the absent pair above (`volumeDelta` unset). The sign rule refuses `< 0`.
+    expect(sampleById(lab, 'sample-3').volumeValue).toBe(100);
+    expect(lab.checkoutEvents).toMatchObject([
+      { sampleId: 'sample-3', action: CheckoutAction.CHECKIN, volumeDelta: 0, volumeUnit: 'µL' },
+    ]);
+  });
+
   it('checks in without a volume when neither field is sent', async () => {
     const lab = checkedOutLab();
     server.use(...fakeApi({ lab }));

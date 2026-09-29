@@ -1814,6 +1814,28 @@ namespace fmgr::test {
       EXPECT_EQ(events[0].action, core::CheckoutAction::CheckedOut);
     }
 
+    TEST_F(SampleServiceTest, CheckoutSampleRefusesANegativeVolumeBelowTheUnitGranularity) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "vial", .volume_ul = 100}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      fmgr::v1::Sample resp;
+      const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                          /*volume_used=*/-0.5, std::string("µL"), &resp);
+
+      // -0.5 truncates to raw 0 on the way into `core::Volume`, so a check on the
+      // constructed volume alone would accept this as a no-op. Sign is a property
+      // of the request, so it is read off the wire value: still negative, still
+      // refused (#112).
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      fmgr::v1::Sample stored;
+      ASSERT_TRUE(get_sample(token, id, &stored).ok());
+      EXPECT_DOUBLE_EQ(stored.volume_value(), 100);
+      EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+      EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+    }
+
     TEST_F(SampleServiceTest, CheckoutSampleAcceptsExplicitZeroVolumeAsARecordedNoOp) {
       const auto token = login(kAdminEmail, kPassword);
       std::string id;

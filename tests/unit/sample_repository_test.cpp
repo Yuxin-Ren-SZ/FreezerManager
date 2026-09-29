@@ -1954,6 +1954,62 @@ namespace fmgr::storage {
       EXPECT_EQ(result.volume_value, 0);
     }
 
+    TEST_P(SampleRepositoryTest, ApplyCheckoutRejectsNegativeVolumeAndLeavesStockUntouched) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.volume_value = 100;
+      sample.volume_unit = core::VolumeUnit::Microliter;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        apply_checkout(*txn, sample.id,
+                       CheckoutCommand{.action = core::CheckoutAction::CheckedOut,
+                                       .event_id = id_from_low<core::CheckoutEventId>(50),
+                                       .at = ts(900)},
+                       mutation_context_as(user_id));
+        txn->commit();
+      }
+
+      // The guard lives in `apply_checkout`, not only in the RPC handler: the
+      // operation that does the subtraction is the one that has to refuse the
+      // value, so a caller arriving any other way cannot inflate the vial either
+      // (#112). Without it this call adds 40 µL and signs the event +40.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_THROW(
+            apply_checkout(*txn, sample.id,
+                           CheckoutCommand{.action = core::CheckoutAction::CheckedIn,
+                                           .volume_used = core::Volume::from_raw(
+                                               -40, core::VolumeUnit::Microliter),
+                                           .event_id = id_from_low<core::CheckoutEventId>(51),
+                                           .at = ts(901)},
+                           mutation_context_as(user_id)),
+            ConstraintViolation);
+      }
+
+      {
+        auto txn = backend().begin(IsolationLevel::ReadCommitted);
+        const auto stored = txn->repo<core::Sample>().find_by_id(sample.id);
+        const auto events =
+            txn->repo<core::CheckoutEvent>().query(Query<core::CheckoutEvent>::where(
+                field<core::CheckoutEvent, std::string>(core::CheckoutEvent::Field::SampleId) ==
+                sample.id.to_string()));
+        txn->commit();
+        ASSERT_TRUE(stored.has_value());
+        EXPECT_EQ(stored.value().volume_value, 100);
+        EXPECT_EQ(stored.value().status, core::SampleStatus::CheckedOut);
+        // Refused before the event: the chain of custody holds the check-out only.
+        ASSERT_EQ(events.size(), 1U);
+        EXPECT_EQ(events.front().action, core::CheckoutAction::CheckedOut);
+      }
+    }
+
     TEST_P(SampleRepositoryTest, CheckoutOfAlreadyCheckedOutSampleThrows) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);

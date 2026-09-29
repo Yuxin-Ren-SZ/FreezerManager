@@ -1654,6 +1654,15 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     if (volumeUnit !== undefined && !isVolumeUnit(volumeUnit)) {
       throw new FakeRpcError('INVALID_ARGUMENT', `volume_unit: unknown unit: '${volumeUnit}'`);
     }
+    // A consumption cannot be negative: the server refuses one with
+    // `volume_used: must not be negative` instead of letting the subtraction
+    // invert and *add* stock (#112), and the fake mirrors that so the client and
+    // the server cannot disagree about it. The sign is read from the raw number,
+    // as the handler reads it, because `Math.trunc` below would otherwise turn
+    // -0.5 into a well-formed 0.
+    if (volumeUsed !== undefined && volumeUsed < 0) {
+      throw new FakeRpcError('INVALID_ARGUMENT', 'volume_used: must not be negative');
+    }
 
     if (found.status === SampleStatus.TOMBSTONED || found.status === SampleStatus.DESTROYED) {
       throw new FakeRpcError('FAILED_PRECONDITION', 'sample is not in a checkout-eligible state');
