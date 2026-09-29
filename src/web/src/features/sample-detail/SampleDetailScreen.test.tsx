@@ -1,0 +1,499 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { Route, Routes } from 'react-router-dom';
+import { describe, expect, it } from 'vitest';
+import sampleDetailCopy from '../../../locales/en/sample-detail.json';
+import { SessionProvider } from '../../app/session';
+import { SampleStatus } from '../../gen/fmgr/v1/sample_pb';
+import { createDemoLab, fakeApi, type DemoLab } from '../../test/fakeApi';
+import { renderWithProviders } from '../../test/render';
+import { server } from '../../test/server';
+import { allPermissionsUser, currentUserWith } from '../../test/session';
+import { axe } from '../../test/setup';
+import { SampleDetailScreen } from './SampleDetailScreen';
+
+/**
+ * The sample detail view (TODO.md G3.3): every field, the PHI rule, the parent
+ * link, the location path, `audit.read`-gated history and the five lifecycle
+ * actions.
+ *
+ * Three of these are about what the screen must *not* do:
+ *
+ *  - it must not render a PHI field the response did not contain — the server
+ *    filters by `phi.read` and the client has no business reconstructing it;
+ *  - it must not render a history section at all without `audit.read`, not an
+ *    empty one and not an error;
+ *  - it must not show an action the caller has no permission for.
+ */
+
+const LAB_ID = 'lab-demo';
+const SAMPLE_ID = 'sample-1';
+
+interface RenderOptions {
+  readonly demo?: DemoLab;
+  readonly user?: ReturnType<typeof currentUserWith>;
+  readonly sampleId?: string;
+}
+
+function renderDetail(options: RenderOptions = {}) {
+  const demo = options.demo ?? createDemoLab();
+  server.use(...fakeApi({ lab: demo }));
+  const user = options.user ?? allPermissionsUser();
+
+  return {
+    ...renderWithProviders(
+      <SessionProvider loadSession={() => Promise.resolve(user)}>
+        <Routes>
+          <Route path="/labs/:labId/samples/:sampleId" element={<SampleDetailScreen />} />
+          <Route path="/labs/:labId/samples" element={<p>sample list</p>} />
+        </Routes>
+      </SessionProvider>,
+      { route: `/labs/${LAB_ID}/samples/${options.sampleId ?? SAMPLE_ID}` },
+    ),
+    demo,
+  };
+}
+
+/** The `<dd>` of one `<dt>` in a definition list, matched by its label. */
+function termValue(label: string): string {
+  const term = screen.getByText(label);
+  return term.nextElementSibling?.textContent ?? '';
+}
+
+const click = (name: string) => userEvent.click(screen.getByRole('button', { name }));
+
+describe('SampleDetailScreen', () => {
+  it('shows the sample, its core fields, its type and its location', async () => {
+    renderDetail();
+
+    expect(await screen.findByRole('heading', { level: 1, name: 'Serum A' })).toBeInTheDocument();
+    expect(screen.getByText('DEMO-0001')).toBeInTheDocument();
+    expect(screen.getByText('Active')).toBeInTheDocument();
+
+    expect(termValue(sampleDetailCopy.detail.itemType)).toBe('Serum');
+    // Freezer → rack → drawer → box → position, resolved by G3.1's path helper.
+    expect(termValue(sampleDetailCopy.detail.location)).toBe(
+      'Freezer A / Rack 1 / Top drawer / Box A / A1',
+    );
+    expect(termValue(sampleDetailCopy.detail.volume)).toContain('100');
+  });
+
+  it('renders a sample that is not in a box without inventing a location', async () => {
+    const demo = createDemoLab();
+    demo.samples[0]!.boxId = undefined;
+    demo.samples[0]!.positionLabel = undefined;
+    renderDetail({ demo });
+
+    await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+    expect(termValue(sampleDetailCopy.detail.location)).toBe(sampleDetailCopy.detail.unplaced);
+  });
+
+  it('renders a custom field per its definition type', async () => {
+    renderDetail();
+
+    await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+    // float, string, int, bool and date, all seeded on sample-1.
+    expect(termValue('Concentration')).toBe('12.5');
+    expect(termValue('Serum notes')).toBe('ok');
+    expect(termValue('Aliquot count')).toBe('3');
+    expect(termValue('Hemolyzed')).toBe(sampleDetailCopy.detail.yes);
+    expect(termValue('Collection date')).toBe('2026-01-05');
+  });
+
+  it('shows a custom field the response did not label, rather than dropping it', async () => {
+    const demo = createDemoLab();
+    demo.samples[0]!.customFieldsJson = JSON.stringify({ mystery: 'x' });
+    renderDetail({ demo });
+
+    await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+    // No definition exists for `mystery`, so the key is what there is to show.
+    expect(termValue('mystery')).toBe('x');
+  });
+
+  describe('PHI', () => {
+    it('does not render a PHI field the response does not contain', async () => {
+      renderDetail();
+
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+      // `donor_name` is a PHI definition on Blood, and sample-1 has no value
+      // for it: the server withheld it, so nothing may appear — not an empty
+      // row and not a placeholder.
+      expect(screen.queryByText('Donor name')).not.toBeInTheDocument();
+      expect(screen.queryByText(sampleDetailCopy.phi.badge)).not.toBeInTheDocument();
+    });
+
+    it('renders a PHI field the response contains, marked as PHI', async () => {
+      const demo = createDemoLab();
+      demo.samples[0]!.customFieldsJson = JSON.stringify({
+        concentration: 12.5,
+        donor_name: 'not-a-real-person',
+      });
+      renderDetail({ demo });
+
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+      expect(termValue('Donor name')).toBe('not-a-real-person');
+      const row = screen.getByText('Donor name').closest('div');
+      expect(row === null ? null : within(row).getByText(sampleDetailCopy.phi.badge)).not.toBeNull();
+    });
+
+    it('marks PHI on the form too, when the definitions are readable', async () => {
+      renderDetail();
+
+      await click(sampleDetailCopy.actions.edit);
+
+      expect(await screen.findByLabelText(/Donor name/)).toBeInTheDocument();
+    });
+  });
+
+  describe('the parent link', () => {
+    it('names the parent and its status', async () => {
+      const demo = createDemoLab();
+      demo.samples[0]!.status = SampleStatus.DEPLETED;
+      renderDetail({ demo, sampleId: 'sample-2' });
+
+      await screen.findByRole('heading', { level: 1, name: 'Serum B' });
+
+      // "parent: X (depleted)" — the status is why the link matters.
+      expect(screen.getByText('Parent: Serum A (Depleted)')).toBeInTheDocument();
+    });
+
+    it('falls back to the id when the parent is not in the loaded list', async () => {
+      const demo = createDemoLab();
+      demo.samples[1]!.parentSampleId = 'sample-gone';
+      renderDetail({ demo, sampleId: 'sample-2' });
+
+      await screen.findByRole('heading', { level: 1, name: 'Serum B' });
+
+      expect(screen.getByText(/sample-gone/)).toBeInTheDocument();
+    });
+  });
+
+  describe('history', () => {
+    it('lists the sample\u2019s own audit events when the caller has audit.read', async () => {
+      renderDetail();
+
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+      const history = screen.getByRole('region', { name: sampleDetailCopy.detail.history });
+      expect(within(history).getByText('sample.create')).toBeInTheDocument();
+      expect(within(history).getByText('sample.checkout')).toBeInTheDocument();
+      // sample-2's events are in the fake, in this lab: filtering is the point.
+      expect(within(history).getAllByRole('listitem')).toHaveLength(3);
+    });
+
+    it('renders no history section at all without audit.read', async () => {
+      renderDetail({
+        user: currentUserWith(['sample.read', 'sample.write', 'sample.checkout']),
+      });
+
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+      expect(screen.queryByRole('region', { name: sampleDetailCopy.detail.history })).toBeNull();
+      expect(screen.queryByText(sampleDetailCopy.detail.history)).not.toBeInTheDocument();
+      // And it is not an error state either: the rest of the screen is fine.
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('does not fetch the history without audit.read', async () => {
+      // `onUnhandledRequest: 'error'` turns a stray `audit/list` into a test
+      // failure, so serving no handler for it is the assertion.
+      const demo = createDemoLab();
+      const handlers = fakeApi({ lab: demo });
+      server.use(...handlers.filter((handler) => !handler.info.header.includes('audit/list')));
+
+      renderDetail({ user: currentUserWith(['sample.read']) });
+
+      expect(await screen.findByRole('heading', { level: 1, name: 'Serum A' })).toBeInTheDocument();
+    });
+  });
+
+  describe('actions', () => {
+    it('checks a sample out', async () => {
+      const { demo } = renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+      await click(sampleDetailCopy.actions.checkout);
+
+      expect(await screen.findByText('Checked out')).toBeInTheDocument();
+      expect(demo.samples.find((sample) => sample.id === SAMPLE_ID)?.status).toBe(
+        SampleStatus.CHECKED_OUT,
+      );
+    });
+
+    it('checks a checked-out sample back in, recording the volume used and the reason', async () => {
+      const demo = createDemoLab();
+      demo.samples[2]!.volumeValue = 100;
+      demo.samples[2]!.volumeUnit = 'uL';
+      renderDetail({ demo, sampleId: 'sample-3' });
+
+      await screen.findByRole('heading', { level: 1, name: 'Plasma A' });
+      await click(sampleDetailCopy.actions.checkin);
+
+      const dialog = await screen.findByRole('dialog');
+      await userEvent.type(
+        within(dialog).getByLabelText(sampleDetailCopy.actions.volumeUsed),
+        '40',
+      );
+      await userEvent.type(within(dialog).getByLabelText(sampleDetailCopy.actions.reason), 'aliquot');
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmCheckin }),
+      );
+
+      expect(await screen.findByText('Active')).toBeInTheDocument();
+      expect(demo.samples.find((sample) => sample.id === 'sample-3')?.volumeValue).toBe(60);
+    });
+
+    it('discards a sample, which consumes the remaining volume', async () => {
+      const { demo } = renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+      await click(sampleDetailCopy.actions.discard);
+
+      const dialog = await screen.findByRole('dialog');
+      // The reason is what the chain of custody keeps; the volume is not an
+      // input here because the server consumes all of it (`apply_checkout`).
+      await userEvent.type(within(dialog).getByLabelText(sampleDetailCopy.actions.reason), 'spilled');
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmDiscard }),
+      );
+
+      expect(await screen.findByText('Destroyed')).toBeInTheDocument();
+      const updated = demo.samples.find((sample) => sample.id === SAMPLE_ID);
+      expect(updated?.status).toBe(SampleStatus.DESTROYED);
+      expect(updated?.volumeValue).toBe(0);
+    });
+
+    it('moves a sample to a free position', async () => {
+      const { demo } = renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+      await click(sampleDetailCopy.actions.move);
+
+      const dialog = await screen.findByRole('dialog');
+      await userEvent.selectOptions(
+        within(dialog).getByLabelText(sampleDetailCopy.actions.destinationBox),
+        'box-2',
+      );
+      await userEvent.selectOptions(
+        within(dialog).getByLabelText(sampleDetailCopy.actions.destinationPosition),
+        'A1',
+      );
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmMove }),
+      );
+
+      expect(await screen.findByText('Freezer A / Rack 1 / Top drawer / Box B / A1')).toBeInTheDocument();
+      const moved = demo.samples.find((sample) => sample.id === SAMPLE_ID);
+      expect(moved?.boxId).toBe('box-2');
+      expect(moved?.positionLabel).toBe('A1');
+    });
+
+    it('offers only free positions, and shows a taken one coming back from the server', async () => {
+      renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+      await click(sampleDetailCopy.actions.move);
+
+      const dialog = await screen.findByRole('dialog');
+      await userEvent.selectOptions(
+        within(dialog).getByLabelText(sampleDetailCopy.actions.destinationBox),
+        'box-1',
+      );
+
+      const position = within(dialog).getByLabelText(sampleDetailCopy.actions.destinationPosition);
+      // A1 is where this sample already is, A2 is sample-2; both are offered as
+      // free only if the picker ignores what the box already holds.
+      const options = within(position)
+        .getAllByRole('option')
+        .map((option) => option.textContent);
+      expect(options).toContain('A3');
+
+      // A race the client cannot prevent: the position is taken between the
+      // picker being drawn and the move. The server says ALREADY_EXISTS.
+      await userEvent.selectOptions(position, 'A1');
+      server.use(
+        ...fakeApi({
+          lab: createDemoLab(),
+          fail: { 'sample/move': 'ALREADY_EXISTS' },
+        }),
+      );
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmMove }),
+      );
+
+      expect(await screen.findByText(sampleDetailCopy.server.positionTaken)).toBeInTheDocument();
+    });
+
+    it('soft-deletes after a confirmation, and leaves the screen', async () => {
+      const { demo } = renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+      await click(sampleDetailCopy.actions.delete);
+
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByText(sampleDetailCopy.actions.deleteTitle)).toBeInTheDocument();
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmDelete }),
+      );
+
+      expect(await screen.findByText('sample list')).toBeInTheDocument();
+      expect(demo.samples.find((sample) => sample.id === SAMPLE_ID)?.status).toBe(
+        SampleStatus.TOMBSTONED,
+      );
+    });
+
+    it('keeps the sample when the confirmation is declined', async () => {
+      const { demo } = renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+      await click(sampleDetailCopy.actions.delete);
+
+      const dialog = await screen.findByRole('dialog');
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: sampleDetailCopy.actions.keep }),
+      );
+
+      expect(demo.samples.find((sample) => sample.id === SAMPLE_ID)?.status).toBe(
+        SampleStatus.ACTIVE,
+      );
+    });
+
+    it('hides the write, checkout and delete actions from a read-only member', async () => {
+      renderDetail({ user: currentUserWith(['sample.read', 'audit.read']) });
+
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+      for (const action of [
+        sampleDetailCopy.actions.edit,
+        sampleDetailCopy.actions.checkout,
+        sampleDetailCopy.actions.move,
+        sampleDetailCopy.actions.delete,
+      ]) {
+        expect(screen.queryByRole('button', { name: action }), action).toBeNull();
+      }
+      // The screen itself is still readable: read is what this member has.
+      expect(screen.getByText('DEMO-0001')).toBeInTheDocument();
+    });
+
+    it('offers no check-in on a sample that is not checked out', async () => {
+      renderDetail();
+
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+      expect(screen.queryByRole('button', { name: sampleDetailCopy.actions.checkin })).toBeNull();
+      expect(screen.getByRole('button', { name: sampleDetailCopy.actions.checkout })).toBeInTheDocument();
+    });
+  });
+
+  describe('editing', () => {
+    it('opens the generated form filled in, and saves the change', async () => {
+      const { demo } = renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+      await click(sampleDetailCopy.actions.edit);
+
+      const name = await screen.findByLabelText(sampleDetailCopy.form.name);
+      expect(name).toHaveValue('Serum A');
+      // The form is generated from the item type's inherited definitions, so an
+      // inherited field is editable here too.
+      expect(screen.getByLabelText('Aliquot count')).toHaveValue(3);
+
+      await userEvent.clear(name);
+      await userEvent.type(name, 'Serum A2');
+      await userEvent.click(
+        screen.getByRole('button', { name: sampleDetailCopy.form.submitUpdate }),
+      );
+
+      expect(await screen.findByRole('heading', { level: 1, name: 'Serum A2' })).toBeInTheDocument();
+      expect(screen.getByText(sampleDetailCopy.form.saved)).toBeInTheDocument();
+      expect(demo.samples.find((sample) => sample.id === SAMPLE_ID)?.name).toBe('Serum A2');
+    });
+
+    it('keeps an unattributable server failure at the form level', async () => {
+      renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+      await click(sampleDetailCopy.actions.edit);
+
+      const name = await screen.findByLabelText(sampleDetailCopy.form.name);
+      await userEvent.clear(name);
+      await userEvent.type(name, 'Serum A2');
+
+      // An injected INVALID_ARGUMENT carries a message that names no field, so
+      // it cannot be pinned to one — the form-level alert is the honest place
+      // for it. (The field-level path is covered by `serverErrors.test.ts` and
+      // by the create form's position and size-class cases.)
+      server.use(
+        ...fakeApi({
+          lab: createDemoLab(),
+          fail: { 'sample/update': 'INVALID_ARGUMENT' },
+        }),
+      );
+      await userEvent.click(
+        screen.getByRole('button', { name: sampleDetailCopy.form.submitUpdate }),
+      );
+
+      expect(await screen.findByRole('alert')).toBeInTheDocument();
+    });
+
+    it('returns to the detail view when the edit is cancelled', async () => {
+      renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+      await click(sampleDetailCopy.actions.edit);
+
+      await screen.findByLabelText(sampleDetailCopy.form.name);
+      await click(sampleDetailCopy.form.cancel);
+
+      expect(await screen.findByRole('heading', { level: 1, name: 'Serum A' })).toBeInTheDocument();
+      expect(screen.queryByLabelText(sampleDetailCopy.form.name)).toBeNull();
+    });
+  });
+
+  describe('failures', () => {
+    it('shows an error state when the sample cannot be read', async () => {
+      server.use(...fakeApi({ fail: { 'sample/get': 'PERMISSION_DENIED' } }));
+
+      renderWithProviders(
+        <SessionProvider loadSession={() => Promise.resolve(allPermissionsUser())}>
+          <Routes>
+            <Route path="/labs/:labId/samples/:sampleId" element={<SampleDetailScreen />} />
+          </Routes>
+        </SessionProvider>,
+        { route: `/labs/${LAB_ID}/samples/${SAMPLE_ID}` },
+      );
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(sampleDetailCopy.errorTitle);
+    });
+
+    it('shows a not-found state when the sample is gone', async () => {
+      server.use(...fakeApi({ fail: { 'sample/get': 'NOT_FOUND' } }));
+
+      renderWithProviders(
+        <SessionProvider loadSession={() => Promise.resolve(allPermissionsUser())}>
+          <Routes>
+            <Route path="/labs/:labId/samples/:sampleId" element={<SampleDetailScreen />} />
+          </Routes>
+        </SessionProvider>,
+        { route: `/labs/${LAB_ID}/samples/${SAMPLE_ID}` },
+      );
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(sampleDetailCopy.notFoundTitle);
+    });
+  });
+
+  it('has no accessibility violations', async () => {
+    const { container } = renderDetail();
+    await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('has no accessibility violations in edit mode', async () => {
+    const { container } = renderDetail();
+    await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+    await click(sampleDetailCopy.actions.edit);
+    await screen.findByLabelText(sampleDetailCopy.form.name);
+
+    expect(await axe(container)).toHaveNoViolations();
+  });
+});
