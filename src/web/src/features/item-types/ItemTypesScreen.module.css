@@ -1,0 +1,220 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/* The item-type and custom-field admin screen (TODO.md G3.9, G-arch 1: CSS
+   Modules over design tokens). Two panes on a wide screen, one column when
+   there is no room for both. */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-4, 1rem);
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-1, 0.25rem);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fmgr-font-size-xl, 1.5rem);
+}
+
+.subtitle,
+.muted {
+  margin: 0;
+  color: var(--fmgr-color-text-muted, #5b6472);
+}
+
+.warning {
+  margin: 0;
+  padding: var(--fmgr-space-2, 0.5rem);
+  border-radius: var(--fmgr-radius-sm, 4px);
+  background: var(--fmgr-color-warning-bg, #fff4e5);
+  color: var(--fmgr-color-text, #111);
+}
+
+.panes {
+  display: grid;
+  grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr);
+  gap: var(--fmgr-space-4, 1rem);
+  align-items: start;
+}
+
+@media (max-width: 60rem) {
+  .panes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---- tree ---- */
+
+.treePane {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-2, 0.5rem);
+  border: 1px solid var(--fmgr-color-border, #d6dae0);
+  border-radius: var(--fmgr-radius-md, 6px);
+  padding: var(--fmgr-space-2, 0.5rem);
+}
+
+.treeToolbar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-2, 0.5rem);
+}
+
+.rootDrop {
+  border: 1px dashed var(--fmgr-color-border, #d6dae0);
+  border-radius: var(--fmgr-radius-sm, 4px);
+  padding: var(--fmgr-space-2, 0.5rem);
+  font-size: var(--fmgr-font-size-sm, 0.875rem);
+  color: var(--fmgr-color-text-muted, #5b6472);
+  text-align: center;
+}
+
+.tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.treeItem {
+  margin: 0;
+}
+
+.treeRow {
+  display: flex;
+  align-items: center;
+  gap: var(--fmgr-space-1, 0.25rem);
+  padding: 2px 0;
+  border-radius: var(--fmgr-radius-sm, 4px);
+}
+
+.treeRow:hover {
+  background: var(--fmgr-color-surface-hover, #f2f4f7);
+}
+
+.dragging {
+  opacity: 0.5;
+}
+
+.glyph {
+  display: inline-block;
+  width: 1.75rem;
+}
+
+.nodeName {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nodeName[aria-current='true'] {
+  font-weight: 600;
+  text-decoration: underline;
+}
+
+.rowActions {
+  display: flex;
+  gap: var(--fmgr-space-1, 0.25rem);
+}
+
+/* ---- detail pane ---- */
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-3, 0.75rem);
+  border: 1px solid var(--fmgr-color-border, #d6dae0);
+  border-radius: var(--fmgr-radius-md, 6px);
+  padding: var(--fmgr-space-3, 0.75rem);
+}
+
+.nodeTitle {
+  margin: 0;
+  font-size: var(--fmgr-font-size-lg, 1.25rem);
+}
+
+.path {
+  margin: 0;
+  font-size: var(--fmgr-font-size-sm, 0.875rem);
+  color: var(--fmgr-color-text-muted, #5b6472);
+}
+
+.fieldSection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-2, 0.5rem);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--fmgr-font-size-md, 1rem);
+}
+
+.fieldList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-1, 0.25rem);
+}
+
+.fieldRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--fmgr-space-2, 0.5rem);
+  padding: var(--fmgr-space-2, 0.5rem);
+  border: 1px solid var(--fmgr-color-border, #d6dae0);
+  border-radius: var(--fmgr-radius-sm, 4px);
+}
+
+.fieldLabel {
+  font-weight: 600;
+}
+
+.fieldKey,
+.fieldType,
+.fieldConstraints,
+.fieldOrigin {
+  font-size: var(--fmgr-font-size-sm, 0.875rem);
+  color: var(--fmgr-color-text-muted, #5b6472);
+}
+
+.fieldKey {
+  font-family: var(--fmgr-font-mono, ui-monospace, monospace);
+}
+
+.badges {
+  display: flex;
+  gap: var(--fmgr-space-1, 0.25rem);
+}
+
+/* ---- dialogs ---- */
+
+.formStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-3, 0.75rem);
+}
+
+.rangeRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--fmgr-space-2, 0.5rem);
+}
+
+.problems {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: var(--fmgr-color-danger, #b3261e);
+}

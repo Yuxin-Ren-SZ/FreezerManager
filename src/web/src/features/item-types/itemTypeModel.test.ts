@@ -17,6 +17,7 @@ import {
   lineageOf,
   parseValidation,
   resolveFields,
+  resolveInheritedFields,
   serializeValidation,
   tightenViolations,
 } from './itemTypeModel';
@@ -80,7 +81,12 @@ describe('buildItemTypeTree', () => {
   it('nests children under their parent and numbers the depth from the root', () => {
     const tree = buildItemTypeTree(TREE);
 
-    expect(outline(tree.roots)).toEqual(['it-blood@0:3', 'it-plasma@1:0', 'it-serum@1:0', 'it-tissue@1:0']);
+    expect(outline(tree.roots)).toEqual([
+      'it-blood@0:3',
+      'it-plasma@1:0',
+      'it-serum@1:0',
+      'it-tissue@1:0',
+    ]);
     expect(tree.cyclic).toEqual([]);
     expect(tree.orphaned).toEqual([]);
   });
@@ -137,7 +143,11 @@ describe('buildItemTypeTree', () => {
     const chain: ItemType[] = [itemType({ id: 'it-0', name: 'Node 0' })];
     for (let index = 1; index < 1000; index += 1) {
       chain.push(
-        itemType({ id: `it-${String(index)}`, parentId: `it-${String(index - 1)}`, name: `N${String(index)}` }),
+        itemType({
+          id: `it-${String(index)}`,
+          parentId: `it-${String(index - 1)}`,
+          name: `N${String(index)}`,
+        }),
       );
     }
 
@@ -272,6 +282,34 @@ describe('resolveFields', () => {
   });
 });
 
+describe('resolveInheritedFields', () => {
+  const onBlood = cfd({ id: 'cfd-blood', itemTypeId: 'it-blood', key: 'notes', label: 'Notes' });
+  const onSerum = cfd({
+    id: 'cfd-serum',
+    itemTypeId: 'it-serum',
+    key: 'notes',
+    label: 'Serum notes',
+  });
+  const labWide = cfd({ id: 'cfd-global', key: 'storage_note' });
+  const cfds = [onBlood, onSerum, labWide];
+
+  it('leaves the node\u2019s own definition out and keeps the ancestor it shadows', () => {
+    // The form has to compare a new definition against the *ancestor* of the
+    // same key; on the node itself that row is already the node's own.
+    const inherited = resolveInheritedFields(cfds, TREE, 'it-serum');
+
+    expect(inherited.find((field) => field.cfd.key === 'notes')?.cfd.id).toBe('cfd-blood');
+    expect(inherited.find((field) => field.cfd.key === 'storage_note')?.origin).toBe('lab');
+  });
+
+  it('returns the lab-wide definitions for a root node', () => {
+    const inherited = resolveInheritedFields(cfds, TREE, 'it-blood');
+
+    expect(inherited.map((field) => field.cfd.key)).toEqual(['storage_note']);
+    expect(inherited[0]?.origin).toBe('lab');
+  });
+});
+
 describe('tightenViolations', () => {
   it('refuses a child that drops a required parent field', () => {
     const parent = cfd({ id: 'p', key: 'tissue_grade', required: true });
@@ -306,7 +344,10 @@ describe('tightenViolations', () => {
       tightenViolations(parent, cfd({ id: 'c', key: 'notes', validationJson: '{"max_length":5}' })),
     ).toEqual([]);
     expect(
-      tightenViolations(parent, cfd({ id: 'c', key: 'notes', validationJson: '{"max_length":40}' })),
+      tightenViolations(
+        parent,
+        cfd({ id: 'c', key: 'notes', validationJson: '{"max_length":40}' }),
+      ),
     ).toEqual([{ code: 'constraint-widened', constraint: 'max_length' }]);
     expect(tightenViolations(parent, cfd({ id: 'c', key: 'notes' }))).toEqual([
       { code: 'constraint-dropped', constraint: 'max_length' },
@@ -324,25 +365,45 @@ describe('tightenViolations', () => {
     expect(
       tightenViolations(
         parent,
-        cfd({ id: 'c', key: 'aliquot_count', dataType: FieldDataType.INT, validationJson: '{"min":2,"max":4}' }),
+        cfd({
+          id: 'c',
+          key: 'aliquot_count',
+          dataType: FieldDataType.INT,
+          validationJson: '{"min":2,"max":4}',
+        }),
       ),
     ).toEqual([]);
     expect(
       tightenViolations(
         parent,
-        cfd({ id: 'c', key: 'aliquot_count', dataType: FieldDataType.INT, validationJson: '{"min":0,"max":10}' }),
+        cfd({
+          id: 'c',
+          key: 'aliquot_count',
+          dataType: FieldDataType.INT,
+          validationJson: '{"min":0,"max":10}',
+        }),
       ),
     ).toEqual([{ code: 'constraint-widened', constraint: 'min' }]);
     expect(
       tightenViolations(
         parent,
-        cfd({ id: 'c', key: 'aliquot_count', dataType: FieldDataType.INT, validationJson: '{"min":1,"max":99}' }),
+        cfd({
+          id: 'c',
+          key: 'aliquot_count',
+          dataType: FieldDataType.INT,
+          validationJson: '{"min":1,"max":99}',
+        }),
       ),
     ).toEqual([{ code: 'constraint-widened', constraint: 'max' }]);
     expect(
       tightenViolations(
         parent,
-        cfd({ id: 'c', key: 'aliquot_count', dataType: FieldDataType.INT, validationJson: '{"min":1}' }),
+        cfd({
+          id: 'c',
+          key: 'aliquot_count',
+          dataType: FieldDataType.INT,
+          validationJson: '{"min":1}',
+        }),
       ),
     ).toEqual([{ code: 'constraint-dropped', constraint: 'max' }]);
   });
@@ -507,9 +568,9 @@ describe('parseValidation and serializeValidation', () => {
     // The editor knows the constraints `custom_field_validator.h` implements.
     // A newer server may store one this bundle has never heard of; dropping it
     // on save would silently change validation on a field the user only renamed.
-    expect(serializeValidation({ maxLength: 5 }, FieldDataType.TEXT, '{"future":true,"max_length":20}')).toBe(
-      '{"future":true,"max_length":5}',
-    );
+    expect(
+      serializeValidation({ maxLength: 5 }, FieldDataType.TEXT, '{"future":true,"max_length":20}'),
+    ).toBe('{"future":true,"max_length":5}');
   });
 
   it('drops constraints that do not apply once the type changes', () => {
@@ -523,9 +584,9 @@ describe('definitionProblems', () => {
   const base = { key: 'patient_id', label: 'Patient id', dataType: FieldDataType.TEXT };
 
   it('refuses is_phi together with indexed, with the L10 reason', () => {
-    expect(definitionProblems({ ...base, isPhi: true, indexed: true }, { phiEnabled: true })).toEqual([
-      { code: 'phi-and-indexed' },
-    ]);
+    expect(
+      definitionProblems({ ...base, isPhi: true, indexed: true }, { phiEnabled: true }),
+    ).toEqual([{ code: 'phi-and-indexed' }]);
   });
 
   it('refuses is_phi when the lab has PHI mode off', () => {
@@ -561,7 +622,10 @@ describe('definitionProblems', () => {
       ),
     ).toEqual([{ code: 'enum-values-duplicated' }]);
     expect(
-      definitionProblems({ ...base, dataType: FieldDataType.INT, min: 5, max: 1 }, { phiEnabled: true }),
+      definitionProblems(
+        { ...base, dataType: FieldDataType.INT, min: 5, max: 1 },
+        { phiEnabled: true },
+      ),
     ).toEqual([{ code: 'range-inverted' }]);
   });
 

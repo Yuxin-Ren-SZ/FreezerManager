@@ -118,14 +118,13 @@ export function buildItemTypeTree(types: readonly ItemType[]): ItemTypeTree {
       continue;
     }
     visited.add(frame.type.id);
-    const node: ItemTypeNode = { type: frame.type, depth: frame.depth, children: [] };
+    const children: ItemTypeNode[] = [];
+    const node: ItemTypeNode = { type: frame.type, depth: frame.depth, children };
     frame.out.push(node);
-    const children = [...(childrenOf.get(frame.type.id) ?? [])].sort(compareItemTypes);
-    for (let index = children.length - 1; index >= 0; index -= 1) {
-      const child = children[index];
-      if (child !== undefined) {
-        stack.push({ type: child, depth: frame.depth + 1, out: node.children });
-      }
+    const sorted = [...(childrenOf.get(frame.type.id) ?? [])].sort(compareItemTypes);
+    // Reversed so `pop()` visits them in name order.
+    for (const child of sorted.reverse()) {
+      stack.push({ type: child, depth: frame.depth + 1, out: children });
     }
   }
 
@@ -212,6 +211,11 @@ export interface EffectiveField {
    * one a child "tightens". `null` when the key is defined once.
    */
   readonly tightenedFrom: CustomFieldDefinition | null;
+  /**
+   * The label of the item type `tightenedFrom` is attached to; `null` when
+   * there is nothing to tighten or the shadowed definition is lab-wide.
+   */
+  readonly tightenedFromName: string | null;
 }
 
 /**
@@ -230,12 +234,40 @@ export function resolveFields(
   types: readonly ItemType[],
   nodeId: string,
 ): readonly EffectiveField[] {
+  return resolveForLineage(cfds, types, nodeId, lineageOf(types, nodeId));
+}
+
+/**
+ * What `nodeId` *inherits*: its ancestors' and the lab-wide definitions, one
+ * per key, with the node's own definitions left out.
+ *
+ * This is what the field form checks a new or edited definition against. It
+ * cannot be read off `resolveFields`' result on the node itself: once a node
+ * defines a key, its own row is the only one left for that key, and the
+ * ancestor definition it has to stay compatible with is gone from the list.
+ */
+export function resolveInheritedFields(
+  cfds: readonly CustomFieldDefinition[],
+  types: readonly ItemType[],
+  nodeId: string,
+): readonly EffectiveField[] {
+  // Drop the node itself, so its own definitions do not participate in the
+  // ranking and lab-global definitions still do.
+  const lineage = lineageOf(types, nodeId).slice(1);
+  return resolveForLineage(cfds, types, nodeId, lineage);
+}
+
+function resolveForLineage(
+  cfds: readonly CustomFieldDefinition[],
+  types: readonly ItemType[],
+  nodeId: string,
+  lineage: readonly string[],
+): readonly EffectiveField[] {
   const byId = new Map(types.map((type) => [type.id, type]));
   const node = byId.get(nodeId);
   if (node === undefined) {
     return [];
   }
-  const lineage = lineageOf(types, nodeId);
   const rankOf = new Map(lineage.map((id, index) => [id, lineage.length - index]));
 
   interface Slot {
@@ -279,6 +311,10 @@ export function resolveFields(
       originName:
         slot.cfd.itemTypeId === undefined ? null : (byId.get(slot.cfd.itemTypeId)?.name ?? null),
       tightenedFrom: slot.shadow,
+      tightenedFromName:
+        slot.shadow?.itemTypeId === undefined
+          ? null
+          : (byId.get(slot.shadow.itemTypeId)?.name ?? null),
     }));
 }
 
@@ -475,20 +511,23 @@ export function parseValidation(json: string): ValidationConstraints {
     max?: number | string;
     values?: readonly string[];
   } = {};
-  const maxLength = parsed['max_length'];
+  const maxLength = parsed.max_length;
   if (typeof maxLength === 'number' && Number.isFinite(maxLength)) {
     constraints.maxLength = maxLength;
   }
-  const min = parsed['min'];
+  const min = parsed.min;
   if (typeof min === 'number' || typeof min === 'string') {
     constraints.min = min;
   }
-  const max = parsed['max'];
+  const max = parsed.max;
   if (typeof max === 'number' || typeof max === 'string') {
     constraints.max = max;
   }
-  const values = parsed['values'];
-  if (Array.isArray(values) && values.every((value): value is string => typeof value === 'string')) {
+  const values = parsed.values;
+  if (
+    Array.isArray(values) &&
+    values.every((value): value is string => typeof value === 'string')
+  ) {
     constraints.values = values;
   }
   return constraints;
@@ -510,45 +549,50 @@ export function serializeValidation(
   dataType: FieldDataType,
   previousJson = '{}',
 ): string {
-  const base: Record<string, unknown> = (() => {
+  const previous: Record<string, unknown> = (() => {
     try {
       const parsed: unknown = JSON.parse(previousJson);
-      return isRecord(parsed) ? { ...parsed } : {};
+      return isRecord(parsed) ? parsed : {};
     } catch {
       return {};
     }
   })();
-  for (const key of KNOWN_KEYS) {
-    delete base[key];
+  // Drop the constraints this writer owns and carry everything else through:
+  // a rule a newer server wrote must survive a rename in this bundle.
+  const base: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(previous)) {
+    if (!KNOWN_KEYS.includes(key as (typeof KNOWN_KEYS)[number])) {
+      base[key] = value;
+    }
   }
 
   switch (dataType) {
     case FieldDataType.TEXT:
       if (constraints.maxLength !== undefined) {
-        base['max_length'] = constraints.maxLength;
+        base.max_length = constraints.maxLength;
       }
       break;
     case FieldDataType.INT:
     case FieldDataType.FLOAT:
       if (typeof constraints.min === 'number') {
-        base['min'] = constraints.min;
+        base.min = constraints.min;
       }
       if (typeof constraints.max === 'number') {
-        base['max'] = constraints.max;
+        base.max = constraints.max;
       }
       break;
     case FieldDataType.DATE:
     case FieldDataType.DATETIME:
       if (typeof constraints.min === 'string' && constraints.min !== '') {
-        base['min'] = constraints.min;
+        base.min = constraints.min;
       }
       if (typeof constraints.max === 'string' && constraints.max !== '') {
-        base['max'] = constraints.max;
+        base.max = constraints.max;
       }
       break;
     case FieldDataType.ENUM:
       if (constraints.values !== undefined && constraints.values.length > 0) {
-        base['values'] = [...constraints.values];
+        base.values = [...constraints.values];
       }
       break;
     case FieldDataType.BOOL:
@@ -634,7 +678,11 @@ export function definitionProblems(
       problems.push({ code: 'enum-values-duplicated' });
     }
   }
-  if (draft.min !== undefined && draft.max !== undefined && compareBound(draft.min, draft.max) > 0) {
+  if (
+    draft.min !== undefined &&
+    draft.max !== undefined &&
+    compareBound(draft.min, draft.max) > 0
+  ) {
     problems.push({ code: 'range-inverted' });
   }
   return problems;
