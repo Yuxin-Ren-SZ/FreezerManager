@@ -1,15 +1,28 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //
-// Fails `npm run build` when the initial JS payload is over budget (TODO.md
-// G1.1: 250 KiB gzipped, overridable with FMGR_WEB_JS_BUDGET_KIB).
+// Two guards on the shape of the build, both run by `npm run build`.
 //
-// "Initial JS" is everything `dist/index.html` pulls in before the first paint:
-// the entry `<script>` plus the `<link rel="modulepreload">` files Vite emits
-// for its static imports. Chunks behind `import()` are deliberately not
-// counted — the TanStack Table/Virtual screens are expected to be lazy (G1.3).
+// 1. **The budget.** Fails when the initial JS payload is over 250 KiB gzipped
+//    (TODO.md G1.1, overridable with FMGR_WEB_JS_BUDGET_KIB). "Initial JS" is
+//    everything `dist/index.html` pulls in before the first paint: the entry
+//    `<script>` plus the `<link rel="modulepreload">` files Vite emits for its
+//    static imports. Chunks behind `import()` are deliberately not counted.
+//
+// 2. **The chunking.** Fails when a feature screen is reachable from the entry
+//    chunk's static imports, i.e. when it is not behind `import()` in
+//    `src/app/route-map.tsx` (issue #64). See the section at the bottom.
+//
+// They belong together because the budget alone is too blunt to be a regression
+// test: it only complains once the entry has already grown past the ceiling, so
+// a screen imported statically today is reported weeks later as "this screen is
+// too big" rather than as "the entry is carrying every screen".
+//
+// Guard 2 reads Vite's build manifest, which needs `build.manifest` in
+// `vite.config.ts`. It exits 1 when the manifest is missing rather than passing
+// by finding nothing.
 
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readFile, readdir } from 'node:fs/promises';
+import { join, resolve, sep } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 const BUDGET_KIB = Number.parseInt(process.env.FMGR_WEB_JS_BUDGET_KIB ?? '250', 10);
@@ -52,6 +65,109 @@ if (totalKiB > BUDGET_KIB) {
   console.error(
     `check-bundle-size: over budget by ${(totalKiB - BUDGET_KIB).toFixed(1)} KiB — ` +
       'split the new code behind import(), or raise the budget in the issue first.',
+  );
+  process.exit(1);
+}
+
+// --- 2. the chunking guard -------------------------------------------------
+//
+// The property: every screen under `src/features/<name>/<Name>Screen.tsx` is
+// reached through `import()`, so it gets its own chunk and the entry chunk
+// carries only the shell (issue #64). G-arch 11 puts one screen per feature
+// directory, which is why the glob is exactly one level deep.
+//
+// `import()`ed modules appear in the build manifest as dynamic entries; a
+// screen imported statically does not appear in the manifest at all, and a
+// screen that is imported both ways appears in the entry's *static* closure.
+// Both are failures below.
+//
+// The limit worth knowing: the manifest maps entries to chunks, not every
+// module to the chunk it landed in, so this proves each screen has a dynamic
+// entry of its own and is not statically reachable. It cannot prove no copy of
+// a screen also sits in the entry chunk; the budget above is what pays for that
+// case, and together the two cover it.
+
+const FEATURES_DIR = join(process.cwd(), 'src', 'features');
+
+const screenFiles = (await readdir(FEATURES_DIR, { recursive: true }))
+  .map((path) => path.split(sep).join('/'))
+  .filter((path) => /^[^/]+\/[^/]+Screen\.tsx$/.test(path))
+  .map((path) => `src/features/${path}`)
+  .sort();
+
+if (screenFiles.length === 0) {
+  console.error(
+    'check-bundle-size: no src/features/*/*Screen.tsx found — the chunking guard would ' +
+      'pass by finding nothing, which is the failure mode it exists to avoid.',
+  );
+  process.exit(1);
+}
+
+let manifest;
+try {
+  manifest = JSON.parse(await readFile(join(distDir, '.vite', 'manifest.json'), 'utf8'));
+} catch (error) {
+  console.error(
+    'check-bundle-size: cannot read dist/.vite/manifest.json, which the chunking guard ' +
+      `needs (${error.message}). \`vite.config.ts\` sets build.manifest, so a run of ` +
+      '`npm run build` produces it.',
+  );
+  process.exit(1);
+}
+
+const entryKey = Object.keys(manifest).find((key) => manifest[key].isEntry === true);
+if (entryKey === undefined) {
+  console.error('check-bundle-size: dist/.vite/manifest.json has no entry chunk.');
+  process.exit(1);
+}
+
+/** The chunks the entry reaches over one manifest edge type, transitively. */
+function reachable(edge) {
+  const seen = new Set([entryKey]);
+  const visit = (key) => {
+    for (const next of manifest[key]?.[edge] ?? []) {
+      if (seen.has(next)) {
+        continue;
+      }
+      seen.add(next);
+      visit(next);
+    }
+  };
+  visit(entryKey);
+  return seen;
+}
+
+const staticChunks = reachable('imports');
+
+const dynamicChunks = new Set();
+for (const key of staticChunks) {
+  for (const next of manifest[key]?.dynamicImports ?? []) {
+    dynamicChunks.add(next);
+  }
+}
+
+const problems = [];
+for (const screen of screenFiles) {
+  if (staticChunks.has(screen)) {
+    problems.push(`${screen} is in the entry chunk's static imports`);
+  } else if (!dynamicChunks.has(screen)) {
+    problems.push(`${screen} is not reached by import() from the entry chunk`);
+  }
+}
+
+const jsChunks = (await readdir(join(distDir, 'assets'))).filter((name) => name.endsWith('.js'));
+console.log(
+  `check-bundle-size: ${jsChunks.length} JS chunks for ${screenFiles.length} feature screens, ` +
+    `${assets.size} chunk(s) before first paint`,
+);
+
+if (problems.length > 0) {
+  console.error(
+    'check-bundle-size: the entry chunk is carrying feature screens (issue #64):\n' +
+      problems.map((problem) => `  - ${problem}`).join('\n') +
+      '\n  Route a screen with `lazyScreen(() => import(…), …)` in src/app/route-map.tsx ' +
+      'rather than importing it at the top of the file: the shell stays eager, the screen ' +
+      'is a screen the user chose to open.',
   );
   process.exit(1);
 }

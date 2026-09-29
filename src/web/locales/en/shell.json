@@ -65,5 +65,8 @@
     "loading": "Checking your session\u2026",
     "errorTitle": "Could not check your session",
     "errorBody": "The server could not be reached, so the app cannot tell whether you are signed in. Nothing has been lost."
+  },
+  "screen": {
+    "loading": "Loading screen\u2026"
   }
 }
