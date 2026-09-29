@@ -12,6 +12,8 @@
 #include <fmgr/v1/session.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 
+#include <algorithm>
+
 namespace fmgr::server {
   namespace {
 
@@ -34,6 +36,37 @@ namespace fmgr::server {
           .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
+    }
+
+    // #77: does `session_id` belong to the caller? find_by_id() returns
+    // tombstoned rows as well, which keeps a repeated revoke of one's own
+    // session the idempotent no-op the IAuthProvider contract promises instead
+    // of turning it into a permission error. A session's owner never changes,
+    // so checking it in a separate read cannot race the tombstone write.
+    [[nodiscard]] bool caller_owns_session(storage::IStorageBackend& backend,
+                                           const auth::SessionContext& sctx,
+                                           const core::SessionId& session_id) {
+      auto txn = backend.begin(storage::IsolationLevel::ReadCommitted);
+      rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+      const auto target = txn->repo<core::Session>().find_by_id(session_id);
+      txn->commit();
+      return target.has_value() && target->user_id == sctx.user_id;
+    }
+
+    // #77: `session.revoke` is a lab-scoped grant in the catalog (by default
+    // only the SystemAdmin role holds it, per lab) and RevokeSessionRequest
+    // carries no lab, so "held in any lab, or deployment-wide" is the only
+    // well-defined evaluation of the permission for this RPC. Non-empty for
+    // exactly the principals `session.revoke` was written for; an API token
+    // whose scope excludes the permission stays excluded, because the scope
+    // intersection has already pruned it from these sets.
+    [[nodiscard]] bool holds_session_revoke_anywhere(const auth::SessionContext& sctx) {
+      if (sctx.has_global(core::Permission::SessionRevoke)) {
+        return true;
+      }
+      return std::ranges::any_of(sctx.permissions_by_lab, [](const auto& lab_grants) {
+        return lab_grants.second.contains(core::Permission::SessionRevoke);
+      });
     }
 
     void fill_session_summary(fmgr::v1::SessionSummary* out, const core::Session& s) {
@@ -98,6 +131,18 @@ namespace fmgr::server {
     try {
       const auto sctx = validate_authed(auth_, *ctx);
       const auto session_id = core::SessionId::parse(req->session_id());
+
+      // #77: a caller may always revoke its own sessions -- that logout path is
+      // why this RPC exists. Revoking someone else's is the SystemAdmin
+      // exception the proto documents, and it is gated on the named
+      // session.revoke permission rather than happening by accident. The denial
+      // is decided by ownership, never by existence, so it is not an oracle for
+      // whether a session id is live.
+      if (!caller_owns_session(backend_, sctx, session_id) &&
+          !holds_session_revoke_anywhere(sctx)) {
+        throw auth::PermissionDenied("caller may not revoke another user's session");
+      }
+
       auth_.revoke_session(session_id, make_ctx(*ctx, sctx, "revoke_session"));
       return grpc::Status::OK;
     } catch (...) {
