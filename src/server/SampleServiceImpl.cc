@@ -187,6 +187,15 @@ namespace fmgr::server {
       out->set_custom_fields_json(sample.custom_fields_json);
     }
 
+    // A PHI value that says nothing: an explicit JSON null or an empty string.
+    // Both are a blank the caller is asking for, not a value it is supplying, so
+    // they cannot count as a PHI write on their own. Anything else — including 0
+    // and false, which are real values — is a value. Fields whose data type is
+    // not a string are already rejected by validation before this matters.
+    [[nodiscard]] bool is_blank_phi_value(const nlohmann::json& value) {
+      return value.is_null() || (value.is_string() && value.get_ref<const std::string&>().empty());
+    }
+
     // Outcome of partitioning an incoming custom-field blob into the plaintext
     // (non-PHI) column and the encrypted PHI envelope.
     struct PreparedCustomFields {
@@ -198,6 +207,11 @@ namespace fmgr::server {
       // a caller that was shown the fields, and "leave it alone" to one that
       // never was. See UpdateSample.
       bool phi_keys_present{false};
+      // True when at least one supplied PHI key carried a *value* rather than a
+      // blank (see is_blank_phi_value). A blank is not a write, so it cannot
+      // make a request authoritative for PHI; UpdateSample still honours the
+      // request when its own caller could have seen the stored fields.
+      bool has_non_empty_phi_value{false};
     };
 
     // Validate the combined incoming custom fields, then split them: PHI-tagged
@@ -236,6 +250,9 @@ namespace fmgr::server {
         for (const auto& [key, value] : incoming.items()) {
           if (phi_keys.contains(key)) {
             phi.emplace(key, value);
+            if (!is_blank_phi_value(value)) {
+              prepared.has_non_empty_phi_value = true;
+            }
           } else {
             non_phi[key] = value;
           }
@@ -647,6 +664,16 @@ namespace fmgr::server {
       const auto& wire = req->sample();
       const auto lab_id = core::LabId::parse(wire.lab_id());
       const auto sample_id = core::SampleId::parse(wire.id());
+      // authorize() checks SampleWrite against the *client-supplied* lab_id, so
+      // by itself it only proves the caller may write in the lab it named — not
+      // that the sample it names lives there. What makes the pair safe is the
+      // find_by_id check below: it rejects unless the stored row's lab_id equals
+      // this one. On SQLite that comparison is the only lab scoping there is —
+      // inject_rls_vars' session vars are a no-op there (IStorageBackend.h's
+      // default set_session_var; only Postgres overrides it), so the RLS backstop
+      // exists on one backend. The two belong together: if that check moves,
+      // loses the lab_id comparison, or runs after anything that acts on the row,
+      // this gate stops being lab-scoped.
       const auto sctx =
           middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleWrite, lab_id);
 
@@ -707,12 +734,30 @@ namespace fmgr::server {
       // mention PHI, so writing the prepared (empty) envelope over the stored one
       // would destroy the sample's PHI on any unrelated edit. A caller that did
       // see the fields stays authoritative, and one whose request carries no PHI
-      // key at all deliberately clears the envelope. A request that does carry
-      // PHI keys is honored either way — PHI write has never required phi.read
+      // key at all deliberately clears the envelope. A request that carries a
+      // PHI *value* is honored either way — PHI write has never required phi.read
       // (PhiWriteDoesNotRequirePhiRead).
+      //
+      // A PHI key with a blank value ("" or null) is not a value, so it is not a
+      // write: it is an erasure. Validation lets it through — an empty string
+      // counts as present, and null as absent, for an optional field — and key
+      // membership alone would call it a supplied PHI key, which is how a caller
+      // that never saw the stored value could destroy it. Blanks therefore only
+      // count for a caller that could have seen what it is clearing, which is
+      // `caller_saw_phi`; for everyone else the stored envelope is left alone,
+      // exactly as if the key had been absent.
+      //
+      // Not closed here, deliberately: a request carrying any non-blank PHI value
+      // is authoritative for the whole envelope, so a non-reader that supplies a
+      // real value for one PHI key still replaces the others rather than merging
+      // into them. That is the #71 decision (non-readers may write PHI) meeting
+      // whole-envelope replacement; making it a per-key merge is a separate
+      // change, not part of closing the blank-value path.
       const bool caller_saw_phi =
           kms_ != nullptr && sctx.has_for_lab(lab_id, core::Permission::PhiRead);
-      if (prepared.phi_keys_present || caller_saw_phi) {
+      const bool caller_supplied_phi_value =
+          prepared.phi_keys_present && prepared.has_non_empty_phi_value;
+      if (caller_supplied_phi_value || caller_saw_phi) {
         existing->phi_fields_enc_json = prepared.phi_fields_enc_json;
       }
       existing->last_modified_by = sctx.user_id;

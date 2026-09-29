@@ -101,9 +101,12 @@ uses.
 Two `GrpcTlsTest` crashes (`WrongHostnameRejected` SIGTRAP, `EcdsaKeyWorks` SEGFAULT)
 appeared in intermediate full runs **while a clang-tidy A/B sweep was running
 concurrently on the same machine**. They are load artifacts, not this change: the TLS
-binary passes 5/5 when run alone, nothing in this diff is reachable from it, and a
-final full run with the machine otherwise idle is `1446/1446`, exit 0. Worth knowing
-before chasing that SIGSEGV in a review.
+binary's **18** tests all pass when it is run alone (`--gtest_list_tests` and
+`ctest -N` both report 18; an earlier revision of this note said "5/5", which is not
+this binary's test count whichever run produced it — the conclusion stands, but
+dismissing a SEGFAULT should not rest on a figure that does not check out), nothing
+in this diff is reachable from it, and a final full run with the machine otherwise
+idle is `1446/1446`, exit 0. Worth knowing before chasing that SIGSEGV in a review.
 
 **Known limitations / follow-ups:**
 

@@ -712,6 +712,99 @@ namespace fmgr::test {
       EXPECT_EQ(reread.name(), "renamed");
     }
 
+    // An empty PHI value is not a write, it is an erasure. A caller without
+    // phi.read never saw the stored value, so it has no basis to intend one;
+    // key membership alone called this a supplied PHI key and let it through
+    // (validation treats "" as present — see custom_field_validator.h). The
+    // stored value must survive, exactly as when the key is absent.
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderWithEmptyPhiValuePreservesStoredPhi) {
+      const auto admin = login(kAdminEmail, kPassword); // SystemAdmin + phi.read
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      // member holds SampleWrite but not phi.read.
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample(
+          {.token = member, .id = id, .name = "blanked", .custom_fields = R"({"mrn":""})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_NE(*envelope, "{}");
+      EXPECT_EQ(stored_phi(id).at("mrn"), "MRN-555");
+
+      fmgr::v1::Sample reread;
+      ASSERT_TRUE(get_sample(admin, id, &reread).ok());
+      EXPECT_EQ(custom_fields(reread).value("mrn", ""), "MRN-555");
+    }
+
+    // JSON null is the same erasure by another spelling: the validator reads it
+    // as "not present", so nothing rejects it, but the split loop still files it
+    // under the PHI keys.
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderWithNullPhiValuePreservesStoredPhi) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample(
+          {.token = member, .id = id, .name = "nulled", .custom_fields = R"({"mrn":null})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_NE(*envelope, "{}");
+      EXPECT_EQ(stored_phi(id).at("mrn"), "MRN-555");
+
+      fmgr::v1::Sample reread;
+      ASSERT_TRUE(get_sample(admin, id, &reread).ok());
+      EXPECT_EQ(custom_fields(reread).value("mrn", ""), "MRN-555");
+    }
+
+    // The complement, and the line the empty-value rule must not cross: a
+    // non-reader that supplies a real value is still writing PHI, which has
+    // never required phi.read. The guard keys off "a value was supplied", not
+    // off "the caller holds phi.read", so this still replaces the envelope.
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderWithNonEmptyPhiValueReplacesStoredPhi) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample({.token = member,
+                                         .id = id,
+                                         .name = "rewritten",
+                                         .custom_fields = R"({"mrn":"MRN-777"})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_EQ(stored_phi(id).at("mrn"), "MRN-777");
+    }
+
+    // The flip side of the empty-value rule: a phi.read holder *did* see the
+    // stored value, so its explicit empty value is a deliberate clear and is
+    // still honored. Only the "never saw it" case is refused.
+    TEST_F(SampleServiceTest, UpdateSampleByPhiReaderWithEmptyPhiValueClearsStoredPhi) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      const auto status = update_sample(
+          {.token = admin, .id = id, .name = "cleared", .custom_fields = R"({"mrn":""})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_NE(*envelope, "{}"); // the holder's request was honored, not ignored
+      EXPECT_EQ(stored_phi(id).at("mrn"), "");
+
+      fmgr::v1::Sample reread;
+      ASSERT_TRUE(get_sample(admin, id, &reread).ok());
+      EXPECT_EQ(custom_fields(reread).value("mrn", "still-set"), "");
+    }
+
     // The phi.read holder's request *is* authoritative for PHI: it saw the
     // fields, so a new value replaces the stored one.
     TEST_F(SampleServiceTest, UpdateSampleByPhiReaderReplacesStoredPhi) {
