@@ -81,8 +81,6 @@ export interface DemoLab {
    */
   customFieldDefs: CustomFieldDefinition[];
   samples: Sample[];
-  /** Custom-field definitions, including the inheritance chain G3.3 resolves. */
-  cfds: CustomFieldDefinition[];
   /** Chain of custody for the seeded samples; `audit/list` filters it. */
   auditEvents: AuditEvent[];
   /** Layout (BoxService): the physical tree the G3.1 screen renders. */

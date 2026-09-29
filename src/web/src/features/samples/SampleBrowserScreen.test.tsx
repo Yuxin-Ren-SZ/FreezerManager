@@ -530,7 +530,11 @@ describe('SampleBrowserScreen', () => {
       await waitFor(() => {
         expect(within(table()).getByRole('cell', { name: '12.5' })).toBeInTheDocument();
       });
-      expect(within(table()).getByRole('cell', { name: '3' })).toBeInTheDocument();
+      // Scoped to the row on purpose: the demo lab holds a `3` in two different
+      // samples' custom fields (Plasma A's freeze/thaw count and Serum A's
+      // aliquot count), and an unscoped query would match both.
+      const serumRow = within(table()).getByRole('row', { name: /Serum A/ });
+      expect(within(serumRow).getByRole('cell', { name: '3' })).toBeInTheDocument();
     });
 
     it('degrades to the base columns for a member without custom_field.define', async () => {
