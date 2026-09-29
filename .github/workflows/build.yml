@@ -9,69 +9,127 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 # Cancel superseded runs on the same ref: every push to a PR otherwise relaunches
-# the full 7-job matrix (each doing a heavy Conan gRPC/abseil/protobuf build).
-# Exception: never cancel runs on main. Re-running failed jobs (or any overlapping
-# run) on main shares this ref-keyed group, and cancel-in-progress would abort the
-# in-flight re-run — the slow dev/asan/tsan jobs get CANCELLED while the fast jobs
-# finish. Keep PR-push cancellation (the runner-minute saver) but protect main.
+# the whole C++ matrix. Exception: never cancel runs on main. Re-running failed
+# jobs (or any overlapping run) on main shares this ref-keyed group, and
+# cancel-in-progress would abort the in-flight re-run — the slow dev/asan/tsan
+# jobs get CANCELLED while the fast jobs finish. Keep PR-push cancellation (the
+# runner-minute saver) but protect main.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # Decides what the change can affect (#56). A PR that touches only the SPA,
+  # docs or issue templates skips the C++ matrix and clang-tidy. The jobs are
+  # gated with job-level `if:`, so they report "skipped", which counts as passing
+  # (a workflow-level `paths-ignore` would leave required checks pending instead).
+  # Pushes to main always run everything.
+  changes:
+    name: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      cpp: ${{ steps.classify.outputs.cpp }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # On pull_request the checkout is GitHub's merge commit, whose first
+          # parent is the base branch tip; depth 2 makes HEAD^1 available.
+          fetch-depth: 2
+
+      - name: Classify changed files
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "cpp=true (not a pull request)"
+            echo "cpp=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          printf 'Changed files:\n%s\n' "$changed"
+          cpp=false
+          reason="only docs, web and issue-template files changed"
+          while IFS= read -r path; do
+            case "$path" in
+              "") ;;
+              # Part of the CMake tree, although the SPA itself is not.
+              src/web/CMakeLists.txt) cpp=true; reason="$path"; break ;;
+              src/web/* | doc/* | .github/ISSUE_TEMPLATE/* | *.md | .nvmrc) ;;
+              *) cpp=true; reason="$path"; break ;;
+            esac
+          done <<<"$changed"
+          if [ -z "$changed" ]; then
+            cpp=true
+            reason="empty diff"
+          fi
+          echo "cpp=$cpp ($reason)"
+          echo "cpp=$cpp" >> "$GITHUB_OUTPUT"
+
+      # The Release jobs only build; tests run in the Debug presets. One Release
+      # build per PR is enough to catch a Release-only break, so PRs skip
+      # clang-17 release. Pushes to main build all seven.
+      - name: Select the C++ build matrix
+        id: matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          matrix='[
+            {"compiler": "gcc-13", "cc": "gcc-13", "cxx": "g++-13", "preset": "dev", "build_type": "Debug"},
+            {"compiler": "gcc-13", "cc": "gcc-13", "cxx": "g++-13", "preset": "release", "build_type": "Release"},
+            {"compiler": "clang-17", "cc": "clang-17", "cxx": "clang++-17", "preset": "dev", "build_type": "Debug"},
+            {"compiler": "clang-17", "cc": "clang-17", "cxx": "clang++-17", "preset": "release", "build_type": "Release"},
+            {"compiler": "clang-17", "cc": "clang-17", "cxx": "clang++-17", "preset": "asan", "build_type": "Debug"},
+            {"compiler": "clang-17", "cc": "clang-17", "cxx": "clang++-17", "preset": "ubsan", "build_type": "Debug"},
+            {"compiler": "clang-17", "cc": "clang-17", "cxx": "clang++-17", "preset": "tsan", "build_type": "Debug"}
+          ]'
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            filter='map(select(.compiler != "clang-17" or .preset != "release"))'
+          else
+            filter='.'
+          fi
+          selected="$(jq -c "{include: ($filter)}" <<<"$matrix")"
+          echo "matrix=$selected"
+          echo "matrix=$selected" >> "$GITHUB_OUTPUT"
+
+  # SPDX and formatting need neither Conan nor a build, so they report in about
+  # a minute instead of after the C++ tests (and still run when a test fails).
+  lint:
+    name: lint (SPDX, clang-format)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-17
+
+      - name: Check SPDX headers
+        run: tools/check-spdx-headers.sh
+
+      - name: Check formatting
+        run: >
+          git ls-files -z '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' '*.ipp' '*.proto'
+          | xargs -0 --no-run-if-empty clang-format-17 --dry-run --Werror
+
   build:
     name: ${{ matrix.compiler }} ${{ matrix.preset }}
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
     runs-on: ubuntu-24.04
     # Backstop against a hung/OOM/deadlocked build (tsan especially) running to
-    # GitHub's 6h default and burning runner minutes.
-    #
-    # Must exceed a COLD-cache run: when the Conan cache is empty (e.g. after
-    # GitHub's 7-day eviction), "Install dependencies" builds gRPC/protobuf/
-    # abseil/drogon from source (~50 min) before our own build even starts. At
-    # 60 min the Build step was cancelled at the timeout, which SKIPS the cache-
-    # save post-step — so the cache never populated and every subsequent run
-    # stayed cold: a permanent failure loop. 120 min lets a cold run finish and
-    # save the cache; warm runs then complete in well under 20 min.
+    # GitHub's 6h default and burning runner minutes. It must still exceed a
+    # cold-cache run, where "Install dependencies" builds gRPC/protobuf/abseil/
+    # drogon from source (~50 min) before our own build starts. The Conan cache
+    # is saved right after that install, so a later timeout no longer loses it.
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - compiler: gcc-13
-            cc: gcc-13
-            cxx: g++-13
-            preset: dev
-            build_type: Debug
-          - compiler: gcc-13
-            cc: gcc-13
-            cxx: g++-13
-            preset: release
-            build_type: Release
-          - compiler: clang-17
-            cc: clang-17
-            cxx: clang++-17
-            preset: dev
-            build_type: Debug
-          - compiler: clang-17
-            cc: clang-17
-            cxx: clang++-17
-            preset: release
-            build_type: Release
-          - compiler: clang-17
-            cc: clang-17
-            cxx: clang++-17
-            preset: asan
-            build_type: Debug
-          - compiler: clang-17
-            cc: clang-17
-            cxx: clang++-17
-            preset: ubsan
-            build_type: Debug
-          - compiler: clang-17
-            cc: clang-17
-            cxx: clang++-17
-            preset: tsan
-            build_type: Debug
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
 
     services:
       postgres:
@@ -114,8 +172,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             clang-17 \
-            clang-format-17 \
-            clang-tidy-17 \
             cmake \
             g++-13 \
             gcc-13 \
@@ -125,26 +181,11 @@ jobs:
           pipx install conan
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
-      - name: Cache Conan
-        uses: actions/cache@v4
+      - name: Conan dependencies
+        uses: ./.github/actions/conan-deps
         with:
-          path: ~/.conan2
-          key: conan-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ hashFiles('conanfile.py', 'conan.lock') }}
-          restore-keys: |
-            conan-${{ runner.os }}-${{ matrix.compiler }}-${{ matrix.build_type }}-
-            conan-${{ runner.os }}-
-
-      - name: Configure Conan
-        run: conan profile detect --force
-
-      - name: Install dependencies
-        run: >
-          conan install .
-          --lockfile=conan.lock
-          --output-folder=out/conan/${{ matrix.preset }}
-          --build=missing
-          -s build_type=${{ matrix.build_type }}
-          -s compiler.cppstd=gnu20
+          build-type: ${{ matrix.build_type }}
+          preset: ${{ matrix.preset }}
 
       - name: Configure CMake
         env:
@@ -174,33 +215,135 @@ jobs:
           ctest --preset ${{ matrix.preset }} --output-on-failure
           ${{ (matrix.preset == 'asan' || matrix.preset == 'tsan') && '--label-exclude "grpc_integration|e2e"' || '' }}
 
-      - name: Check SPDX headers
-        run: tools/check-spdx-headers.sh
-
-      - name: Check formatting
-        run: |
-          files="$(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' '*.ipp' '*.proto')"
-          if [ -n "$files" ]; then
-            clang-format-17 --dry-run --Werror $files
-          fi
-
-      - name: Run clang-tidy
-        if: ${{ matrix.preset == 'dev' }}
-        run: |
-          # run-clang-tidy (ships with LLVM) lints every TU in compile_commands.json
-          # in parallel; only our sources are in the compile DB (Conan deps are
-          # prebuilt). The trailing regex (Python re.search, negative lookahead)
-          # excludes the protoc/grpc-generated .pb.cc / .grpc.pb.cc translation
-          # units, which are not ours to lint.
-          # Cap parallelism at 2: each clang-tidy process can consume 2–4 GB with
-          # the full check set enabled; -j $(nproc) easily OOMs a runner with
-          # 16 GB RAM (same constraint as the build step above).
-          run-clang-tidy-17 -p out/build/dev -j 2 -quiet '^(?!.*proto_generated).*$'
-
       - name: Coverage tooling
         if: ${{ matrix.preset == 'dev' }}
         continue-on-error: true
         run: gcovr --version
+
+  # clang-tidy runs once, here, rather than in both dev jobs (#56). It needs the
+  # compile DB and the protoc output, not a full build, so it runs alongside the
+  # matrix instead of after a build and the tests.
+  #
+  # Results are cached with ctcache (https://github.com/matus-chochlik/ctcache),
+  # pinned by commit and checksum. ctcache hashes each translation unit's
+  # preprocessed text (so a changed header invalidates every file that includes
+  # it) together with the clang-tidy config dumped for that file, and it stores
+  # only clean results, so a file with findings is re-checked on every run.
+  # Parallelism stays at -j 2 (doc/dev/clang-tidy.md); the cache is what makes
+  # this fast.
+  clang-tidy:
+    name: clang-tidy
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CTCACHE_COMMIT: 857b14271d3ded5511c2e6a60f2dc20c1e4b5680
+      CTCACHE_SHA256: 65b86482ec7574528889ea60f3ce9388e0da562ecc27cdefa4343bc220360884
+      # Hash comments too. Otherwise deleting a NOLINT from a clean file would
+      # leave its preprocessed text unchanged and replay a stale "clean".
+      CTCACHE_KEEP_COMMENTS: "1"
+      # Conan gives every package build a fresh folder name
+      # (~/.conan2/p/b/grpc<16 hex>/p), and that path appears in the -isystem
+      # flags and in the preprocessor's line markers. Strip that segment (a
+      # regex, applied to flags and, with STRIP_SRC, to the preprocessed text), so
+      # a rebuilt but identical dependency does not invalidate every result.
+      # Header content still counts: a changed header changes the hash.
+      CTCACHE_STRIP: '/\.conan2/p/(b/)?[^/\s"]+/p/'
+      CTCACHE_STRIP_SRC: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # A cold Conan cache builds gRPC/protobuf/abseil here too; see the build
+      # job for why the runner needs the extra space.
+      - name: Free up disk space
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/lib/android \
+            /opt/ghc \
+            /usr/local/share/boost \
+            "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Install system tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-17 \
+            clang-tidy-17 \
+            cmake \
+            ninja-build \
+            pipx
+          pipx install conan
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Conan dependencies
+        uses: ./.github/actions/conan-deps
+        with:
+          build-type: Debug
+          preset: dev
+
+      - name: Configure CMake
+        env:
+          CC: clang-17
+          CXX: clang++-17
+        run: cmake --preset dev
+
+      # Every TU that includes an API type needs the generated fmgr/v1/*.pb.h.
+      - name: Generate protobuf sources
+        run: cmake --build --preset dev --target freezermanager_proto -j 2
+
+      - name: Set up ctcache
+        id: ctcache
+        run: |
+          bin="$RUNNER_TEMP/ctcache-bin"
+          mkdir -p "$bin"
+          curl -fsSL --retry 3 -o "$bin/clang_tidy_cache.py" \
+            "https://raw.githubusercontent.com/matus-chochlik/ctcache/$CTCACHE_COMMIT/src/ctcache/clang_tidy_cache.py"
+          echo "$CTCACHE_SHA256  $bin/clang_tidy_cache.py" | sha256sum --check -
+          tidy="$(command -v clang-tidy-17)"
+          printf '#!/bin/sh\nexec python3 "%s" "%s" "$@"\n' "$bin/clang_tidy_cache.py" "$tidy" > "$bin/clang-tidy"
+          chmod +x "$bin/clang-tidy"
+          echo "CTCACHE_DIR=$RUNNER_TEMP/ctcache" >> "$GITHUB_ENV"
+          # Part of the cache key: a different clang-tidy may report differently
+          # on unchanged code, so it starts from an empty cache.
+          echo "tidy-version=$("$tidy" --version | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      # The entries are a few bytes per clean TU, so every run saves one (PRs
+      # included) and restores the newest for its clang-tidy version.
+      - name: Restore clang-tidy result cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ctcache
+          key: ctcache-${{ runner.os }}-${{ steps.ctcache.outputs.tidy-version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ctcache-${{ runner.os }}-${{ steps.ctcache.outputs.tidy-version }}-
+
+      - name: Run clang-tidy
+        # run-clang-tidy (ships with LLVM) lints every TU in compile_commands.json;
+        # only our sources are in the compile DB (Conan deps are prebuilt). The
+        # trailing regex (Python re.search, negative lookahead) excludes the
+        # protoc/grpc-generated .pb.cc / .grpc.pb.cc translation units, which are
+        # not ours to lint. Never above -j 2: each clang-tidy process can use
+        # 2–4 GB with the full check set, and the runner has 16 GB.
+        run: >
+          run-clang-tidy-17 -p out/build/dev -j 2 -quiet
+          -clang-tidy-binary "$RUNNER_TEMP/ctcache-bin/clang-tidy"
+          '^(?!.*proto_generated).*$'
+
+      - name: clang-tidy cache statistics
+        if: success() || failure()
+        run: python3 "$RUNNER_TEMP/ctcache-bin/clang_tidy_cache.py" --show-stats
+
+      # Saved after a failed run too: the clean results it did produce are valid.
+      - name: Save clang-tidy result cache
+        if: success() || failure()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ctcache
+          key: ctcache-${{ runner.os }}-${{ steps.ctcache.outputs.tidy-version }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # The SPA in src/web (TODO.md G1.1) is independent of the C++ matrix: it needs
   # Node, not Conan, and finishes in about a minute. A separate job means a web

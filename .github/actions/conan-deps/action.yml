@@ -1,0 +1,73 @@
+name: Conan dependencies
+description: >-
+  Restore the Conan package cache, install the locked dependencies into
+  out/conan/<preset>, and, on pushes to main only, save a trimmed cache for
+  later runs.
+
+# Why the cache looks like this (issue #56):
+#
+# - GitHub keeps at most 10 GB of Actions cache per repository. An untrimmed
+#   ~/.conan2 is ~3.7 GB compressed, because it still holds the gRPC/protobuf/
+#   abseil build trees. Four such entries evicted each other, so most runs
+#   rebuilt every dependency from source (~50 min). `conan cache clean` keeps
+#   only the package binaries the build links against.
+# - The key has no compiler in it. `conan profile detect` runs without CC/CXX,
+#   so every job, clang ones included, builds its dependencies with the
+#   runner's default gcc 13 and gets identical package ids. One entry per build
+#   type is enough.
+# - Only pushes to main save. A PR run can read main's entry but never writes a
+#   multi-GB entry of its own that would evict it.
+
+inputs:
+  build-type:
+    description: Conan/CMake build type, Debug or Release.
+    required: true
+  preset:
+    description: CMake preset; selects the output folder out/conan/<preset>.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Restore Conan cache
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ~/.conan2
+        key: conan-${{ runner.os }}-${{ inputs.build-type }}-${{ hashFiles('conanfile.py', 'conan.lock') }}
+        # The last two prefixes match the per-compiler keys used before #56.
+        # Those entries hold the same gcc-built binaries, so they can warm-start
+        # a run until they expire (7 days without use).
+        restore-keys: |
+          conan-${{ runner.os }}-${{ inputs.build-type }}-
+          conan-${{ runner.os }}-gcc-13-${{ inputs.build-type }}-
+          conan-${{ runner.os }}-clang-17-${{ inputs.build-type }}-
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        conan profile detect --force
+        conan install . \
+          --lockfile=conan.lock \
+          --output-folder=out/conan/${{ inputs.preset }} \
+          --build=missing \
+          -s build_type=${{ inputs.build-type }} \
+          -s compiler.cppstd=gnu20
+
+    # Saved right after the install, before our own build, so a later build or
+    # test failure (or the job timeout) can no longer cost the next run its cache.
+    - name: Trim Conan cache
+      if: github.event_name == 'push' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        conan cache clean "*" --source --build --download --temp
+        du -sh ~/.conan2
+
+    # Jobs sharing a build type race to save the same key; the losers log
+    # "another job may be creating this cache" and carry on.
+    - name: Save Conan cache
+      if: github.event_name == 'push' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ~/.conan2
+        key: ${{ steps.restore.outputs.cache-primary-key }}
