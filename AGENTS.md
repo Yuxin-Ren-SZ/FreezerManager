@@ -241,8 +241,11 @@ same `npm ci && npm run check` in the `web` job, independently of the C++ matrix
 - **Every mutation writes its audit row in the same transaction.** A new
   mutating RPC without audit coverage is a blocking review comment.
 - **Every new RPC is registered** in the `AuthMiddleware` RPC → permission
-  registry. `ServerIntegrationTest.RpcRegistryCoversAllExpectedMethods`
-  enforces this.
+  registry, **and the permission it registers must match the one the method's
+  `authorize()` call enforces.** The per-method `authorize()` is the enforcement
+  point; the registry is documentation. `ServerIntegrationTest.RpcRegistryCoversAllExpectedMethods`
+  asserts only a count floor, so it cannot catch a mismatch between the two —
+  keeping them in step is a review obligation until **#60** makes it structural.
 - **PHI never appears** in logs, error messages, fixtures, screenshots, PR text
   or unencrypted backups.
 - **SQLite is single-writer:** return `Unavailable` on contention and let
