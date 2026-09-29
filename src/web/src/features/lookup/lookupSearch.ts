@@ -21,6 +21,13 @@ import { queryTooShort } from '../samples/sampleFilters';
  *
  * Pure apart from `call()`, so the screen's tests can pin the request order
  * without rendering anything.
+ *
+ * **`probeBarcode` is that first step on its own**, and it has a second caller:
+ * G3.6's scan mode (`features/scan/`) resolves the tube with it and then acts on
+ * it. Scan mode deliberately never reaches the free-text fallback — applying a
+ * check-out to a *name* that happens to contain the scanned characters changes a
+ * tube the operator is not holding — so the ordering above stays the single
+ * definition of how a scanned term is looked up.
  */
 
 /**
@@ -63,13 +70,14 @@ interface SamplePage {
 async function listSamples(
   labId: string,
   filters: { readonly barcode?: string; readonly query?: string },
+  pageSize: number = LOOKUP_PAGE_SIZE,
 ): Promise<SamplePage> {
   const response = await call('sample/list', {
     labId,
     // Deleted samples are not a lookup result, whoever scans the old label.
     includeArchived: false,
     ...filters,
-    page: { pageSize: LOOKUP_PAGE_SIZE, pageToken: '' },
+    page: { pageSize, pageToken: '' },
   });
 
   return {
@@ -79,13 +87,30 @@ async function listSamples(
 }
 
 /**
+ * The exact-barcode step on its own: one page of `sample/list?barcode=`, no
+ * fallback, and no interpretation of the answer.
+ *
+ * A caller that is going to *act* on the result (G3.6's scan mode) passes a
+ * small `pageSize` — it only needs to know whether the barcode is unique — and
+ * decides for itself what zero or several hits mean. Throws only when the
+ * request itself failed; a caller must not read that as "no match".
+ */
+export async function probeBarcode(
+  labId: string,
+  term: string,
+  pageSize: number = LOOKUP_PAGE_SIZE,
+): Promise<SamplePage> {
+  return listSamples(labId, { barcode: term }, pageSize);
+}
+
+/**
  * Where the sample is, for the scanned term.
  *
  * Throws only when the request itself failed; the caller renders that as the
  * error state, not as a miss.
  */
 export async function searchSamples(labId: string, term: string): Promise<LookupOutcome> {
-  const barcode = await listSamples(labId, { barcode: term });
+  const barcode = await probeBarcode(labId, term);
   if (barcode.samples.length > 0) {
     return { kind: 'barcode', ...barcode };
   }

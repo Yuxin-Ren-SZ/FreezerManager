@@ -1,4 +1,63 @@
 {
   "title": "Bulk check-in / check-out",
-  "placeholder": "This screen is a placeholder. {{task}} fills it in."
+  "action": {
+    "label": "Action for every scan",
+    "hint": "Chosen once, then applied to each barcode you scan.",
+    "out": "Check out",
+    "in": "Check in",
+    "discard": "Discard"
+  },
+  "reason": {
+    "label": "Reason (optional)",
+    "hint": "Stored with every action in this session, in the sample's chain of custody."
+  },
+  "volume": {
+    "label": "Volume used",
+    "hint": "Subtracted from each sample you check in.",
+    "unitLabel": "Unit"
+  },
+  "field": {
+    "label": "Scan a barcode",
+    "placeholder": "Scan a barcode",
+    "submit": "Apply",
+    "hint": "The barcode is looked up exactly — a name is not enough to act on. The field stays ready for the next tube.",
+    "noLab": "You are not a member of a lab yet, so there is nothing to scan into."
+  },
+  "autoSubmit": {
+    "label": "Submit when the scan pauses",
+    "hint": "Off by default: most scanners send Enter. Turn this on only if yours does not."
+  },
+  "session": {
+    "new": "New session",
+    "newHint": "Clears this log and lets the same barcodes be scanned again. It does not undo anything."
+  },
+  "log": {
+    "title": "This session",
+    "count_one": "{{count}} scan",
+    "count_other": "{{count}} scans",
+    "emptyTitle": "No scans yet",
+    "emptyHint": "Pick an action above, then scan the first barcode."
+  },
+  "outcome": {
+    "done": "Done",
+    "doneHint": "Recorded in the sample's chain of custody.",
+    "notFound": "No such barcode",
+    "notFoundHint": "Nothing in this lab carries that barcode. Check the label, or look the tube up by name.",
+    "wrongState": "Wrong state",
+    "wrongStateHint": "The sample is {{status}}, so {{action}} does not apply to it.",
+    "denied": "Not allowed",
+    "deniedHint": "The server refused {{action}}: your role does not allow it in this lab. Ask a lab administrator.",
+    "duplicate": "Already scanned",
+    "duplicateHint": "This session already applied {{action}} to this barcode, so the second scan was skipped. Start a new session to do it again.",
+    "ambiguous": "Barcode not unique",
+    "ambiguousHint": "More than one sample carries this barcode, so nothing was changed. Use Lookup to pick the right one.",
+    "unavailable": "Could not reach the server",
+    "unavailableHint": "Nothing was changed, and the same scan can be sent again."
+  },
+  "noUndo": {
+    "title": "There is no undo",
+    "body": "Every action is written to the sample's chain of custody, and the server decides what is allowed. This screen cannot take an action back.",
+    "reverse": "To reverse a check-out, scan the same tube again with Check in. A discard is final: nothing brings a discarded sample back, so a discard made in error is corrected by creating a new sample and recording why in the reason.",
+    "session": "Starting a new session clears the log; it does not undo anything."
+  }
 }

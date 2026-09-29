@@ -1,0 +1,149 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-4);
+  max-width: var(--fmgr-content-max-width);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fmgr-font-size-xl);
+  line-height: var(--fmgr-line-height-tight);
+}
+
+/* What a scan does, chosen once before the stack starts moving. */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--fmgr-space-3);
+}
+
+.controls > * {
+  flex: 1 1 14rem;
+}
+
+/* The scan field and its button, side by side and wrapping on a narrow window
+   rather than scrolling: the field must never be pushed off-screen. */
+.scan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--fmgr-space-2);
+}
+
+/* Oversized and monospaced for the same reason as G3.5's lookup field: it is
+   read at arm's length, through gloves, and a mistyped character has to be
+   visible at a glance. */
+.input {
+  flex: 1 1 22rem;
+  min-height: var(--fmgr-control-height-lg);
+  padding: 0 var(--fmgr-space-3);
+  color: var(--fmgr-color-text);
+  font-family: var(--fmgr-font-mono);
+  font-size: var(--fmgr-font-size-lg);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border);
+  border-radius: var(--fmgr-radius-md);
+}
+
+.input:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+.hint {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.session {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-2);
+  padding-top: var(--fmgr-space-3);
+  border-top: 1px solid var(--fmgr-color-border-subtle);
+}
+
+.sessionHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--fmgr-space-3);
+}
+
+.sessionTitle {
+  margin: 0;
+  font-size: var(--fmgr-font-size-lg);
+  line-height: var(--fmgr-line-height-tight);
+}
+
+.count {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+/* The log is read top to bottom, newest last, and it grows while the operator
+   is looking at the tube rather than the screen. */
+.log {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.entry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--fmgr-space-3);
+  padding: var(--fmgr-space-2) var(--fmgr-space-3);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-md);
+}
+
+.entryBarcode {
+  font-family: var(--fmgr-font-mono);
+  font-size: var(--fmgr-font-size-base);
+}
+
+.entrySample {
+  color: var(--fmgr-color-accent-text);
+  font-weight: var(--fmgr-font-weight-medium);
+}
+
+.entryMessage {
+  flex: 1 1 16rem;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+/* Not an alert box: the screen has to say plainly that the button it does not
+   have would not be possible, and where the record actually lives. */
+.noUndo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-1);
+  padding: var(--fmgr-space-3);
+  background-color: var(--fmgr-color-neutral-subtle);
+  border-radius: var(--fmgr-radius-md);
+}
+
+.noUndoTitle {
+  margin: 0;
+  font-size: var(--fmgr-font-size-base);
+  font-weight: var(--fmgr-font-weight-semibold);
+}
+
+.noUndoBody {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}

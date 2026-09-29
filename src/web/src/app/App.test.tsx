@@ -61,7 +61,7 @@ const EXPECTED_SCREEN: Record<string, { title: string; task: string | null }> = 
   // visits `lab-1` — so the screen has no box to name and falls back to the id
   // in the path, which is exactly the state the title has to survive.
   box: { title: boxCopy.title.replace('{{label}}', 'box-1'), task: null },
-  scan: { title: scanCopy.title, task: 'G3.6' },
+  scan: { title: scanCopy.title, task: null },
   'csv-import': { title: csvImportCopy.title, task: 'G3.7' },
   shares: { title: sharesCopy.title, task: 'G3.13' },
   'admin-layout': { title: layoutCopy.title, task: 'G3.8' },
@@ -462,13 +462,14 @@ describe('error boundary', () => {
 
 describe('placeholder screens', () => {
   it('name the TODO item that replaces them', async () => {
-    // The samples route used to be the example here; G3.2 replaced it, so this
-    // now uses a route that is still a placeholder (the scan screen, G3.6).
-    renderApp({ path: `/labs/${LAB_ID}/scan`, user: user(['sample.checkout']) });
+    // The samples route used to be the example here; G3.2, G3.6 and the others
+    // replaced their placeholders, so this uses a route that still is one (the
+    // shares screen, G3.13).
+    renderApp({ path: `/labs/${LAB_ID}/shares`, user: user(['share.request']) });
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: scanCopy.title }),
+      await screen.findByRole('heading', { level: 1, name: sharesCopy.title }),
     ).toBeInTheDocument();
-    expect(screen.getByText(/G3\.6/)).toBeInTheDocument();
+    expect(screen.getByText(/G3\.13/)).toBeInTheDocument();
   });
 });
