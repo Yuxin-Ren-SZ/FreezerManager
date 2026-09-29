@@ -25,7 +25,14 @@ import {
   type StorageContainer,
 } from '../gen/fmgr/v1/box_pb';
 import { TimestampSchema } from '../gen/fmgr/v1/common/types_pb';
-import { ItemTypeSchema, type ItemType } from '../gen/fmgr/v1/item_type_pb';
+import {
+  CustomFieldDefinitionSchema,
+  FieldDataType,
+  ItemTypeSchema,
+  ScopeKind,
+  type CustomFieldDefinition,
+  type ItemType,
+} from '../gen/fmgr/v1/item_type_pb';
 import { LabSchema, type Lab } from '../gen/fmgr/v1/lab_pb';
 import { SampleSchema, SampleStatus, type Sample } from '../gen/fmgr/v1/sample_pb';
 
@@ -42,6 +49,14 @@ import { SampleSchema, SampleStatus, type Sample } from '../gen/fmgr/v1/sample_p
  *    can only answer `OK` hides every error branch — the failure mode
  *    `doc/TEST_COVERAGE_AUDIT_2026-07-01.md` records for the C++ fakes, and the
  *    reason AGENTS.md §6 requires `fail_<method>` injection there.
+ * 3. **Paging and filtering mirror the server, not a convenience default**
+ *    (TODO.md G3.2). `sample/list` follows `SampleServiceImpl::ListSamples`
+ *    (`page_size = 0` means no limit, a token only after a full page, no
+ *    `total_count`), the other list routes return everything because their
+ *    services ignore `page`, and the `status` / `query` filters behave as the
+ *    server's do — including the two-byte minimum on `query`. A fake that is
+ *    more generous than `freezerd` is how a screen ships a request production
+ *    rejects. See `samplePage`.
  *
  * Requests are parsed exactly as the gateway parses them (`fromJson` with
  * `ignore_unknown_fields = false`, `JsonProtoMapping.cc`), so a client that
@@ -55,6 +70,13 @@ import { SampleSchema, SampleStatus, type Sample } from '../gen/fmgr/v1/sample_p
 export interface DemoLab {
   labs: Lab[];
   itemTypes: ItemType[];
+  /**
+   * The lab's custom-field definitions (`custom-field-def/list`), which the
+   * G3.2 column chooser turns into columns. Note the *route* needs
+   * `custom_field.define`, so a read-only member's request fails and the screen
+   * has to survive that — see `useCustomFieldDefinitions`.
+   */
+  customFieldDefs: CustomFieldDefinition[];
   samples: Sample[];
   /** Layout (BoxService): the physical tree the G3.1 screen renders. */
   freezers: Freezer[];
@@ -293,6 +315,50 @@ export function createDemoLab(): DemoLab {
       create(ItemTypeSchema, { id: 'it-plasma', labId: 'lab-demo', name: 'Plasma', createdAt }),
       create(ItemTypeSchema, { id: 'it-dna', labId: 'lab-second', name: 'DNA', createdAt }),
     ],
+    // Two item-type fields and one lab-wide field, which is the shape
+    // `ListCustomFieldDefinitions` filters on: `item_type_id` is compared for
+    // equality, so a lab-scoped definition is absent from an item-type query.
+    customFieldDefs: [
+      create(CustomFieldDefinitionSchema, {
+        id: 'cfd-concentration',
+        labId: 'lab-demo',
+        scopeKind: ScopeKind.SAMPLE,
+        itemTypeId: 'it-serum',
+        key: 'concentration',
+        label: 'Concentration',
+        dataType: FieldDataType.FLOAT,
+        createdAt,
+      }),
+      create(CustomFieldDefinitionSchema, {
+        id: 'cfd-freeze-thaw',
+        labId: 'lab-demo',
+        scopeKind: ScopeKind.SAMPLE,
+        itemTypeId: 'it-plasma',
+        key: 'freeze_thaw_count',
+        label: 'Freeze/thaw count',
+        dataType: FieldDataType.INT,
+        createdAt,
+      }),
+      create(CustomFieldDefinitionSchema, {
+        id: 'cfd-storage-note',
+        labId: 'lab-demo',
+        scopeKind: ScopeKind.SAMPLE,
+        key: 'storage_note',
+        label: 'Storage note',
+        dataType: FieldDataType.TEXT,
+        createdAt,
+      }),
+      create(CustomFieldDefinitionSchema, {
+        id: 'cfd-second-kit',
+        labId: 'lab-second',
+        scopeKind: ScopeKind.SAMPLE,
+        itemTypeId: 'it-dna',
+        key: 'extraction_kit',
+        label: 'Extraction kit',
+        dataType: FieldDataType.TEXT,
+        createdAt,
+      }),
+    ],
     samples: [
       seedSample({
         id: 'sample-1',
@@ -302,6 +368,7 @@ export function createDemoLab(): DemoLab {
         barcode: 'DEMO-0001',
         boxId: 'box-1',
         positionLabel: 'A1',
+        customFieldsJson: JSON.stringify({ concentration: '12.5' }),
       }),
       seedSample({
         id: 'sample-2',
@@ -321,6 +388,7 @@ export function createDemoLab(): DemoLab {
         boxId: 'box-2',
         positionLabel: 'B1',
         status: SampleStatus.CHECKED_OUT,
+        customFieldsJson: JSON.stringify({ freeze_thaw_count: '3' }),
       }),
       seedSample({
         id: 'sample-4',
@@ -330,6 +398,44 @@ export function createDemoLab(): DemoLab {
         barcode: 'DEMO-0004',
       }),
     ],
+  };
+}
+
+/**
+ * Replace a lab's samples with `count` generated ones (TODO.md G3.2).
+ *
+ * Deliberately a generator and not a literal list: the 100k-row screen has to be
+ * tested against a fake that is *able* to serve 100k rows, otherwise the
+ * "never loads them all" assertion proves nothing. The generated rows cover the
+ * three filters a screen can apply server-side and the two it cannot:
+ *
+ * - `item_type_id`: even index → `it-serum`, odd → `it-plasma`;
+ * - `box_id`: every 4th row `box-1`, the next `box-2`, the rest unplaced;
+ * - `status`: every 5th row `CHECKED_OUT`, the rest `ACTIVE`;
+ * - `name`/`barcode`: `Serum 000123` / `DEMO-000123`, so `query` has both a
+ *   name and a barcode to match.
+ *
+ * The samples belong to `lab-demo`; the ids are stable (`sample-000001`), so a
+ * test can assert on a page boundary without depending on insertion timing.
+ */
+export function seedSamples(lab: DemoLab, count: number): DemoLab {
+  return {
+    ...lab,
+    samples: Array.from({ length: count }, (_, index) =>
+      seedSample({
+        id: `sample-${String(index + 1).padStart(6, '0')}`,
+        labId: 'lab-demo',
+        itemTypeId: index % 2 === 0 ? 'it-serum' : 'it-plasma',
+        name:
+          index % 2 === 0
+            ? `Serum ${String(index + 1).padStart(6, '0')}`
+            : `Plasma ${String(index + 1).padStart(6, '0')}`,
+        barcode: `DEMO-${String(index + 1).padStart(6, '0')}`,
+        ...(index % 4 === 0 ? { boxId: 'box-1' } : {}),
+        ...(index % 4 === 1 ? { boxId: 'box-2' } : {}),
+        status: index % 5 === 0 ? SampleStatus.CHECKED_OUT : SampleStatus.ACTIVE,
+      }),
+    ),
   };
 }
 
@@ -388,26 +494,144 @@ type Resolver = (lab: DemoLab, message: Message) => MessageInitShape<DescMessage
 
 const DEFAULT_PAGE_SIZE = 100;
 
-function paginate<T>(items: T[], page: JsonValue | undefined): { slice: T[]; token: string } {
+/**
+ * Paging for `sample/list` — the one route this fake serves whose service
+ * actually implements `page_token`.
+ *
+ * It is written to `SampleServiceImpl::ListSamples` and *not* to a convenient
+ * default, because a fake that is more generous than the server lets a screen
+ * pass a test it would fail in production (the opposite mistake, a cap the
+ * server does not have, is what made a 150-row seed silently exercise 100 rows
+ * before G3.2):
+ *
+ * - `page_size = 0` means **no limit**, so an un-paged request gets every row.
+ * - A `next_page_token` comes back **only after a full page** ("a full page
+ *   implies there may be more"), even when that page happened to be the last.
+ * - The token is the next offset, and `page.token` is read with the same
+ *   `parseInt` tolerance for a garbage token as the server's `stoull` on an
+ *   empty string (`0`).
+ * - There is no `total_count`: no `*ServiceImpl` in `src/server/` ever sets
+ *   one, so the real gateway always sends the proto default.
+ *
+ * The other list routes are *not* paged here. `LabServiceImpl`,
+ * `BoxServiceImpl` and `ItemTypeServiceImpl` ignore `page` entirely and answer
+ * with the whole result, so `lab/list`, `freezer/list`, `storage-container/list`,
+ * `box-type/list`, `box/list`, `item-type/list` and `custom-field-def/list` do
+ * the same instead of inventing a cap the server does not have.
+ */
+function samplePage<T>(items: T[], page: JsonValue | undefined): { slice: T[]; token: string } {
   // Decoded messages carry the TypeScript field names, not the wire names.
   const { pageSize: size = 0, pageToken: token = '' } = (page ?? {}) as {
     pageSize?: number;
     pageToken?: string;
   };
-  const limit = size > 0 ? size : DEFAULT_PAGE_SIZE;
   const offset = Number.parseInt(token, 10) || 0;
+  const limited = size > 0;
+  const slice = limited ? items.slice(offset, offset + size) : items.slice(offset);
   return {
-    slice: items.slice(offset, offset + limit),
-    token: offset + limit < items.length ? String(offset + limit) : '',
+    slice,
+    token: limited && slice.length === size ? String(offset + slice.length) : '',
   };
 }
-
-const page = (nextPageToken: string, totalCount: number) => ({ nextPageToken, totalCount });
 
 function requireId(id: string, kind: string): void {
   if (id === '') {
     throw new FakeRpcError('INVALID_ARGUMENT', `${kind} id is required`);
   }
+}
+
+/** `SampleServiceImpl::k_min_query_length`: measured in bytes, not characters. */
+const MIN_QUERY_BYTES = 2;
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+/**
+ * `contains_ci_any({name, barcode}, query)`: a case-insensitive substring match
+ * over the name or the barcode. Custom fields and PHI are never searched, so
+ * neither does this. SQLite's `LIKE` folds ASCII case; JavaScript's
+ * `toLowerCase` folds more, which can only make a match *more* likely here —
+ * the same direction a real deployment with a case-insensitive collation goes.
+ */
+function matchesQuery(sample: Sample, query: string): boolean {
+  const needle = query.toLowerCase();
+  return (
+    sample.name.toLowerCase().includes(needle) ||
+    (sample.barcode ?? '').toLowerCase().includes(needle)
+  );
+}
+
+/** The columns `cli/SampleCsv.cc` writes, in order (`phi_fields_enc_json` aside). */
+const SAMPLE_CSV_COLUMNS = [
+  'id',
+  'lab_id',
+  'item_type_id',
+  'name',
+  'barcode',
+  'container_type_id',
+  'box_id',
+  'position_label',
+  'volume_value',
+  'volume_unit',
+  'mass_value',
+  'mass_unit',
+  'status',
+  'parent_sample_id',
+  'created_by',
+  'created_at',
+  'last_modified_by',
+  'last_modified_at',
+  'custom_fields_json',
+] as const;
+
+/** `core::to_string(SampleStatus)`, which is what the CSV's status column holds. */
+const CSV_STATUS: Readonly<Record<number, string>> = {
+  [SampleStatus.UNSPECIFIED]: '',
+  [SampleStatus.ACTIVE]: 'active',
+  [SampleStatus.CHECKED_OUT]: 'checked_out',
+  [SampleStatus.DEPLETED]: 'depleted',
+  [SampleStatus.DESTROYED]: 'destroyed',
+  [SampleStatus.TOMBSTONED]: 'tombstoned',
+};
+
+/** RFC 4180 quoting: only what needs it, doubled quotes inside. */
+function csvCell(value: string): string {
+  return /[",\n\r]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
+
+/**
+ * The CSV body of `ExportSamplesCsv` — the same chain-of-custody schema as
+ * `freezerctl sample export`, with no PHI column. Enough of a body for a screen
+ * test to download something real and assert on its shape.
+ */
+function exportSamplesCsv(samples: readonly Sample[]): string {
+  const rows = samples.map((sample) =>
+    [
+      sample.id,
+      sample.labId,
+      sample.itemTypeId,
+      sample.name,
+      sample.barcode ?? '',
+      sample.containerTypeId ?? '',
+      sample.boxId ?? '',
+      sample.positionLabel ?? '',
+      sample.volumeValue === undefined ? '' : String(sample.volumeValue),
+      sample.volumeUnit,
+      sample.massValue === undefined ? '' : String(sample.massValue),
+      sample.massUnit,
+      CSV_STATUS[sample.status] ?? '',
+      sample.parentSampleId ?? '',
+      sample.createdBy,
+      String(sample.createdAt?.unixMicros ?? 0n),
+      sample.lastModifiedBy ?? '',
+      String(sample.lastModifiedAt?.unixMicros ?? 0n),
+      sample.customFieldsJson,
+    ]
+      .map(csvCell)
+      .join(','),
+  );
+  return [...[SAMPLE_CSV_COLUMNS.join(',')], ...rows].join('\n').concat('\n');
 }
 
 /**
@@ -418,11 +642,8 @@ function requireId(id: string, kind: string): void {
  * own, and it keeps the fake one place.
  */
 const resolvers: Partial<Record<RpcName, Resolver>> = {
-  'lab/list': (lab, message) => {
-    const { page: pageRequest } = fields(message) as { page?: JsonValue };
-    const { slice, token } = paginate(lab.labs, pageRequest);
-    return { labs: slice, page: page(token, lab.labs.length) };
-  },
+  // ---- The un-paged lists: the server ignores `page`, so these do too ----
+  'lab/list': (lab) => ({ labs: lab.labs }),
 
   'lab/get': (lab, message) => {
     const { labId } = fields(message) as { labId: string };
@@ -438,81 +659,74 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
   // archived rows come back and the client decides. `parent_id` /
   // `storage_container_id` are optional filters, exactly as in the proto.
   'freezer/list': (lab, message) => {
-    const { labId, page: pageRequest } = fields(message) as { labId: string; page?: JsonValue };
+    const { labId } = fields(message) as { labId: string };
     requireId(labId, 'lab');
-    const matching = lab.freezers.filter((freezer) => freezer.labId === labId);
-    const { slice, token } = paginate(matching, pageRequest);
-    return { freezers: slice, page: page(token, matching.length) };
+    return { freezers: lab.freezers.filter((freezer) => freezer.labId === labId) };
   },
 
   'storage-container/list': (lab, message) => {
-    const {
-      labId,
-      parentId,
-      page: pageRequest,
-    } = fields(message) as {
-      labId: string;
-      parentId?: string;
-      page?: JsonValue;
-    };
+    const { labId, parentId } = fields(message) as { labId: string; parentId?: string };
     requireId(labId, 'lab');
-    const matching = lab.storageContainers.filter((container) => {
-      if (container.labId !== labId) return false;
-      if (parentId !== undefined && container.parentId !== parentId) return false;
-      return true;
-    });
-    const { slice, token } = paginate(matching, pageRequest);
-    return { containers: slice, page: page(token, matching.length) };
+    return {
+      containers: lab.storageContainers.filter((container) => {
+        if (container.labId !== labId) return false;
+        if (parentId !== undefined && container.parentId !== parentId) return false;
+        return true;
+      }),
+    };
   },
 
   'box-type/list': (lab, message) => {
-    const { labId, page: pageRequest } = fields(message) as { labId: string; page?: JsonValue };
+    const { labId } = fields(message) as { labId: string };
     requireId(labId, 'lab');
-    const matching = lab.boxTypes.filter((boxType) => boxType.labId === labId);
-    const { slice, token } = paginate(matching, pageRequest);
-    return { boxTypes: slice, page: page(token, matching.length) };
+    return { boxTypes: lab.boxTypes.filter((boxType) => boxType.labId === labId) };
   },
 
   'box/list': (lab, message) => {
-    const {
-      labId,
-      storageContainerId,
-      page: pageRequest,
-    } = fields(message) as {
+    const { labId, storageContainerId } = fields(message) as {
       labId: string;
       storageContainerId?: string;
-      page?: JsonValue;
     };
     requireId(labId, 'lab');
-    const matching = lab.boxes.filter((box) => {
-      if (box.labId !== labId) return false;
-      if (storageContainerId !== undefined && box.storageContainerId !== storageContainerId) {
-        return false;
-      }
-      return true;
-    });
-    const { slice, token } = paginate(matching, pageRequest);
-    return { boxes: slice, page: page(token, matching.length) };
+    return {
+      boxes: lab.boxes.filter((box) => {
+        if (box.labId !== labId) return false;
+        if (storageContainerId !== undefined && box.storageContainerId !== storageContainerId) {
+          return false;
+        }
+        return true;
+      }),
+    };
   },
 
   'item-type/list': (lab, message) => {
-    const {
-      labId,
-      includeArchived,
-      page: pageRequest,
-    } = fields(message) as {
+    const { labId, includeArchived } = fields(message) as {
       labId: string;
       includeArchived: boolean;
-      page?: JsonValue;
     };
-    const matching = lab.itemTypes.filter(
-      (candidate) =>
-        candidate.labId === labId && (includeArchived || candidate.archivedAt === undefined),
-    );
-    const { slice, token } = paginate(matching, pageRequest);
-    return { itemTypes: slice, page: page(token, matching.length) };
+    return {
+      itemTypes: lab.itemTypes.filter(
+        (candidate) =>
+          candidate.labId === labId && (includeArchived || candidate.archivedAt === undefined),
+      ),
+    };
   },
 
+  // `ListCustomFieldDefinitions` filters `item_type_id` by equality, so a
+  // lab-scoped definition is not returned for an item-type query.
+  'custom-field-def/list': (lab, message) => {
+    const { labId, itemTypeId } = fields(message) as { labId: string; itemTypeId?: string };
+    requireId(labId, 'lab');
+    return {
+      cfds: lab.customFieldDefs.filter((cfd) => {
+        if (cfd.labId !== labId) return false;
+        if (itemTypeId !== undefined && cfd.itemTypeId !== itemTypeId) return false;
+        return true;
+      }),
+    };
+  },
+
+  // ---- SampleService ----
   'sample/list': (lab, message) => {
     const {
       labId,
@@ -520,6 +734,8 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
       boxId,
       itemTypeId,
       barcode,
+      status,
+      query,
       page: pageRequest,
     } = fields(message) as {
       labId: string;
@@ -527,18 +743,35 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
       boxId?: string;
       itemTypeId?: string;
       barcode?: string;
+      status?: SampleStatus;
+      query?: string;
       page?: JsonValue;
     };
+    requireId(labId, 'lab');
+    if (query !== undefined && utf8ByteLength(query) < MIN_QUERY_BYTES) {
+      throw new FakeRpcError(
+        'INVALID_ARGUMENT',
+        `query must be at least ${String(MIN_QUERY_BYTES)} characters`,
+      );
+    }
     const matching = lab.samples.filter((candidate) => {
       if (candidate.labId !== labId) return false;
       if (!includeArchived && candidate.status === SampleStatus.TOMBSTONED) return false;
       if (boxId !== undefined && candidate.boxId !== boxId) return false;
       if (itemTypeId !== undefined && candidate.itemTypeId !== itemTypeId) return false;
       if (barcode !== undefined && candidate.barcode !== barcode) return false;
+      if (
+        status !== undefined &&
+        status !== SampleStatus.UNSPECIFIED &&
+        candidate.status !== status
+      ) {
+        return false;
+      }
+      if (query !== undefined && !matchesQuery(candidate, query)) return false;
       return true;
     });
-    const { slice, token } = paginate(matching, pageRequest);
-    return { samples: slice, page: page(token, matching.length) };
+    const { slice, token } = samplePage(matching, pageRequest);
+    return { samples: slice, page: { nextPageToken: token } };
   },
 
   'sample/get': (lab, message) => {
@@ -547,6 +780,26 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     const found = lab.samples.find((candidate) => candidate.id === sampleId);
     if (found === undefined) throw new FakeRpcError('NOT_FOUND', 'no such sample');
     return { sample: found };
+  },
+
+  // `ExportSamplesCsvRequest` carries only `lab_id` and `include_archived`: the
+  // export is lab-wide, so the screen's filters do not narrow it (G3.2 notes
+  // this as a known limit rather than pretending otherwise).
+  'sample/export': (lab, message) => {
+    const { labId, includeArchived } = fields(message) as {
+      labId: string;
+      includeArchived: boolean;
+    };
+    requireId(labId, 'lab');
+    return {
+      csvContent: exportSamplesCsv(
+        lab.samples.filter(
+          (candidate) =>
+            candidate.labId === labId &&
+            (includeArchived || candidate.status !== SampleStatus.TOMBSTONED),
+        ),
+      ),
+    };
   },
 
   'sample/create': (lab, message) => {

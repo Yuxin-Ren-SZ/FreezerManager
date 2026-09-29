@@ -56,7 +56,9 @@ describe('useSamples', () => {
 
     const firstPage = result.current.data?.pages[0];
     expect(firstPage?.samples).toHaveLength(2);
-    expect(firstPage?.page?.totalCount).toBe(3);
+    // `ListSamples` returns only `next_page_token`; `total_count` is never set
+    // by the server, so a screen must not render one (G3.2, fakeApi contract).
+    expect(firstPage?.page?.totalCount).toBe(0);
     expect(result.current.hasNextPage).toBe(true);
   });
 

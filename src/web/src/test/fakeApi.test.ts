@@ -6,7 +6,7 @@ import { apiRoutes, type RpcName } from '../api/routes';
 import { subscribeSse } from '../api/sse';
 import { SampleSchema, SampleStatus } from '../gen/fmgr/v1/sample_pb';
 import { FakeEventSource, fakeEventSource } from './fakeEventSource';
-import { createDemoLab, fakeApi, HTTP_STATUS_FOR } from './fakeApi';
+import { createDemoLab, fakeApi, HTTP_STATUS_FOR, seedSamples } from './fakeApi';
 import { server } from './server';
 
 /**
@@ -92,7 +92,11 @@ describe('fakeApi demo lab', () => {
       'sample-2',
       'sample-3',
     ]);
-    expect(response.page?.totalCount).toBe(3);
+    // `SampleServiceImpl` never sets `total_count` (nor does any other service),
+    // so the fake must not invent one: a screen that rendered it would show a
+    // number the real gateway never sends. The paging-contract block below is
+    // the full statement of that rule.
+    expect(response.page?.totalCount).toBe(0);
   });
 
   it('pages with an opaque page_token, like the gateway', async () => {
@@ -144,6 +148,136 @@ describe('fakeApi demo lab', () => {
 
     expect(created.sample?.name).toBe('Serum C');
     expect(lab.samples.map((sample) => sample.name)).toContain('Serum C');
+  });
+});
+
+describe('fakeApi paging and filtering contract (G3.2)', () => {
+  it('returns every row for page_size 0, as ListSamples does (0 means "no limit")', async () => {
+    const lab = seedSamples(createDemoLab(), 150);
+    server.use(...fakeApi({ lab }));
+
+    const response = await call('sample/list', { labId: 'lab-demo' });
+
+    // 150, not the fake's old DEFAULT_PAGE_SIZE of 100: the gateway only limits
+    // when `page_size > 0`, so a fake cap silently truncated this screen's data.
+    expect(response.samples).toHaveLength(150);
+    expect(response.page?.nextPageToken).toBe('');
+  });
+
+  it('pages past 100 rows and ends only on a short page, like SampleServiceImpl', async () => {
+    const lab = seedSamples(createDemoLab(), 150);
+    server.use(...fakeApi({ lab }));
+
+    const first = await call('sample/list', { labId: 'lab-demo', page: { pageSize: 100 } });
+    const second = await call('sample/list', {
+      labId: 'lab-demo',
+      page: { pageSize: 100, pageToken: first.page?.nextPageToken ?? '' },
+    });
+
+    expect(first.samples).toHaveLength(100);
+    expect(first.page?.nextPageToken).toBe('100');
+    expect(second.samples).toHaveLength(50);
+    expect(second.page?.nextPageToken).toBe('');
+  });
+
+  it('hands back a token after a full page even when nothing follows, like the server', async () => {
+    const lab = seedSamples(createDemoLab(), 100);
+    server.use(...fakeApi({ lab }));
+
+    const first = await call('sample/list', { labId: 'lab-demo', page: { pageSize: 100 } });
+    const second = await call('sample/list', {
+      labId: 'lab-demo',
+      page: { pageSize: 100, pageToken: first.page?.nextPageToken ?? '' },
+    });
+
+    // "A full page implies there may be more" is the server's rule, and being
+    // faithful here is what makes `hasNextPage` behave the same in both.
+    expect(first.page?.nextPageToken).toBe('100');
+    expect(second.samples).toHaveLength(0);
+    expect(second.page?.nextPageToken).toBe('');
+  });
+
+  it('applies the status filter', async () => {
+    server.use(...fakeApi());
+
+    const response = await call('sample/list', {
+      labId: 'lab-demo',
+      status: SampleStatus.CHECKED_OUT,
+    });
+
+    expect(response.samples.map((sample) => sample.id)).toEqual(['sample-3']);
+  });
+
+  it('searches name and barcode case-insensitively, as contains_ci_any does', async () => {
+    server.use(...fakeApi());
+
+    const byName = await call('sample/list', { labId: 'lab-demo', query: 'plasma' });
+    const byBarcode = await call('sample/list', { labId: 'lab-demo', query: 'demo-0002' });
+
+    expect(byName.samples.map((sample) => sample.id)).toEqual(['sample-3']);
+    expect(byBarcode.samples.map((sample) => sample.id)).toEqual(['sample-2']);
+  });
+
+  it('rejects a query shorter than two bytes with INVALID_ARGUMENT', async () => {
+    server.use(...fakeApi());
+
+    const error = (await call('sample/list', { labId: 'lab-demo', query: 'a' }).catch(
+      (caught: unknown) => caught,
+    )) as ApiError;
+
+    // The server refuses short queries (PRD §9) instead of scanning the lab; a
+    // fake that answered them would let a screen ship a request the real
+    // gateway 400s.
+    expect(error.code).toBe('INVALID_ARGUMENT');
+    expect(error.httpStatus).toBe(400);
+  });
+
+  it('serves the lab custom-field definitions the column chooser is built from', async () => {
+    server.use(...fakeApi());
+
+    const response = await call('custom-field-def/list', { labId: 'lab-demo' });
+
+    expect(response.cfds.map((cfd) => cfd.key)).toContain('concentration');
+    expect(response.cfds.every((cfd) => cfd.labId === 'lab-demo')).toBe(true);
+  });
+
+  it('filters custom-field definitions by item type', async () => {
+    server.use(...fakeApi());
+
+    const response = await call('custom-field-def/list', {
+      labId: 'lab-demo',
+      itemTypeId: 'it-plasma',
+    });
+
+    expect(response.cfds.map((cfd) => cfd.key)).toEqual(['freeze_thaw_count']);
+  });
+
+  it('serves a CSV body from sample/export, with the CLI column schema', async () => {
+    server.use(...fakeApi());
+
+    const response = await call('sample/export', { labId: 'lab-demo' });
+    const lines = response.csvContent.trim().split('\n');
+
+    expect(lines[0]).toBe(
+      'id,lab_id,item_type_id,name,barcode,container_type_id,box_id,position_label,' +
+        'volume_value,volume_unit,mass_value,mass_unit,status,parent_sample_id,created_by,' +
+        'created_at,last_modified_by,last_modified_at,custom_fields_json',
+    );
+    expect(lines).toHaveLength(4); // header + the three non-archived demo samples
+    expect(response.csvContent).toContain('Serum A');
+  });
+
+  it('keeps a tombstoned sample out of the export unless include_archived is set', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('sample/delete', { sampleId: 'sample-1' });
+
+    const visible = await call('sample/export', { labId: 'lab-demo' });
+    const all = await call('sample/export', { labId: 'lab-demo', includeArchived: true });
+
+    expect(visible.csvContent).not.toContain('Serum A');
+    expect(all.csvContent).toContain('Serum A');
   });
 });
 
