@@ -210,13 +210,18 @@ namespace fmgr::server {
   BoxServiceImpl::BoxServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend)
       : auth_(auth), backend_(backend), middleware_(auth) {
     using P = core::Permission;
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListFreezers", P::FreezerConfigure);
+    // Read/write split for the layout (#54): the RPCs a client needs to
+    // *interpret* a sample's location are sample.read, matching ListBoxes/GetBox
+    // below and the permission the REST route and the SPA `layout` route already
+    // declare. The mutating RPCs keep *.configure, which is what actually guards
+    // the layout. Container *types* are not part of that read set and stay on
+    // box.configure.
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListFreezers", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetFreezer", P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateFreezer", P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/UpdateFreezer", P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveFreezer", P::FreezerConfigure);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListStorageContainers",
-                                      P::FreezerConfigure);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListStorageContainers", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateStorageContainer",
                                       P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/UpdateStorageContainer",
@@ -225,7 +230,7 @@ namespace fmgr::server {
                                       P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListContainerTypes", P::BoxConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateContainerType", P::BoxConfigure);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListBoxTypes", P::BoxConfigure);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListBoxTypes", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateBoxType", P::BoxConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListBoxes", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetBox", P::SampleRead);
@@ -243,8 +248,9 @@ namespace fmgr::server {
                                             fmgr::v1::ListFreezersResponse* resp) {
     try {
       const auto lab_id = core::LabId::parse(req->lab_id());
+      // Reading the layout is a read: sample.read, not freezer.configure (#54).
       const auto sctx =
-          middleware_.authorize(extract_bearer(*ctx), core::Permission::FreezerConfigure, lab_id);
+          middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -413,8 +419,9 @@ namespace fmgr::server {
                                         fmgr::v1::ListStorageContainersResponse* resp) {
     try {
       const auto lab_id = core::LabId::parse(req->lab_id());
+      // Reading the layout is a read: sample.read, not freezer.configure (#54).
       const auto sctx =
-          middleware_.authorize(extract_bearer(*ctx), core::Permission::FreezerConfigure, lab_id);
+          middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
 
       auto query = storage::Query<core::StorageContainer>::where(
           storage::field<core::StorageContainer, std::string>(
@@ -618,8 +625,9 @@ namespace fmgr::server {
                                             fmgr::v1::ListBoxTypesResponse* resp) {
     try {
       const auto lab_id = core::LabId::parse(req->lab_id());
+      // Reading the layout is a read: sample.read, not box.configure (#54).
       const auto sctx =
-          middleware_.authorize(extract_bearer(*ctx), core::Permission::BoxConfigure, lab_id);
+          middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
