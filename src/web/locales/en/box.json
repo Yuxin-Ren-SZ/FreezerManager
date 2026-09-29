@@ -13,7 +13,7 @@
   },
   "grid": {
     "label": "Positions of {{box}}",
-    "hint": "Drag a sample onto a position. With the keyboard: focus a sample, press Space to pick it up, then focus a position and press Enter to put it down. Escape puts it back.",
+    "hint": "Drag a sample onto a position. With the keyboard: press Space on a sample to pick it up, move with the arrow keys — Home and End go to the ends of a row — and press Enter on a position to put it down. Escape puts it back.",
     "cellFree": "{{position}} — empty",
     "cellOccupied": "{{position}} — {{name}}, {{status}}",
     "summary": "{{occupied}} of {{total}} positions hold a sample",
@@ -25,7 +25,7 @@
   "selection": {
     "label": "Picked-up sample",
     "none": "No sample picked up",
-    "picked": "{{name}} picked up from {{position}}. Focus a position and press Enter to put it down.",
+    "picked": "{{name}} picked up from {{position}}. Move with the arrow keys and press Enter to put it down.",
     "cancel": "Put it back"
   },
   "move": {

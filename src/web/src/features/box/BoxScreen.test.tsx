@@ -38,6 +38,10 @@ import boxStyles from './BoxScreen.module.css';
  *    actionable part.
  *  - **The grid is live.** A `sample/watch?box_id=` frame adds a cell, and a
  *    tombstoned frame drops one out.
+ *
+ * Issue #92's roving tabindex adds a fifth, in its own block below: **the number
+ * of key presses a corner-to-corner move takes**, which is the one assertion a
+ * grid that is still 96 tab stops would pass on the outcome alone.
  */
 
 const LAB_ID = 'lab-demo';
@@ -209,6 +213,13 @@ function cell(position: string): HTMLElement {
 
 function cellButton(position: string): HTMLElement {
   return within(cell(position)).getByRole('button');
+}
+
+/** The interactive grid — the print sheet's map is a second grid, and hidden. */
+function grid(boxLabel: string): HTMLElement {
+  return screen.getByRole('grid', {
+    name: boxCopy.grid.label.replace('{{box}}', boxLabel),
+  });
 }
 
 function occupiedCell(position: string): RegExp {
@@ -542,6 +553,201 @@ describe('BoxScreen — moving a sample', () => {
     expect(lab.samples.find((sample) => sample.id === 'sample-mix-15')).toHaveProperty(
       'positionLabel',
       'A5',
+    );
+  });
+});
+
+describe('BoxScreen — the roving tabindex', () => {
+  it('is one tab stop, entered at the cell the keyboard was last on', async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    await screen.findByRole('button', { name: occupiedCell('A1') });
+
+    // Ninety-six cells, one tab stop.
+    const stops = within(grid(MIXED_BOX_LABEL))
+      .getAllByRole('button')
+      .filter((candidate) => candidate.tabIndex === 0);
+    expect(stops).toHaveLength(1);
+    expect(stops[0]).toBe(cellButton('A1'));
+
+    await user.tab();
+    expect(cellButton('A1')).toHaveFocus();
+
+    await user.keyboard('{ArrowRight}{ArrowRight}');
+    expect(cellButton('A3')).toHaveFocus();
+
+    // ...and Tab leaves the grid rather than walking its cells.
+    await user.tab();
+    expect(grid(MIXED_BOX_LABEL).contains(document.activeElement)).toBe(false);
+
+    // Coming back lands on A3, not on the first cell again.
+    await user.tab({ shift: true });
+    expect(cellButton('A3')).toHaveFocus();
+  });
+
+  /**
+   * The decisive test for issue #92, and the reason it counts key presses: a
+   * grid that is still 96 tab stops keeps a sample at A1 and passes any test
+   * that only asserts where the sample ended up.
+   *
+   * `box-1` is the fake's 96-well rack, so the far corner is H12: seven rows
+   * down and eleven columns along.
+   */
+  it('moves a sample from A1 to H12 in twenty key presses, not ninety-six Tabs', async () => {
+    const user = userEvent.setup();
+    const { lab } = renderScreen({ boxId: WELL_BOX_ID });
+    await screen.findByRole('button', { name: occupiedCell('A1') });
+
+    await user.tab();
+    expect(cellButton('A1')).toHaveFocus();
+
+    // Every key the test presses is counted, the two that do the move included.
+    let presses = 0;
+    const press = async (keys: string): Promise<void> => {
+      presses += 1;
+      await user.keyboard(keys);
+    };
+
+    await press(' '); // pick the sample up
+    for (let step = 0; step < 7; step += 1) {
+      await press('{ArrowDown}'); // A → H
+    }
+    for (let step = 0; step < 11; step += 1) {
+      await press('{ArrowRight}'); // 1 → 12
+    }
+    expect(cellButton('H12')).toHaveFocus();
+    await press('{Enter}'); // put it down
+
+    await waitFor(() => {
+      expect(lab.samples.find((sample) => sample.id === 'sample-1')).toHaveProperty(
+        'positionLabel',
+        'H12',
+      );
+    });
+    expect(presses).toBe(20);
+    expect(presses).toBeLessThan(96);
+  });
+
+  it('walks the mixed template one declared position at a time, holes and all', async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    await screen.findByRole('button', { name: occupiedCell('A1') });
+
+    // Row A ends at A5, and the next position in reading order is B1 — a row
+    // down. The cell to the right of A5 does not exist.
+    cellButton('A5').focus();
+    await user.keyboard('{ArrowRight}');
+    expect(cellButton('A5')).toHaveFocus();
+
+    // A5 → B5 is the one step down that exists; below B5 is the hole C5.
+    await user.keyboard('{ArrowDown}');
+    expect(cellButton('B5')).toHaveFocus();
+    await user.keyboard('{ArrowDown}');
+    expect(cellButton('B5')).toHaveFocus();
+
+    // B4 has the other hole below it, C4...
+    cellButton('B4').focus();
+    await user.keyboard('{ArrowDown}');
+    expect(cellButton('B4')).toHaveFocus();
+    // ...while its own row continues both ways, and C3 is the end of the map.
+    await user.keyboard('{ArrowLeft}');
+    expect(cellButton('B3')).toHaveFocus();
+    await user.keyboard('{ArrowDown}');
+    expect(cellButton('C3')).toHaveFocus();
+    await user.keyboard('{ArrowRight}');
+    expect(cellButton('C3')).toHaveFocus();
+
+    // Nothing that took focus is a hole or a cell outside the box type.
+    for (const focused of [
+      cellButton('A5'),
+      cellButton('B5'),
+      cellButton('B3'),
+      cellButton('C3'),
+    ]) {
+      expect(focused.closest('[data-position]')).not.toBeNull();
+    }
+  });
+
+  it('moves a sample with the arrow keys alone in the mixed template', async () => {
+    const user = userEvent.setup();
+    const { lab } = renderScreen();
+    await screen.findByRole('button', { name: occupiedCell('A5') });
+
+    cellButton('A5').focus();
+    await user.keyboard(' '); // pick up a 15 mL tube
+    await user.keyboard('{ArrowDown}'); // A5 → B5, the only position below it
+    expect(cellButton('B5')).toHaveFocus();
+    await user.keyboard('{Enter}');
+
+    await waitFor(() => {
+      expect(lab.samples.find((sample) => sample.id === 'sample-mix-15')).toHaveProperty(
+        'positionLabel',
+        'B5',
+      );
+    });
+  });
+
+  it('jumps to a row’s ends with Home and End, and to the grid’s with Control', async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    await screen.findByRole('button', { name: occupiedCell('A1') });
+
+    cellButton('B5').focus();
+    await user.keyboard('{Home}');
+    expect(cellButton('B1')).toHaveFocus();
+    await user.keyboard('{End}');
+    expect(cellButton('B5')).toHaveFocus();
+
+    // The last declared position is C3: C5 is a hole and B5 is a row up.
+    await user.keyboard('{Control>}{Home}{/Control}');
+    expect(cellButton('A1')).toHaveFocus();
+    await user.keyboard('{Control>}{End}{/Control}');
+    expect(cellButton('C3')).toHaveFocus();
+  });
+
+  it('announces every cell’s row and column, holes included', async () => {
+    renderScreen();
+    await screen.findByRole('button', { name: occupiedCell('A1') });
+
+    const mixed = grid(MIXED_BOX_LABEL);
+    expect(mixed).toHaveAttribute('aria-rowcount', '3');
+    expect(mixed).toHaveAttribute('aria-colcount', '5');
+
+    const rows = within(mixed).getAllByRole('row');
+    expect(rows.map((row) => row.getAttribute('aria-rowindex'))).toEqual(['1', '2', '3']);
+
+    // Five declared columns, so A4 is column 4 of row 1...
+    const first = within(rows[0]).getAllByRole('gridcell');
+    expect(first).toHaveLength(5);
+    expect(first[3]).toHaveAttribute('aria-colindex', '4');
+    expect(first[3]).toHaveAttribute('data-position', 'A4');
+    // ...and the two holes of row 3 are absent cells, not invented ones.
+    expect(within(rows[2]).getAllByRole('gridcell')).toHaveLength(3);
+  });
+
+  it('keeps free positions focusable but announced as disabled until a sample is in hand', async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    const free = await screen.findByRole('button', { name: /^C3 — empty$/ });
+
+    // A `disabled` control cannot take focus at all, and the cell below the
+    // holes is exactly where the keyboard has to be able to stand.
+    expect(free).toHaveAttribute('aria-disabled', 'true');
+    free.focus();
+    expect(free).toHaveFocus();
+
+    cellButton('A5').focus();
+    await user.keyboard(' ');
+
+    expect(screen.getByRole('button', { name: /^C3 — empty$/ })).not.toHaveAttribute(
+      'aria-disabled',
+    );
+  });
+
+  it('styles the cell the keyboard is on with a visible focus ring', () => {
+    // jsdom applies no stylesheet, so the ring is checked where it lives.
+    expect(boxCss).toMatch(
+      /\.position:focus-visible\s*\{[^}]*outline:\s*var\(--fmgr-focus-ring-width\)/,
     );
   });
 });

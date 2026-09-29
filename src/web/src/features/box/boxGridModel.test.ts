@@ -5,9 +5,18 @@ import { create } from '@bufbuild/protobuf';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { BoxTypeSchema, type BoxType } from '../../gen/fmgr/v1/box_pb';
+import { BoxPositionSchema, BoxTypeSchema, type BoxType } from '../../gen/fmgr/v1/box_pb';
 import { SampleSchema, SampleStatus, type Sample } from '../../gen/fmgr/v1/sample_pb';
-import { buildBoxGrid, cellAt } from './boxGridModel';
+import {
+  buildBoxGrid,
+  cellAt,
+  cellAtRowEdge,
+  cellInDirection,
+  gridEdgeCell,
+  type BoxGrid,
+  type BoxGridCell,
+  type GridDirection,
+} from './boxGridModel';
 
 /**
  * The box grid as a value (TODO.md G3.4, PRD §9 / F6.3).
@@ -196,5 +205,221 @@ describe('buildBoxGrid — occupancy', () => {
     expect(grid.positions).toEqual([]);
     expect(grid.cells).toEqual([]);
     expect(grid.unplaced.map((row) => row.id)).toEqual(['sample-1']);
+  });
+});
+
+/**
+ * Arrow-key movement (issue #92's roving tabindex).
+ *
+ * The rule under test is "one declared position in that direction", and it is
+ * deliberately *not* "the next entry of `cells`" or "one column further along":
+ *
+ *  - `cells` holds a `null` for every hole, so `cells[index + 1]` hands the
+ *    caller a hole for `C3` and `B4`/`B5` of the mixed template;
+ *  - `col + 1` is not a position at all for those same three cells;
+ *  - the next entry of `positions` (row-major) after the last cell of a row is
+ *    the first cell of the *next* row — `B1` to the right of `A5` — a jump no
+ *    keyboard user can see coming, because it goes down as well as along.
+ *
+ * The mixed Eppendorf template is 3×5 with holes at (2,3) and (2,4), so it is
+ * the template where all three wrong answers differ from the right one.
+ *
+ * **The shipped files cannot pin `col + 1` on their own**, though: both mixed
+ * holes sit at the *end* of their row, and a rectangle step that lands on one
+ * of them and gives up returns the same `null` the right rule does. The fixture
+ * below puts a hole in the middle of a row, where "the next cell to the right"
+ * and "one column further along" finally disagree.
+ */
+
+/** The shipped mixed template — 13 positions, two holes — as a grid. */
+function mixedGrid(): BoxGrid {
+  return buildBoxGrid(seedTemplate('mixed_eppendorf.json'), []);
+}
+
+/**
+ * A 2×3 rectangle with the middle column declared by nothing:
+ *
+ * ```
+ * A1 ·  A3
+ * B1 ·  B3
+ * ```
+ */
+function holedBoxType(): BoxType {
+  return create(BoxTypeSchema, {
+    id: 'bt-holed',
+    labId: LAB_ID,
+    name: 'Rack with a missing middle column',
+    positions: [
+      create(BoxPositionSchema, { label: 'A1', row: 0, col: 0 }),
+      create(BoxPositionSchema, { label: 'A3', row: 0, col: 2 }),
+      create(BoxPositionSchema, { label: 'B1', row: 1, col: 0 }),
+      create(BoxPositionSchema, { label: 'B3', row: 1, col: 2 }),
+    ],
+  });
+}
+
+/** The cell at a declared coordinate, or a thrown error naming it. */
+function need(grid: BoxGrid, row: number, col: number): BoxGridCell {
+  const cell = cellAt(grid, row, col);
+  if (cell === null) {
+    throw new Error(`the grid has no cell at row ${String(row)}, column ${String(col)}`);
+  }
+  return cell;
+}
+
+function label(cell: BoxGridCell | null): string | null {
+  return cell === null ? null : cell.position.label;
+}
+
+const DIRECTIONS: readonly GridDirection[] = ['up', 'down', 'left', 'right'];
+
+describe('cellInDirection — stepping over the declared positions', () => {
+  it('steps one position right, left, up and down in the 96-well rack', () => {
+    const grid = buildBoxGrid(seedTemplate('96_well_rack.json'), []);
+
+    expect(label(cellInDirection(grid, need(grid, 0, 0), 'right'))).toBe('A2');
+    expect(label(cellInDirection(grid, need(grid, 0, 1), 'left'))).toBe('A1');
+    expect(label(cellInDirection(grid, need(grid, 0, 0), 'down'))).toBe('B1');
+    expect(label(cellInDirection(grid, need(grid, 7, 11), 'up'))).toBe('G12');
+  });
+
+  it('stops at the edge of the grid rather than wrapping onto another row', () => {
+    const grid = buildBoxGrid(seedTemplate('96_well_rack.json'), []);
+
+    // Wrapping is the one thing a user cannot predict from the map: the cell
+    // that gets focus is a whole row away.
+    expect(cellInDirection(grid, need(grid, 0, 11), 'right')).toBeNull();
+    expect(cellInDirection(grid, need(grid, 0, 0), 'left')).toBeNull();
+    expect(cellInDirection(grid, need(grid, 0, 0), 'up')).toBeNull();
+    expect(cellInDirection(grid, need(grid, 7, 0), 'down')).toBeNull();
+  });
+
+  it('does not step into either hole of the mixed template', () => {
+    const grid = mixedGrid();
+
+    // C3 is the last declared position of its row: C4 and C5 are holes.
+    expect(cellInDirection(grid, need(grid, 2, 2), 'right')).toBeNull();
+    // B4 and B5 sit directly above the holes, so nothing is below them...
+    expect(cellInDirection(grid, need(grid, 1, 3), 'down')).toBeNull();
+    expect(cellInDirection(grid, need(grid, 1, 4), 'down')).toBeNull();
+    // ...while the columns that do continue still move.
+    expect(label(cellInDirection(grid, need(grid, 0, 3), 'down'))).toBe('B4');
+    expect(label(cellInDirection(grid, need(grid, 0, 4), 'down'))).toBe('B5');
+    expect(label(cellInDirection(grid, need(grid, 0, 2), 'down'))).toBe('B3');
+    expect(label(cellInDirection(grid, need(grid, 1, 2), 'down'))).toBe('C3');
+  });
+
+  it('does not read "right" as "the next position in reading order"', () => {
+    const grid = mixedGrid();
+    const a5 = need(grid, 0, 4);
+
+    // The next declared position after A5 is B1 — the first cell of the *next*
+    // row, which is what a roving tabindex built on `positions[index + 1]` would
+    // focus on ArrowRight. The cell to the right of A5 does not exist.
+    const after = grid.positions.at(grid.positions.indexOf(a5.position) + 1);
+    expect(after?.label).toBe('B1');
+    expect(cellInDirection(grid, a5, 'right')).toBeNull();
+  });
+
+  it('steps to the next declared position when a hole sits inside the row', () => {
+    const grid = buildBoxGrid(holedBoxType(), []);
+
+    // Column 1 is declared by no position, so "one column further along" from
+    // A1 is the hole (0,1) — and the next cell to the right is A3.
+    expect(grid.cols).toEqual([0, 2]);
+    expect(grid.cells.filter((cell) => cell !== null)).toHaveLength(4);
+
+    expect(label(cellInDirection(grid, need(grid, 0, 0), 'right'))).toBe('A3');
+    expect(label(cellInDirection(grid, need(grid, 0, 2), 'left'))).toBe('A1');
+    expect(label(cellInDirection(grid, need(grid, 0, 0), 'down'))).toBe('B1');
+    expect(label(cellInDirection(grid, need(grid, 1, 2), 'up'))).toBe('A3');
+    // The row's ends are its declared ends, on both sides of the hole.
+    expect(label(cellAtRowEdge(grid, need(grid, 0, 2), 'start'))).toBe('A1');
+    expect(label(cellAtRowEdge(grid, need(grid, 0, 0), 'end'))).toBe('A3');
+    expect(label(gridEdgeCell(grid, 'end'))).toBe('B3');
+  });
+
+  it('never lands on a hole, and always on the nearest position in that direction', () => {
+    for (const file of [
+      '96_well_rack.json',
+      '9x9_cryobox.json',
+      '10x10_cryobox.json',
+      'mixed_eppendorf.json',
+    ]) {
+      const grid = buildBoxGrid(seedTemplate(file), []);
+      for (const cell of grid.cells) {
+        if (cell === null) {
+          continue;
+        }
+        for (const direction of DIRECTIONS) {
+          const next = cellInDirection(grid, cell, direction);
+          if (next === null) {
+            continue;
+          }
+          // A real position, never one of the rectangle's holes.
+          expect(grid.positions).toContain(next.position);
+
+          if (direction === 'left' || direction === 'right') {
+            expect(next.row).toBe(cell.row);
+            expect(direction === 'right' ? next.col > cell.col : next.col < cell.col).toBe(true);
+            // Nearest, not merely somewhere further along the row.
+            for (const position of grid.positions) {
+              if (position.row !== cell.row) {
+                continue;
+              }
+              const between =
+                direction === 'right'
+                  ? position.col > cell.col && position.col < next.col
+                  : position.col < cell.col && position.col > next.col;
+              expect(between).toBe(false);
+            }
+            continue;
+          }
+          expect(next.col).toBe(cell.col);
+          expect(direction === 'down' ? next.row > cell.row : next.row < cell.row).toBe(true);
+          for (const position of grid.positions) {
+            if (position.col !== cell.col) {
+              continue;
+            }
+            const between =
+              direction === 'down'
+                ? position.row > cell.row && position.row < next.row
+                : position.row < cell.row && position.row > next.row;
+            expect(between).toBe(false);
+          }
+        }
+      }
+    }
+  });
+});
+
+describe('cellAtRowEdge and gridEdgeCell — the Home and End keys', () => {
+  it('takes Home and End to the ends of the mixed template row the cell is in', () => {
+    const grid = mixedGrid();
+
+    expect(label(cellAtRowEdge(grid, need(grid, 2, 2), 'start'))).toBe('C1');
+    expect(label(cellAtRowEdge(grid, need(grid, 2, 2), 'end'))).toBe('C3');
+    // Row 0 ends at A5, not at the rectangle's last column of the row below.
+    expect(label(cellAtRowEdge(grid, need(grid, 0, 3), 'start'))).toBe('A1');
+    expect(label(cellAtRowEdge(grid, need(grid, 0, 3), 'end'))).toBe('A5');
+  });
+
+  it('takes Control+Home and Control+End to the first and last declared position', () => {
+    const grid = mixedGrid();
+
+    expect(label(gridEdgeCell(grid, 'start'))).toBe('A1');
+    // Not C5, which is a hole, and not B5, which is a row up: the template's
+    // reading order ends at C3.
+    expect(label(gridEdgeCell(grid, 'end'))).toBe('C3');
+    expect(label(gridEdgeCell(buildBoxGrid(seedTemplate('96_well_rack.json'), []), 'end'))).toBe(
+      'H12',
+    );
+  });
+
+  it('has no edge cell at all for a box type with no positions', () => {
+    const grid = buildBoxGrid(undefined, []);
+
+    expect(gridEdgeCell(grid, 'start')).toBeNull();
+    expect(gridEdgeCell(grid, 'end')).toBeNull();
   });
 });
