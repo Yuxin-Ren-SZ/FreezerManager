@@ -11,6 +11,14 @@ const devPort = Number.parseInt(process.env.FMGR_WEB_DEV_PORT ?? '5173', 10);
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    // `scripts/check-bundle-size.mjs` reads the manifest to prove that every
+    // feature screen is behind `import()` rather than in the entry chunk's
+    // static imports (issue #64). Without it the guard has nothing to read and
+    // fails, which is deliberate: a guard that can pass vacuously is worse than
+    // no guard.
+    manifest: true,
+  },
   server: {
     host: '127.0.0.1',
     port: devPort,

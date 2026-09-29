@@ -1,24 +1,66 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import type { ReactNode } from 'react';
 import shell from '../../locales/en/shell.json';
-import { AccountScreen } from '../features/account/AccountScreen';
-import { AuditScreen } from '../features/audit/AuditScreen';
-import { LoginScreen } from '../features/auth/LoginScreen';
-import { MfaScreen } from '../features/auth/MfaScreen';
-import { HomeScreen } from '../features/home/HomeScreen';
-import { ImportScreen } from '../features/import/ImportScreen';
-import { ItemTypesScreen } from '../features/item-types/ItemTypesScreen';
-import { BoxScreen } from '../features/layout/BoxScreen';
-import { LayoutAdminScreen } from '../features/layout/LayoutAdminScreen';
-import { LayoutTreeScreen } from '../features/layout/LayoutTreeScreen';
-import { LookupScreen } from '../features/lookup/LookupScreen';
-import { MembersScreen } from '../features/members/MembersScreen';
-import { SampleBrowserScreen } from '../features/samples/SampleBrowserScreen';
-import { SampleCreateScreen } from '../features/samples/SampleCreateScreen';
-import { SampleDetailScreen } from '../features/samples/SampleDetailScreen';
-import { ScanScreen } from '../features/scan/ScanScreen';
-import { SharesScreen } from '../features/shares/SharesScreen';
+import { lazyScreen } from './lazyScreen';
 import type { PermissionKey } from './permissions';
+
+/**
+ * Every screen, fetched when its route is first rendered — not when the app
+ * boots (issue #64).
+ *
+ * These were static imports until G3.2: a screen that renders TanStack Table
+ * pulls TanStack Table and TanStack Virtual in with it, and with all 17 screens
+ * statically imported the entry chunk carried every one of them. G3.1 left
+ * 196.0 KiB of a 250 KiB budget; G3.2 alone took that to 235.4 KiB, so G3.3 and
+ * G3.4 would have failed `npm run build` and the failure would have read as
+ * "this screen is too big" rather than "the entry is carrying every screen".
+ *
+ * The shell is deliberately *not* deferred: `AppShell`, the nav and the kit
+ * they use stay eager, so the frame paints immediately and only the screen
+ * shows a fallback. `scripts/check-bundle-size.mjs` fails the build if a screen
+ * here goes back to a static import.
+ *
+ * `lazyScreen` names the export so a rename is a type error at this line rather
+ * than a blank route at runtime.
+ */
+const AccountScreen = lazyScreen(
+  () => import('../features/account/AccountScreen'),
+  'AccountScreen',
+);
+const AuditScreen = lazyScreen(() => import('../features/audit/AuditScreen'), 'AuditScreen');
+const LoginScreen = lazyScreen(() => import('../features/auth/LoginScreen'), 'LoginScreen');
+const MfaScreen = lazyScreen(() => import('../features/auth/MfaScreen'), 'MfaScreen');
+const HomeScreen = lazyScreen(() => import('../features/home/HomeScreen'), 'HomeScreen');
+const ImportScreen = lazyScreen(() => import('../features/import/ImportScreen'), 'ImportScreen');
+const ItemTypesScreen = lazyScreen(
+  () => import('../features/item-types/ItemTypesScreen'),
+  'ItemTypesScreen',
+);
+const BoxScreen = lazyScreen(() => import('../features/layout/BoxScreen'), 'BoxScreen');
+const LayoutAdminScreen = lazyScreen(
+  () => import('../features/layout/LayoutAdminScreen'),
+  'LayoutAdminScreen',
+);
+const LayoutTreeScreen = lazyScreen(
+  () => import('../features/layout/LayoutTreeScreen'),
+  'LayoutTreeScreen',
+);
+const LookupScreen = lazyScreen(() => import('../features/lookup/LookupScreen'), 'LookupScreen');
+const MembersScreen = lazyScreen(() => import('../features/members/MembersScreen'), 'MembersScreen');
+const SampleBrowserScreen = lazyScreen(
+  () => import('../features/samples/SampleBrowserScreen'),
+  'SampleBrowserScreen',
+);
+const SampleCreateScreen = lazyScreen(
+  () => import('../features/samples/SampleCreateScreen'),
+  'SampleCreateScreen',
+);
+const SampleDetailScreen = lazyScreen(
+  () => import('../features/samples/SampleDetailScreen'),
+  'SampleDetailScreen',
+);
+const ScanScreen = lazyScreen(() => import('../features/scan/ScanScreen'), 'ScanScreen');
+const SharesScreen = lazyScreen(() => import('../features/shares/SharesScreen'), 'SharesScreen');
 
 /** Where a nav entry is grouped. */
 export type NavSection = 'primary' | 'admin' | 'account';
@@ -33,6 +75,11 @@ export interface AppRoute {
   path: string;
   /** The TODO.md item that replaces this placeholder. */
   task: string;
+  /**
+   * The screen. Since issue #64 every screen here is a lazy element, so the
+   * router has to render it inside a `Suspense` boundary — `router.tsx` does,
+   * with the fallback in the shell's content area.
+   */
   element: ReactNode;
   /**
    * Any-of permissions required to see the screen. `null` means "any signed-in
