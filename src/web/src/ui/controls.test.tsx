@@ -266,3 +266,23 @@ describe('Checkbox', () => {
     await expectNoA11yViolations(container);
   });
 });
+
+describe('Select with a hidden label', () => {
+  it('keeps the label in the accessibility tree instead of dropping it', () => {
+    render(
+      <Select label="Current lab" labelHidden options={[{ value: 'lab-1', label: 'Demo Lab' }]} />,
+    );
+
+    expect(screen.getByLabelText('Current lab')).toBeInTheDocument();
+  });
+
+  it('has no accessibility violations', async () => {
+    const { container } = render(
+      <main>
+        <Select label="Current lab" labelHidden options={[{ value: 'lab-1', label: 'Demo Lab' }]} />
+      </main>,
+    );
+
+    await expectNoA11yViolations(container);
+  });
+});
