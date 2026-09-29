@@ -74,6 +74,11 @@ namespace fmgr::test {
 
         // Start server on a random port (OS-assigned by using port 0).
         server_opts_.listen_address = "localhost:0";
+        // Unmask INTERNAL detail: the registry-mismatch test (#60) asserts that
+        // the refusal names both permissions, and the default masks it in release
+        // builds (NDEBUG). Set explicitly rather than relying on the debug
+        // default, so the assertion holds in every preset CI builds.
+        server_opts_.mask_internal_errors = false;
         server_ = std::make_unique<server::FreezerServer>(*backend_, *provider_, server_opts_);
         // build() binds the port (fills bound_port_) without blocking.
         server_->build();
@@ -455,6 +460,33 @@ namespace fmgr::test {
         const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
         EXPECT_TRUE(status.ok()) << status.error_message();
       }
+
+      // The refusal is INTERNAL in both masking modes; only the detail differs.
+      // Masking is process-wide and keys off NDEBUG in production
+      // (FreezerServerOptions), so the assertions above depend on the fixture
+      // turning it *off* — deliberately, not by inheriting the debug default,
+      // which is what made this test fail the release presets in review. With
+      // masking on, the client must see the generic message and no permission
+      // keys at all.
+      server::set_mask_internal_errors(true);
+      rpc::AuthMiddleware::register_rpc(sample_read_rpc, core::Permission::FreezerConfigure);
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSamplesRequest req;
+        req.set_lab_id(kLabId);
+        fmgr::v1::ListSamplesResponse resp;
+        const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL) << status.error_message();
+        EXPECT_EQ(status.error_message().find("freezer.configure"), std::string::npos)
+            << "masked internal detail must not name the registered permission; got: "
+            << status.error_message();
+        EXPECT_EQ(status.error_message().find("sample.read"), std::string::npos)
+            << "masked internal detail must not name the enforced permission; got: "
+            << status.error_message();
+      }
+      server::set_mask_internal_errors(false);
+      rpc::AuthMiddleware::register_rpc(sample_read_rpc, core::Permission::SampleRead);
     }
 
     // Security audit H-1: a burst of Login attempts from one source is throttled

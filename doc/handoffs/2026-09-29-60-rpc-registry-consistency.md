@@ -87,14 +87,19 @@ load-bearing at the gate (PRD §12 authorisation, `AGENTS.md` §5).
   registered as permission 'sample.read' but its handler enforces 'sample.write'`.
   Reverted; 49/49 green again.
 - `clang-format --dry-run --Werror` over every changed file: clean.
+- The acceptance test keeps the refusal message readable by setting
+  `server_opts_.mask_internal_errors = false` in the fixture. Without it the
+  assertion only passes in debug builds, where INTERNAL detail is unmasked by
+  default (`FreezerServerOptions` keys masking off NDEBUG) — the release presets
+  CI builds would return "internal server error" and the test would fail there.
 
 **Known limitations / follow-ups:**
 
 - **The gate check covers the 39 of the 72 served RPCs that call
   `middleware_.authorize()`.** The other 33 gate somewhere else, so nothing
   verifies their registry entry yet. Measured on this branch, they are:
-  - **twenty** that check the *same* permission by hand, usually after loading the
-    row: `GetFreezer`/`ArchiveFreezer`/`ArchiveStorageContainer`,
+  - **eighteen** that check the *same* permission by hand, usually after loading
+    the row: `GetFreezer`/`ArchiveFreezer`/`ArchiveStorageContainer`,
     `GetBox`/`ArchiveBox`, `GetItemType`/`ArchiveItemType`/
     `ArchiveCustomFieldDefinition`, `ArchiveRole`, `GrantPermission`,
     `RevokePermission`, `GetSample`, `SoftDeleteSample`, `MoveSample`,
@@ -122,6 +127,12 @@ load-bearing at the gate (PRD §12 authorisation, `AGENTS.md` §5).
   ownership check, so any authenticated caller can revoke any session id while the
   registry claims `session.revoke`. Reported on #60; deliberately not changed
   here, since it is a behaviour change and #54's territory.
+- **Cost of the check**: every `authorize()` call now takes a process-global
+  mutex (one map lookup) and `extract_bearer()` copies the bearer token and the
+  method name. That is per authenticated RPC, on the request path, and it is
+  fine at this scale — but it is a new global lock in the hot path, so a future
+  RPC-per-second-sensitive change should know it is there. The interceptor also
+  adds one map insert/erase per RPC on the server side.
 - **Local `clang-tidy` 17.0.1 cannot lint this project on the owner's Mac**: LLVM
   17 cannot parse the installed SDK's libc++ (`__builtin_clzg` in
   `__bit/countr.h`), so every TU dies with ~20 `clang-diagnostic-error`s from

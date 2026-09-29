@@ -125,6 +125,20 @@ namespace fmgr::server {
       // That is a bad argument, not an internal fault (review N-1). The detail is
       // not echoed back: a parse-error snippet could carry client PHI.
       return {grpc::StatusCode::INVALID_ARGUMENT, "request contained malformed JSON"};
+    } catch (const rpc::RpcRegistryMismatch& e) {
+      // The permission a handler enforces disagrees with the one its RPC
+      // registered (#60) — a deployment defect, not a caller error. It gets its
+      // own event code so a production occurrence is one grep away
+      // ("grpc.registry_mismatch") instead of hiding among generic internal
+      // errors; the detail is masked on the wire exactly like every other
+      // internal failure.
+      obs::log_lifecycle(obs::Level::Error,
+                         fmt::format("grpc: RPC registry mismatch: {}", e.what()),
+                         "grpc.registry_mismatch");
+      if (internal_error_masking().load(std::memory_order_acquire)) {
+        return {grpc::StatusCode::INTERNAL, "internal server error"};
+      }
+      return {grpc::StatusCode::INTERNAL, fmt::format("internal server error: {}", e.what())};
     } catch (const std::exception& e) {
       // Do not leak internal detail (DB messages carry table/column names) to the
       // client when masking is on. Log the real error server-side; return a

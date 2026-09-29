@@ -14,12 +14,19 @@
 // interceptors and handlers are not required to share a thread, and a
 // thread-local would also go stale across pooled worker threads.
 //
+// That identity is load-bearing. The interceptor stores
+// `ServerRpcInfo::server_context()`; extract_bearer() looks up
+// `static_cast<const ServerContextBase*>(&ctx)`. If a gRPC upgrade ever made
+// those two addresses diverge, the lookup would find nothing and the gate would
+// skip its registry check — this path fails **open**, not closed. Nothing in the
+// library promises the two are the same object, so the #60 acceptance test
+// (ServerIntegrationTest.RegisteredPermissionDisagreeingWithEnforcedPermissionIsRefused)
+// is the tripwire: it plants the disagreement and drives a live server, so it
+// fails if the interceptor stops being installed or stops being found.
+//
 // A context with no record is not inside a served RPC (unit tests, tooling): the
 // gate then skips the registry check rather than inventing an RPC to check
-// against. The #60 acceptance test
-// (ServerIntegrationTest.RegisteredPermissionDisagreeingWithEnforcedPermissionIsRefused)
-// turns red if the interceptor stops being installed, so that fallback cannot
-// silently become a hole.
+// against.
 #ifndef FMGR_RPC_RPCMETHODTRACKER_H
 #define FMGR_RPC_RPCMETHODTRACKER_H
 
