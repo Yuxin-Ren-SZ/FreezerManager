@@ -59,10 +59,14 @@ namespace fmgr::core {
       EXPECT_TRUE(is_global_only_permission(Permission::SampleDeleteHard));
       EXPECT_TRUE(is_global_only_permission(Permission::BackupRun));
       EXPECT_TRUE(is_global_only_permission(Permission::KeyRotate));
+      // #77: session.revoke moved here. RevokeSessionRequest carries no lab, so
+      // a lab-scoped grant of it was spendable deployment-wide: a LabAdmin could
+      // mint a custom role carrying it and revoke a session belonging to another
+      // lab's user. Its contract allows a SystemAdmin only.
+      EXPECT_TRUE(is_global_only_permission(Permission::SessionRevoke));
 
       EXPECT_FALSE(is_global_only_permission(Permission::SampleRead));
       EXPECT_FALSE(is_global_only_permission(Permission::AuditExport));
-      EXPECT_FALSE(is_global_only_permission(Permission::SessionRevoke));
     }
 
     TEST(PermissionCatalog, LabAdminDoesNotGrantDeploymentWideBackupRun) {

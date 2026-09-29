@@ -36,6 +36,26 @@ namespace fmgr::server {
       };
     }
 
+    // #77: does `session_id` belong to the caller? find_by_id() returns
+    // tombstoned rows as well, which keeps a repeated revoke of one's own
+    // session the idempotent no-op the IAuthProvider contract promises instead
+    // of turning it into a permission error. A session's owner never changes,
+    // so checking it in a separate read cannot race the tombstone write.
+    //
+    // The read is unfiltered only because `sessions` carries no RLS policy
+    // (Postgres enables RLS on lab-scoped tables alone) and inject_rls_vars() is
+    // a no-op on SQLite. Scoping sessions to a lab in a future migration would
+    // change what this call can see, and with it the self-logout path.
+    [[nodiscard]] bool caller_owns_session(storage::IStorageBackend& backend,
+                                           const auth::SessionContext& sctx,
+                                           const core::SessionId& session_id) {
+      auto txn = backend.begin(storage::IsolationLevel::ReadCommitted);
+      rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+      const auto target = txn->repo<core::Session>().find_by_id(session_id);
+      txn->commit();
+      return target.has_value() && target->user_id == sctx.user_id;
+    }
+
     void fill_session_summary(fmgr::v1::SessionSummary* out, const core::Session& s) {
       out->set_id(s.id.to_string());
       out->set_user_id(s.user_id.to_string());
@@ -98,6 +118,21 @@ namespace fmgr::server {
     try {
       const auto sctx = validate_authed(auth_, *ctx);
       const auto session_id = core::SessionId::parse(req->session_id());
+
+      // #77: a caller may always revoke its own sessions -- that logout path is
+      // why this RPC exists. Revoking someone else's is the SystemAdmin
+      // exception the proto documents, and it is gated on the named
+      // session.revoke permission rather than happening by accident.
+      // session.revoke is global-only (core/permissions.h), so `has_global` is
+      // the whole test: a lab-owned role can neither be granted it nor, if a
+      // grant predates that classification, spend it. The denial is decided by
+      // ownership, never by existence, so it is not an oracle for whether a
+      // session id is live.
+      if (!caller_owns_session(backend_, sctx, session_id) &&
+          !sctx.has_global(core::Permission::SessionRevoke)) {
+        throw auth::PermissionDenied("caller may not revoke another user's session");
+      }
+
       auth_.revoke_session(session_id, make_ctx(*ctx, sctx, "revoke_session"));
       return grpc::Status::OK;
     } catch (...) {
