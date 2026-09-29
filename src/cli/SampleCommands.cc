@@ -6,6 +6,7 @@
 #include "cli/SampleCsv.h"
 #include "cli/SampleImport.h"
 #include "core/enums.h"
+#include "storage/CustomFieldWrite.h"
 #include "storage/SampleTraits.h"
 
 #include <array>
@@ -111,6 +112,20 @@ namespace fmgr::cli {
       txn.set_session_var("current_lab_ids", options.lab_id.to_string());
     };
 
+    // Split each row the same way the server splits a CreateSample/UpdateSample
+    // request, so a PHI-tagged key that arrived in the CSV's custom_fields_json
+    // cell reaches the encrypted envelope and never the plaintext column — this
+    // tool writes into the same database the server reads (#108). Throws for a
+    // row that cannot be stored safely (validation failure, PHI with no master
+    // key, PHI where the lab has PHI mode off); the caller reports the row and
+    // never commits.
+    const auto prepare_row = [&](storage::ITransaction& txn, core::Sample& sample) {
+      const auto prepared = storage::prepare_custom_fields(txn, options.lab_id, sample.item_type_id,
+                                                           sample.custom_fields_json, options.kms);
+      sample.custom_fields_json = prepared.custom_fields_json;
+      sample.phi_fields_enc_json = prepared.phi_fields_enc_json;
+    };
+
     if (options.dry_run) {
       // Validate against committed DB state without persisting: each row inserts
       // in its own transaction that is dropped (rolled back), so one failing row
@@ -123,7 +138,9 @@ namespace fmgr::cli {
         try {
           auto txn = backend.begin(storage::IsolationLevel::Serializable);
           inject_lab(*txn);
-          txn->repo<core::Sample>().insert(row.sample.value(), import_mutation_context(options));
+          core::Sample sample = row.sample.value();
+          prepare_row(*txn, sample);
+          txn->repo<core::Sample>().insert(sample, import_mutation_context(options));
           // Intentionally no commit(): the transaction rolls back on destruction.
         } catch (const std::exception& error) {
           ++db_errors;
@@ -142,11 +159,23 @@ namespace fmgr::cli {
     // failure aborts the whole batch (the transaction is never committed).
     auto txn = backend.begin(storage::IsolationLevel::Serializable);
     inject_lab(*txn);
+    std::size_t db_errors = 0;
     for (const auto& row : report.rows) {
       if (!row.sample.has_value()) {
         continue;
       }
-      txn->repo<core::Sample>().insert(row.sample.value(), import_mutation_context(options));
+      try {
+        core::Sample sample = row.sample.value();
+        prepare_row(*txn, sample);
+        txn->repo<core::Sample>().insert(sample, import_mutation_context(options));
+      } catch (const std::exception& error) {
+        ++db_errors;
+        out << "row " << row.row_number << ": ERROR " << error.what() << '\n';
+      }
+    }
+    if (db_errors > 0) {
+      out << db_errors << " row(s) failed validation; nothing written\n";
+      return 1;
     }
     txn->commit();
     out << "imported " << report.rows.size() << " sample(s)\n";

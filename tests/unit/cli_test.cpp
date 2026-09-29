@@ -1063,7 +1063,10 @@ namespace fmgr::cli {
                             id_from_low<core::ItemTypeId>(20).to_string() +
                             ",\"{\"\"mrn\"\":\"\"MRN-555\"\"}\"\r\n");
       std::ostringstream out;
-      const int code = run_sample_import(backend, import_options(lab), in, out);
+      auto opts = import_options(lab);
+      const fmgr::kms::EnvVarKms kms(old_kek());
+      opts.kms = &kms;
+      const int code = run_sample_import(backend, opts, in, out);
       EXPECT_EQ(code, 0) << out.str();
 
       const auto rows = query_samples(backend, SampleQueryOptions{.lab_id = lab});
@@ -1075,7 +1078,6 @@ namespace fmgr::cli {
       EXPECT_EQ(imported->custom_fields_json.find("mrn"), std::string::npos);
       EXPECT_NE(imported->phi_fields_enc_json, "{}");
       EXPECT_EQ(imported->phi_fields_enc_json.find("MRN-555"), std::string::npos);
-      const fmgr::kms::EnvVarKms kms(old_kek());
       const auto phi = crypto::decrypt(imported->phi_fields_enc_json, kms);
       ASSERT_TRUE(phi.contains("mrn"));
       EXPECT_EQ(phi.at("mrn"), "MRN-555");
@@ -1098,6 +1100,24 @@ namespace fmgr::cli {
       EXPECT_EQ(out.str().find("MRN-555"), std::string::npos) << out.str();
       const auto after = query_samples(backend, SampleQueryOptions{.lab_id = lab});
       EXPECT_EQ(after.size(), before.size());
+    }
+
+    // The dry run refuses the same row the real import refuses: a preview that
+    // approves what the commit rejects is worse than no preview at all (#110).
+    TEST_P(CliBackendTest, ImportDryRunRefusesPhiTaggedKeyWithoutMasterKey) {
+      auto& backend = fixture_->backend();
+      const auto lab = fixture_->lab_a();
+      const auto before = query_samples(backend, SampleQueryOptions{.lab_id = lab});
+      std::istringstream in("name,item_type_id,custom_fields_json\r\nImported PHI," +
+                            id_from_low<core::ItemTypeId>(20).to_string() +
+                            ",\"{\"\"mrn\"\":\"\"MRN-555\"\"}\"\r\n");
+      std::ostringstream out;
+      auto opts = import_options(lab);
+      opts.dry_run = true;
+      const int code = run_sample_import(backend, opts, in, out);
+      EXPECT_EQ(code, 1) << out.str();
+      EXPECT_NE(out.str().find("mrn"), std::string::npos) << out.str();
+      EXPECT_EQ(query_samples(backend, SampleQueryOptions{.lab_id = lab}).size(), before.size());
     }
 
     // The mirror of the refusal: nothing PHI-tagged means no KEK is needed, so an

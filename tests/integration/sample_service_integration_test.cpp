@@ -1827,6 +1827,43 @@ namespace fmgr::test {
       EXPECT_EQ(custom_fields(as_admin).value("mrn", ""), "MRN-555");
     }
 
+    // The import now validates custom fields exactly like CreateSample, because
+    // it runs the same split. A known field of the wrong type is refused instead
+    // of being written to the plaintext column unchecked.
+    TEST_F(SampleServiceTest, ImportSamplesRejectsCustomFieldFailingValidation) {
+      const auto admin = login(kAdminEmail, kPassword);
+      fmgr::v1::ImportSamplesResponse resp;
+      const auto status =
+          import_csv(admin, false, import_csv_with_custom_fields(R"({"mrn":5})"), &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("mrn"), std::string::npos);
+
+      grpc::ClientContext lctx;
+      set_bearer(lctx, admin);
+      fmgr::v1::ListSamplesRequest lreq;
+      lreq.set_lab_id(kLab1);
+      fmgr::v1::ListSamplesResponse lresp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&lctx, lreq, &lresp).ok());
+      EXPECT_EQ(lresp.samples_size(), 0);
+    }
+
+    // ... and the dry run says so too: the probe runs the same split as the
+    // commit path, so it cannot approve a row the commit will refuse. Without
+    // that, a user would be told the file is good and then shown an error on the
+    // row the preview passed (#110).
+    TEST_F(SampleServiceTest, ImportSamplesDryRunReportsCustomFieldValidationFailure) {
+      const auto admin = login(kAdminEmail, kPassword);
+      fmgr::v1::ImportSamplesResponse resp;
+      ASSERT_TRUE(
+          import_csv(admin, true, import_csv_with_custom_fields(R"({"mrn":5})"), &resp).ok());
+      EXPECT_FALSE(resp.committed());
+      ASSERT_EQ(resp.rows_size(), 1);
+      EXPECT_FALSE(resp.rows(0).ok());
+      EXPECT_NE(resp.rows(0).error().find("mrn"), std::string::npos);
+      EXPECT_EQ(resp.succeeded(), 0);
+    }
+
     TEST_F(SampleServiceTest, ImportSamplesDryRunDoesNotPersist) {
       const auto token = login(kAdminEmail, kPassword);
       const std::string csv =
