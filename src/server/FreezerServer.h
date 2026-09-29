@@ -30,9 +30,16 @@ namespace fmgr::server {
   struct FreezerServerOptions {
     // Listening address, e.g. "0.0.0.0:50051".
     std::string listen_address{"0.0.0.0:50051"};
-    // If empty, server starts without TLS (dev mode only).
+    // If empty, server starts without TLS (dev mode only). Both must be set
+    // together: a cert without a key (or vice versa) is a misconfiguration and
+    // build() throws rather than silently falling back to a plaintext listener.
     std::string tls_cert_path;
     std::string tls_key_path;
+    // Optional mTLS: PEM bundle of CAs trusted to sign *client* certificates.
+    // When set, build() requires and verifies a client certificate on every
+    // connection. Left empty, clients are not authenticated at the TLS layer
+    // (bearer tokens remain the only caller identity).
+    std::string tls_client_ca_path;
     // Production safety guard: when true, build() refuses to start a plaintext
     // server. A misconfiguration that drops TLS (missing cert/key paths) then
     // fails loudly at startup instead of silently exposing bearer tokens and
@@ -47,6 +54,20 @@ namespace fmgr::server {
     // buffered, so a malicious client cannot exhaust server memory. Paired with a
     // grpc::ResourceQuota that bounds the process-wide buffer pool. Default 10 MiB.
     std::size_t max_receive_message_bytes{std::size_t{10} * 1024 * 1024};
+    // Hard cap on a single outbound gRPC message. Without it a wide List query
+    // can serialize an arbitrarily large response and the peer rejects it late,
+    // after the server has already built the whole frame. Default 10 MiB.
+    std::size_t max_send_message_bytes{std::size_t{10} * 1024 * 1024};
+    // Ceiling on the gRPC buffer pool, in BYTES (grpc::ResourceQuota). This is
+    // the process-wide memory bound that pairs with the per-message caps above.
+    // Default 512 MiB.
+    std::size_t max_grpc_memory_bytes{std::size_t{512} * 1024 * 1024};
+    // Ceiling on gRPC-owned threads, a COUNT — deliberately a separate knob from
+    // the byte-valued limits above. (Security audit C-13: this was previously
+    // derived as max_receive_message_bytes / 4096, i.e. a byte count used as a
+    // thread count, which yielded 2560 threads at the default message size and
+    // left the memory pool unbounded.) Default 64.
+    int max_grpc_threads{64};
     // When true, INTERNAL errors return a generic message to the client and the
     // real detail is only logged server-side (security audit C-11 info leak).
     // Defaults on in release builds, off in debug so developers see detail on the

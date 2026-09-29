@@ -10,6 +10,7 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMessageBox>
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QStatusBar>
@@ -100,8 +101,17 @@ void MainWindow::buildMenus() {
 }
 
 void MainWindow::onConnect() {
-  channel_ = GrpcChannel(config_.serverUrl().toStdString());
-  channel_.connect();
+  channel_ = GrpcChannel(
+      config_.serverUrl().toStdString(),
+      TlsOptions{config_.useTls(), config_.tlsRootCaPath().toStdString()});
+  if (!channel_.connect()) {
+    QMessageBox::critical(
+        this, QStringLiteral("Connection failed"),
+        QStringLiteral("Could not read the configured TLS root "
+                       "certificate. Check the CA path in settings."));
+    updateStatus();
+    return;
+  }
   updateStatus();
 
   auth_ = std::make_unique<AuthServiceClient>(channel_.makeAuthStub());

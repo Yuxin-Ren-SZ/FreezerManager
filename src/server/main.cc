@@ -106,6 +106,43 @@ namespace {
     return fmgr::obs::DepStatus::ok();
   }
 
+  // Fills the TLS half of FreezerServerOptions from the environment. Returns
+  // false when the process must not start; the caller exits non-zero.
+  //
+  // FMGR_TLS_CERT / FMGR_TLS_KEY enable the TLS listener, FMGR_TLS_CLIENT_CA
+  // additionally requires and verifies client certificates (mTLS), and
+  // FMGR_REQUIRE_TLS makes a plaintext listener a startup error.
+  bool apply_tls_env(fmgr::server::FreezerServerOptions& opts) {
+    const char* tls_cert_env = std::getenv("FMGR_TLS_CERT");
+    if (tls_cert_env != nullptr) {
+      opts.tls_cert_path = tls_cert_env;
+    }
+    const char* tls_key_env = std::getenv("FMGR_TLS_KEY");
+    if (tls_key_env != nullptr) {
+      opts.tls_key_path = tls_key_env;
+    }
+    const char* tls_client_ca_env = std::getenv("FMGR_TLS_CLIENT_CA");
+    if (tls_client_ca_env != nullptr) {
+      opts.tls_client_ca_path = tls_client_ca_env;
+    }
+    const char* require_tls_env = std::getenv("FMGR_REQUIRE_TLS");
+    opts.require_tls = require_tls_env != nullptr && (std::string(require_tls_env) == "1" ||
+                                                      std::string(require_tls_env) == "true");
+
+    // PRD F4: a production deployment may not serve plaintext. Requiring the
+    // operator to opt in explicitly (rather than inferring TLS from the cert
+    // paths) means a config that loses its cert paths fails closed.
+    const char* env_name = std::getenv("FMGR_ENV");
+    if (env_name != nullptr && std::string(env_name) == "production" && !opts.require_tls) {
+      fmgr::obs::log_lifecycle(fmgr::obs::Level::Error,
+                               "FMGR_ENV=production requires FMGR_REQUIRE_TLS=1 "
+                               "(refusing to start a plaintext listener)",
+                               "tls.production_guard");
+      return false;
+    }
+    return true;
+  }
+
 } // namespace
 
 // Minimal entry point: reads FMGR_LISTEN (default "0.0.0.0:50051") and
@@ -146,17 +183,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
     fmgr::server::FreezerServerOptions opts;
     opts.listen_address = listen;
 
-    const char* tls_cert_env = std::getenv("FMGR_TLS_CERT");
-    if (tls_cert_env != nullptr) {
-      opts.tls_cert_path = tls_cert_env;
+    if (!apply_tls_env(opts)) {
+      return 1;
     }
-    const char* tls_key_env = std::getenv("FMGR_TLS_KEY");
-    if (tls_key_env != nullptr) {
-      opts.tls_key_path = tls_key_env;
-    }
-    const char* require_tls_env = std::getenv("FMGR_REQUIRE_TLS");
-    opts.require_tls = require_tls_env != nullptr && (std::string(require_tls_env) == "1" ||
-                                                      std::string(require_tls_env) == "true");
 
     // Optional in-process scheduled backups (PRD §14). Enabled by FMGR_BACKUP_DIR;
     // SQLite-only, so skip an in-memory database (nothing on disk to hot-copy).

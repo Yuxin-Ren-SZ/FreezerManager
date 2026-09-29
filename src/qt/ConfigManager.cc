@@ -7,6 +7,8 @@ namespace {
 
 constexpr auto kServerUrlKey = "server/url";
 constexpr auto kAutoConnectKey = "server/auto_connect";
+constexpr auto kUseTlsKey = "server/use_tls";
+constexpr auto kTlsRootCaKey = "server/tls_root_ca";
 constexpr auto kWindowGeometryKey = "window/geometry";
 
 constexpr auto kDefaultServerUrl = "0.0.0.0:50051";
@@ -42,6 +44,22 @@ bool ConfigManager::autoConnect() const {
 
 void ConfigManager::setAutoConnect(bool enabled) {
   settings_->setValue(QLatin1String(kAutoConnectKey), enabled);
+}
+
+bool ConfigManager::useTls() const {
+  return settings_->value(QLatin1String(kUseTlsKey), false).toBool();
+}
+
+void ConfigManager::setUseTls(bool enabled) {
+  settings_->setValue(QLatin1String(kUseTlsKey), enabled);
+}
+
+QString ConfigManager::tlsRootCaPath() const {
+  return settings_->value(QLatin1String(kTlsRootCaKey), QString()).toString();
+}
+
+void ConfigManager::setTlsRootCaPath(const QString& path) {
+  settings_->setValue(QLatin1String(kTlsRootCaKey), path);
 }
 
 QByteArray ConfigManager::windowGeometry() const {

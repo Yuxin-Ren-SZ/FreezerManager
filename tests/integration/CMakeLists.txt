@@ -3,6 +3,7 @@
 find_package(gRPC CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 add_executable(freezermanager_server_integration_tests
   server_integration_test.cpp
@@ -22,6 +23,30 @@ target_link_libraries(
     FreezerManager::storage_sqlite
     FreezerManager::auth
     gRPC::grpc++
+    GTest::gtest_main
+)
+
+add_executable(freezermanager_grpc_tls_integration_tests
+  grpc_tls_test.cpp
+)
+
+target_include_directories(
+  freezermanager_grpc_tls_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+# OpenSSL is used directly here to mint a throwaway self-signed certificate, so
+# the suite needs no fixture files and no `openssl` binary on PATH.
+target_link_libraries(
+  freezermanager_grpc_tls_integration_tests
+  PRIVATE
+    FreezerManager::server_lib
+    FreezerManager::storage_sqlite
+    FreezerManager::auth
+    gRPC::grpc++
+    OpenSSL::Crypto
     GTest::gtest_main
 )
 
@@ -203,6 +228,8 @@ include(GoogleTest)
 # labelled "grpc_integration" so CI can exclude them from the asan/tsan runs via
 # `ctest --label-exclude grpc_integration`; they still run under dev/release.
 gtest_discover_tests(freezermanager_server_integration_tests
+  PROPERTIES LABELS "grpc_integration")
+gtest_discover_tests(freezermanager_grpc_tls_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_lab_service_integration_tests
   PROPERTIES LABELS "grpc_integration")

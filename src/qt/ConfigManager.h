@@ -27,6 +27,14 @@ class ConfigManager {
   bool autoConnect() const;
   void setAutoConnect(bool enabled);
 
+  // Transport security for the gRPC channel. Off by default (local dev server).
+  bool useTls() const;
+  void setUseTls(bool enabled);
+
+  // PEM bundle verifying the server certificate; empty = system trust store.
+  QString tlsRootCaPath() const;
+  void setTlsRootCaPath(const QString& path);
+
   QByteArray windowGeometry() const;
   void setWindowGeometry(const QByteArray& geometry);
 

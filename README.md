@@ -128,7 +128,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ⚙️ PHI field-level encryption — Sample PHI custom fields split out of the plaintext blob and AEAD-encrypted (`crypto_secretbox`) with a fresh per-record DEK wrapped by the master KEK; decrypted on read only for callers holding `phi.read`. `is_phi`∧`indexed` rejected at definition time. (Sample done; other entities 🔲)
 - ✅ `IKmsProvider` envelope KMS + keyring — `KeyringKms` holds an active KEK plus retired KEKs (records wrapped under an older KEK still decrypt during rotation); `EnvVarKms` (dev/test, `FMGR_MASTER_KEK` + `FMGR_MASTER_KEK_PREVIOUS`) and `OsKeyringKms` (production, systemd-creds `$CREDENTIALS_DIRECTORY/master_kek`). `VaultKms` 🔲
 - ✅ Key rotation — `freezerctl key rotate` re-wraps every sample's per-record DEK under the active KEK (field ciphertext untouched, no plaintext exposed); idempotent, audited. `key.rotate` permission reserved for a future online RPC
-- 🔲 TLS 1.3 only — HSTS; modern cipher suites; self-signed cert for dev, required for production
+- ⚙️ gRPC TLS — `FMGR_TLS_CERT` / `FMGR_TLS_KEY` enable the TLS listener, optional mTLS via `FMGR_TLS_CLIENT_CA`; `FMGR_REQUIRE_TLS=1` (mandatory when `FMGR_ENV=production`) refuses to start a plaintext listener. Unreadable or malformed certificate material aborts startup — there is no insecure fallback. Qt client verifies via the system trust store or a configured root CA. HSTS / explicit TLS-1.3-only cipher policy 🔲
 
 ### Audit
 
