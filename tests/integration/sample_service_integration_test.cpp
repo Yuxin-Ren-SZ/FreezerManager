@@ -14,6 +14,7 @@
 #include "server/FreezerServer.h"
 #include "storage/AuditTraits.h"
 #include "storage/BoxGeometryTraits.h"
+#include "storage/CustomFieldResolver.h"
 #include "storage/FreezerTraits.h"
 #include "storage/IdentityTraits.h"
 #include "storage/ItemTypeTraits.h"
@@ -43,6 +44,7 @@
 #include <filesystem>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -305,6 +307,39 @@ namespace fmgr::test {
       [[nodiscard]] static std::string orphan_phi_envelope() {
         const kms::EnvVarKms unknown_kek{std::vector<std::uint8_t>(32, 0xAB)};
         return crypto::encrypt(crypto::PhiFields{{"mrn", "MRN-555"}}, unknown_kek);
+      }
+
+      // Archive a seeded custom-field definition the way
+      // ItemTypeServiceImpl::ArchiveCustomFieldDefinition does — soft_delete, which
+      // the resolver's query() then filters out. The key is *gone* from the current
+      // definitions rather than never defined, which is the state #87 is about:
+      // the form builds its controls from what is current, so there is no control
+      // that could send this key back.
+      void archive_phi_field(const std::string& key) {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        const auto defs = txn->repo<core::CustomFieldDefinition>().query(
+            storage::Query<core::CustomFieldDefinition>::where(
+                storage::field<core::CustomFieldDefinition, std::string>(
+                    core::CustomFieldDefinition::Field::Key) == key));
+        ASSERT_EQ(defs.size(), 1U) << key;
+        txn->repo<core::CustomFieldDefinition>().soft_delete(defs.front().id, direct_write_ctx());
+        txn->commit();
+      }
+
+      // The PHI keys a *current* definition covers, resolved the way a write
+      // resolves them. It is what lets a test assert the fixture genuinely archived
+      // a definition — the key is not merely absent from the request.
+      [[nodiscard]] std::set<std::string> defined_phi_keys() {
+        auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        std::set<std::string> keys;
+        for (const auto& def : storage::resolve_custom_field_defs(
+                 *txn, core::LabId::parse(kLab1), core::ItemTypeId::parse(kItemType))) {
+          if (def.is_phi) {
+            keys.insert(def.key);
+          }
+        }
+        txn->commit();
+        return keys;
       }
 
       // Read one sample back over gRPC as the given principal.
@@ -1195,6 +1230,73 @@ namespace fmgr::test {
       fmgr::v1::Sample reread;
       ASSERT_TRUE(get_sample(admin, id, &reread).ok());
       EXPECT_EQ(reread.custom_fields_json().find("mrn"), std::string::npos);
+    }
+
+    // #87, the reader-side half of "a request must not erase what it could not
+    // have named". This caller *did* see `age_years` — it holds phi.read and the
+    // envelope opened — but by the time it saves, the definition is archived, so
+    // the form has no control that could send the key back and the request cannot
+    // carry it. The request is authoritative for the keys it could have named and
+    // no others, so the archived key's ciphertext survives an unrelated edit.
+    TEST_F(SampleServiceTest, UpdateSampleByPhiReaderKeepsPhiKeyWhoseDefinitionWasArchived) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample(
+                      {.token = admin, .custom_fields = R"({"mrn":"MRN-555","age_years":7})"}, &id)
+                      .ok());
+      ASSERT_EQ(stored_phi(id).size(), 2U);
+
+      archive_phi_field("age_years");
+      // Genuinely archived rather than never defined: the resolver no longer
+      // returns it, which is *why* there was no control to render.
+      const auto defined = defined_phi_keys();
+      EXPECT_FALSE(defined.contains("age_years"));
+      EXPECT_TRUE(defined.contains("mrn"));
+
+      const auto status = update_sample({.token = admin,
+                                         .id = id,
+                                         .name = "unrelated edit",
+                                         .custom_fields = R"({"mrn":"MRN-999"})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto after = stored_phi(id);
+      EXPECT_EQ(after.at("mrn"), "MRN-999"); // the request still speaks for a defined key
+      // A request cannot clear a key it had no control to name.
+      ASSERT_TRUE(after.contains("age_years"));
+      EXPECT_EQ(after.at("age_years"), 7);
+
+      // A reader sees both: the archived key is still PHI, so it comes back
+      // through reveal_phi like any other stored PHI key.
+      fmgr::v1::Sample reread;
+      ASSERT_TRUE(get_sample(admin, id, &reread).ok());
+      EXPECT_EQ(custom_fields(reread).value("mrn", ""), "MRN-999");
+      EXPECT_EQ(custom_fields(reread).value("age_years", 0), 7);
+    }
+
+    // The same rule at its boundary, in one request: `mrn` still has a definition,
+    // so omitting it is the holder's deliberate clear (#79); `age_years` has none,
+    // so it is not the request's to clear (#87). An implementation that preserved
+    // everything fails the first assertion, one that recomputed from the request
+    // fails the second — which is what this did before the fix.
+    TEST_F(SampleServiceTest, UpdateSampleByPhiReaderClearsDefinedPhiKeyAndKeepsArchivedOne) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample(
+                      {.token = admin, .custom_fields = R"({"mrn":"MRN-555","age_years":7})"}, &id)
+                      .ok());
+
+      archive_phi_field("age_years");
+
+      const auto status =
+          update_sample({.token = admin, .id = id, .name = "cleared", .custom_fields = R"({})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto after = stored_phi(id);
+      // A defined PHI key the holder omitted is a deliberate clear; the archived
+      // one above is not.
+      EXPECT_FALSE(after.contains("mrn"));
+      ASSERT_TRUE(after.contains("age_years"));
+      EXPECT_EQ(after.at("age_years"), 7);
     }
 
     // The complement of the preservation case: a request that *does* carry PHI

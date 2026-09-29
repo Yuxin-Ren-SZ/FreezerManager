@@ -57,6 +57,12 @@ namespace fmgr::storage {
     // a PHI-tagged key at all, which is why there is no separate "keys present"
     // flag (review F5 on #83).
     bool has_non_blank_phi_value{false};
+    // The PHI keys a *current* definition covers. A request can only name the
+    // keys a definition renders a control for, so UpdateSample uses this to tell
+    // a key the caller could have sent back — and may therefore clear — from one
+    // whose definition is archived and which the request cannot express at all
+    // (#87). The keys are metadata, never values.
+    std::set<std::string> current_phi_keys;
   };
 
   // The "no master key is wired" message, and the keys that need one. Naming the
@@ -105,6 +111,7 @@ namespace fmgr::storage {
     }
 
     PreparedCustomFields prepared;
+    prepared.current_phi_keys = phi_keys;
     nlohmann::json non_phi = nlohmann::json::object();
     crypto::PhiFields phi;
     if (incoming.is_object()) {

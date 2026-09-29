@@ -260,6 +260,80 @@ namespace fmgr::server {
       return disclosed;
     }
 
+    // The wire -> domain half of UpdateSample: copy every optional field of the
+    // request onto the stored row, clearing the ones the request does not carry
+    // (the RPC sends the whole sample, so an absent field is a removal). Mechanical
+    // by design — no PHI, no validation, no transaction — and it exists as a
+    // function for the reason the cognitive-complexity check kept pointing at:
+    // UpdateSample is where five PHI fixes have landed (#71, #79, #82, #83, #87),
+    // which left a sequence of unrelated concerns in one body. `name` and
+    // `item_type_id` stay with the caller, which needs the latter for the
+    // custom-field split.
+    void apply_optional_wire_fields(const fmgr::v1::Sample& wire, core::Sample& existing) {
+      existing.barcode =
+          wire.has_barcode() ? std::optional<std::string>{wire.barcode()} : std::nullopt;
+      existing.container_type_id =
+          wire.has_container_type_id()
+              ? std::optional<core::ContainerTypeId>{core::ContainerTypeId::parse(
+                    wire.container_type_id())}
+              : std::nullopt;
+      existing.box_id = wire.has_box_id()
+                            ? std::optional<core::BoxId>{core::BoxId::parse(wire.box_id())}
+                            : std::nullopt;
+      existing.position_label = wire.has_position_label()
+                                    ? std::optional<std::string>{wire.position_label()}
+                                    : std::nullopt;
+      existing.volume_value =
+          wire.has_volume_value()
+              ? std::optional<std::int64_t>{static_cast<std::int64_t>(wire.volume_value())}
+              : std::nullopt;
+      existing.volume_unit =
+          wire.has_volume_unit()
+              ? std::optional<core::VolumeUnit>{core::parse_volume_unit(wire.volume_unit())}
+              : std::nullopt;
+      existing.mass_value =
+          wire.has_mass_value()
+              ? std::optional<std::int64_t>{static_cast<std::int64_t>(wire.mass_value())}
+              : std::nullopt;
+      existing.mass_unit =
+          wire.has_mass_unit()
+              ? std::optional<core::MassUnit>{core::parse_mass_unit(wire.mass_unit())}
+              : std::nullopt;
+      existing.parent_sample_id =
+          wire.has_parent_sample_id()
+              ? std::optional<core::SampleId>{core::SampleId::parse(wire.parent_sample_id())}
+              : std::nullopt;
+    }
+
+    // The PHI envelope an authoritative request produces, i.e. one from a caller
+    // that could have seen the stored values (it holds phi.read and the envelope
+    // opened). Its request decides every key a *current* definition covers —
+    // including by omission, which is a deliberate clear (#79).
+    //
+    // A request can only clear a PHI key it could have named, though (#87). The
+    // form builds its controls from the current definitions, so a stored key whose
+    // definition was archived (or renamed, or otherwise absent) has no control
+    // that could send it back, and its absence from the request is not a clear:
+    // those keys are carried over exactly as stored. `prepared.current_phi_keys`
+    // is the "could have named" set — the definitions alone, deliberately not
+    // widened to the keys the stored envelope holds: a key the envelope holds as
+    // PHI but no definition covers is still not one this request could name.
+    //
+    // Used only by UpdateSample. It lives here rather than inline because
+    // UpdateSample is where five PHI fixes have landed and the loop below is what
+    // took it over the cognitive-complexity threshold CI enforces.
+    [[nodiscard]] crypto::PhiFields
+    preserve_uncovered_phi_keys(const storage::PreparedCustomFields& prepared,
+                                const crypto::PhiFields& stored_phi) {
+      crypto::PhiFields merged = prepared.phi_values;
+      for (const auto& [key, value] : stored_phi) {
+        if (!prepared.current_phi_keys.contains(key)) {
+          merged[key] = value;
+        }
+      }
+      return merged;
+    }
+
     // Tail query for WatchSampleList: lab scope + the request's box/item-type
     // filters plus a `last_modified_at >= cursor` lower bound, ordered
     // (last_modified_at, id) so the cursor advances monotonically. Tombstoned
@@ -661,39 +735,7 @@ namespace fmgr::server {
       const auto item_type_id = core::ItemTypeId::parse(wire.item_type_id());
       existing->item_type_id = item_type_id;
       existing->name = wire.name();
-      existing->barcode =
-          wire.has_barcode() ? std::optional<std::string>{wire.barcode()} : std::nullopt;
-      existing->container_type_id =
-          wire.has_container_type_id()
-              ? std::optional<core::ContainerTypeId>{core::ContainerTypeId::parse(
-                    wire.container_type_id())}
-              : std::nullopt;
-      existing->box_id = wire.has_box_id()
-                             ? std::optional<core::BoxId>{core::BoxId::parse(wire.box_id())}
-                             : std::nullopt;
-      existing->position_label = wire.has_position_label()
-                                     ? std::optional<std::string>{wire.position_label()}
-                                     : std::nullopt;
-      existing->volume_value =
-          wire.has_volume_value()
-              ? std::optional<std::int64_t>{static_cast<std::int64_t>(wire.volume_value())}
-              : std::nullopt;
-      existing->volume_unit =
-          wire.has_volume_unit()
-              ? std::optional<core::VolumeUnit>{core::parse_volume_unit(wire.volume_unit())}
-              : std::nullopt;
-      existing->mass_value =
-          wire.has_mass_value()
-              ? std::optional<std::int64_t>{static_cast<std::int64_t>(wire.mass_value())}
-              : std::nullopt;
-      existing->mass_unit =
-          wire.has_mass_unit()
-              ? std::optional<core::MassUnit>{core::parse_mass_unit(wire.mass_unit())}
-              : std::nullopt;
-      existing->parent_sample_id =
-          wire.has_parent_sample_id()
-              ? std::optional<core::SampleId>{core::SampleId::parse(wire.parent_sample_id())}
-              : std::nullopt;
+      apply_optional_wire_fields(wire, *existing);
       const auto prepared = storage::prepare_custom_fields(*txn, lab_id, item_type_id,
                                                            wire.custom_fields_json(), kms_);
       existing->custom_fields_json = prepared.custom_fields_json;
@@ -741,7 +783,14 @@ namespace fmgr::server {
       }
 
       if (caller_saw_phi) {
-        existing->phi_fields_enc_json = prepared.phi_fields_enc_json;
+        // The rule, and why "could have named" means the current definitions
+        // rather than "the caller saw it", is on preserve_uncovered_phi_keys().
+        const auto authoritative = preserve_uncovered_phi_keys(prepared, stored_phi);
+        // A non-empty map here means the KMS is wired: every key came either from
+        // the request (prepare_custom_fields refuses PHI without a key provider) or
+        // from a stored envelope that could only have been decrypted with one.
+        existing->phi_fields_enc_json =
+            authoritative.empty() ? std::string{"{}"} : crypto::encrypt(authoritative, *kms_);
       } else if (prepared.has_non_blank_phi_value) {
         if (has_stored_phi) {
           stored_phi = crypto::decrypt(existing->phi_fields_enc_json, *kms_);
