@@ -1027,7 +1027,10 @@ namespace fmgr::test {
       request += path;
       request += " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
       for (const auto& [name, value] : headers) {
-        request += name + ": " + value + "\r\n";
+        request += name;
+        request += ": ";
+        request += value;
+        request += "\r\n";
       }
       request += "Accept: text/event-stream\r\nConnection: keep-alive\r\n\r\n";
       (void)::send(fd, request.data(), request.size(), 0);
