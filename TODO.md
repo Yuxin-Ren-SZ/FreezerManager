@@ -1032,7 +1032,7 @@ inline.
       hit, an unplaced sample, the error paths, and a fast burst of keystrokes
       like a scanner produces.
 
-- [ ] **G3.6. Bulk check-in/out scan mode** (`features/scan/`; F6.4). The
+- [x] **G3.6. Bulk check-in/out scan mode** (`features/scan/`; F6.4). The
       user picks an action (out, in or discard) and an optional reason and
       volume, then scans repeatedly. Each scan calls `sample/list?barcode`
       then `sample/checkout` and adds a line to a session log with its
@@ -1064,7 +1064,7 @@ inline.
       validation (D4.1) and a size-class reference to a missing container
       type are tested.
 
-- [ ] **G3.9. Item types and custom fields admin**
+- [x] **G3.9. Item types and custom fields admin**
       (`features/admin-item-types/`; N5 documents the rules). An item-type
       tree editor with cycle-safe re-parenting, and a field-definition
       editor per node that shows inherited fields read-only. Each definition
