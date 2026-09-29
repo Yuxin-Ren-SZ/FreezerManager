@@ -203,9 +203,16 @@ ctest --preset dev -R '^LabService' # focused
 ```
 
 - **Sanitizers** (`asan`, `ubsan`, `tsan` presets) are required when touching
-  memory, concurrency, storage or parser code. Each preset needs its own
-  `conan install --output-folder=out/conan/<preset>`. Under asan/tsan, exclude
-  `-LE 'grpc_integration|e2e'`, as CI does.
+  memory, concurrency, storage or parser code. Each preset needs its own Conan
+  install, which the helper does — **never hand-edit a generated preset file**:
+
+  ```sh
+  scripts/agent/conan-install.sh asan    # fills out/conan/asan
+  cmake --build --preset asan
+  ctest --preset asan -LE 'grpc_integration|e2e'
+  ```
+
+  Under asan/tsan, exclude `-LE 'grpc_integration|e2e'`, as CI does.
 - **PostgreSQL tests** skip unless `FMGR_TEST_POSTGRES_URL` is set (CI uses a
   `postgres:16` service). Each test process gets its own schema, so a shared
   server is safe.
