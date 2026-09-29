@@ -19,7 +19,7 @@
     "parentSampleHint": "The id of the sample this one was taken from.",
     "customFields": "Custom fields",
     "customFieldsUnavailable": "Custom fields are not shown: reading field definitions needs the sample.read permission.",
-    "phiWriteWarning": "This item type has PHI fields you cannot read. Saving this form clears them, because the server replaces the PHI store with what the request contains. Ask someone with phi.read to edit this sample.",
+    "phiWriteWarning": "This item type has PHI fields you cannot read, so their stored values are hidden and this form does not submit them: saving leaves them as they are on the server. Anything you enter in them is not saved. Ask someone with phi.read to change them.",
     "noChoice": "None",
     "referenceHint": "A UUID.",
     "submitCreate": "Create sample",

@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { create, fromJson, toJson, type JsonValue } from '@bufbuild/protobuf';
 import { fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
 import { Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import sampleDetailCopy from '../../../locales/en/sample-detail.json';
+import { apiRoutes } from '../../api/routes';
 import { SessionProvider } from '../../app/session';
+import {
+  CustomFieldDefinitionSchema,
+  FieldDataType,
+  ScopeKind,
+} from '../../gen/fmgr/v1/item_type_pb';
 import { SampleStatus } from '../../gen/fmgr/v1/sample_pb';
 import { createDemoLab, fakeApi, type DemoLab } from '../../test/fakeApi';
 import { renderWithProviders } from '../../test/render';
@@ -12,6 +20,7 @@ import { server } from '../../test/server';
 import { allPermissionsUser, currentUserWith } from '../../test/session';
 import { axe } from '../../test/setup';
 import { SampleCreateScreen } from './SampleCreateScreen';
+import { SampleDetailScreen } from './SampleDetailScreen';
 
 /**
  * The generated create form (TODO.md G3.3).
@@ -370,5 +379,188 @@ describe('SampleCreateScreen', () => {
     await chooseItemType('it-serum');
 
     expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+/**
+ * Editing a sample whose item type carries PHI fields the caller cannot read.
+ *
+ * The server withholds **every** PHI value from a caller without `phi.read`
+ * (`reveal_phi()` in `SampleServiceImpl.cc`), so the response carries no PHI key
+ * at all — while the definitions come from `custom-field-def/list`, which is
+ * gated on `sample.read` (#69, not on `phi.read`), so the form still renders a
+ * control for each PHI definition. The form is therefore holding fields whose
+ * values it has never seen.
+ *
+ * What it does with them is a question about the **payload**, not about the
+ * screen: one PHI key makes the request authoritative for the whole stored
+ * envelope server-side (#83), so an invented `false` is not a cosmetic default —
+ * it deletes every other PHI key on the sample. A test that only asserted the
+ * save succeeded passes against that, which is why this suite missed it.
+ */
+
+const PHI_BOOL_KEY = 'donor_screening_flag';
+const PHI_BOOL_LABEL = 'Donor screening flag';
+
+/**
+ * A caller that may open and edit the sample — which is also what lets the form
+ * read the item type's definitions, since `custom-field-def/list` is gated on
+ * `sample.read` (#69) and not on `custom_field.define` — but holds no `phi.read`.
+ */
+const phiBlindEditor = () => currentUserWith(['sample.read', 'sample.write']);
+
+/**
+ * The fake seeds Text PHI (`donor_name`) but no Bool PHI, and a Bool is the one
+ * field type whose "empty" control is a *value* rather than an absence. Added to
+ * Blood so the sample's own type (Serum) inherits it, like `donor_name`.
+ */
+function withPhiBool(demo: DemoLab): DemoLab {
+  demo.customFieldDefs.push(
+    create(CustomFieldDefinitionSchema, {
+      id: `cfd-${PHI_BOOL_KEY}`,
+      labId: LAB_ID,
+      scopeKind: ScopeKind.SAMPLE,
+      itemTypeId: 'it-blood',
+      key: PHI_BOOL_KEY,
+      label: PHI_BOOL_LABEL,
+      dataType: FieldDataType.BOOL,
+      isPhi: true,
+    }),
+  );
+  return demo;
+}
+
+function renderEdit(options: RenderOptions = {}) {
+  const demo = options.demo ?? createDemoLab();
+  server.use(...fakeApi({ lab: demo }));
+
+  const user = options.user ?? allPermissionsUser();
+
+  return {
+    ...renderWithProviders(
+      <SessionProvider loadSession={() => Promise.resolve(user)}>
+        <Routes>
+          <Route path="/labs/:labId/samples/:sampleId" element={<SampleDetailScreen />} />
+          <Route path="/labs/:labId/samples" element={<p>sample list</p>} />
+        </Routes>
+      </SessionProvider>,
+      { route: `/labs/${LAB_ID}/samples/sample-1` },
+    ),
+    demo,
+  };
+}
+
+/**
+ * The `sample/update` bodies the form actually put on the wire.
+ *
+ * Registered *after* the screen has rendered, because MSW matches the
+ * most-recently-added handler first — so this one sees the request instead of
+ * the fake's resolver, and echoing the request back keeps the save a success
+ * (`UpdateSampleRequest` and `UpdateSampleResponse` are both `{ sample }`, so
+ * the request body *is* a valid response body). Asserting against a failed save
+ * would prove nothing about what a successful one sends.
+ */
+function captureUpdateBodies(): JsonValue[] {
+  const bodies: JsonValue[] = [];
+  const route = apiRoutes['sample/update'];
+
+  server.use(
+    http.post(route.path, async ({ request }) => {
+      const body = (await request.json()) as JsonValue;
+      bodies.push(body);
+      const echoed = fromJson(route.output, body, { ignoreUnknownFields: false });
+      return HttpResponse.json(toJson(route.output, echoed, { useProtoFieldName: true }));
+    }),
+  );
+
+  return bodies;
+}
+
+/** The one custom-field blob of a captured request, parsed. */
+function sentCustomFields(bodies: JsonValue[]): Record<string, unknown> {
+  const [sent] = bodies;
+  expect(sent, 'the form sent no sample/update request').toBeDefined();
+  const { sample } = sent as { sample?: { custom_fields_json?: string } };
+  return JSON.parse(sample?.custom_fields_json ?? '{}') as Record<string, unknown>;
+}
+
+const openEditor = async () => {
+  await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+  await userEvent.click(screen.getByRole('button', { name: sampleDetailCopy.actions.edit }));
+  return findByLabel(sampleDetailCopy.form.name);
+};
+
+const save = async () => {
+  await userEvent.click(screen.getByRole('button', { name: sampleDetailCopy.form.submitUpdate }));
+  await screen.findByText(sampleDetailCopy.form.saved);
+};
+
+describe('SampleForm: PHI the caller cannot read', () => {
+  it('leaves a withheld Bool PHI field out of the payload rather than sending false', async () => {
+    // `sample-1` comes back without a `donor_screening_flag` key, which is what
+    // `reveal_phi()` produces for this caller: the stored envelope is real, it
+    // is simply not disclosed. A blank control is not a value the user chose.
+    renderEdit({ demo: withPhiBool(createDemoLab()), user: phiBlindEditor() });
+    const name = await openEditor();
+    // The control is **rendered** — that is what makes the payload assertion
+    // below meaningful. This caller holds `sample.read`, so the definitions are
+    // readable and the form has a PHI control to withhold; a caller without it
+    // would render no custom fields at all (`definitionsReadable`), and a
+    // "the key is absent" assertion would then hold for the wrong reason.
+    expect(screen.getByLabelText(new RegExp(`^${PHI_BOOL_LABEL}`))).toBeInTheDocument();
+    const bodies = captureUpdateBodies();
+
+    await userEvent.clear(name);
+    await userEvent.type(name, 'Serum A2');
+    await save();
+
+    // The whole blob: the fields the caller *could* see are still carried, so
+    // the absence is specific to PHI rather than a form that sent nothing.
+    expect(sentCustomFields(bodies)).toEqual({
+      concentration: 12.5,
+      notes: 'ok',
+      aliquot_count: 3,
+      is_hemolyzed: true,
+      collection_date: '2026-01-05',
+    });
+  });
+
+  it('offers no PHI control it could not fill with the stored value', async () => {
+    renderEdit({ demo: withPhiBool(createDemoLab()), user: phiBlindEditor() });
+    await openEditor();
+
+    // The value is hidden, not missing, so the control must not accept an edit
+    // that `wireValues` would then have to drop on submit.
+    expect(screen.getByLabelText(new RegExp(`^${PHI_BOOL_LABEL}`))).toBeDisabled();
+    expect(screen.getByText(sampleDetailCopy.form.phiWriteWarning)).toBeInTheDocument();
+    // And the warning has to match that behaviour: the old copy claimed a save
+    // "clears them", which is not what happens for a field the form never
+    // submits. A warning that overstates is one people learn to ignore.
+    expect(sampleDetailCopy.form.phiWriteWarning).not.toMatch(/clear/i);
+  });
+
+  it('sends an explicit false when a caller that can read PHI unchecks the box', async () => {
+    const demo = withPhiBool(createDemoLab());
+    // A `phi.read` holder's response has the envelope merged into
+    // `custom_fields_json`, so the box renders the stored value.
+    const sample = demo.samples.find((candidate) => candidate.id === 'sample-1');
+    if (sample === undefined) throw new Error('fixture has no sample-1');
+    sample.customFieldsJson = JSON.stringify({
+      ...(JSON.parse(sample.customFieldsJson) as Record<string, unknown>),
+      [PHI_BOOL_KEY]: true,
+    });
+
+    renderEdit({ demo, user: allPermissionsUser() });
+    await openEditor();
+    const box = await screen.findByLabelText(new RegExp(`^${PHI_BOOL_LABEL}`));
+    expect(box).toBeChecked();
+    const bodies = captureUpdateBodies();
+
+    await userEvent.click(box);
+    await save();
+
+    // `false` is a deliberate unset and is distinguishable in the payload from
+    // the withheld field above, which is *absent*.
+    expect(sentCustomFields(bodies)).toMatchObject({ [PHI_BOOL_KEY]: false });
   });
 });
