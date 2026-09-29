@@ -723,7 +723,7 @@ Changing one needs a lead `DECISION` on the issue and an edit here.
 The SPA can be built against fakes without these, but it cannot talk to a
 real `freezerd` safely until G0.1–G0.3 land.
 
-- [ ] **G0.1. Browser session cookie + CSRF in the REST gateway.** Today the
+- [x] **G0.1. Browser session cookie + CSRF in the REST gateway.** Today the
       gateway reads only `Authorization: Bearer`. The SSE routes also accept
       `?access_token=`, because `EventSource` can't set headers, and a token
       in a URL ends up in proxy and access logs.

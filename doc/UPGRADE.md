@@ -149,6 +149,50 @@ curl -s http://localhost:8080/health
 # Expected: {"status":"SERVING"}
 ```
 
+## Behaviour Changes
+
+Changes that alter what a running deployment accepts or does, as opposed to
+adding features. Read this before upgrading across the listed releases.
+
+### Browser sessions (`G0.1`, merged 2026-09-29)
+
+**`?access_token=` is no longer accepted on the SSE routes.** `EventSource`
+cannot set headers, so the token used to travel in the URL — where it lands in
+proxy and access logs. It is now rejected; clients must authenticate with the
+session cookie or an `Authorization` header. If you have a client, script or
+proxy rewriting SSE URLs with `access_token`, it stops working at this upgrade.
+
+New, additive: `POST /api/v1/auth/browser/{login,submit-mfa,logout}` set an
+`HttpOnly` `fmgr_session` cookie plus a JS-readable `fmgr_csrf`, and any
+cookie-authenticated mutating request must echo the CSRF cookie in
+`X-CSRF-Token` and send a matching `Origin`. Bearer-token callers are unaffected.
+
+**If the gateway runs behind a reverse proxy, the proxy must preserve the public
+`Host`**, or every mutating request returns 403 with nothing in the body to
+explain why. `FMGR_WEB_ORIGIN` names an additional accepted origin when it
+cannot.
+
+### `session.revoke` is deployment level (`#77`, merged 2026-09-29)
+
+`session.revoke` moved into the global-only permission set. **A lab-scoped role
+that had been granted `session.revoke` no longer has it** — the grant is left in
+the database and is now inert rather than deleted.
+
+That is deliberate: the permission let a lab administrator of one lab revoke a
+session belonging to a user of another lab, because the RPC takes a session id
+and no lab. Self-revocation (logging yourself out) never needed the permission
+and is unaffected.
+
+If you granted `session.revoke` to a custom lab role, either remove the grant or
+move the role's holders to a system-administrator role, which still holds it.
+
+### Additive, for completeness
+
+- `POST /api/v1/auth/login` (the legacy route) now returns `user_id` in its
+  response. Additive for scripts; the field was already declared in the proto.
+- `sample/update` no longer replaces a sample's encrypted PHI envelope when the
+  caller could not have seen it, and a blank PHI value cannot erase a stored one.
+
 ## Version Compatibility
 
 FreezerManager follows **semantic versioning**:
