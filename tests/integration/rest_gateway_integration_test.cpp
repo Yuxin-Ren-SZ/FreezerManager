@@ -519,13 +519,47 @@ namespace fmgr::test {
       EXPECT_EQ(res.body["item_type"].value("name", std::string{}), "liquid");
     }
 
-    TEST(RestGatewayTest, ListItemTypesAsMemberReturns403) {
+    // #69: the catalog reads are sample.read (the permission a Member holds), so
+    // a Member's generated sample form can be built through the REST gateway too.
+    // The admin creates the row; the Member must see it, not a 403.
+    TEST(RestGatewayTest, ListItemTypesAsMemberReturns200) {
       auto* env = RestGatewayEnv::instance;
+      const auto admin = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(admin.empty());
+      {
+        const nlohmann::json create_req{{"lab_id", env->kLabId}, {"name", "member-visible"}};
+        const auto created = post("/api/v1/item-type/create", create_req.dump(), admin);
+        ASSERT_EQ(created.status, 200) << created.raw;
+      }
+
       const auto token = login(env->kMemberEmail, env->kPassword);
       ASSERT_FALSE(token.empty());
       const nlohmann::json req{{"lab_id", env->kLabId}};
       const auto res = post("/api/v1/item-type/list", req.dump(), token);
+      ASSERT_EQ(res.status, 200) << res.raw;
+      ASSERT_TRUE(res.body.is_object());
+      ASSERT_TRUE(res.body.contains("item_types")) << res.raw;
+      EXPECT_FALSE(res.body["item_types"].empty()) << res.raw;
+    }
+
+    // The negative direction at the REST layer: relaxing the catalog read must not
+    // relax the write behind the same route family.
+    TEST(RestGatewayTest, CreateItemTypeAsMemberReturns403) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kMemberEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}, {"name", "hijack"}};
+      const auto res = post("/api/v1/item-type/create", req.dump(), token);
       EXPECT_EQ(res.status, 403) << res.raw;
+    }
+
+    TEST(RestGatewayTest, ListCustomFieldDefinitionsAsMemberReturns200) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kMemberEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/custom-field-def/list", req.dump(), token);
+      EXPECT_EQ(res.status, 200) << res.raw;
     }
 
     // List has lenient request validation, so the missing-bearer path reaches
