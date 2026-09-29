@@ -46,12 +46,21 @@ export const REQUEST_ID_HEADER_NAME = 'X-Request-Id';
  * Reads a cookie by name. `document.cookie` is the only way to see
  * `fmgr_csrf`: it is deliberately *not* `HttpOnly`, unlike `fmgr_session`,
  * which JavaScript must never be able to read (G-arch 6).
+ *
+ * A value that cannot be percent-decoded is treated as absent, so a corrupt
+ * cookie fails closed as a clear 403 rather than escaping `call()` as a raw
+ * `URIError` — every failure out of this module is an `ApiError`.
  */
 export function readCookie(name: string): string | null {
   for (const part of document.cookie.split(';')) {
     const trimmed = part.trim();
     if (trimmed.startsWith(`${name}=`)) {
-      return decodeURIComponent(trimmed.slice(name.length + 1));
+      const raw = trimmed.slice(name.length + 1);
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return null;
+      }
     }
   }
   return null;
@@ -103,6 +112,24 @@ function notifySessionExpired(error: ApiError): void {
   for (const listener of sessionExpiredListeners) {
     listener(error);
   }
+}
+
+/**
+ * Throw an `ApiError` and, first, tell the session-expired listeners if the
+ * session is gone.
+ *
+ * The trigger is **the session being over**, not one particular body. The
+ * gateway pairs 401 with `UNAUTHENTICATED`, but a reverse proxy or load
+ * balancer answers 401 itself with its own body, and by then `toApiError` can
+ * only call it `INTERNAL`. Keying off the status as well as the code is what
+ * makes G-arch 7's "any 401 clears the query cache" true rather than usually
+ * true — otherwise the SPA keeps rendering cached data as if still signed in.
+ */
+function fail(error: ApiError): never {
+  if (error.code === 'UNAUTHENTICATED' || error.httpStatus === 401) {
+    notifySessionExpired(error);
+  }
+  throw error;
 }
 
 /** The gateway's error body: `{"code": "<GRPC_CODE>", "message": "..."}`. */
@@ -181,20 +208,18 @@ export async function call<K extends RpcName>(
     try {
       json = JSON.parse(text) as JsonValue;
     } catch (cause) {
-      throw new ApiError('INTERNAL', `response was not JSON (HTTP ${String(response.status)})`, {
-        httpStatus: response.status,
-        requestId: response.headers.get(REQUEST_ID_HEADER_NAME) ?? requestId,
-        cause,
-      });
+      fail(
+        new ApiError('INTERNAL', `response was not JSON (HTTP ${String(response.status)})`, {
+          httpStatus: response.status,
+          requestId: response.headers.get(REQUEST_ID_HEADER_NAME) ?? requestId,
+          cause,
+        }),
+      );
     }
   }
 
   if (!response.ok) {
-    const error = toApiError(json, response, requestId);
-    if (error.code === 'UNAUTHENTICATED') {
-      notifySessionExpired(error);
-    }
-    throw error;
+    fail(toApiError(json, response, requestId));
   }
 
   try {

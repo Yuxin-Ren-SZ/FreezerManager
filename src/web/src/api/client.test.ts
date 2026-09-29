@@ -206,6 +206,46 @@ describe('session-expired listener', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  it('notifies on a 401 that never produced the gateway error shape', async () => {
+    const listener = vi.fn();
+    onSessionExpired(listener);
+    // A reverse proxy or load balancer answers 401 itself: valid JSON, but not
+    // the gateway's {"code","message"} body, so `toApiError` falls back to
+    // INTERNAL. G-arch 7 says *any* 401 clears the cache.
+    server.use(
+      http.post(SAMPLE_LIST, () => HttpResponse.json({ error: 'unauthorized' }, { status: 401 })),
+    );
+
+    const error = (await call('sample/list', { labId: 'lab-1' }).catch(
+      (caught: unknown) => caught,
+    )) as ApiError;
+
+    expect(error.code).toBe('INTERNAL');
+    expect(error.httpStatus).toBe(401);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener.mock.calls[0]?.[0]).toBe(error);
+  });
+
+  it('notifies on a 401 whose body is not JSON at all', async () => {
+    const listener = vi.fn();
+    onSessionExpired(listener);
+    server.use(http.post(SAMPLE_LIST, () => new HttpResponse('<html>401</html>', { status: 401 })));
+
+    await call('sample/list', { labId: 'lab-1' }).catch(() => undefined);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not notify on an INTERNAL failure that is not a 401', async () => {
+    const listener = vi.fn();
+    onSessionExpired(listener);
+    server.use(http.post(SAMPLE_LIST, () => HttpResponse.json({ error: 'boom' }, { status: 500 })));
+
+    await call('sample/list', { labId: 'lab-1' }).catch(() => undefined);
+
+    expect(listener).not.toHaveBeenCalled();
+  });
+
   it('stops notifying after the returned unsubscribe runs', async () => {
     const listener = vi.fn();
     const unsubscribe = onSessionExpired(listener);
@@ -240,6 +280,17 @@ describe('call() typing and transport details', () => {
     expect(response).toMatchObject({ sessionId: 's-1', userId: 'u-1', mfaRequired: true });
     expect(LoginResponseSchema.typeName).toBe('fmgr.v1.LoginResponse');
     expect(SampleSchema.typeName).toBe('fmgr.v1.Sample');
+  });
+
+  it('treats an undecodable csrf cookie as absent instead of throwing', async () => {
+    // A raw `URIError` out of `call()` would break the module's promise that
+    // every failure is an ApiError.
+    document.cookie = 'fmgr_csrf=100%; path=/';
+    const seen = captureRequest();
+
+    await expect(call('sample/list', { labId: 'lab-1' })).resolves.toBeDefined();
+
+    expect(seen.headers.get('x-csrf-token')).toBeNull();
   });
 
   it('sends same-origin credentials so the session cookie is used', async () => {

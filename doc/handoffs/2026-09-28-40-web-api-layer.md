@@ -83,6 +83,30 @@ G-arch 4/5/10, PRD §6/§10.
   review asked for exactly this so G1.3 would not need `lock:deps`; #37 merged
   without it, so the last `lock:deps` holder before wave 2 does it.
 
+**Review round 1 (lead, on PR #42) — four findings, all taken:**
+
+- **Any 401 clears the cache, not only `UNAUTHENTICATED`.** `fail()` in
+  `client.ts` now notifies the session-expired listeners when the *status* is
+  401 as well as when the code is `UNAUTHENTICATED`. A reverse proxy or load
+  balancer answers 401 with its own body, which `toApiError` can only call
+  `INTERNAL`; keying off the code alone left the TanStack cache intact and the
+  SPA rendering stale data as if still signed in. It also covers a 401 whose
+  body is not JSON at all.
+- **The streaming half of `check-routes.mjs` had no drift guard.** It now
+  classifies every literal `registerHandler(...)` path — a `…/watch` feed, or
+  one of the three non-streaming endpoints on an explicit allowlist — and pins
+  the number of registrations without a literal path to exactly one (the
+  `FMGR_ROUTE` macro body). A planned bulk-import progress feed registered
+  through a variable would have been invisible while the checker still printed
+  `ok`.
+- **`readCookie` no longer throws.** An undecodable `fmgr_csrf` value is treated
+  as absent, so a corrupt cookie fails closed as a clear 403 instead of escaping
+  `call()` as a raw `URIError`. The CSRF value is base64url so this cannot happen
+  today, but the module's promise is that every failure is an `ApiError`.
+- **`doc/dev/web.md`** records that routes without a resolver answer with the
+  response message's defaults, so "the grid is empty" can pass for the wrong
+  reason.
+
 **Guards proven to fail (each planted, observed, reverted — `RestGateway.cc` is
 unchanged in this branch):**
 
@@ -95,6 +119,8 @@ unchanged in this branch):**
 | the whole macro renamed so nothing parses | exit 1, `no FMGR_ROUTE lines found at all` |
 | deleting `src/gen/` before `npm test` | the suite fails at collection time |
 | `FMGR_PROTO_DIR` pointing at nothing | `npm run gen` exits 1 |
+| a new `registerHandler("/api/v1/import/progress", …)` | exit 1, "neither a streaming …/watch feed nor on `NON_STREAMING_HANDLER_PATHS`" |
+| `/metrics` registered through a `const std::string` | exit 1, "only 4 have a literal path … invisible to this checker" |
 
 **For G1.3 and the feature tasks:**
 
