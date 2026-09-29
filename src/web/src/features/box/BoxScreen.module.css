@@ -1,0 +1,221 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-4);
+  max-width: var(--fmgr-content-max-width);
+}
+
+/* Everything the screen shows on a display. The printable sheet below is its
+   sibling, and the print block at the end of this file swaps the two. */
+.noPrint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-4);
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--fmgr-space-3);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fmgr-font-size-xl);
+  line-height: var(--fmgr-line-height-tight);
+}
+
+.live,
+.path,
+.summary,
+.hint {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.selection {
+  margin: 0;
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.warning {
+  margin: 0;
+  color: var(--fmgr-color-warning);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+/* The columns come from the box type and are set inline, because a cryobox has
+   9, 10 or 12 of them and a media query cannot know which. */
+.grid {
+  display: grid;
+  gap: var(--fmgr-space-1);
+}
+
+.cell {
+  display: flex;
+}
+
+/* A hole in a mixed box type. It occupies its cell so the blocks stay aligned
+   and is visibly not a position: nothing to click, nothing to drop on. */
+.gap {
+  border: 1px dashed var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-sm);
+  opacity: 0.5;
+}
+
+.position {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--fmgr-space-1);
+  width: 100%;
+  min-height: var(--fmgr-control-height-lg);
+  padding: var(--fmgr-space-1);
+  font: inherit;
+  text-align: left;
+  color: var(--fmgr-color-text);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-sm);
+  cursor: pointer;
+}
+
+.position:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+/* A free position is a target only while a sample is in hand; until then it is
+   disabled, so the tab order is the samples and not the empty box. */
+.free {
+  color: var(--fmgr-color-text-muted);
+}
+
+.free:disabled {
+  cursor: default;
+}
+
+.occupied {
+  border-color: var(--fmgr-color-border);
+}
+
+.picked {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-accent);
+  outline-offset: 0;
+}
+
+.positionLabel {
+  font-size: var(--fmgr-font-size-xs);
+  font-weight: var(--fmgr-font-weight-semibold);
+}
+
+.sampleName {
+  font-size: var(--fmgr-font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+/* ── The printable box map and label sheet (TODO.md G3.4, PRD F6.3) ───────── */
+
+/* Rendered at all times and hidden here rather than by a conditional render, so
+   the print layout is a stylesheet rule and not a second React tree. */
+.printSheet {
+  display: none;
+}
+
+.printTitle {
+  margin: 0 0 var(--fmgr-space-2);
+  font-size: var(--fmgr-font-size-base);
+}
+
+.printPath {
+  margin: 0 0 var(--fmgr-space-3);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.printMap {
+  display: grid;
+  gap: 1px;
+  margin-bottom: var(--fmgr-space-6);
+}
+
+.printCell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--fmgr-space-1);
+  border: 1px solid currentcolor;
+}
+
+.printGap {
+  border: 1px dashed currentcolor;
+  opacity: 0.4;
+}
+
+.printPosition {
+  font-size: var(--fmgr-font-size-xs);
+  font-weight: var(--fmgr-font-weight-semibold);
+}
+
+.printSample {
+  font-size: var(--fmgr-font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.labelSheet {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--fmgr-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--fmgr-space-2);
+  border: 1px dashed currentcolor;
+  break-inside: avoid;
+}
+
+/*
+ * Print: hide the screen, show the sheet.
+ *
+ * The two colour literals are deliberate and are the only ones in this file.
+ * Print is not a theme — a dark-mode user must still get black on white, or the
+ * label sheet is a blank page — and `tokens.css` has no print token set to say
+ * so. Everything else here uses the tokens.
+ */
+@media print {
+  .noPrint {
+    display: none;
+  }
+
+  .printSheet {
+    display: block;
+    color: #000;
+    background-color: #fff;
+  }
+
+  .printMap,
+  .printCell,
+  .label {
+    break-inside: avoid;
+  }
+
+  .labelSheet {
+    break-inside: auto;
+  }
+}
+
+/* Page margins are a document property, so this is the one at-rule that cannot
+   live inside the print block above. */
+@page {
+  margin: 12mm;
+}
