@@ -13,6 +13,7 @@
 
 #include <compare>
 #include <cstdint>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -94,6 +95,27 @@ namespace fmgr::core {
         return {raw_value_ / 1'000, target};
       }
       throw std::invalid_argument("unsupported volume unit conversion");
+    }
+
+    // True when `to_unit(target)` reproduces this quantity exactly: the
+    // conversion neither truncates (µL→mL keeps only whole millilitres) nor
+    // overflows the raw count. `to_unit` keeps its truncating semantics for
+    // callers that want the nearest whole unit; this is the predicate for
+    // callers that must not lose any of the quantity. `storage::apply_checkout`
+    // uses it to refuse a consumption the sample's unit cannot hold instead of
+    // subtracting a truncated amount (#111).
+    [[nodiscard]] constexpr bool converts_exactly_to(VolumeUnit target) const {
+      if (unit_ == target) {
+        return true;
+      }
+      if (unit_ == VolumeUnit::Milliliter && target == VolumeUnit::Microliter) {
+        return raw_value_ <= std::numeric_limits<std::int64_t>::max() / 1'000 &&
+               raw_value_ >= std::numeric_limits<std::int64_t>::min() / 1'000;
+      }
+      if (unit_ == VolumeUnit::Microliter && target == VolumeUnit::Milliliter) {
+        return raw_value_ % 1'000 == 0;
+      }
+      return false;
     }
 
     friend constexpr bool operator==(const Volume&, const Volume&) = default;
