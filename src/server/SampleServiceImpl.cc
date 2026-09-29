@@ -201,17 +201,18 @@ namespace fmgr::server {
     struct PreparedCustomFields {
       std::string custom_fields_json{"{}"};  // non-PHI, validated
       std::string phi_fields_enc_json{"{}"}; // AEAD envelope; "{}" when no PHI
-      // True when the incoming blob actually carried a PHI-tagged key. Only the
-      // caller can turn that into a decision, because it also needs its own
-      // phi.read status: an update that does not mention PHI means "clear it" to
-      // a caller that was shown the fields, and "leave it alone" to one that
-      // never was. See UpdateSample.
-      bool phi_keys_present{false};
+      // The PHI keys the request carried, still in the clear, so UpdateSample can
+      // merge a supplied value into the stored envelope without re-parsing the
+      // request. Stays in the request scope, is never logged, and is never
+      // returned to a caller.
+      crypto::PhiFields phi_values;
       // True when at least one supplied PHI key carried a *value* rather than a
-      // blank (see is_blank_phi_value). A blank is not a write, so it cannot
-      // make a request authoritative for PHI; UpdateSample still honours the
-      // request when its own caller could have seen the stored fields.
-      bool has_non_empty_phi_value{false};
+      // blank (see is_blank_phi_value). A blank is not a write, so it cannot make
+      // a request authoritative for PHI; UpdateSample honours a blank only from a
+      // caller that could see what it is clearing. Implies that the request named
+      // a PHI-tagged key at all, which is why there is no separate "keys present"
+      // flag (review F5 on #83).
+      bool has_non_blank_phi_value{false};
     };
 
     // Validate the combined incoming custom fields, then split them: PHI-tagged
@@ -251,7 +252,7 @@ namespace fmgr::server {
           if (phi_keys.contains(key)) {
             phi.emplace(key, value);
             if (!is_blank_phi_value(value)) {
-              prepared.has_non_empty_phi_value = true;
+              prepared.has_non_blank_phi_value = true;
             }
           } else {
             non_phi[key] = value;
@@ -259,7 +260,6 @@ namespace fmgr::server {
         }
       }
       prepared.custom_fields_json = non_phi.dump();
-      prepared.phi_keys_present = !phi.empty();
 
       if (!phi.empty()) {
         const auto lab = txn.repo<core::Lab>().find_by_id(lab_id);
@@ -274,6 +274,7 @@ namespace fmgr::server {
         }
         prepared.phi_fields_enc_json = crypto::encrypt(phi, *kms);
       }
+      prepared.phi_values = phi;
       return prepared;
     }
 
@@ -726,40 +727,64 @@ namespace fmgr::server {
       const auto prepared =
           prepare_custom_fields(*txn, lab_id, item_type_id, wire.custom_fields_json(), kms_);
       existing->custom_fields_json = prepared.custom_fields_json;
-      // "The caller did not supply PHI" is not "the sample has no PHI": the
-      // request is authoritative for PHI only when the caller could have seen
-      // the fields, which is exactly reveal_phi()'s disclosure condition — it
-      // merges them into the response for a caller holding phi.read, and only
-      // when a KMS is wired to decrypt them with. Everyone else's request cannot
-      // mention PHI, so writing the prepared (empty) envelope over the stored one
-      // would destroy the sample's PHI on any unrelated edit. A caller that did
-      // see the fields stays authoritative, and one whose request carries no PHI
-      // key at all deliberately clears the envelope. A request that carries a
-      // PHI *value* is honored either way — PHI write has never required phi.read
-      // (PhiWriteDoesNotRequirePhiRead).
+      // "The caller did not supply PHI" is not "the sample has no PHI", and "the
+      // caller supplied a PHI value" is not "the caller saw the rest".
       //
-      // A PHI key with a blank value ("" or null) is not a value, so it is not a
-      // write: it is an erasure. Validation lets it through — an empty string
-      // counts as present, and null as absent, for an optional field — and key
-      // membership alone would call it a supplied PHI key, which is how a caller
-      // that never saw the stored value could destroy it. Blanks therefore only
-      // count for a caller that could have seen what it is clearing, which is
-      // `caller_saw_phi`; for everyone else the stored envelope is left alone,
-      // exactly as if the key had been absent.
+      // A request is authoritative for the *whole* envelope only when this server
+      // could actually have shown the caller what is in it: the caller holds
+      // phi.read AND the stored envelope decrypts. Holding the permission is not
+      // the same as having seen the values (review F4 on #83): a sample whose
+      // wrapping KEK is missing returns INTERNAL from the read path, so nobody —
+      // holder included — was shown anything, and an unrelated edit must not be
+      // allowed to answer for keys nobody could display. For a caller that did see
+      // them the request replaces the envelope, which is what makes an omitted key
+      // or a blank a deliberate clear (#79).
       //
-      // Not closed here, deliberately: a request carrying any non-blank PHI value
-      // is authoritative for the whole envelope, so a non-reader that supplies a
-      // real value for one PHI key still replaces the others rather than merging
-      // into them. That is the #71 decision (non-readers may write PHI) meeting
-      // whole-envelope replacement; making it a per-key merge is a separate
-      // change, not part of closing the blank-value path.
-      const bool caller_saw_phi =
+      // Every other caller has seen nothing, so its request speaks only for the
+      // keys it names and only for the values it supplies:
+      //   * no PHI key, or a blank value ("" / null, per is_blank_phi_value): not
+      //     a write at all — the stored envelope is left exactly as it was (#79);
+      //   * a non-blank value: a real PHI write, which has never required
+      //     phi.read (#71), merged *per key* into the stored envelope so every key
+      //     this caller could not see survives (#83). Recomputing the envelope
+      //     from the request is the bug: validation says nothing about which keys
+      //     the caller was shown, so it silently destroyed the others.
+      //
+      // Both branches need the envelope openable, at most once each: the
+      // authoritative branch to prove it can be read at all, the merge branch to
+      // have something to merge into. A failure in either — missing KEK, tampered
+      // ciphertext, KMS error — propagates as INTERNAL before anything is
+      // assigned, updated or committed, so the row keeps the ciphertext that
+      // `freezerctl key rotate` can still recover. Losing one key quietly is the
+      // outcome this whole decision exists to prevent.
+      const bool has_stored_phi =
+          !existing->phi_fields_enc_json.empty() && existing->phi_fields_enc_json != "{}";
+      const bool caller_holds_phi_read =
           kms_ != nullptr && sctx.has_for_lab(lab_id, core::Permission::PhiRead);
-      const bool caller_supplied_phi_value =
-          prepared.phi_keys_present && prepared.has_non_empty_phi_value;
-      if (caller_supplied_phi_value || caller_saw_phi) {
-        existing->phi_fields_enc_json = prepared.phi_fields_enc_json;
+      bool caller_saw_phi = false;
+      crypto::PhiFields stored_phi;
+      if (!has_stored_phi) {
+        caller_saw_phi = true; // nothing was withheld: the request is authoritative
+      } else if (caller_holds_phi_read) {
+        stored_phi = crypto::decrypt(existing->phi_fields_enc_json, *kms_);
+        caller_saw_phi = true;
       }
+
+      if (caller_saw_phi) {
+        existing->phi_fields_enc_json = prepared.phi_fields_enc_json;
+      } else if (prepared.has_non_blank_phi_value) {
+        if (has_stored_phi) {
+          stored_phi = crypto::decrypt(existing->phi_fields_enc_json, *kms_);
+        }
+        for (const auto& [key, value] : prepared.phi_values) {
+          if (!is_blank_phi_value(value)) { // a blank is not a write, here either
+            stored_phi[key] = value;
+          }
+        }
+        existing->phi_fields_enc_json = crypto::encrypt(stored_phi, *kms_);
+      }
+      // else: the caller named no PHI value and never saw the stored ones — leave
+      // the envelope alone, exactly as if the request had not mentioned PHI.
       existing->last_modified_by = sctx.user_id;
       existing->last_modified_at = now_timestamp();
 

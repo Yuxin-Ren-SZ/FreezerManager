@@ -45,6 +45,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace fmgr::test {
   namespace {
@@ -228,6 +229,41 @@ namespace fmgr::test {
         return crypto::decrypt(*envelope, kms::EnvVarKms::from_base64(kMasterKek));
       }
 
+      // The stored name, read straight from storage. Used where the read path
+      // cannot answer: a phi.read holder's GetSample returns INTERNAL while the
+      // row's envelope is unreadable.
+      [[nodiscard]] std::optional<std::string> stored_name(const std::string& sample_id) {
+        auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(sample_id));
+        txn->commit();
+        if (!row.has_value()) {
+          return std::nullopt;
+        }
+        return row->name;
+      }
+
+      // Overwrite a sample's stored PHI envelope straight through storage, so a
+      // test can plant the state the read path already treats as broken: an
+      // envelope whose wrapped DEK names a KEK this server does not hold.
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      void put_stored_phi_envelope(const std::string& sample_id, const std::string& envelope) {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(sample_id));
+        ASSERT_TRUE(row.has_value());
+        auto planted = *row;
+        planted.phi_fields_enc_json = envelope;
+        txn->repo<core::Sample>().update(planted, direct_write_ctx());
+        txn->commit();
+      }
+
+      // A PHI envelope this server cannot open: the same synthetic value the rest
+      // of this file uses, sealed under a KEK the fixture's server was never given
+      // — what a rotation that ran without `freezerctl key rotate` leaves behind.
+      [[nodiscard]] static std::string orphan_phi_envelope() {
+        const kms::EnvVarKms unknown_kek{std::vector<std::uint8_t>(32, 0xAB)};
+        return crypto::encrypt(crypto::PhiFields{{"mrn", "MRN-555"}}, unknown_kek);
+      }
+
       // Read one sample back over gRPC as the given principal.
       // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       grpc::Status get_sample(const std::string& token, const std::string& sample_id,
@@ -277,6 +313,18 @@ namespace fmgr::test {
         std::filesystem::remove(path, error);
         std::filesystem::remove(std::filesystem::path(path.string() + "-wal"), error);
         std::filesystem::remove(std::filesystem::path(path.string() + "-shm"), error);
+      }
+
+      // MutationContext for rows a test writes straight through storage, bypassing
+      // the services: seeding, and planting state the services would never write
+      // themselves (e.g. an envelope wrapped under a KEK this server cannot open).
+      [[nodiscard]] static storage::MutationContext direct_write_ctx() {
+        return storage::MutationContext{
+            .actor_user_id = core::UserId::parse("00000000-0000-0000-0000-000000000000"),
+            .actor_session_id = "seed",
+            .request_id = "seed",
+            .reason = "test setup",
+        };
       }
 
       static void register_all_repositories(storage::SqliteBackend& b) {
@@ -334,12 +382,7 @@ namespace fmgr::test {
               .joined_at = core::Timestamp::from_unix_micros(1),
           };
         };
-        const storage::MutationContext ctx{
-            .actor_user_id = core::UserId::parse("00000000-0000-0000-0000-000000000000"),
-            .actor_session_id = "seed",
-            .request_id = "seed",
-            .reason = "test setup",
-        };
+        const storage::MutationContext ctx = direct_write_ctx();
 
         {
           auto txn = backend_->begin(storage::IsolationLevel::Serializable);
@@ -374,23 +417,38 @@ namespace fmgr::test {
           txn->commit();
         }
         {
-          // PHI-tagged (is_phi) custom field, not required, on the seeded item type.
-          // Separate transaction: the repository validates item_type_id against the
-          // committed DB, not the staging map.
+          // PHI-tagged (is_phi) custom fields, none required, on the seeded item
+          // type. Separate transaction: the repository validates item_type_id
+          // against the committed DB, not the staging map.
+          //
+          // Three of them, one per type that matters here: `mrn` (String) is the
+          // usual fixture; `age_years` (Int) and `consent_flag` (Bool) exist so a
+          // test can pin that `0` and `false` count as PHI *values* and not as
+          // blanks (#83 review F2) — with only a String field, reclassifying them
+          // as blanks would have gone unnoticed.
           auto txn = backend_->begin(storage::IsolationLevel::Serializable);
-          txn->repo<core::CustomFieldDefinition>().insert(
-              core::CustomFieldDefinition{.id = core::CustomFieldDefinitionId::parse(
-                                              "80000000-0000-0000-0000-0000000000ff"),
-                                          .lab_id = lab1,
-                                          .scope_kind = core::ScopeKind::Sample,
-                                          .item_type_id = core::ItemTypeId::parse(kItemType),
-                                          .key = "mrn",
-                                          .label = "Medical Record Number",
-                                          .data_type = core::FieldDataType::String,
-                                          .required = false,
-                                          .is_phi = true,
-                                          .created_at = core::Timestamp::from_unix_micros(1)},
-              ctx);
+          const auto add_phi_field = [this, &txn,
+                                      &ctx](const std::string& id, const std::string& key,
+                                            const std::string& label, core::FieldDataType type) {
+            txn->repo<core::CustomFieldDefinition>().insert(
+                core::CustomFieldDefinition{.id = core::CustomFieldDefinitionId::parse(id),
+                                            .lab_id = core::LabId::parse(kLab1),
+                                            .scope_kind = core::ScopeKind::Sample,
+                                            .item_type_id = core::ItemTypeId::parse(kItemType),
+                                            .key = key,
+                                            .label = label,
+                                            .data_type = type,
+                                            .required = false,
+                                            .is_phi = true,
+                                            .created_at = core::Timestamp::from_unix_micros(1)},
+                ctx);
+          };
+          add_phi_field("80000000-0000-0000-0000-0000000000ff", "mrn", "Medical Record Number",
+                        core::FieldDataType::String);
+          add_phi_field("80000000-0000-0000-0000-0000000000a1", "age_years", "Age (years)",
+                        core::FieldDataType::Int);
+          add_phi_field("80000000-0000-0000-0000-0000000000b1", "consent_flag", "Consent given",
+                        core::FieldDataType::Bool);
           txn->commit();
         }
         // Container types committed before the box type that references the
@@ -766,8 +824,12 @@ namespace fmgr::test {
     // The complement, and the line the empty-value rule must not cross: a
     // non-reader that supplies a real value is still writing PHI, which has
     // never required phi.read. The guard keys off "a value was supplied", not
-    // off "the caller holds phi.read", so this still replaces the envelope.
-    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderWithNonEmptyPhiValueReplacesStoredPhi) {
+    // off "the caller holds phi.read", so this is honored — and because this
+    // caller saw only the keys it names, the value is merged per key rather than
+    // answering for the whole envelope. Single-key case here; the case where the
+    // difference bites is UpdateSampleByNonPhiReaderSupplyingOnePhiKeyKeepsThe-
+    // OtherKeys below.
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderWithNonEmptyPhiValueMergesIntoStoredPhi) {
       const auto admin = login(kAdminEmail, kPassword);
       std::string id;
       ASSERT_TRUE(
@@ -780,6 +842,212 @@ namespace fmgr::test {
                                          .custom_fields = R"({"mrn":"MRN-777"})"});
       ASSERT_TRUE(status.ok()) << status.error_message();
       EXPECT_EQ(stored_phi(id).at("mrn"), "MRN-777");
+    }
+
+    // The decisive case for #83. A caller without phi.read is shown no PHI key,
+    // yet may still *name* one — the item type's field definitions are not secret
+    // — and PHI write has never required phi.read (#71), so the value it supplies
+    // is stored. Only that one, though: the keys it was never shown must survive.
+    // Recomputing the whole envelope from the request destroyed them silently,
+    // and the destruction was invisible to any test that asserted on the supplied
+    // key alone. Note the two-key assertion below; that is the point of the test.
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderSupplyingOnePhiKeyKeepsTheOtherKeys) {
+      const auto admin = login(kAdminEmail, kPassword); // SystemAdmin + phi.read
+      std::string id;
+      ASSERT_TRUE(create_sample(
+                      {.token = admin,
+                       .name = "before",
+                       .custom_fields = R"({"mrn":"MRN-555","age_years":41,"consent_flag":true})"},
+                      &id)
+                      .ok());
+      ASSERT_EQ(stored_phi(id).size(), 3U); // three PHI keys stored, none of them shown
+
+      const auto member = login(kMemberEmail, kPassword); // SampleWrite, no phi.read
+      fmgr::v1::Sample seen;
+      ASSERT_TRUE(get_sample(member, id, &seen).ok());
+      EXPECT_EQ(seen.custom_fields_json().find("mrn"), std::string::npos); // nothing to echo
+
+      const auto status = update_sample(
+          {.token = member, .id = id, .name = "renamed", .custom_fields = R"({"mrn":"MRN-777"})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      // Both keys, from storage: the supplied one and the two that were invisible.
+      const auto after = stored_phi(id);
+      ASSERT_TRUE(after.contains("mrn"));
+      ASSERT_TRUE(after.contains("age_years"));
+      ASSERT_TRUE(after.contains("consent_flag"));
+      EXPECT_EQ(after.at("mrn"), "MRN-777");     // what the member supplied
+      EXPECT_EQ(after.at("age_years"), 41);      // what it never saw
+      EXPECT_EQ(after.at("consent_flag"), true); // and the same for the Bool
+
+      // And the phi.read holder still reads all three back after the foreign edit.
+      fmgr::v1::Sample reread;
+      ASSERT_TRUE(get_sample(admin, id, &reread).ok());
+      const auto fields = custom_fields(reread);
+      EXPECT_EQ(fields.value("mrn", ""), "MRN-777");
+      EXPECT_EQ(fields.value("age_years", 0), 41);
+      EXPECT_EQ(fields.value("consent_flag", false), true);
+      EXPECT_EQ(reread.name(), "renamed");
+    }
+
+    // A blank is not a write (#79), and that has to hold *inside* the merge too:
+    // a non-reader supplying one real value while blanking a different unseen key
+    // must not blank that key. Same destruction, second route — key membership
+    // plus a value elsewhere in the blob.
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderBlankForAnotherPhiKeyDoesNotEraseIt) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample(
+                      {.token = admin, .custom_fields = R"({"mrn":"MRN-555","age_years":41})"}, &id)
+                      .ok());
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample({.token = member,
+                                         .id = id,
+                                         .name = "mixed",
+                                         .custom_fields = R"({"age_years":9,"mrn":""})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto after = stored_phi(id);
+      ASSERT_TRUE(after.contains("mrn"));
+      ASSERT_TRUE(after.contains("age_years"));
+      EXPECT_EQ(after.at("mrn"), "MRN-555"); // the blank was ignored, not written
+      EXPECT_EQ(after.at("age_years"), 9);   // the supplied value was stored
+    }
+
+    // F2 (#82 review): `0` and `false` are PHI *values*, not blanks — only JSON
+    // null and "" are blanks (is_blank_phi_value). Nothing pinned that claim: the
+    // fixture's only PHI field was a String, so a change that reclassified 0 or
+    // false as blank would have silently dropped a non-reader's write with no
+    // test going red. Int and Bool PHI fields now exist in the fixture for this.
+    // is_number_integer()/is_boolean() also pin FieldCipher's dump()/parse
+    // round-trip: a value that came back as a string would be a different bug.
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderSupplyingZeroForIntPhiFieldStoresIt) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample(
+          {.token = member, .id = id, .name = "aged", .custom_fields = R"({"age_years":0})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto after = stored_phi(id);
+      ASSERT_TRUE(after.contains("age_years"));
+      EXPECT_TRUE(after.at("age_years").is_number_integer());
+      EXPECT_EQ(after.at("age_years").get<std::int64_t>(), 0);
+      EXPECT_EQ(after.at("mrn"), "MRN-555"); // `0` is a write, and the merge kept the rest
+    }
+
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderSupplyingFalseForBoolPhiFieldStoresIt) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample({.token = member,
+                                         .id = id,
+                                         .name = "declined",
+                                         .custom_fields = R"({"consent_flag":false})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto after = stored_phi(id);
+      ASSERT_TRUE(after.contains("consent_flag"));
+      EXPECT_TRUE(after.at("consent_flag").is_boolean());
+      EXPECT_FALSE(after.at("consent_flag").get<bool>());
+      EXPECT_EQ(after.at("mrn"), "MRN-555"); // `false` is a write too
+    }
+
+    // F4 (#82 review): "holds phi.read" is not "saw the values". An envelope this
+    // server cannot open — its wrapping KEK is gone before `freezerctl key rotate`
+    // re-wrapped it — makes GetSample return INTERNAL, so a holder learns nothing
+    // from it. Treating that holder's request as authoritative rewrote the
+    // envelope to {} and destroyed ciphertext that key rotate could still have
+    // recovered. The condition now depends on the decryption succeeding; when it
+    // does not, the request fails and nothing at all is written. (The non-PHI half
+    // of the same request is checked too: the whole update rolls back, so the name
+    // does not change either.)
+    TEST_F(SampleServiceTest, UpdateSampleByPhiReaderWithUndecryptableEnvelopeFailsWithoutWriting) {
+      const auto admin = login(kAdminEmail, kPassword); // SystemAdmin + phi.read
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .name = "before", .custom_fields = R"({"mrn":"MRN-555"})"},
+                        &id)
+              .ok());
+      const std::string orphan = orphan_phi_envelope();
+      put_stored_phi_envelope(id, orphan);
+
+      // The read path already refuses this row; that is the state being modelled.
+      fmgr::v1::Sample unreadable;
+      EXPECT_EQ(get_sample(admin, id, &unreadable).error_code(), grpc::StatusCode::INTERNAL);
+
+      // An unrelated edit that does not mention PHI at all.
+      const auto status =
+          update_sample({.token = admin, .id = id, .name = "renamed", .custom_fields = R"({})"});
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL) << status.error_message();
+      // The failure detail is not where PHI may appear (AGENTS.md §5).
+      EXPECT_EQ(status.error_message().find("MRN-555"), std::string::npos);
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_EQ(*envelope, orphan); // byte-identical: not rewritten, not emptied
+      EXPECT_EQ(stored_name(id), "before");
+    }
+
+    // The same unreadable state reached through the merge path: a non-reader's
+    // supplied value has to be merged with the stored keys, so the stored keys
+    // must be recoverable. They are not — so the request fails whole rather than
+    // writing the caller's key over an envelope that still held the others.
+    TEST_F(SampleServiceTest,
+           UpdateSampleByNonPhiReaderWithUndecryptableEnvelopeFailsWithoutWriting) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .name = "before", .custom_fields = R"({"mrn":"MRN-555"})"},
+                        &id)
+              .ok());
+      const std::string orphan = orphan_phi_envelope();
+      put_stored_phi_envelope(id, orphan);
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample(
+          {.token = member, .id = id, .name = "renamed", .custom_fields = R"({"age_years":7})"});
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL) << status.error_message();
+      EXPECT_EQ(status.error_message().find("MRN-555"), std::string::npos);
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_EQ(*envelope, orphan);
+      EXPECT_EQ(stored_name(id), "before");
+    }
+
+    // The boundary of the two tests above: when the request needs nothing out of
+    // the envelope, there is nothing to fail about. A non-reader's request is
+    // never authoritative for stored PHI (#79), so an unreadable envelope changes
+    // nothing for it — the edit is honoured and the envelope is left alone.
+    // Failing this edit would be an availability regression with no security gain.
+    TEST_F(SampleServiceTest,
+           UpdateSampleByNonPhiReaderWithUndecryptableEnvelopeKeepsEnvelopeOnUnrelatedEdit) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .name = "before", .custom_fields = R"({"mrn":"MRN-555"})"},
+                        &id)
+              .ok());
+      const std::string orphan = orphan_phi_envelope();
+      put_stored_phi_envelope(id, orphan);
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status =
+          update_sample({.token = member, .id = id, .name = "renamed", .custom_fields = R"({})"});
+      EXPECT_TRUE(status.ok()) << status.error_message();
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_EQ(*envelope, orphan);
+      EXPECT_EQ(stored_name(id), "renamed");
     }
 
     // The flip side of the empty-value rule: a phi.read holder *did* see the
