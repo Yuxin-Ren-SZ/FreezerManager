@@ -59,6 +59,21 @@ namespace fmgr::storage {
     bool has_non_blank_phi_value{false};
   };
 
+  // The "no master key is wired" message, and the keys that need one. Naming the
+  // keys is what makes the error actionable — key *names* are metadata, not
+  // values, and the PHI-read audit records them the same way — so the message
+  // keeps them. Built here rather than inline in prepare_custom_fields: the loop
+  // sits at nesting level 2 there and pushed that function's cognitive
+  // complexity over the threshold CI enforces, and the function genuinely has
+  // two jobs once it also has to explain a misconfiguration.
+  [[nodiscard]] inline std::string describe_missing_kek(const crypto::PhiFields& phi) {
+    std::string message = "no master key is configured; cannot store PHI custom fields:";
+    for (const auto& entry : phi) {
+      message += " [" + entry.first + "]";
+    }
+    return message;
+  }
+
   // Validate the combined incoming custom fields, then split them: PHI-tagged
   // keys are encrypted into the envelope under a fresh per-record DEK, the rest
   // stay in the plaintext column. Throws ConstraintViolation (→ INVALID_ARGUMENT)
@@ -114,14 +129,10 @@ namespace fmgr::storage {
       }
       if (kms == nullptr) {
         // Misconfiguration, not a client error: no master key is wired, so the
-        // PHI cannot be encrypted. Name the keys — key names are metadata, not
-        // values, and the PHI-read audit records them the same way — so the
-        // error says what to configure rather than only that something is wrong.
-        std::string message = "no master key is configured; cannot store PHI custom fields:";
-        for (const auto& entry : phi) {
-          message += " [" + entry.first + "]";
-        }
-        throw std::runtime_error(message);
+        // PHI cannot be encrypted. The message names the keys
+        // (describe_missing_kek) so the error says what to configure rather than
+        // only that something is wrong.
+        throw std::runtime_error(describe_missing_kek(phi));
       }
       prepared.phi_fields_enc_json = crypto::encrypt(phi, *kms);
     }

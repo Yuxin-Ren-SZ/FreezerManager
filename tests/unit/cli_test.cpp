@@ -1096,6 +1096,13 @@ namespace fmgr::cli {
       std::ostringstream out;
       const int code = run_sample_import(backend, import_options(lab), in, out);
       EXPECT_EQ(code, 1) << out.str();
+      // The whole message, not just the key name: `describe_missing_kek` builds
+      // it in CustomFieldWrite.h, so pinning it here is what keeps the extracted
+      // helper byte-identical to the block it replaced (#109's clang-tidy fix).
+      EXPECT_NE(out.str().find("no master key is configured; cannot store PHI custom fields: "
+                               "[mrn]"),
+                std::string::npos)
+          << out.str();
       EXPECT_NE(out.str().find("mrn"), std::string::npos) << out.str();
       EXPECT_EQ(out.str().find("MRN-555"), std::string::npos) << out.str();
       const auto after = query_samples(backend, SampleQueryOptions{.lab_id = lab});
