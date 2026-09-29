@@ -1771,13 +1771,15 @@ namespace fmgr::test {
     // A PHI-tagged key that arrives in the CSV's custom_fields_json cell must be
     // split out and encrypted exactly like CreateSample does it, never stored in
     // the plaintext column. Asserted on the stored columns, so a read path that
-    // happens to hide the key cannot make this pass.
+    // happens to hide the key cannot make this pass. The untagged key beside it
+    // must stay in the plaintext column: this is a split, not "encrypt the blob".
     TEST_F(SampleServiceTest, ImportSamplesStoresPhiTaggedKeyEncryptedAtRest) {
       const auto admin = login(kAdminEmail, kPassword);
       fmgr::v1::ImportSamplesResponse resp;
-      ASSERT_TRUE(
-          import_csv(admin, import_csv_with_custom_fields(R"({"mrn":"MRN-555"})"), false, &resp)
-              .ok())
+      ASSERT_TRUE(import_csv(admin,
+                             import_csv_with_custom_fields(R"({"mrn":"MRN-555","strain":"EC-1"})"),
+                             false, &resp)
+                      .ok())
           << resp.header_error();
       ASSERT_TRUE(resp.committed());
       ASSERT_EQ(resp.succeeded(), 1);
@@ -1788,6 +1790,7 @@ namespace fmgr::test {
       ASSERT_TRUE(row.has_value());
       EXPECT_EQ(row->custom_fields_json.find("MRN-555"), std::string::npos);
       EXPECT_EQ(row->custom_fields_json.find("mrn"), std::string::npos);
+      EXPECT_NE(row->custom_fields_json.find("strain"), std::string::npos);
       EXPECT_NE(row->phi_fields_enc_json, "{}");
       EXPECT_EQ(row->phi_fields_enc_json.find("MRN-555"), std::string::npos);
       const auto phi = stored_phi(id);
