@@ -142,3 +142,95 @@ export function cellAt(grid: BoxGrid, row: number, col: number): BoxGridCell | n
 export function gapCount(grid: BoxGrid): number {
   return grid.cells.length - grid.positions.length;
 }
+
+/** The four arrow-key directions a roving tabindex moves focus in (issue #92). */
+export type GridDirection = 'up' | 'down' | 'left' | 'right';
+
+/** Which end of a row — or of the whole grid — Home and End jump to. */
+export type GridEdge = 'start' | 'end';
+
+/**
+ * The declared position one step from `from` in `direction`, or `null` when the
+ * grid ends there (issue #92's arrow-key movement).
+ *
+ * **A step is taken over the declared positions, never over the rectangle and
+ * never over reading order.** Three tempting implementations are all wrong on
+ * the mixed template, whose 3×5 rectangle has holes at (2,3) and (2,4):
+ *
+ *  - `cells[index + 1]` hands back the hole to the right of `C3`, and `B4`/`B5`
+ *    have a hole below them;
+ *  - `col + 1` is not a position at all for those three cells;
+ *  - `positions[index + 1]` is `A4` to the right of `C3` — a row up and a column
+ *    along, a jump no keyboard user can see coming.
+ *
+ * The correct answer for all three is `null`: the step stops at the end of the
+ * row or column. `null` is therefore a normal result, not an error — the caller
+ * leaves focus where it is.
+ */
+export function cellInDirection(
+  grid: BoxGrid,
+  from: BoxGridCell,
+  direction: GridDirection,
+): BoxGridCell | null {
+  const rowIndex = grid.rows.indexOf(from.row);
+  const colIndex = grid.cols.indexOf(from.col);
+  if (rowIndex < 0 || colIndex < 0) {
+    return null;
+  }
+
+  // Left/right stay inside the row and walk the declared columns; up/down stay
+  // inside the column and walk the declared rows. Both therefore skip a hole
+  // that sits between two positions of the same line.
+  const horizontal = direction === 'right' || direction === 'left';
+  const forward = direction === 'right' || direction === 'down';
+  const step = forward ? 1 : -1;
+  const length = horizontal ? grid.cols.length : grid.rows.length;
+  const start = (horizontal ? colIndex : rowIndex) + step;
+
+  for (let index = start; forward ? index < length : index >= 0; index += step) {
+    const cell = horizontal
+      ? cellAt(grid, from.row, grid.cols[index])
+      : cellAt(grid, grid.rows[index], from.col);
+    if (cell !== null) {
+      return cell;
+    }
+  }
+  return null;
+}
+
+/**
+ * The first (`start`) or last (`end`) declared position of `from`'s row — what
+ * Home and End jump to. Always a cell: the row holds `from` itself at worst.
+ */
+export function cellAtRowEdge(grid: BoxGrid, from: BoxGridCell, edge: GridEdge): BoxGridCell {
+  const forward = edge === 'start';
+  for (
+    let index = forward ? 0 : grid.cols.length - 1;
+    forward ? index < grid.cols.length : index >= 0;
+    index += forward ? 1 : -1
+  ) {
+    const cell = cellAt(grid, from.row, grid.cols[index]);
+    if (cell !== null) {
+      return cell;
+    }
+  }
+  // Only reachable for a cell whose row the grid does not declare.
+  return from;
+}
+
+/**
+ * The first or last declared position of the whole grid — what Control+Home and
+ * Control+End jump to. `positions` is in reading order, so "last" is the bottom
+ * right of the map as it is *declared*: `H12` of a 96-well rack, and `C3` — not
+ * `C5`, which is a hole, nor `B5`, which is a row up — of the mixed template.
+ */
+export function gridEdgeCell(grid: BoxGrid, edge: GridEdge): BoxGridCell | null {
+  const ordered = edge === 'start' ? grid.positions : [...grid.positions].reverse();
+  for (const position of ordered) {
+    const cell = cellAt(grid, position.row, position.col);
+    if (cell !== null) {
+      return cell;
+    }
+  }
+  return null;
+}
