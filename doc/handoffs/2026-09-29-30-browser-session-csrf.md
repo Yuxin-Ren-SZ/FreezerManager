@@ -13,10 +13,12 @@ CSRF/Origin gate in front of every cookie-authenticated mutation. PRD §7.1,
 
 - `src/rest/BrowserSession.{h,cc}` — **new**, the pure helpers: cookie
   attributes (`session_cookie`, `csrf_cookie`, `expired_*`), `generate_csrf_token`
-  (32 random bytes, base64url, via libsodium `randombytes_buf`), `parse_cookie_header`,
+  (32 random bytes, base64url, via libsodium `randombytes_buf`),
   `browser_request_from` (the five fields the gate needs out of a drogon request),
   `authorization_metadata`, `csrf_denial`, and the environment rules
   (`BrowserSessionConfig::from_env`, `validate_browser_session_env`).
+  (A `parse_cookie_header` helper shipped in the first commit and was **deleted**
+  in `6163712` — see the last section: it had no production caller.)
 - `src/rest/RestGateway.cc` — three `FMGR_ROUTE`s for
   `/api/v1/auth/browser/{login,submit-mfa,logout}`; `forward()` now resolves the
   credential from header-else-cookie, and runs the gate before parsing the body
@@ -129,3 +131,29 @@ CSRF/Origin gate in front of every cookie-authenticated mutation. PRD §7.1,
   reload".
 - Nothing in this PR was added to the `AuthMiddleware` registry: the three routes
   forward to `Login`/`SubmitMfa`/`Logout`, which are already registered.
+
+**Second commit — `6163712`, the clang-tidy round.** `run-clang-tidy-17` was the
+only red step on #53 (`ctest` was 1493/1493 on both dev jobs). Five findings, all
+now fixed: `at` → `offset` in `base64url_encode`; `parse_cookie_header` deleted
+(see below); `NOLINTNEXTLINE(bugprone-easily-swappable-parameters)` with a
+justification on the two test helpers, following `src/kms/KmsFactory.cc:20` and
+`src/auth/Totp.cc:27`; and the SSE request line built with `+=` instead of a
+chain of temporaries.
+
+`parse_cookie_header` was the convergence of two independent findings — the CI
+complexity error (26 > 25) and the security review's "exported and unit-tested
+but unused in production". It is gone, with its four unit tests, which is why the
+local `ctest` count is **1489** where CI reported 1493. `browser_request_from`
+reads both cookies with Drogon's `getCookie`; that is now a comment at the call
+site, together with why it is safe (the `Origin` check runs before and
+independently of any cookie, and a duplicate `fmgr_csrf` cannot help an attacker
+who would have to set it on our own origin). If a future change needs control
+over duplicate-cookie resolution, the parser comes back with the caller that
+depends on it.
+
+One line the reviewer asked for, recorded here because the issue said the legacy
+routes stay unchanged: **filling `AuthToken.user_id` also adds `user_id` to the
+response of the legacy `POST /api/v1/auth/login`.** That is additive for an
+existing script (protobuf JSON omits nothing it previously sent, and adds one
+field), but it is a change to a route whose contract this issue did not intend to
+touch.
