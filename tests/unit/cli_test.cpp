@@ -71,13 +71,32 @@ namespace fmgr::cli {
       };
     }
 
-    core::Lab make_lab(std::uint64_t low) {
+    core::Lab make_lab(std::uint64_t low, bool phi_enabled = false) {
       return core::Lab{
           .id = id_from_low<core::LabId>(low),
           .name = "Lab " + std::to_string(low),
           .contact = "lab@example.org",
           .created_at = ts(100 + static_cast<std::int64_t>(low)),
           .settings_json = nlohmann::json::object(),
+          .is_phi_enabled = phi_enabled,
+      };
+    }
+
+    // PHI-tagged (is_phi) custom field definition on the fixture's lab-A item
+    // type, so an import can carry a key the server must not treat as plaintext.
+    core::CustomFieldDefinition make_phi_field_def(core::LabId lab_id,
+                                                   core::ItemTypeId item_type_id) {
+      return core::CustomFieldDefinition{
+          .id = id_from_low<core::CustomFieldDefinitionId>(50),
+          .lab_id = lab_id,
+          .scope_kind = core::ScopeKind::Sample,
+          .item_type_id = item_type_id,
+          .key = "mrn",
+          .label = "Medical Record Number",
+          .data_type = core::FieldDataType::String,
+          .required = false,
+          .is_phi = true,
+          .created_at = ts(350),
       };
     }
 
@@ -189,7 +208,7 @@ namespace fmgr::cli {
       explicit CliFixture(BackendKind kind) : kind_(kind) {
         backend_ = open_backend(make_options());
 
-        lab_a_ = make_lab(1).id;
+        lab_a_ = make_lab(1, /*phi_enabled=*/true).id;
         lab_b_ = make_lab(2).id;
         const auto user = make_user(10, lab_a_);
         const auto item_type = make_item_type(20, lab_a_);
@@ -200,7 +219,7 @@ namespace fmgr::cli {
         // live *committed* row, so labs/users/item-types must land before samples.
         {
           auto txn = backend_->begin(storage::IsolationLevel::Serializable);
-          txn->repo<core::Lab>().insert(make_lab(1), mutation_context());
+          txn->repo<core::Lab>().insert(make_lab(1, /*phi_enabled=*/true), mutation_context());
           txn->repo<core::Lab>().insert(make_lab(2), mutation_context());
           txn->repo<core::User>().insert(user, mutation_context());
           txn->repo<core::User>().insert(user_b, mutation_context());
@@ -240,6 +259,14 @@ namespace fmgr::cli {
           txn->repo<core::Box>().insert(make_box(34, lab_a_, id_from_low<core::BoxTypeId>(33),
                                                  id_from_low<core::StorageContainerId>(30)),
                                         mutation_context());
+          txn->commit();
+        }
+        {
+          // Own transaction: the repository validates item_type_id against the
+          // committed DB, not the staging map.
+          auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+          txn->repo<core::CustomFieldDefinition>().insert(
+              make_phi_field_def(lab_a_, id_from_low<core::ItemTypeId>(20)), mutation_context());
           txn->commit();
         }
       }
@@ -1024,6 +1051,103 @@ namespace fmgr::cli {
       EXPECT_EQ(code, 1) << out.str();
       const auto after = query_samples(fixture_->backend(), SampleQueryOptions{.lab_id = lab});
       EXPECT_EQ(after.size(), before.size());
+    }
+
+    // A PHI-tagged key arriving in the CSV's custom_fields_json cell must be
+    // split into the encrypted envelope exactly like a CreateSample write, never
+    // left in the plaintext column that every sample.read holder receives.
+    TEST_P(CliBackendTest, ImportStoresPhiTaggedKeyEncryptedAtRest) {
+      auto& backend = fixture_->backend();
+      const auto lab = fixture_->lab_a();
+      std::istringstream in("name,item_type_id,custom_fields_json\r\nImported PHI," +
+                            id_from_low<core::ItemTypeId>(20).to_string() +
+                            ",\"{\"\"mrn\"\":\"\"MRN-555\"\"}\"\r\n");
+      std::ostringstream out;
+      auto opts = import_options(lab);
+      const fmgr::kms::EnvVarKms kms(old_kek());
+      opts.kms = &kms;
+      const int code = run_sample_import(backend, opts, in, out);
+      EXPECT_EQ(code, 0) << out.str();
+
+      const auto rows = query_samples(backend, SampleQueryOptions{.lab_id = lab});
+      const auto imported = std::find_if(rows.begin(), rows.end(), [](const core::Sample& sample) {
+        return sample.name == "Imported PHI";
+      });
+      ASSERT_NE(imported, rows.end());
+      EXPECT_EQ(imported->custom_fields_json.find("MRN-555"), std::string::npos);
+      EXPECT_EQ(imported->custom_fields_json.find("mrn"), std::string::npos);
+      EXPECT_NE(imported->phi_fields_enc_json, "{}");
+      EXPECT_EQ(imported->phi_fields_enc_json.find("MRN-555"), std::string::npos);
+      const auto phi = crypto::decrypt(imported->phi_fields_enc_json, kms);
+      ASSERT_TRUE(phi.contains("mrn"));
+      EXPECT_EQ(phi.at("mrn"), "MRN-555");
+    }
+
+    // A PHI-carrying row with no master KEK configured is refused outright — the
+    // alternative is storing it in the plaintext column, which is the bug. The
+    // message names the key so the operator knows what to fix.
+    TEST_P(CliBackendTest, ImportRefusesPhiTaggedKeyWithoutMasterKey) {
+      auto& backend = fixture_->backend();
+      const auto lab = fixture_->lab_a();
+      const auto before = query_samples(backend, SampleQueryOptions{.lab_id = lab});
+      std::istringstream in("name,item_type_id,custom_fields_json\r\nImported PHI," +
+                            id_from_low<core::ItemTypeId>(20).to_string() +
+                            ",\"{\"\"mrn\"\":\"\"MRN-555\"\"}\"\r\n");
+      std::ostringstream out;
+      const int code = run_sample_import(backend, import_options(lab), in, out);
+      EXPECT_EQ(code, 1) << out.str();
+      // The whole message, not just the key name: `describe_missing_kek` builds
+      // it in CustomFieldWrite.h, so pinning it here is what keeps the extracted
+      // helper byte-identical to the block it replaced (#109's clang-tidy fix).
+      EXPECT_NE(out.str().find("no master key is configured; cannot store PHI custom fields: "
+                               "[mrn]"),
+                std::string::npos)
+          << out.str();
+      EXPECT_NE(out.str().find("mrn"), std::string::npos) << out.str();
+      EXPECT_EQ(out.str().find("MRN-555"), std::string::npos) << out.str();
+      const auto after = query_samples(backend, SampleQueryOptions{.lab_id = lab});
+      EXPECT_EQ(after.size(), before.size());
+    }
+
+    // The dry run refuses the same row the real import refuses: a preview that
+    // approves what the commit rejects is worse than no preview at all (#110).
+    TEST_P(CliBackendTest, ImportDryRunRefusesPhiTaggedKeyWithoutMasterKey) {
+      auto& backend = fixture_->backend();
+      const auto lab = fixture_->lab_a();
+      const auto before = query_samples(backend, SampleQueryOptions{.lab_id = lab});
+      std::istringstream in("name,item_type_id,custom_fields_json\r\nImported PHI," +
+                            id_from_low<core::ItemTypeId>(20).to_string() +
+                            ",\"{\"\"mrn\"\":\"\"MRN-555\"\"}\"\r\n");
+      std::ostringstream out;
+      auto opts = import_options(lab);
+      opts.dry_run = true;
+      const int code = run_sample_import(backend, opts, in, out);
+      EXPECT_EQ(code, 1) << out.str();
+      EXPECT_NE(out.str().find("mrn"), std::string::npos) << out.str();
+      EXPECT_EQ(query_samples(backend, SampleQueryOptions{.lab_id = lab}).size(), before.size());
+    }
+
+    // The mirror of the refusal: nothing PHI-tagged means no KEK is needed, so an
+    // ordinary bulk load still works on a CLI with no key material configured.
+    TEST_P(CliBackendTest, ImportWithoutPhiTaggedKeysNeedsNoMasterKey) {
+      auto& backend = fixture_->backend();
+      const auto lab = fixture_->lab_a();
+      const auto before = query_samples(backend, SampleQueryOptions{.lab_id = lab});
+      std::istringstream in("name,item_type_id,custom_fields_json\r\nImported Plain," +
+                            id_from_low<core::ItemTypeId>(20).to_string() +
+                            ",\"{\"\"strain\"\":\"\"EC-1\"\"}\"\r\n");
+      std::ostringstream out;
+      const int code = run_sample_import(backend, import_options(lab), in, out);
+      EXPECT_EQ(code, 0) << out.str();
+
+      const auto after = query_samples(backend, SampleQueryOptions{.lab_id = lab});
+      EXPECT_EQ(after.size(), before.size() + 1U);
+      const auto imported = std::find_if(after.begin(), after.end(), [](const core::Sample& s) {
+        return s.name == "Imported Plain";
+      });
+      ASSERT_NE(imported, after.end());
+      EXPECT_NE(imported->custom_fields_json.find("EC-1"), std::string::npos);
+      EXPECT_EQ(imported->phi_fields_enc_json, "{}");
     }
 
     // ---- Read nouns: freezer / box / item-type list + inspect ----

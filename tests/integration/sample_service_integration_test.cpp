@@ -328,6 +328,49 @@ namespace fmgr::test {
         return nlohmann::json::parse(sample.custom_fields_json());
       }
 
+      // RFC 4180 quoting (doubled inner quotes) around one cell.
+      [[nodiscard]] static std::string csv_quote(const std::string& cell) {
+        std::string quoted = "\"";
+        for (const char chr : cell) {
+          if (chr == '"') {
+            quoted += '"';
+          }
+          quoted += chr;
+        }
+        quoted += '"';
+        return quoted;
+      }
+
+      // One-row import CSV whose custom_fields_json cell holds `fields` verbatim.
+      [[nodiscard]] std::string import_csv_with_custom_fields(const std::string& fields) const {
+        return "item_type_id,name,custom_fields_json\n" + kItemType + ",phi-import," +
+               csv_quote(fields) + "\n";
+      }
+
+      // Run one ImportSamples call. Returns the gRPC status; `resp` always holds
+      // the body so a caller can assert on header_error/rows. `dry_run` sits
+      // between the two strings so neither pair is adjacent: clang-tidy's
+      // bugprone-easily-swappable-parameters is enforced on this file.
+      grpc::Status import_csv(const std::string& token, bool dry_run, const std::string& csv,
+                              fmgr::v1::ImportSamplesResponse* resp) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ImportSamplesRequest req;
+        req.set_lab_id(kLab1);
+        req.set_csv_content(csv);
+        req.set_dry_run(dry_run);
+        return sample_stub_->ImportSamples(&ctx, req, resp);
+      }
+
+      // The whole stored row, read straight from storage so an assertion cannot
+      // be satisfied or defeated by the read path's disclosure rules.
+      [[nodiscard]] std::optional<core::Sample> stored_row(const std::string& sample_id) {
+        auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(sample_id));
+        txn->commit();
+        return row;
+      }
+
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kMemberEmail{"member@example.com"};
       const std::string kReadonlyEmail{"readonly@example.com"};
@@ -1850,6 +1893,100 @@ namespace fmgr::test {
       fmgr::v1::ListSamplesResponse lresp;
       ASSERT_TRUE(sample_stub_->ListSamples(&lctx, lreq, &lresp).ok());
       EXPECT_EQ(lresp.samples_size(), 2);
+    }
+
+    // A PHI-tagged key that arrives in the CSV's custom_fields_json cell must be
+    // split out and encrypted exactly like CreateSample does it, never stored in
+    // the plaintext column. Asserted on the stored columns, so a read path that
+    // happens to hide the key cannot make this pass. The untagged key beside it
+    // must stay in the plaintext column: this is a split, not "encrypt the blob".
+    TEST_F(SampleServiceTest, ImportSamplesStoresPhiTaggedKeyEncryptedAtRest) {
+      const auto admin = login(kAdminEmail, kPassword);
+      fmgr::v1::ImportSamplesResponse resp;
+      ASSERT_TRUE(import_csv(admin, false,
+                             import_csv_with_custom_fields(R"({"mrn":"MRN-555","strain":"EC-1"})"),
+                             &resp)
+                      .ok())
+          << resp.header_error();
+      ASSERT_TRUE(resp.committed());
+      ASSERT_EQ(resp.succeeded(), 1);
+      const std::string id = resp.rows(0).sample_id();
+      ASSERT_FALSE(id.empty());
+
+      const auto row = stored_row(id);
+      ASSERT_TRUE(row.has_value());
+      EXPECT_EQ(row->custom_fields_json.find("MRN-555"), std::string::npos);
+      EXPECT_EQ(row->custom_fields_json.find("mrn"), std::string::npos);
+      EXPECT_NE(row->custom_fields_json.find("strain"), std::string::npos);
+      EXPECT_NE(row->phi_fields_enc_json, "{}");
+      EXPECT_EQ(row->phi_fields_enc_json.find("MRN-555"), std::string::npos);
+      const auto phi = stored_phi(id);
+      ASSERT_TRUE(phi.contains("mrn"));
+      EXPECT_EQ(phi.at("mrn"), "MRN-555");
+    }
+
+    // The disclosure is the harm, so the assertion is written from the side that
+    // must not see it: a sample.read holder without phi.read.
+    TEST_F(SampleServiceTest, ImportSamplesHidesPhiTaggedKeyFromNonPhiReader) {
+      const auto admin = login(kAdminEmail, kPassword);
+      fmgr::v1::ImportSamplesResponse resp;
+      ASSERT_TRUE(
+          import_csv(admin, false, import_csv_with_custom_fields(R"({"mrn":"MRN-555"})"), &resp)
+              .ok())
+          << resp.header_error();
+      ASSERT_TRUE(resp.committed());
+      const std::string id = resp.rows(0).sample_id();
+      ASSERT_FALSE(id.empty());
+
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
+      fmgr::v1::Sample as_member;
+      ASSERT_TRUE(get_sample(member, id, &as_member).ok());
+      EXPECT_EQ(as_member.custom_fields_json().find("mrn"), std::string::npos);
+      EXPECT_EQ(as_member.custom_fields_json().find("MRN-555"), std::string::npos);
+
+      // The value must exist, not merely be invisible: the phi.read holder sees
+      // it. Otherwise "hidden" would also be satisfied by having dropped it.
+      fmgr::v1::Sample as_admin;
+      ASSERT_TRUE(get_sample(admin, id, &as_admin).ok());
+      EXPECT_EQ(custom_fields(as_admin).value("mrn", ""), "MRN-555");
+    }
+
+    // The import now validates custom fields exactly like CreateSample, because
+    // it runs the same split. A known field of the wrong type is refused instead
+    // of being written to the plaintext column unchecked.
+    TEST_F(SampleServiceTest, ImportSamplesRejectsCustomFieldFailingValidation) {
+      const auto admin = login(kAdminEmail, kPassword);
+      fmgr::v1::ImportSamplesResponse resp;
+      const auto status =
+          import_csv(admin, false, import_csv_with_custom_fields(R"({"mrn":5})"), &resp);
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("mrn"), std::string::npos);
+
+      grpc::ClientContext lctx;
+      set_bearer(lctx, admin);
+      fmgr::v1::ListSamplesRequest lreq;
+      lreq.set_lab_id(kLab1);
+      fmgr::v1::ListSamplesResponse lresp;
+      ASSERT_TRUE(sample_stub_->ListSamples(&lctx, lreq, &lresp).ok());
+      EXPECT_EQ(lresp.samples_size(), 0);
+    }
+
+    // ... and the dry run says so too: the probe runs the same split as the
+    // commit path, so it cannot approve a row the commit will refuse. Without
+    // that, a user would be told the file is good and then shown an error on the
+    // row the preview passed (#110).
+    TEST_F(SampleServiceTest, ImportSamplesDryRunReportsCustomFieldValidationFailure) {
+      const auto admin = login(kAdminEmail, kPassword);
+      fmgr::v1::ImportSamplesResponse resp;
+      ASSERT_TRUE(
+          import_csv(admin, true, import_csv_with_custom_fields(R"({"mrn":5})"), &resp).ok());
+      EXPECT_FALSE(resp.committed());
+      ASSERT_EQ(resp.rows_size(), 1);
+      EXPECT_FALSE(resp.rows(0).ok());
+      EXPECT_NE(resp.rows(0).error().find("mrn"), std::string::npos);
+      EXPECT_EQ(resp.succeeded(), 0);
     }
 
     TEST_F(SampleServiceTest, ImportSamplesDryRunDoesNotPersist) {

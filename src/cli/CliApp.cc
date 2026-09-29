@@ -794,9 +794,16 @@ namespace fmgr::cli {
       }
       if (importer->parsed()) {
         auto backend = open_backend(backend_options_from(import_sqlite, import_postgres));
+        // The same master KEK the server uses. It is needed only when the file
+        // carries a PHI-tagged custom field, which cannot be stored safely
+        // without it: such a row is refused rather than written in the clear
+        // (#108). nullptr here means "no KEK configured", which is not an error
+        // by itself, so an ordinary import still runs on a CLI without one.
+        const auto kms = kms::make_default_kms();
         const SampleImportOptions import_opts{.lab_id = core::LabId::parse(import_lab),
                                               .actor = core::UserId::parse(import_actor),
-                                              .dry_run = import_dry_run};
+                                              .dry_run = import_dry_run,
+                                              .kms = kms.get()};
         if (import_file == "-") {
           return run_sample_import(*backend, import_opts, std::cin, out);
         }

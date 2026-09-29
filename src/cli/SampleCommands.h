@@ -8,6 +8,7 @@
 
 #include "cli/SampleQuery.h"
 #include "core/ids.h"
+#include "kms/IKmsProvider.h"
 #include "storage/IStorageBackend.h"
 
 #include <istream>
@@ -33,6 +34,12 @@ namespace fmgr::cli {
     core::LabId lab_id;
     core::UserId actor;
     bool dry_run{false};
+    // Master key for PHI-tagged custom fields, or nullptr when none is
+    // configured. Rows are split exactly as the server splits them, so the key
+    // is needed only when the file actually carries a PHI-tagged key: without one
+    // such a row is refused — naming the key — rather than written to the
+    // plaintext column in the clear (#108).
+    const kms::IKmsProvider* kms{nullptr};
   };
 
   int run_sample_import(storage::IStorageBackend& backend, const SampleImportOptions& options,

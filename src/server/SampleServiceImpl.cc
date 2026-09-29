@@ -15,6 +15,7 @@
 #include "crypto/FieldCipher.h"
 #include "server/GrpcErrorTranslation.h"
 #include "storage/CustomFieldResolver.h"
+#include "storage/CustomFieldWrite.h"
 #include "storage/IStorageBackend.h"
 #include "storage/IdentityTraits.h"
 #include "storage/SampleOps.h"
@@ -188,97 +189,6 @@ namespace fmgr::server {
       out->set_custom_fields_json(sample.custom_fields_json);
     }
 
-    // A PHI value that says nothing: an explicit JSON null or an empty string.
-    // Both are a blank the caller is asking for, not a value it is supplying, so
-    // they cannot count as a PHI write on their own. Anything else — including 0
-    // and false, which are real values — is a value. Fields whose data type is
-    // not a string are already rejected by validation before this matters.
-    [[nodiscard]] bool is_blank_phi_value(const nlohmann::json& value) {
-      return value.is_null() || (value.is_string() && value.get_ref<const std::string&>().empty());
-    }
-
-    // Outcome of partitioning an incoming custom-field blob into the plaintext
-    // (non-PHI) column and the encrypted PHI envelope.
-    struct PreparedCustomFields {
-      std::string custom_fields_json{"{}"};  // non-PHI, validated
-      std::string phi_fields_enc_json{"{}"}; // AEAD envelope; "{}" when no PHI
-      // The PHI keys the request carried, still in the clear, so UpdateSample can
-      // merge a supplied value into the stored envelope without re-parsing the
-      // request. Stays in the request scope, is never logged, and is never
-      // returned to a caller.
-      crypto::PhiFields phi_values;
-      // True when at least one supplied PHI key carried a *value* rather than a
-      // blank (see is_blank_phi_value). A blank is not a write, so it cannot make
-      // a request authoritative for PHI; UpdateSample honours a blank only from a
-      // caller that could see what it is clearing. Implies that the request named
-      // a PHI-tagged key at all, which is why there is no separate "keys present"
-      // flag (review F5 on #83).
-      bool has_non_blank_phi_value{false};
-    };
-
-    // Validate the combined incoming custom fields, then split them: PHI-tagged
-    // keys are encrypted into the envelope under a fresh per-record DEK, the rest
-    // stay in the plaintext column. Throws ConstraintViolation (→ INVALID_ARGUMENT)
-    // on validation failure or when a PHI value is supplied for a lab that has PHI
-    // mode disabled. Throws when PHI is supplied but no KMS is configured.
-    PreparedCustomFields prepare_custom_fields(storage::ITransaction& txn,
-                                               const core::LabId& lab_id,
-                                               const core::ItemTypeId& item_type_id,
-                                               const std::string& incoming_json,
-                                               const kms::IKmsProvider* kms) {
-      const auto definitions = storage::resolve_custom_field_defs(txn, lab_id, item_type_id);
-      const auto incoming =
-          incoming_json.empty() ? nlohmann::json::object() : nlohmann::json::parse(incoming_json);
-      const auto errors = core::validate_custom_fields(definitions, incoming);
-      if (!errors.empty()) {
-        std::string message = "custom field validation failed:";
-        for (const auto& error : errors) {
-          message += " [" + error.key + ": " + error.message + "]";
-        }
-        throw storage::ConstraintViolation(message);
-      }
-
-      std::set<std::string> phi_keys;
-      for (const auto& def : definitions) {
-        if (def.is_phi) {
-          phi_keys.insert(def.key);
-        }
-      }
-
-      PreparedCustomFields prepared;
-      nlohmann::json non_phi = nlohmann::json::object();
-      crypto::PhiFields phi;
-      if (incoming.is_object()) {
-        for (const auto& [key, value] : incoming.items()) {
-          if (phi_keys.contains(key)) {
-            phi.emplace(key, value);
-            if (!is_blank_phi_value(value)) {
-              prepared.has_non_blank_phi_value = true;
-            }
-          } else {
-            non_phi[key] = value;
-          }
-        }
-      }
-      prepared.custom_fields_json = non_phi.dump();
-
-      if (!phi.empty()) {
-        const auto lab = txn.repo<core::Lab>().find_by_id(lab_id);
-        if (!lab.has_value() || !lab->is_phi_enabled) {
-          throw storage::ConstraintViolation(
-              "PHI custom fields supplied but PHI mode is disabled for this lab");
-        }
-        if (kms == nullptr) {
-          // Server misconfiguration, not a client error: no master key is wired.
-          throw std::runtime_error(
-              "server is not configured with a master key; cannot store PHI fields");
-        }
-        prepared.phi_fields_enc_json = crypto::encrypt(phi, *kms);
-      }
-      prepared.phi_values = phi;
-      return prepared;
-    }
-
     // If the caller holds phi.read for the sample's lab and the sample carries a
     // PHI envelope, decrypt it, merge the PHI fields into the response's
     // custom_fields_json, and return the disclosed key names (for the PHI-read
@@ -378,7 +288,8 @@ namespace fmgr::server {
     // persist nothing. Reports one row per record with per-row ok/error.
     void report_import_validation(storage::IStorageBackend& backend, grpc::ServerContext* ctx,
                                   const auth::SessionContext& sctx, const cli::ImportReport& report,
-                                  bool dry_run, fmgr::v1::ImportSamplesResponse* resp) {
+                                  bool dry_run, const kms::IKmsProvider* kms,
+                                  fmgr::v1::ImportSamplesResponse* resp) {
       int succeeded = 0;
       int failed = 0;
       for (const auto& row : report.rows) {
@@ -388,12 +299,19 @@ namespace fmgr::server {
         std::string error = row.error;
         // Dry-run additionally checks each structurally-ok row against committed
         // state (FK liveness, occupied position) in its own never-committed
-        // transaction, mirroring `freezerctl sample import --dry-run`.
+        // transaction, mirroring `freezerctl sample import --dry-run`. It runs the
+        // same custom-field split as the commit path, so the probe cannot report a
+        // row OK that commit_import would refuse for a PHI or validation reason
+        // (#110: a dry run that disagrees with the real run is worse than none).
         if (dry_run && okay && row.sample.has_value()) {
-          const auto& sample = *row.sample;
           try {
             auto probe = backend.begin(storage::IsolationLevel::Serializable);
             rpc::AuthMiddleware::inject_rls_vars(*probe, sctx);
+            core::Sample sample = *row.sample;
+            const auto prepared = storage::prepare_custom_fields(
+                *probe, sample.lab_id, sample.item_type_id, sample.custom_fields_json, kms);
+            sample.custom_fields_json = prepared.custom_fields_json;
+            sample.phi_fields_enc_json = prepared.phi_fields_enc_json;
             probe->repo<core::Sample>().insert(sample,
                                                make_ctx(*ctx, sctx, "import_samples_dryrun"));
             // Intentionally not committed: the transaction rolls back on scope exit.
@@ -420,13 +338,23 @@ namespace fmgr::server {
     // batch back and surfaces as the mapped gRPC status — nothing is persisted.
     void commit_import(storage::IStorageBackend& backend, grpc::ServerContext* ctx,
                        const auth::SessionContext& sctx, const cli::ImportReport& report,
-                       fmgr::v1::ImportSamplesResponse* resp) {
+                       const kms::IKmsProvider* kms, fmgr::v1::ImportSamplesResponse* resp) {
       auto txn = backend.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
       for (const auto& row : report.rows) {
         // row.sample is guaranteed present when row.ok is true
         if (row.sample.has_value()) {
-          txn->repo<core::Sample>().insert(*row.sample, make_ctx(*ctx, sctx, "import_samples"));
+          // Same validate-and-split as CreateSample/UpdateSample: a PHI-tagged key
+          // that arrived in the CSV's custom_fields_json cell must reach the
+          // encrypted envelope, never the plaintext column (#108). A row that
+          // cannot be split safely throws before anything is written, and the
+          // whole batch rolls back with it.
+          core::Sample sample = *row.sample;
+          const auto prepared = storage::prepare_custom_fields(
+              *txn, sample.lab_id, sample.item_type_id, sample.custom_fields_json, kms);
+          sample.custom_fields_json = prepared.custom_fields_json;
+          sample.phi_fields_enc_json = prepared.phi_fields_enc_json;
+          txn->repo<core::Sample>().insert(sample, make_ctx(*ctx, sctx, "import_samples"));
         }
       }
       txn->commit();
@@ -641,8 +569,8 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      const auto prepared =
-          prepare_custom_fields(*txn, lab_id, item_type_id, req->custom_fields_json(), kms_);
+      const auto prepared = storage::prepare_custom_fields(*txn, lab_id, item_type_id,
+                                                           req->custom_fields_json(), kms_);
       sample.custom_fields_json = prepared.custom_fields_json;
       // A new row has no stored envelope to protect, so the prepared one is
       // always the truth here — including for a caller without phi.read that
@@ -725,8 +653,8 @@ namespace fmgr::server {
           wire.has_parent_sample_id()
               ? std::optional<core::SampleId>{core::SampleId::parse(wire.parent_sample_id())}
               : std::nullopt;
-      const auto prepared =
-          prepare_custom_fields(*txn, lab_id, item_type_id, wire.custom_fields_json(), kms_);
+      const auto prepared = storage::prepare_custom_fields(*txn, lab_id, item_type_id,
+                                                           wire.custom_fields_json(), kms_);
       existing->custom_fields_json = prepared.custom_fields_json;
       // "The caller did not supply PHI" is not "the sample has no PHI", and "the
       // caller supplied a PHI value" is not "the caller saw the rest".
@@ -778,7 +706,7 @@ namespace fmgr::server {
           stored_phi = crypto::decrypt(existing->phi_fields_enc_json, *kms_);
         }
         for (const auto& [key, value] : prepared.phi_values) {
-          if (!is_blank_phi_value(value)) { // a blank is not a write, here either
+          if (!storage::is_blank_phi_value(value)) { // a blank is not a write, here either
             stored_phi[key] = value;
           }
         }
@@ -991,9 +919,9 @@ namespace fmgr::server {
                       [](const cli::ImportRowResult& row) { return !row.ok; });
 
       if (req->dry_run() || any_structural_error) {
-        report_import_validation(backend_, ctx, sctx, report, req->dry_run(), resp);
+        report_import_validation(backend_, ctx, sctx, report, req->dry_run(), kms_, resp);
       } else {
-        commit_import(backend_, ctx, sctx, report, resp);
+        commit_import(backend_, ctx, sctx, report, kms_, resp);
       }
       return grpc::Status::OK;
     } catch (...) {

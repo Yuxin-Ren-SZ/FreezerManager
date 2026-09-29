@@ -14,6 +14,10 @@ target_link_libraries(
   freezermanager_storage
   INTERFACE
     FreezerManager::core
+    # CustomFieldWrite.h encrypts PHI-tagged fields through crypto::encrypt with
+    # the caller's kms::IKmsProvider.
+    FreezerManager::crypto
+    FreezerManager::kms
     nlohmann_json::nlohmann_json
 )
 
