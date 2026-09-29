@@ -21,6 +21,20 @@ deliberately a no-op, so `cmake --build --preset dev` never needs Node.
 | Lint / format | ESLint flat config (`eslint.config.js`) + Prettier (`.prettierrc.json`) |
 | Tests | Vitest + React Testing Library + MSW (`src/test/`) |
 
+**ESLint is pinned to `^9` on purpose, and the pin wants revisiting.**
+`eslint-plugin-jsx-a11y@6.10.2` — still the newest release — peers
+`eslint: ^3 || … || ^9`, so an `eslint@^10` install fails with `ERESOLVE`; every
+other plugin in the stack already accepts `^10`, which makes this one package the
+whole blocker. It is not merely "one major behind by choice": `eslint@9.39.5` is
+upstream-deprecated (`npm ci` warns about it) and its dist-tag is now
+`maintenance`, so no further fixes land on the line we are pinned to. Issue **#39**
+tracks it with the reproduction, the control group and the upstream references.
+One command decides whether it can move:
+
+```sh
+npm view eslint-plugin-jsx-a11y peerDependencies
+```
+
 ```sh
 nvm use                # or any Node 22 on PATH
 cd src/web
