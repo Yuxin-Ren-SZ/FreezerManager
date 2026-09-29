@@ -73,8 +73,14 @@ load-bearing at the gate (PRD §12 authorisation, `AGENTS.md` §5).
   calls skip the check, coverage check names every missing RPC, tracker
   note/lookup/forget.
 - `cmake --build --preset dev` → exit 0; `ctest --preset dev` →
-  **1444/1444 passed, 0 failed** (Postgres-backed tests skip without
-  `FMGR_TEST_POSTGRES_URL`, as on `main`).
+  **1454/1454 passed, 0 failed** on the final rebase (origin/main `77680f6`,
+  which brought #71's tests in); Postgres-backed tests skip without
+  `FMGR_TEST_POSTGRES_URL`, as on `main`. One incremental build during the
+  rebase failed to regenerate the gtest-discovery files for the e2e and REST
+  gateway targets — the discovery step runs each freshly linked binary with
+  `--gtest_list_tests`, and both binaries return 0 and list their tests now, so
+  it was environmental, not a compile error. The rebuild immediately after
+  reported `ninja: no work to do` (exit 0).
 - Hand demonstration: planting `P::SampleRead` on `CreateSample`'s registration
   in `src/server/SampleServiceImpl.cc` turns **38 of 49** `SampleService` tests
   red with `internal server error: RPC /fmgr.v1.SampleService/CreateSample is

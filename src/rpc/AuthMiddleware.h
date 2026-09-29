@@ -133,6 +133,11 @@ namespace fmgr::rpc {
     static void verify_registry_covers(std::span<const std::string> served_rpc_names);
 
   private:
+    // Step 0 of authorize(): throws RpcRegistryMismatch unless `enforced` is the
+    // permission registered for call's RPC. No-op when the call carries no RPC
+    // identity.
+    static void require_registry_agreement(const RpcCall& call, core::Permission enforced);
+
     auth::IAuthProvider& auth_;
   };
 

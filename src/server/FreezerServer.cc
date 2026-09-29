@@ -61,25 +61,34 @@ namespace {
     return contents;
   }
 
-} // namespace
+  // The gRPC services this server serves. Each name is used twice: to build
+  // served_service_full_names() — the list the startup coverage check and its
+  // test enumerate — and to pair a service with its implementation in build().
+  // Declaring them once keeps the two from drifting, and the pair array in
+  // build() is sized by this list, so adding a service without listing it here
+  // does not compile.
+  constexpr std::string_view k_auth_service = "fmgr.v1.AuthService";
+  constexpr std::string_view k_session_service = "fmgr.v1.SessionService";
+  constexpr std::string_view k_lab_service = "fmgr.v1.LabService";
+  constexpr std::string_view k_box_service = "fmgr.v1.BoxService";
+  constexpr std::string_view k_item_type_service = "fmgr.v1.ItemTypeService";
+  constexpr std::string_view k_sample_service = "fmgr.v1.SampleService";
+  constexpr std::string_view k_role_service = "fmgr.v1.RoleService";
+  constexpr std::string_view k_audit_service = "fmgr.v1.AuditService";
+  constexpr std::string_view k_share_service = "fmgr.v1.ShareService";
 
-namespace {
-  // The gRPC services this server serves, in the order build() registers them.
-  // Single source of truth for "served": build() checks every RPC these expose
-  // against the permission registry before it starts, and ServerIntegrationTest
-  // asserts the registry matches them exactly (#60). Adding a service here
-  // without registering its RPCs fails the build() check.
   constexpr std::array<std::string_view, 9> k_served_service_full_names{{
-      "fmgr.v1.AuthService",
-      "fmgr.v1.SessionService",
-      "fmgr.v1.LabService",
-      "fmgr.v1.BoxService",
-      "fmgr.v1.ItemTypeService",
-      "fmgr.v1.SampleService",
-      "fmgr.v1.RoleService",
-      "fmgr.v1.AuditService",
-      "fmgr.v1.ShareService",
+      k_auth_service,
+      k_session_service,
+      k_lab_service,
+      k_box_service,
+      k_item_type_service,
+      k_sample_service,
+      k_role_service,
+      k_audit_service,
+      k_share_service,
   }};
+
 } // namespace
 
 namespace fmgr::server {
@@ -216,13 +225,25 @@ namespace fmgr::server {
                                "tls.enabled");
     }
 
-    // Registration order matches k_served_service_full_names, which is what the
-    // coverage check below (and its test) enumerates.
-    const std::array<grpc::Service*, k_served_service_full_names.size()> served_services{
-        {&auth_svc_, &session_svc_, &lab_svc_, &box_svc_, &item_type_svc_, &sample_svc_, &role_svc_,
-         &audit_svc_, &share_svc_}};
-    for (auto* service : served_services) {
-      builder.RegisterService(service);
+    // Each served service paired with its implementation, using the same name
+    // constants the coverage check below enumerates, so the two cannot drift.
+    struct ServedService {
+      std::string_view full_name;
+      grpc::Service* impl;
+    };
+    const std::array<ServedService, k_served_service_full_names.size()> served_services{{
+        {.full_name = k_auth_service, .impl = &auth_svc_},
+        {.full_name = k_session_service, .impl = &session_svc_},
+        {.full_name = k_lab_service, .impl = &lab_svc_},
+        {.full_name = k_box_service, .impl = &box_svc_},
+        {.full_name = k_item_type_service, .impl = &item_type_svc_},
+        {.full_name = k_sample_service, .impl = &sample_svc_},
+        {.full_name = k_role_service, .impl = &role_svc_},
+        {.full_name = k_audit_service, .impl = &audit_svc_},
+        {.full_name = k_share_service, .impl = &share_svc_},
+    }};
+    for (const auto& service : served_services) {
+      builder.RegisterService(service.impl);
     }
 
     // Fail closed (#60): a served RPC that is not in the permission registry has a

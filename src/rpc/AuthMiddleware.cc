@@ -38,33 +38,36 @@ namespace fmgr::rpc {
       return std::string(core::to_key(perm));
     }
 
-    // #60: the registry is a contract, not documentation. A handler that asks the
-    // gate for a permission other than the one its RPC registered is a code
-    // defect — relaxing a mutating RPC's registration is how #54 nearly shipped a
-    // wrong permission with every test green — so the call is refused instead of
-    // being served behind a gate nobody can look up.
-    void require_registry_agreement(const RpcCall& call, core::Permission enforced) {
-      if (call.method.empty()) {
-        // Not inside a served RPC (unit tests, tooling): there is no registration
-        // this call could contradict.
-        return;
-      }
-      const auto registry = AuthMiddleware::registered_rpcs();
-      const auto registered = registry.find(call.method);
-      if (registered == registry.end()) {
-        throw RpcRegistryMismatch("RPC " + call.method +
-                                  " calls authorize() but is not in the permission registry; "
-                                  "register it in its service constructor (#60)");
-      }
-      if (registered->second != enforced) {
-        throw RpcRegistryMismatch("RPC " + call.method + " is registered as permission '" +
-                                  permission_key(registered->second) +
-                                  "' but its handler enforces '" + permission_key(enforced) +
-                                  "'; the registration and the authorize() call must agree (#60)");
-      }
-    }
-
   } // namespace
+
+  // #60: the registry is a contract, not documentation. A handler that asks the
+  // gate for a permission other than the one its RPC registered is a code defect —
+  // relaxing a mutating RPC's registration is how #54 nearly shipped a wrong
+  // permission with every test green — so the call is refused instead of being
+  // served behind a gate nobody can look up.
+  void AuthMiddleware::require_registry_agreement(const RpcCall& call, core::Permission enforced) {
+    if (call.method.empty()) {
+      // Not inside a served RPC (unit tests, tooling): there is no registration
+      // this call could contradict.
+      return;
+    }
+    // One locked lookup, not a snapshot copy: this runs on every authenticated
+    // RPC.
+    auto& reg = get_registry();
+    std::scoped_lock lock(reg.mutex);
+    const auto registered = reg.map.find(call.method);
+    if (registered == reg.map.end()) {
+      throw RpcRegistryMismatch("RPC " + call.method +
+                                " calls authorize() but is not in the permission registry; "
+                                "register it in its service constructor (#60)");
+    }
+    if (registered->second != enforced) {
+      throw RpcRegistryMismatch("RPC " + call.method + " is registered as permission '" +
+                                permission_key(registered->second) +
+                                "' but its handler enforces '" + permission_key(enforced) +
+                                "'; the registration and the authorize() call must agree (#60)");
+    }
+  }
 
   AuthMiddleware::AuthMiddleware(auth::IAuthProvider& auth) : auth_(auth) {}
 
