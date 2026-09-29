@@ -959,7 +959,7 @@ none needs a lock. Every list screen uses cursor paging via `page_token`,
 has empty, loading and error states, and handles `PERMISSION_DENIED`
 inline.
 
-- [ ] **G3.1. Lab layout tree** (`features/layout/`). `useLabLayout(labId)`
+- [x] **G3.1. Lab layout tree** (`features/layout/`). `useLabLayout(labId)`
       loads the lab's freezers, storage containers, box types and boxes once
       (every page) and derives the tree plus a `locationPath(boxId,
       position)` helper (freezer → … → box → position). The helper keeps the
@@ -970,7 +970,7 @@ inline.
       container, a cycle, archived nodes (hidden) and an RPC failure partway
       through loading.
 
-- [ ] **G3.2. Sample browser** (`features/samples/`; F6.2, F6.6, F7). A
+- [x] **G3.2. Sample browser** (`features/samples/`; F6.2, F6.6, F7). A
       virtualized TanStack table with infinite cursor paging that stays
       smooth at 100k rows. Filters: status, box, item type, barcode, and
       free text via G0.4, all kept in the URL. A column chooser includes
