@@ -197,6 +197,27 @@ target_link_libraries(
     GTest::gtest_main
 )
 
+add_executable(freezermanager_session_service_integration_tests
+  session_service_integration_test.cpp
+)
+
+target_include_directories(
+  freezermanager_session_service_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  freezermanager_session_service_integration_tests
+  PRIVATE
+    FreezerManager::server_lib
+    FreezerManager::storage_sqlite
+    FreezerManager::auth
+    gRPC::grpc++
+    GTest::gtest_main
+)
+
 add_executable(freezermanager_rest_gateway_integration_tests
   rest_gateway_integration_test.cpp
 )
@@ -244,6 +265,8 @@ gtest_discover_tests(freezermanager_role_service_integration_tests
 gtest_discover_tests(freezermanager_audit_service_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_share_service_integration_tests
+  PROPERTIES LABELS "grpc_integration")
+gtest_discover_tests(freezermanager_session_service_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_rest_gateway_integration_tests
   PROPERTIES LABELS "grpc_integration")
