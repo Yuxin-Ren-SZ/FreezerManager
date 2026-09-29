@@ -64,9 +64,11 @@ import styles from './SampleBrowserScreen.module.css';
  * of writing it; the stream never carries PHI, so it must never become what a
  * detail view shows.
  *
- * The custom-field columns need `custom_field.define`, which a read-only member
- * does not hold: `useCan` switches that request off, and the screen is complete
- * without it (G-arch 8 — the server is still the enforcement point).
+ * The custom-field columns read `custom-field-def/list`, which the server gates
+ * on `sample.read` since #69 — the permission that already opened this screen —
+ * so a ReadOnly member is served them. That is also the gate used here, so the
+ * request is never fired on behalf of a caller the server would refuse
+ * (G-arch 8 — the server is still the enforcement point).
  */
 
 /**
@@ -92,8 +94,8 @@ export function SampleBrowserScreen() {
   // G3.1's hook: the box filter's labels and the location column both need it.
   const { boxes, locationPath } = useLabLayout(labId);
   const itemTypesQuery = useItemTypes(labId);
-  const canDefineFields = useCan('custom_field.define', labId);
-  const cfdsQuery = useCustomFieldDefinitions(labId, { enabled: canDefineFields });
+  const canReadSamples = useCan('sample.read', labId);
+  const cfdsQuery = useCustomFieldDefinitions(labId, { enabled: canReadSamples });
   const live = useSampleLive({ labId, boxId: filters.boxId, itemTypeId: filters.itemTypeId });
   const exportSamples = useExportSamples(labId);
   const [exportError, setExportError] = useState<unknown>(null);

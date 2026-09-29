@@ -18,7 +18,7 @@
     "parentSample": "Parent sample",
     "parentSampleHint": "The id of the sample this one was taken from.",
     "customFields": "Custom fields",
-    "customFieldsUnavailable": "Custom fields are not shown: reading field definitions needs the custom_field.define permission.",
+    "customFieldsUnavailable": "Custom fields are not shown: reading field definitions needs the sample.read permission.",
     "phiWriteWarning": "This item type has PHI fields you cannot read. Saving this form clears them, because the server replaces the PHI store with what the request contains. Ask someone with phi.read to edit this sample.",
     "noChoice": "None",
     "referenceHint": "A UUID.",

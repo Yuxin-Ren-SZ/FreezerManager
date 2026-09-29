@@ -272,12 +272,13 @@ describe('SampleCreateScreen', () => {
   });
 
   it('shows a server rejection on the field it names, even one the form could not render', async () => {
-    // Without `custom_field.define` the definitions cannot be read, so the form
+    // `custom-field-def/list` is gated on `sample.read` since #69, so a caller
+    // holding `sample.write` without it cannot read the definitions: the form
     // renders no custom-field inputs at all — and `tissue_grade` is required on
     // the server. The rejection has to name the field rather than become a
     // banner that leaves the user hunting.
     const demo = createDemoLab();
-    renderCreate({ demo, user: currentUserWith(['sample.read', 'sample.write']) });
+    renderCreate({ demo, user: currentUserWith(['sample.write']) });
 
     expect(
       await screen.findByText(sampleDetailCopy.form.customFieldsUnavailable),

@@ -75,9 +75,12 @@ export interface DemoLab {
   itemTypes: ItemType[];
   /**
    * The lab's custom-field definitions (`custom-field-def/list`), which the
-   * G3.2 column chooser turns into columns. Note the *route* needs
-   * `custom_field.define`, so a read-only member's request fails and the screen
-   * has to survive that — see `useCustomFieldDefinitions`.
+   * G3.2 column chooser turns into columns. The *route* is gated on
+   * `sample.read` since #69 — `ItemTypeServiceImpl::ListCustomFieldDefinitions`
+   * — so a ReadOnly member is served them. This fake models no permissions at
+   * all: a refusal is scripted per RPC with
+   * `fail: { 'custom-field-def/list': 'PERMISSION_DENIED' }`, and the screen has
+   * to survive that — see `useCustomFieldDefinitions`.
    */
   customFieldDefs: CustomFieldDefinition[];
   samples: Sample[];
