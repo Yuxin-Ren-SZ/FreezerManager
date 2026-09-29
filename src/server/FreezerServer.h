@@ -23,7 +23,10 @@
 #include <cstddef>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace fmgr::server {
 
@@ -115,6 +118,19 @@ namespace fmgr::server {
     // same handlers (RBAC gate, audit append, transactions) as a native client.
     // Only valid after build() returns.
     [[nodiscard]] std::shared_ptr<grpc::Channel> in_process_channel();
+
+    // Full names of the gRPC services this server serves ("fmgr.v1.SampleService"),
+    // in registration order. build() registers exactly these and refuses to start
+    // unless every RPC they expose is in the AuthMiddleware permission registry
+    // (#60), so this list is what "served" means for that check and for
+    // ServerIntegrationTest.
+    [[nodiscard]] static std::span<const std::string_view> served_service_full_names();
+
+    // Every RPC this server serves, as the gRPC full method names the registry is
+    // keyed by ("/fmgr.v1.SampleService/ListSamples"), enumerated from the
+    // generated protobuf descriptors of served_service_full_names(). Throws
+    // std::logic_error if a served service has no generated descriptor.
+    [[nodiscard]] static std::vector<std::string> served_rpc_names();
 
   private:
     FreezerServerOptions opts_;

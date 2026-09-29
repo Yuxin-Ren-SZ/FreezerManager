@@ -2,6 +2,7 @@
 
 #include "auth/LocalAuthProvider.h"
 #include "core/identity.h"
+#include "core/permissions.h"
 #include "core/role.h"
 #include "server/FreezerServer.h"
 #include "server/GrpcErrorTranslation.h"
@@ -22,10 +23,12 @@
 #include "rpc/AuthMiddleware.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
+#include <fmgr/v1/sample.grpc.pb.h>
 #include <fmgr/v1/session.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -34,6 +37,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace fmgr::test {
   namespace {
@@ -81,6 +85,7 @@ namespace fmgr::test {
         channel_ = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
         auth_stub_ = fmgr::v1::AuthService::NewStub(channel_);
         session_stub_ = fmgr::v1::SessionService::NewStub(channel_);
+        sample_stub_ = fmgr::v1::SampleService::NewStub(channel_);
       }
 
       void TearDown() override {
@@ -118,6 +123,9 @@ namespace fmgr::test {
 
       const std::string kEmail{"admin@example.com"};
       const std::string kPassword{"hunter22"};
+      // The lab seed_test_user() creates; its id is what the layout/sample RPCs
+      // are called with (#60).
+      const std::string kLabId{"20000000-0000-0000-0000-000000000001"};
 
       std::filesystem::path db_path_;
       std::unique_ptr<storage::SqliteBackend> backend_;
@@ -128,6 +136,7 @@ namespace fmgr::test {
       std::shared_ptr<grpc::Channel> channel_;
       std::unique_ptr<fmgr::v1::AuthService::Stub> auth_stub_;
       std::unique_ptr<fmgr::v1::SessionService::Stub> session_stub_;
+      std::unique_ptr<fmgr::v1::SampleService::Stub> sample_stub_;
 
     private:
       static void remove_sqlite_files(const std::filesystem::path& path) {
@@ -153,7 +162,7 @@ namespace fmgr::test {
       void seed_test_user() {
         const auto password_hash = provider_->hash_password(kPassword);
         const core::UserId uid = core::UserId::parse("10000000-0000-0000-0000-000000000001");
-        const core::LabId lab_id = core::LabId::parse("20000000-0000-0000-0000-000000000001");
+        const core::LabId lab_id = core::LabId::parse(kLabId);
         const core::User user{
             .id = uid,
             .primary_email = kEmail,
@@ -332,16 +341,120 @@ namespace fmgr::test {
       EXPECT_GE(resp.sessions_size(), 1);
     }
 
-    TEST_F(ServerIntegrationTest, RpcRegistryCoversAllExpectedMethods) {
-      // Verify that every gRPC method defined in all service stubs is present in
-      // the AuthMiddleware registry. At minimum the count must be >= the number of
-      // stubs registered (auth + session + 7 stub services).
+    // #60: the count floor is gone. The registry must hold exactly the RPCs the
+    // server serves — no fewer (an RPC would be served with no registration for
+    // the gate to check against) and no more (an entry for an RPC nobody serves
+    // is a claim nothing can honour). The served set comes from the server's own
+    // list of services and the generated proto descriptors, not from a second
+    // hand-written copy in the test.
+    TEST_F(ServerIntegrationTest, RpcRegistryHoldsExactlyTheServedRpcs) {
+      const auto served = server::FreezerServer::served_rpc_names();
       const auto registry = rpc::AuthMiddleware::registered_rpcs();
-      // 6 (AuthService) + 2 (SessionService) + 8 (LabService) + 8 (SampleService)
-      // + 19 (BoxService) + 9 (ItemTypeService) + 8 (RoleService) + 4 (AuditService)
-      // + 6 (ShareService) = 70 RPCs
-      EXPECT_GE(registry.size(), 60U) << "RPC registry smaller than expected; "
-                                         "a new service may have been added without registering.";
+
+      EXPECT_FALSE(served.empty()) << "no served RPCs enumerated; the descriptor lookup is broken";
+
+      std::string not_registered;
+      for (const auto& name : served) {
+        if (!registry.contains(name)) {
+          not_registered += name + " ";
+        }
+      }
+      std::string not_served;
+      for (const auto& [name, permission] : registry) {
+        (void)permission;
+        if (std::find(served.begin(), served.end(), name) == served.end()) {
+          not_served += name + " ";
+        }
+      }
+
+      EXPECT_TRUE(not_registered.empty())
+          << "served RPC(s) missing from the permission registry: " << not_registered;
+      EXPECT_TRUE(not_served.empty())
+          << "registered RPC(s) the server does not serve: " << not_served;
+      EXPECT_EQ(registry.size(), served.size());
+    }
+
+    // #60 acceptance test. The registry is not just documentation any more: the
+    // gate (AuthMiddleware::authorize) checks the permission a handler enforces
+    // against the permission its RPC registered, and refuses the call when the
+    // two disagree. This test plants the disagreement in-process — the same
+    // `register_rpc` call the service constructor makes, with the wrong
+    // permission — and asserts the call is refused. Before #60 this passed and
+    // the suite stayed green, which is exactly how #54 nearly relaxed a mutating
+    // RPC.
+    TEST_F(ServerIntegrationTest, RegisteredPermissionDisagreeingWithEnforcedPermissionIsRefused) {
+      const auto token = login(kEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      const std::string sample_read_rpc = "/fmgr.v1.SampleService/ListSamples";
+      const std::string sample_write_rpc = "/fmgr.v1.SampleService/CreateSample";
+
+      // Control: ListSamples enforces sample.read and is registered as sample.read,
+      // so an authorised call succeeds.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSamplesRequest req;
+        req.set_lab_id(kLabId);
+        fmgr::v1::ListSamplesResponse resp;
+        const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+      }
+
+      // Planted disagreement #1, read path: ListSamples enforces sample.read;
+      // register it as freezer.configure.
+      rpc::AuthMiddleware::register_rpc(sample_read_rpc, core::Permission::FreezerConfigure);
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSamplesRequest req;
+        req.set_lab_id(kLabId);
+        fmgr::v1::ListSamplesResponse resp;
+        const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL)
+            << "a registered permission that disagrees with the enforced one must be refused; got: "
+            << status.error_message();
+        EXPECT_NE(status.error_message().find("freezer.configure"), std::string::npos)
+            << "the refusal must name the registered permission; got: " << status.error_message();
+        EXPECT_NE(status.error_message().find("sample.read"), std::string::npos)
+            << "the refusal must name the enforced permission; got: " << status.error_message();
+      }
+      rpc::AuthMiddleware::register_rpc(sample_read_rpc, core::Permission::SampleRead);
+
+      // Planted disagreement #2, mutating path (#54's near miss): CreateSample
+      // enforces sample.write; register it as sample.read. The caller holds both,
+      // so only the registry disagreement can refuse the call. The refusal must
+      // name both permissions — an empty payload fails with a UUID parse error
+      // that names neither, so the message is what distinguishes the two.
+      rpc::AuthMiddleware::register_rpc(sample_write_rpc, core::Permission::SampleRead);
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateSampleRequest req;
+        req.set_lab_id(kLabId);
+        fmgr::v1::CreateSampleResponse resp;
+        const auto status = sample_stub_->CreateSample(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL)
+            << "a mutating RPC whose registration was relaxed must be refused; got: "
+            << status.error_message();
+        EXPECT_NE(status.error_message().find("sample.read"), std::string::npos)
+            << "the refusal must name the registered permission; got: " << status.error_message();
+        EXPECT_NE(status.error_message().find("sample.write"), std::string::npos)
+            << "the refusal must name the enforced permission; got: " << status.error_message();
+      }
+      rpc::AuthMiddleware::register_rpc(sample_write_rpc, core::Permission::SampleWrite);
+
+      // Restored: the same authorised call is back to succeeding, so the refusals
+      // above came from the planted disagreement and nothing else.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSamplesRequest req;
+        req.set_lab_id(kLabId);
+        fmgr::v1::ListSamplesResponse resp;
+        const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+      }
     }
 
     // Security audit H-1: a burst of Login attempts from one source is throttled
