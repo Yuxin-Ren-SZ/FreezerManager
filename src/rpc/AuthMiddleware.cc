@@ -42,12 +42,12 @@ namespace fmgr::rpc {
 
   std::string_view to_key(CredentialRule rule) {
     switch (rule) {
-      case CredentialRule::None:
-        return "no_credential";
-      case CredentialRule::TokenOnly:
-        return "token_only";
-      case CredentialRule::TokenAndMfa:
-        return "token_and_mfa";
+    case CredentialRule::None:
+      return "no_credential";
+    case CredentialRule::TokenOnly:
+      return "token_only";
+    case CredentialRule::TokenAndMfa:
+      return "token_and_mfa";
     }
     throw std::logic_error("unknown credential rule (#119)");
   }
@@ -114,8 +114,7 @@ namespace fmgr::rpc {
   // kind over: a handler that asks for a *different* credential rule from the one
   // it registered is a code defect, not a caller who presented the wrong
   // credential.
-  void AuthMiddleware::require_credential_agreement(const RpcCall& call,
-                                                    CredentialRule required) {
+  void AuthMiddleware::require_credential_agreement(const RpcCall& call, CredentialRule required) {
     if (call.method.empty()) {
       // Not inside a served RPC (unit tests, tooling): there is no registration
       // this call could contradict.
@@ -195,9 +194,8 @@ namespace fmgr::rpc {
       // declared with admit_no_credential() instead. Refusing here rather than
       // inventing an empty SessionContext keeps "no credential" from looking like
       // "a credential that resolved to nobody".
-      throw std::logic_error(
-          "CredentialRule::None has no session context; declare it with "
-          "AuthMiddleware::admit_no_credential() (#119)");
+      throw std::logic_error("CredentialRule::None has no session context; declare it with "
+                             "AuthMiddleware::admit_no_credential() (#119)");
     }
 
     // Step 0: the RPC's registration must declare the rule this handler applies

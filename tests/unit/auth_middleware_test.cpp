@@ -527,7 +527,8 @@ namespace fmgr::rpc {
       for (const auto& [name, gate] : gates) {
         AuthMiddleware::register_rpc(std::string(name), gate);
         try {
-          do_authorize_on(*middleware_, RpcCall{.bearer_token = "irrelevant", .method = std::string(name)},
+          do_authorize_on(*middleware_,
+                          RpcCall{.bearer_token = "irrelevant", .method = std::string(name)},
                           core::Permission::SampleRead);
           FAIL() << name << ": an authorize() call for a credential-rule RPC must be refused";
         } catch (const RpcRegistryMismatch& error) {
@@ -563,11 +564,11 @@ namespace fmgr::rpc {
       // A pending-MFA session is exactly what TokenOnly admits…
       ASSERT_FALSE(lab_admin_token_.mfa_complete);
       auth::SessionContext ctx;
-      EXPECT_NO_THROW(ctx = do_authenticate_on(
-                          *middleware_,
-                          RpcCall{.bearer_token = lab_admin_token_.plaintext_token,
-                                  .method = "e3_test.PendingMfaOk"},
-                          CredentialRule::TokenOnly));
+      EXPECT_NO_THROW(
+          ctx = do_authenticate_on(*middleware_,
+                                   RpcCall{.bearer_token = lab_admin_token_.plaintext_token,
+                                           .method = "e3_test.PendingMfaOk"},
+                                   CredentialRule::TokenOnly));
       EXPECT_FALSE(ctx.mfa_complete);
 
       // …and exactly what TokenAndMfa refuses.
@@ -579,10 +580,10 @@ namespace fmgr::rpc {
 
       // A session whose factor is complete passes the same rule.
       const auto completed = lab_admin_mfa_complete();
-      EXPECT_NO_THROW(do_authenticate_on(*middleware_,
-                                         RpcCall{.bearer_token = completed.plaintext_token,
-                                                 .method = "e3_test.PendingMfaRefused"},
-                                         CredentialRule::TokenAndMfa));
+      EXPECT_NO_THROW(do_authenticate_on(
+          *middleware_,
+          RpcCall{.bearer_token = completed.plaintext_token, .method = "e3_test.PendingMfaRefused"},
+          CredentialRule::TokenAndMfa));
     }
 
     // The planted disagreement: this is the test that goes red when a handler
@@ -612,10 +613,10 @@ namespace fmgr::rpc {
                                               .method = "e3_test.TokenOnlyRpcForBadToken"},
                                       CredentialRule::TokenOnly),
                    auth::AuthError);
-      EXPECT_THROW(do_authenticate_on(*middleware_,
-                                      RpcCall{.bearer_token = "",
-                                              .method = "e3_test.TokenOnlyRpcForBadToken"},
-                                      CredentialRule::TokenOnly),
+      EXPECT_THROW(do_authenticate_on(
+                       *middleware_,
+                       RpcCall{.bearer_token = "", .method = "e3_test.TokenOnlyRpcForBadToken"},
+                       CredentialRule::TokenOnly),
                    auth::AuthError);
     }
 

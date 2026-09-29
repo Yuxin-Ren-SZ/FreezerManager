@@ -75,8 +75,7 @@ namespace fmgr::server {
     // session must be able to give the credential up); the rest need a token whose
     // second factor is complete.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Login", rpc::RpcGate::no_credential());
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/SubmitMfa",
-                                      rpc::RpcGate::token_only());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/SubmitMfa", rpc::RpcGate::token_only());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Logout", rpc::RpcGate::token_only());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/CreateApiToken",
                                       rpc::RpcGate::token_and_mfa());

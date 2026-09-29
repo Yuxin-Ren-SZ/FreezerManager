@@ -224,8 +224,7 @@ namespace fmgr::rpc {
     //
     // Throws: RpcRegistryMismatch (a code defect, → INTERNAL) or any AuthError
     //         subclass (InvalidCredentials, TokenExpired, MfaRequired, …)
-    [[nodiscard]] auth::SessionContext authenticate(const RpcCall& call,
-                                                    CredentialRule rule) const;
+    [[nodiscard]] auth::SessionContext authenticate(const RpcCall& call, CredentialRule rule) const;
 
     // The CredentialRule::None half of the credential gate: admits a call that
     // presents no credential at all, and refuses one whose RPC declares any other

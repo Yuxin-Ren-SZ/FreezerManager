@@ -702,8 +702,7 @@ namespace fmgr::test {
       {
         const auto status = submit_mfa(pending);
         ASSERT_FALSE(status.ok()) << "a wrong TOTP code must not verify";
-        ASSERT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED)
-            << status.error_message();
+        ASSERT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED) << status.error_message();
         ASSERT_EQ(status.error_message().find("mfa_required"), std::string::npos)
             << "the control must reach the TOTP check, not the MFA gate: "
             << status.error_message();
