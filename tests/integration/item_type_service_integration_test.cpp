@@ -2,7 +2,9 @@
 
 #include "auth/LocalAuthProvider.h"
 #include "core/identity.h"
+#include "core/permissions.h"
 #include "core/role.h"
+#include "rpc/AuthMiddleware.h"
 #include "server/FreezerServer.h"
 #include "storage/IdentityTraits.h"
 #include "storage/RoleTraits.h"
@@ -45,12 +47,16 @@ namespace fmgr::test {
              ("fmgr-item-type-test-" + std::to_string(counter.fetch_add(1)) + ".db");
     }
 
-    // Three principals across two labs:
+    // Four principals across two labs:
     //   - admin   : SystemAdmin in lab1 (holds ItemTypeDefine + CustomFieldDefine)
-    //   - member  : Member in lab1 (holds neither define permission)
+    //   - member  : Member in lab1 (holds SampleRead, neither define permission)
+    //   - readonly: ReadOnly in lab1 (holds SampleRead + AuditRead only)
     //   - outsider: SystemAdmin in lab2 only (holds nothing for lab1)
     //
-    // ItemType/CFD define RPCs use `member` as the negative authz principal;
+    // The catalog *read* RPCs (ListItemTypes/GetItemType/ListCustomFieldDefinitions)
+    // are gated on SampleRead so a Member can render a generated sample form
+    // (#69); `readonly` asserts that this reaches the read-only role too, and the
+    // mutating define RPCs use `member` as the negative authz principal.
     // `outsider` exercises cross-lab isolation.
     class ItemTypeServiceTest : public ::testing::Test {
     protected:
@@ -141,6 +147,7 @@ namespace fmgr::test {
 
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kMemberEmail{"member@example.com"};
+      const std::string kReadOnlyEmail{"readonly@example.com"};
       const std::string kOutsiderEmail{"outsider@example.com"};
       const std::string kPassword{"hunter22"};
       const std::string kLab1{"20000000-0000-0000-0000-000000000001"};
@@ -185,6 +192,8 @@ namespace fmgr::test {
         const core::UserId member_id = core::UserId::parse("10000000-0000-0000-0000-000000000002");
         const core::UserId outsider_id =
             core::UserId::parse("10000000-0000-0000-0000-000000000003");
+        const core::UserId readonly_id =
+            core::UserId::parse("10000000-0000-0000-0000-000000000004");
 
         const auto make_lab = [](const core::LabId& id, const std::string& name) {
           return core::Lab{
@@ -227,11 +236,14 @@ namespace fmgr::test {
         txn->repo<core::Lab>().insert(make_lab(lab2, "Lab Two"), ctx);
         txn->repo<core::User>().insert(make_user(admin_id, kAdminEmail), ctx);
         txn->repo<core::User>().insert(make_user(member_id, kMemberEmail), ctx);
+        txn->repo<core::User>().insert(make_user(readonly_id, kReadOnlyEmail), ctx);
         txn->repo<core::User>().insert(make_user(outsider_id, kOutsiderEmail), ctx);
         txn->repo<core::LabMembership>().insert(
             make_membership(admin_id, lab1, core::RoleKind::SystemAdmin), ctx);
         txn->repo<core::LabMembership>().insert(
             make_membership(member_id, lab1, core::RoleKind::Member), ctx);
+        txn->repo<core::LabMembership>().insert(
+            make_membership(readonly_id, lab1, core::RoleKind::ReadOnly), ctx);
         txn->repo<core::LabMembership>().insert(
             make_membership(outsider_id, lab2, core::RoleKind::SystemAdmin), ctx);
         txn->commit();
@@ -325,10 +337,50 @@ namespace fmgr::test {
       EXPECT_EQ(resp.item_types_size(), 2);
     }
 
-    TEST_F(ItemTypeServiceTest, ListItemTypesRejectsMember) {
-      const auto token = login(kMemberEmail, kPassword);
+    // #69: the catalog read RPCs are gated on sample.read, the permission the
+    // sample screens already require, so a Member can render the custom fields of
+    // a generated sample form. This member holds neither define permission.
+    TEST_F(ItemTypeServiceTest, ListItemTypesAllowsMember) {
+      const auto admin = login(kAdminEmail, kPassword);
+      create_item_type(admin, kLab1, "liquid");
+      create_item_type(admin, kLab1, "solid");
+
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
       grpc::ClientContext ctx;
-      set_bearer(ctx, token);
+      set_bearer(ctx, member);
+      fmgr::v1::ListItemTypesRequest req;
+      req.set_lab_id(kLab1);
+      fmgr::v1::ListItemTypesResponse resp;
+      const auto status = item_type_stub_->ListItemTypes(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_EQ(resp.item_types_size(), 2);
+    }
+
+    TEST_F(ItemTypeServiceTest, ListItemTypesAllowsReadOnly) {
+      const auto admin = login(kAdminEmail, kPassword);
+      create_item_type(admin, kLab1, "liquid");
+
+      const auto readonly_user = login(kReadOnlyEmail, kPassword);
+      ASSERT_FALSE(readonly_user.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, readonly_user);
+      fmgr::v1::ListItemTypesRequest req;
+      req.set_lab_id(kLab1);
+      fmgr::v1::ListItemTypesResponse resp;
+      const auto status = item_type_stub_->ListItemTypes(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_EQ(resp.item_types_size(), 1);
+    }
+
+    // Relaxing the read must not make the catalog readable across labs.
+    TEST_F(ItemTypeServiceTest, ListItemTypesRejectsOutsiderCrossLab) {
+      const auto admin = login(kAdminEmail, kPassword);
+      create_item_type(admin, kLab1, "liquid");
+
+      const auto outsider = login(kOutsiderEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, outsider);
       fmgr::v1::ListItemTypesRequest req;
       req.set_lab_id(kLab1);
       fmgr::v1::ListItemTypesResponse resp;
@@ -347,6 +399,25 @@ namespace fmgr::test {
       req.set_item_type_id(id);
       fmgr::v1::GetItemTypeResponse resp;
       ASSERT_TRUE(item_type_stub_->GetItemType(&ctx, req, &resp).ok());
+      EXPECT_EQ(resp.item_type().id(), id);
+      EXPECT_EQ(resp.item_type().name(), "liquid");
+    }
+
+    // #69: GetItemType resolves the owning lab from the row and then checks the
+    // same read permission, so a Member can load the item type a form needs.
+    TEST_F(ItemTypeServiceTest, GetItemTypeAllowsMember) {
+      const auto admin = login(kAdminEmail, kPassword);
+      const auto id = create_item_type(admin, kLab1, "liquid");
+
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, member);
+      fmgr::v1::GetItemTypeRequest req;
+      req.set_item_type_id(id);
+      fmgr::v1::GetItemTypeResponse resp;
+      const auto status = item_type_stub_->GetItemType(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
       EXPECT_EQ(resp.item_type().id(), id);
       EXPECT_EQ(resp.item_type().name(), "liquid");
     }
@@ -649,6 +720,41 @@ namespace fmgr::test {
       EXPECT_EQ(resp.cfds(0).key(), "scoped_key");
     }
 
+    // #69: the custom-field catalog a generated sample form is built from is a
+    // read of the sample's own schema, not a schema-authoring operation.
+    TEST_F(ItemTypeServiceTest, ListCfdsAllowsMember) {
+      const auto admin = login(kAdminEmail, kPassword);
+      create_cfd(admin, kLab1, "global_key");
+      create_cfd(admin, kLab1, "other_key");
+
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, member);
+      fmgr::v1::ListCfdsRequest req;
+      req.set_lab_id(kLab1);
+      fmgr::v1::ListCfdsResponse resp;
+      const auto status = item_type_stub_->ListCustomFieldDefinitions(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_EQ(resp.cfds_size(), 2);
+    }
+
+    TEST_F(ItemTypeServiceTest, ListCfdsAllowsReadOnly) {
+      const auto admin = login(kAdminEmail, kPassword);
+      create_cfd(admin, kLab1, "global_key");
+
+      const auto readonly_user = login(kReadOnlyEmail, kPassword);
+      ASSERT_FALSE(readonly_user.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, readonly_user);
+      fmgr::v1::ListCfdsRequest req;
+      req.set_lab_id(kLab1);
+      fmgr::v1::ListCfdsResponse resp;
+      const auto status = item_type_stub_->ListCustomFieldDefinitions(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_EQ(resp.cfds_size(), 1);
+    }
+
     TEST_F(ItemTypeServiceTest, ListCfdsRejectsOutsiderCrossLab) {
       const auto admin = login(kAdminEmail, kPassword);
       create_cfd(admin, kLab1, "k1");
@@ -737,6 +843,162 @@ namespace fmgr::test {
       const auto status = item_type_stub_->ArchiveCustomFieldDefinition(&ctx, req, &resp);
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    // =====================================================================
+    // Permission boundaries (#69)
+    // =====================================================================
+
+    // The acceptance criterion that a positive-only test would miss: relaxing the
+    // catalog reads must not relax the catalog writes. One Member reads all three
+    // RPCs successfully and is then still refused on all six mutating paths, so a
+    // careless "relax everything in this file" change cannot pass.
+    TEST_F(ItemTypeServiceTest, MemberCanReadItemTypeCatalogButStillCannotDefine) {
+      const auto admin = login(kAdminEmail, kPassword);
+      const auto item_type_id = create_item_type(admin, kLab1, "liquid");
+      const auto cfd_id = create_cfd(admin, kLab1, "patient_id");
+
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
+
+      // Reads: all three succeed, and return real rows.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::ListItemTypesRequest req;
+        req.set_lab_id(kLab1);
+        fmgr::v1::ListItemTypesResponse resp;
+        const auto status = item_type_stub_->ListItemTypes(&ctx, req, &resp);
+        ASSERT_TRUE(status.ok()) << status.error_message();
+        EXPECT_EQ(resp.item_types_size(), 1);
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::GetItemTypeRequest req;
+        req.set_item_type_id(item_type_id);
+        fmgr::v1::GetItemTypeResponse resp;
+        const auto status = item_type_stub_->GetItemType(&ctx, req, &resp);
+        ASSERT_TRUE(status.ok()) << status.error_message();
+        EXPECT_EQ(resp.item_type().id(), item_type_id);
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::ListCfdsRequest req;
+        req.set_lab_id(kLab1);
+        fmgr::v1::ListCfdsResponse resp;
+        const auto status = item_type_stub_->ListCustomFieldDefinitions(&ctx, req, &resp);
+        ASSERT_TRUE(status.ok()) << status.error_message();
+        EXPECT_EQ(resp.cfds_size(), 1);
+      }
+
+      // Writes: every mutating path stays behind *.define.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::CreateItemTypeRequest req;
+        req.set_lab_id(kLab1);
+        req.set_name("hijack");
+        fmgr::v1::CreateItemTypeResponse resp;
+        const auto status = item_type_stub_->CreateItemType(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::UpdateItemTypeRequest req;
+        auto* const it = req.mutable_item_type();
+        it->set_id(item_type_id);
+        it->set_lab_id(kLab1);
+        it->set_name("hijack");
+        fmgr::v1::UpdateItemTypeResponse resp;
+        const auto status = item_type_stub_->UpdateItemType(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::ArchiveItemTypeRequest req;
+        req.set_item_type_id(item_type_id);
+        fmgr::v1::ArchiveItemTypeResponse resp;
+        const auto status = item_type_stub_->ArchiveItemType(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::CreateCfdRequest req;
+        auto* const cfd = req.mutable_cfd();
+        cfd->set_lab_id(kLab1);
+        cfd->set_scope_kind(fmgr::v1::SCOPE_KIND_SAMPLE);
+        cfd->set_key("hijack");
+        cfd->set_label("Hijack");
+        cfd->set_data_type(fmgr::v1::FIELD_DATA_TYPE_TEXT);
+        fmgr::v1::CreateCfdResponse resp;
+        const auto status = item_type_stub_->CreateCustomFieldDefinition(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::UpdateCfdRequest req;
+        auto* const cfd = req.mutable_cfd();
+        cfd->set_id(cfd_id);
+        cfd->set_lab_id(kLab1);
+        cfd->set_scope_kind(fmgr::v1::SCOPE_KIND_SAMPLE);
+        cfd->set_key("patient_id");
+        cfd->set_label("hijack");
+        cfd->set_data_type(fmgr::v1::FIELD_DATA_TYPE_TEXT);
+        fmgr::v1::UpdateCfdResponse resp;
+        const auto status = item_type_stub_->UpdateCustomFieldDefinition(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::ArchiveCfdRequest req;
+        req.set_cfd_id(cfd_id);
+        fmgr::v1::ArchiveCfdResponse resp;
+        const auto status = item_type_stub_->ArchiveCustomFieldDefinition(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+      }
+    }
+
+    // The registry entry is documentation and the method's authorize() call is
+    // the enforcement point (AGENTS.md §5), so the two have to move together.
+    // RpcRegistryCoversAllExpectedMethods asserts only a count floor and cannot
+    // see a permission mismatch (#60 makes the pairing structural); these two
+    // tests pin the registry half for every RPC in this service. The behavioral
+    // half is the tests above: if a method's authorize() still demanded
+    // item_type.define, ListItemTypesAllowsMember would be red.
+    void expect_registered(const std::string& rpc, core::Permission expected) {
+      const auto registry = rpc::AuthMiddleware::registered_rpcs();
+      const auto entry = registry.find(rpc);
+      ASSERT_NE(entry, registry.end()) << rpc << " is missing from the RPC registry";
+      EXPECT_EQ(entry->second, expected) << rpc;
+    }
+
+    TEST_F(ItemTypeServiceTest, RegistryGatesCatalogReadsOnSampleRead) {
+      expect_registered("/fmgr.v1.ItemTypeService/ListItemTypes", core::Permission::SampleRead);
+      expect_registered("/fmgr.v1.ItemTypeService/GetItemType", core::Permission::SampleRead);
+      expect_registered("/fmgr.v1.ItemTypeService/ListCustomFieldDefinitions",
+                        core::Permission::SampleRead);
+    }
+
+    TEST_F(ItemTypeServiceTest, RegistryKeepsDefineOnCatalogWrites) {
+      expect_registered("/fmgr.v1.ItemTypeService/CreateItemType",
+                        core::Permission::ItemTypeDefine);
+      expect_registered("/fmgr.v1.ItemTypeService/UpdateItemType",
+                        core::Permission::ItemTypeDefine);
+      expect_registered("/fmgr.v1.ItemTypeService/ArchiveItemType",
+                        core::Permission::ItemTypeDefine);
+      expect_registered("/fmgr.v1.ItemTypeService/CreateCustomFieldDefinition",
+                        core::Permission::CustomFieldDefine);
+      expect_registered("/fmgr.v1.ItemTypeService/UpdateCustomFieldDefinition",
+                        core::Permission::CustomFieldDefine);
+      expect_registered("/fmgr.v1.ItemTypeService/ArchiveCustomFieldDefinition",
+                        core::Permission::CustomFieldDefine);
     }
 
   } // namespace
