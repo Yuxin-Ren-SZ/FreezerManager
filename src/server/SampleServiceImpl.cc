@@ -28,10 +28,12 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
 #include <exception>
+#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -162,6 +164,16 @@ namespace fmgr::server {
     // stock (#112). The sign is checked on the raw `double` because the cast
     // below truncates toward zero, so `-0.5` would otherwise reach storage as a
     // well-formed `0` and be accepted as a no-op.
+    //
+    // The same truncation is how a *positive* value the domain cannot represent
+    // becomes a smaller one: `0.04 mL` truncates to raw `0`, so the check-in
+    // answered OK and subtracted nothing (#111). A `double` cannot say what a
+    // fraction was meant to be — `1.001 mL` is 1001 µL, but its nearest double
+    // is not — so a fractional count is refused rather than rounded: the
+    // rounding policy is a separate decision, and this is the wrong layer to
+    // invent one in. A whole number of the *stated* unit is representable at
+    // this layer; whether the sample's unit can hold it is settled by
+    // `storage::apply_checkout`.
     [[nodiscard]] std::optional<core::Volume>
     parse_volume_used(const fmgr::v1::CheckoutSampleRequest& req) {
       if (req.has_volume_used() != req.has_volume_unit()) {
@@ -174,8 +186,24 @@ namespace fmgr::server {
       if (req.volume_used() < 0) {
         throw storage::ConstraintViolation("volume_used: must not be negative");
       }
+      // `std::trunc` on the wire value, not on the cast: comparing the double
+      // with its own truncation is exact, so a value the caller stated as a
+      // whole number is never refused by floating-point drift.
+      const double amount = req.volume_used();
+      if (amount != std::trunc(amount)) {
+        std::ostringstream message;
+        message << "volume_used: must be a whole number of " << req.volume_unit() << " (got "
+                << amount << ")";
+        throw storage::ConstraintViolation(message.str());
+      }
+      // The cast below is undefined for a value outside the raw count's range,
+      // so the range is part of what "representable" means here. It is a
+      // different failure from the truncation above and says so.
+      if (amount >= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
+        throw storage::ConstraintViolation("volume_used: is too large to represent");
+      }
       try {
-        return core::Volume::from_raw(static_cast<std::int64_t>(req.volume_used()),
+        return core::Volume::from_raw(static_cast<std::int64_t>(amount),
                                       core::parse_volume_unit(req.volume_unit()));
       } catch (const std::exception&) {
         // A unit this build does not know is the caller's error. Without this
@@ -901,8 +929,10 @@ namespace fmgr::server {
         throw auth::PermissionDenied("sample.checkout required for this lab");
       }
 
-      // Volume and unit are validated as a pair, and a negative consumption is
-      // refused there rather than applied in reverse (#100, #112).
+      // Volume and unit are validated as a pair, a negative consumption is
+      // refused, and so is a fraction the integer domain cannot hold — the
+      // remaining question, whether the sample's own unit can hold it, is a
+      // precondition inside `apply_checkout` (#100, #111, #112).
       const auto volume_used = parse_volume_used(*req);
 
       storage::CheckoutCommand command{

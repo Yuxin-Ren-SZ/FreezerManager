@@ -11,6 +11,7 @@
 
 #include <concepts>
 #include <cstddef>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -112,6 +113,31 @@ namespace fmgr::core {
       const auto ml = Volume::from_raw(1, VolumeUnit::Milliliter);
       const auto ul = Volume::from_raw(1000, VolumeUnit::Microliter);
       EXPECT_EQ(ml.to_unit(VolumeUnit::Microliter), ul);
+    }
+
+    // `to_unit` truncates, so a caller that must not lose quantity asks this
+    // first. `storage::apply_checkout` refuses a `volume_used` it answers false
+    // for, which is what keeps a `500 µL` consumption against a mL-tracked
+    // sample from subtracting nothing (#111).
+    TEST(CoreQuantity, VolumeConversionExactnessMatchesTheTruncatingConversion) {
+      const auto sub_unit = Volume::from_raw(500, VolumeUnit::Microliter);
+      const auto whole_unit = Volume::from_raw(1000, VolumeUnit::Microliter);
+
+      EXPECT_TRUE(sub_unit.converts_exactly_to(VolumeUnit::Microliter));
+      EXPECT_FALSE(sub_unit.converts_exactly_to(VolumeUnit::Milliliter));
+      EXPECT_TRUE(whole_unit.converts_exactly_to(VolumeUnit::Milliliter));
+      // Refining is exact until the product leaves the raw count's range.
+      EXPECT_TRUE(
+          Volume::from_raw(1, VolumeUnit::Milliliter).converts_exactly_to(VolumeUnit::Microliter));
+      EXPECT_FALSE(
+          Volume::from_raw(std::numeric_limits<std::int64_t>::max() / 500, VolumeUnit::Milliliter)
+              .converts_exactly_to(VolumeUnit::Microliter));
+      // Zero truncates to itself in either direction — the explicit-zero case
+      // #112 keeps accepting is not affected by this rule.
+      EXPECT_TRUE(
+          Volume::from_raw(0, VolumeUnit::Microliter).converts_exactly_to(VolumeUnit::Milliliter));
+      EXPECT_TRUE(
+          Volume::from_raw(0, VolumeUnit::Milliliter).converts_exactly_to(VolumeUnit::Microliter));
     }
 
     TEST(CoreQuantity, MassSupportsSameUnitArithmeticAndRejectsMixedUnits) {
