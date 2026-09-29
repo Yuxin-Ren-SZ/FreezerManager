@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { expectNoA11yViolations } from './a11y';
+import { axe } from '../test/setup';
 import { Badge } from './Badge';
 import { Kbd } from './Kbd';
 import { Skeleton } from './Skeleton';
@@ -18,7 +18,7 @@ describe('VisuallyHidden', () => {
   it('has no accessibility violations', async () => {
     const { container } = render(<VisuallyHidden>Hidden label</VisuallyHidden>);
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -44,7 +44,7 @@ describe('Spinner', () => {
   it('has no accessibility violations', async () => {
     const { container } = render(<Spinner label="Loading samples" />);
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -69,7 +69,7 @@ describe('Skeleton', () => {
       </div>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -98,7 +98,7 @@ describe('Badge', () => {
       </>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -116,6 +116,6 @@ describe('Kbd', () => {
       </p>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });

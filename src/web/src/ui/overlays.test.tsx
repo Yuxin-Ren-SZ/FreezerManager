@@ -2,11 +2,11 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { axe } from '../test/setup';
 import { Button } from './Button';
 import { ConfirmDialog } from './ConfirmDialog';
 import { Dialog } from './Dialog';
 import { ToastProvider, useToast } from './Toast';
-import { expectNoA11yViolations } from './a11y';
 
 describe('Dialog', () => {
   it('renders its title and body when open', () => {
@@ -78,7 +78,7 @@ describe('Dialog', () => {
     );
 
     await screen.findByRole('dialog');
-    await expectNoA11yViolations(document.body);
+    expect(await axe(document.body)).toHaveNoViolations();
   });
 });
 
@@ -131,7 +131,7 @@ describe('ConfirmDialog', () => {
     render(<ConfirmDialog {...baseProps} tone="danger" onConfirm={vi.fn()} />);
 
     await screen.findByRole('dialog');
-    await expectNoA11yViolations(document.body);
+    expect(await axe(document.body)).toHaveNoViolations();
   });
 });
 
@@ -263,6 +263,6 @@ describe('Toast', () => {
     );
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
-    await expectNoA11yViolations(document.body);
+    expect(await axe(document.body)).toHaveNoViolations();
   });
 });

@@ -2,12 +2,12 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { axe } from '../test/setup';
 import { Button } from './Button';
 import { Checkbox } from './Checkbox';
 import { IconButton } from './IconButton';
 import { Select } from './Select';
 import { TextField } from './TextField';
-import { expectNoA11yViolations } from './a11y';
 
 describe('Button', () => {
   it('defaults to type="button" so it never submits a form by accident', () => {
@@ -79,7 +79,7 @@ describe('Button', () => {
       </>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -111,7 +111,7 @@ describe('IconButton', () => {
       </IconButton>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -181,7 +181,7 @@ describe('TextField', () => {
       </>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -221,7 +221,7 @@ describe('Select', () => {
       <Select label="Freezer" options={options} placeholder="Pick a freezer" />,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -263,7 +263,7 @@ describe('Checkbox', () => {
       </>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -283,6 +283,6 @@ describe('Select with a hidden label', () => {
       </main>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });

@@ -2,8 +2,8 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { axe } from '../test/setup';
 import { Table, type TableColumn } from './Table';
-import { expectNoA11yViolations } from './a11y';
 import tableCss from './Table.module.css?raw';
 
 interface Sample {
@@ -135,7 +135,7 @@ describe('Table', () => {
   it('has no accessibility violations', async () => {
     const { container } = renderTable();
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 
   it('has no accessibility violations with a long virtualized list', async () => {
@@ -146,7 +146,7 @@ describe('Table', () => {
     }));
     const { container } = renderTable({ data: many, maxHeight: 200 });
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 
   it('reads the header rule out of the real stylesheet', () => {
