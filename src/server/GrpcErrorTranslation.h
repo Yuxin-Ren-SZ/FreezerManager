@@ -4,6 +4,8 @@
 
 #include "auth/AuthTypes.h"
 #include "obs/Log.h"
+#include "rpc/AuthMiddleware.h"
+#include "rpc/RpcMethodTracker.h"
 #include "storage/IStorageBackend.h"
 
 #include <fmt/format.h>
@@ -123,6 +125,20 @@ namespace fmgr::server {
       // That is a bad argument, not an internal fault (review N-1). The detail is
       // not echoed back: a parse-error snippet could carry client PHI.
       return {grpc::StatusCode::INVALID_ARGUMENT, "request contained malformed JSON"};
+    } catch (const rpc::RpcRegistryMismatch& e) {
+      // The permission a handler enforces disagrees with the one its RPC
+      // registered (#60) — a deployment defect, not a caller error. It gets its
+      // own event code so a production occurrence is one grep away
+      // ("grpc.registry_mismatch") instead of hiding among generic internal
+      // errors; the detail is masked on the wire exactly like every other
+      // internal failure.
+      obs::log_lifecycle(obs::Level::Error,
+                         fmt::format("grpc: RPC registry mismatch: {}", e.what()),
+                         "grpc.registry_mismatch");
+      if (internal_error_masking().load(std::memory_order_acquire)) {
+        return {grpc::StatusCode::INTERNAL, "internal server error"};
+      }
+      return {grpc::StatusCode::INTERNAL, fmt::format("internal server error: {}", e.what())};
     } catch (const std::exception& e) {
       // Do not leak internal detail (DB messages carry table/column names) to the
       // client when masking is on. Log the real error server-side; return a
@@ -160,15 +176,26 @@ namespace fmgr::server {
     return std::string(header->substr(prefix.size()));
   }
 
-  // Extract "Bearer <token>" from gRPC request metadata.
+  // Extract "Bearer <token>" from gRPC request metadata, together with the full
+  // name of the RPC being served (rpc::RpcCall).
+  //
+  // Handlers hand the result straight to AuthMiddleware::authorize(), which uses
+  // the method name to check the permission the handler enforces against the
+  // permission its RPC registered (#60). Filling it here — from the same
+  // ServerContext the handler already passes — is what keeps that check free of
+  // per-handler plumbing. The name comes from rpc::RpcMethodTracker, which the
+  // server's per-RPC interceptor fills; gRPC's ServerContext has no accessor for
+  // it in this version.
+  //
   // Throws auth::InvalidCredentials if header is missing or malformed.
-  [[nodiscard]] inline std::string extract_bearer(const grpc::ServerContext& ctx) {
+  [[nodiscard]] inline rpc::RpcCall extract_bearer(const grpc::ServerContext& ctx) {
     const auto& metadata = ctx.client_metadata();
     const auto it = metadata.find("authorization");
-    if (it == metadata.end()) {
-      return parse_bearer(std::nullopt);
-    }
-    return parse_bearer(std::string_view(it->second.data(), it->second.size()));
+    const std::string token =
+        it == metadata.end() ? parse_bearer(std::nullopt)
+                             : parse_bearer(std::string_view(it->second.data(), it->second.size()));
+    const auto* context = static_cast<const grpc::ServerContextBase*>(&ctx);
+    return rpc::RpcCall{.bearer_token = token, .method = rpc::RpcMethodTracker::lookup(context)};
   }
 
 } // namespace fmgr::server

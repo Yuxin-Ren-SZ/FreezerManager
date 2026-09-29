@@ -257,10 +257,24 @@ same `npm ci && npm run check` in the `web` job, independently of the C++ matrix
   mutating RPC without audit coverage is a blocking review comment.
 - **Every new RPC is registered** in the `AuthMiddleware` RPC → permission
   registry, **and the permission it registers must match the one the method's
-  `authorize()` call enforces.** The per-method `authorize()` is the enforcement
-  point; the registry is documentation. `ServerIntegrationTest.RpcRegistryCoversAllExpectedMethods`
-  asserts only a count floor, so it cannot catch a mismatch between the two —
-  keeping them in step is a review obligation until **#60** makes it structural.
+  `authorize()` call enforces.** The per-method `authorize()` is still where the
+  permission is enforced, but the registry is no longer documentation: the gate
+  compares the two on every call and refuses the call with `INTERNAL` when they
+  disagree, and `FreezerServer::build()` refuses to start when a served RPC has
+  no registration. The method name reaches the gate through
+  `server::extract_bearer(ctx)`, so a new handler needs no extra plumbing.
+  `ServerIntegrationTest.RpcRegistryHoldsExactlyTheServedRpcs` asserts the
+  registry holds exactly the RPCs the server serves — enumerated from the
+  generated descriptors, not a count floor — and
+  `ServerIntegrationTest.RegisteredPermissionDisagreeingWithEnforcedPermissionIsRefused`
+  is the planted-disagreement test that keeps the check honest.
+- **An RPC that does not gate through `authorize()`** — one whose handler checks
+  a permission itself (`has_for_lab`/`has_global`, a helper such as
+  `gate_role_read`/`is_system_admin`), or that needs only a token and MFA — is
+  outside that check: the gate never runs, so nothing verifies its registry entry
+  yet. Register it, and say in review which of the three kinds it is; a
+  registration claiming a permission its handler never enforces is a finding, not
+  a formality.
 - **PHI never appears** in logs, error messages, fixtures, screenshots, PR text
   or unencrypted backups.
 - **SQLite is single-writer:** return `Unavailable` on contention and let

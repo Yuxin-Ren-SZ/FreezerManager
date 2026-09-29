@@ -14,6 +14,7 @@
 // Two labs seeded: lab_a (all users except ReadOnly) and lab_b (no members).
 
 #include "rpc/AuthMiddleware.h"
+#include "rpc/RpcMethodTracker.h"
 
 #include "auth/AuthTypes.h"
 #include "auth/LocalAuthProvider.h"
@@ -100,11 +101,23 @@ namespace fmgr::rpc {
 
     // ---- Test helper: non-[[nodiscard]] wrapper so EXPECT_THROW/NO_THROW macros
     //      can discard the return value without triggering [[nodiscard]] warnings. ----
-
+    //
+    // An empty method means "not inside a served RPC": these tests exercise the
+    // credential/MFA/permission gate itself, not the registry consistency check
+    // that RpcCall carries for served RPCs (see the RpcRegistry* tests below).
     auth::SessionContext do_authorize(AuthMiddleware& mw, std::string_view bearer,
                                       core::Permission perm,
                                       std::optional<core::LabId> lab = std::nullopt) {
-      return mw.authorize(bearer, perm, lab);
+      return mw.authorize(RpcCall{.bearer_token = std::string(bearer), .method = ""}, perm, lab);
+    }
+
+    // Same, for a call that carries the RPC it is being served for. The
+    // parameter is an RpcCall, not a token string, so a caller cannot drop the
+    // RPC identity by letting it convert to the bearer token first.
+    auth::SessionContext do_authorize_on(AuthMiddleware& mw, const RpcCall& call,
+                                         core::Permission perm,
+                                         std::optional<core::LabId> lab = std::nullopt) {
+      return mw.authorize(call, perm, lab);
     }
 
     // ---- Fixture ----
@@ -264,8 +277,9 @@ namespace fmgr::rpc {
     // ---- Tests ----
 
     TEST_F(AuthMiddlewareTest, AuthorizeSucceedsAndReturnsSessionContext) {
-      const auto ctx = middleware_->authorize(member_token_.plaintext_token,
-                                              core::Permission::SampleRead, kLabA);
+      const auto ctx = middleware_->authorize(
+          RpcCall{.bearer_token = member_token_.plaintext_token, .method = ""},
+          core::Permission::SampleRead, kLabA);
       EXPECT_EQ(ctx.user_id, kMemberId);
       EXPECT_TRUE(ctx.mfa_complete);
       EXPECT_TRUE(ctx.can_see_lab(kLabA));
@@ -341,8 +355,9 @@ namespace fmgr::rpc {
     TEST_F(AuthMiddlewareTest, AuthorizeSucceedsWithMatchingLabId) {
       // member is in lab_a — should pass with lab_id = lab_a.
       auth::SessionContext ctx;
-      EXPECT_NO_THROW(ctx = middleware_->authorize(member_token_.plaintext_token,
-                                                   core::Permission::SampleRead, kLabA));
+      EXPECT_NO_THROW(ctx = middleware_->authorize(
+                          RpcCall{.bearer_token = member_token_.plaintext_token, .method = ""},
+                          core::Permission::SampleRead, kLabA));
       EXPECT_EQ(ctx.user_id, kMemberId);
     }
 
@@ -423,11 +438,133 @@ namespace fmgr::rpc {
       EXPECT_EQ(tx.captured.at("current_lab_ids"), "");
     }
 
-    TEST_F(AuthMiddlewareTest, RpcRegistryRegisterAndLookup) {
-      const std::string rpc_name = "e3_test.GetSample";
-      AuthMiddleware::register_rpc(rpc_name, core::Permission::SampleRead);
-      EXPECT_TRUE(AuthMiddleware::is_rpc_registered(rpc_name));
-      EXPECT_FALSE(AuthMiddleware::is_rpc_registered("nonexistent.Rpc"));
+    // ---- RPC → permission registry (#60) ----
+    //
+    // The registry is a process-global static shared by every test in this binary,
+    // so these tests use RPC names unique to themselves rather than assuming a
+    // clean slate.
+
+    TEST_F(AuthMiddlewareTest, AuthorizeRejectsPermissionThatDisagreesWithTheRegistration) {
+      AuthMiddleware::register_rpc("e3_test.GetSample", core::Permission::SampleRead);
+
+      // The handler enforces freezer.configure while its RPC registered
+      // sample.read: refused before any credential work, as a server defect.
+      EXPECT_THROW(
+          do_authorize_on(*middleware_,
+                          RpcCall{.bearer_token = "irrelevant", .method = "e3_test.GetSample"},
+                          core::Permission::FreezerConfigure),
+          RpcRegistryMismatch);
+    }
+
+    TEST_F(AuthMiddlewareTest, AuthorizeRejectsServedRpcThatIsNotRegistered) {
+      EXPECT_THROW(do_authorize_on(
+                       *middleware_,
+                       RpcCall{.bearer_token = "irrelevant", .method = "e3_test.NeverRegistered"},
+                       core::Permission::SampleRead),
+                   RpcRegistryMismatch);
+    }
+
+    TEST_F(AuthMiddlewareTest, AuthorizeAcceptsPermissionThatMatchesTheRegistration) {
+      AuthMiddleware::register_rpc("e3_test.ListSamples", core::Permission::SampleRead);
+      const auto completed = lab_admin_mfa_complete();
+
+      auth::SessionContext ctx;
+      EXPECT_NO_THROW(ctx = do_authorize_on(*middleware_,
+                                            RpcCall{.bearer_token = completed.plaintext_token,
+                                                    .method = "e3_test.ListSamples"},
+                                            core::Permission::SampleRead, kLabA));
+      EXPECT_TRUE(ctx.mfa_complete);
+    }
+
+    TEST_F(AuthMiddlewareTest, AuthorizeStillRefusesInsufficientPermissionOnARegisteredRpc) {
+      AuthMiddleware::register_rpc("e3_test.WriteSample", core::Permission::SampleWrite);
+
+      // readonly holds no sample.write: the registry check must not turn a
+      // genuine permission denial into a pass.
+      EXPECT_THROW(do_authorize_on(*middleware_,
+                                   RpcCall{.bearer_token = readonly_token_.plaintext_token,
+                                           .method = "e3_test.WriteSample"},
+                                   core::Permission::SampleWrite, kLabA),
+                   auth::PermissionDenied);
+    }
+
+    TEST_F(AuthMiddlewareTest, AuthorizeWithoutRpcIdentitySkipsTheRegistryCheck) {
+      // Not inside a served RPC (the id is empty): there is no registration this
+      // call could contradict, so the credential gate runs as before.
+      EXPECT_THROW(do_authorize(*middleware_, "not-a-token", core::Permission::SampleRead),
+                   auth::AuthError);
+      EXPECT_THROW(do_authorize_on(*middleware_,
+                                   RpcCall{.bearer_token = "not-a-token", .method = ""},
+                                   core::Permission::SampleRead),
+                   auth::AuthError);
+    }
+
+    TEST_F(AuthMiddlewareTest, RpcRegistryReturnsSnapshotForAllRegisteredRpcs) {
+      const auto before = AuthMiddleware::registered_rpcs();
+      EXPECT_FALSE(before.contains("e3_test.SnapshotRead"));
+      EXPECT_FALSE(before.contains("e3_test.SnapshotWrite"));
+
+      AuthMiddleware::register_rpc("e3_test.SnapshotRead", core::Permission::SampleRead);
+      AuthMiddleware::register_rpc("e3_test.SnapshotWrite", core::Permission::SampleWrite);
+
+      const auto snapshot = AuthMiddleware::registered_rpcs();
+      EXPECT_GE(snapshot.size(), 2U);
+      EXPECT_EQ(snapshot.at("e3_test.SnapshotRead"), core::Permission::SampleRead);
+      EXPECT_EQ(snapshot.at("e3_test.SnapshotWrite"), core::Permission::SampleWrite);
+    }
+
+    TEST_F(AuthMiddlewareTest, RpcRegistryDuplicateRegistrationOverwrites) {
+      AuthMiddleware::register_rpc("e3_test.DupRpc", core::Permission::SampleRead);
+      AuthMiddleware::register_rpc("e3_test.DupRpc", core::Permission::SampleWrite); // overwrite
+
+      const auto snapshot = AuthMiddleware::registered_rpcs();
+      ASSERT_TRUE(snapshot.contains("e3_test.DupRpc"));
+      EXPECT_EQ(snapshot.at("e3_test.DupRpc"), core::Permission::SampleWrite);
+    }
+
+    TEST_F(AuthMiddlewareTest, RegistryCoverageCheckAcceptsCoveredRpcs) {
+      // Each gtest case runs in its own process here (gtest_discover_tests), so
+      // this test registers everything it checks.
+      AuthMiddleware::register_rpc("e3_test.Covered", core::Permission::SampleRead);
+      AuthMiddleware::register_rpc("e3_test.AlsoCovered", core::Permission::SampleWrite);
+      const std::array<std::string, 2> served{"e3_test.Covered", "e3_test.AlsoCovered"};
+      EXPECT_NO_THROW(AuthMiddleware::verify_registry_covers(served));
+    }
+
+    TEST_F(AuthMiddlewareTest, RegistryCoverageCheckNamesEveryUnregisteredServedRpc) {
+      AuthMiddleware::register_rpc("e3_test.CoveredAgain", core::Permission::SampleRead);
+      const std::array<std::string, 3> served{"e3_test.CoveredAgain", "e3_test.MissingOne",
+                                              "e3_test.MissingTwo"};
+      try {
+        AuthMiddleware::verify_registry_covers(served);
+        FAIL() << "an unregistered served RPC must fail the coverage check";
+      } catch (const RpcRegistryMismatch& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("e3_test.MissingOne"), std::string::npos) << message;
+        EXPECT_NE(message.find("e3_test.MissingTwo"), std::string::npos) << message;
+        EXPECT_EQ(message.find("e3_test.CoveredAgain"), std::string::npos) << message;
+      }
+    }
+
+    TEST_F(AuthMiddlewareTest, RpcMethodTrackerRecordsAndForgetsPerContext) {
+      const int first = 0;
+      const int second = 0;
+      RpcMethodTracker::note(&first, "/fmgr.v1.SampleService/ListSamples");
+      RpcMethodTracker::note(&second, "/fmgr.v1.SampleService/GetSample");
+
+      EXPECT_EQ(RpcMethodTracker::lookup(&first), "/fmgr.v1.SampleService/ListSamples");
+      EXPECT_EQ(RpcMethodTracker::lookup(&second), "/fmgr.v1.SampleService/GetSample");
+      EXPECT_EQ(RpcMethodTracker::lookup(&first), "/fmgr.v1.SampleService/ListSamples");
+
+      RpcMethodTracker::forget(&first);
+      EXPECT_TRUE(RpcMethodTracker::lookup(&first).empty());
+      EXPECT_EQ(RpcMethodTracker::lookup(&second), "/fmgr.v1.SampleService/GetSample");
+
+      // A reused context address takes the new RPC, never the stale one.
+      RpcMethodTracker::note(&first, "/fmgr.v1.SampleService/CreateSample");
+      EXPECT_EQ(RpcMethodTracker::lookup(&first), "/fmgr.v1.SampleService/CreateSample");
+      RpcMethodTracker::forget(&second);
+      RpcMethodTracker::forget(&first);
     }
 
     TEST_F(AuthMiddlewareTest, MfaCompleteRequiredBeforePrivilegedOps) {
@@ -446,30 +583,6 @@ namespace fmgr::rpc {
       EXPECT_NO_THROW(ctx = do_authorize(*middleware_, completed.plaintext_token,
                                          core::Permission::AuditExport, kLabA));
       EXPECT_TRUE(ctx.mfa_complete);
-    }
-
-    TEST_F(AuthMiddlewareTest, RpcRegistryReturnsSnapshotForAllRegisteredRpcs) {
-      // The registry is a process-global static shared by every test in this
-      // binary, so this test uses names unique to itself rather than assuming a
-      // clean slate.
-      EXPECT_FALSE(AuthMiddleware::is_rpc_registered("e3_test.SnapshotRead"));
-      EXPECT_FALSE(AuthMiddleware::is_rpc_registered("e3_test.SnapshotWrite"));
-      AuthMiddleware::register_rpc("e3_test.SnapshotRead", core::Permission::SampleRead);
-      AuthMiddleware::register_rpc("e3_test.SnapshotWrite", core::Permission::SampleWrite);
-
-      const auto snapshot = AuthMiddleware::registered_rpcs();
-      EXPECT_GE(snapshot.size(), 2U);
-      EXPECT_EQ(snapshot.at("e3_test.SnapshotRead"), core::Permission::SampleRead);
-      EXPECT_EQ(snapshot.at("e3_test.SnapshotWrite"), core::Permission::SampleWrite);
-    }
-
-    TEST_F(AuthMiddlewareTest, RpcRegistryDuplicateRegistrationOverwrites) {
-      AuthMiddleware::register_rpc("e3_test.DupRpc", core::Permission::SampleRead);
-      AuthMiddleware::register_rpc("e3_test.DupRpc", core::Permission::SampleWrite); // overwrite
-
-      const auto snapshot = AuthMiddleware::registered_rpcs();
-      ASSERT_TRUE(snapshot.contains("e3_test.DupRpc"));
-      EXPECT_EQ(snapshot.at("e3_test.DupRpc"), core::Permission::SampleWrite);
     }
 
   } // namespace

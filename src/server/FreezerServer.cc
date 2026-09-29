@@ -4,16 +4,20 @@
 
 #include "kms/KmsFactory.h"
 #include "obs/Log.h"
+#include "rpc/AuthMiddleware.h"
+#include "rpc/RpcMethodTracker.h"
 #include "server/BackupScheduler.h"
 #include "server/GrpcErrorTranslation.h"
 #include "server/MetricsInterceptor.h"
 #include "server/RateLimitInterceptor.h"
 
 #include <fmt/format.h>
+#include <google/protobuf/descriptor.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
 #include <grpcpp/resource_quota.h>
 
+#include <array>
 #include <vector>
 
 #include <fstream>
@@ -57,9 +61,61 @@ namespace {
     return contents;
   }
 
+  // The gRPC services this server serves. Each name is used twice: to build
+  // served_service_full_names() — the list the startup coverage check and its
+  // test enumerate — and to pair a service with its implementation in build().
+  // Declaring them once keeps the two from drifting, and the pair array in
+  // build() is sized by this list, so adding a service without listing it here
+  // does not compile.
+  constexpr std::string_view k_auth_service = "fmgr.v1.AuthService";
+  constexpr std::string_view k_session_service = "fmgr.v1.SessionService";
+  constexpr std::string_view k_lab_service = "fmgr.v1.LabService";
+  constexpr std::string_view k_box_service = "fmgr.v1.BoxService";
+  constexpr std::string_view k_item_type_service = "fmgr.v1.ItemTypeService";
+  constexpr std::string_view k_sample_service = "fmgr.v1.SampleService";
+  constexpr std::string_view k_role_service = "fmgr.v1.RoleService";
+  constexpr std::string_view k_audit_service = "fmgr.v1.AuditService";
+  constexpr std::string_view k_share_service = "fmgr.v1.ShareService";
+
+  constexpr std::array<std::string_view, 9> k_served_service_full_names{{
+      k_auth_service,
+      k_session_service,
+      k_lab_service,
+      k_box_service,
+      k_item_type_service,
+      k_sample_service,
+      k_role_service,
+      k_audit_service,
+      k_share_service,
+  }};
+
 } // namespace
 
 namespace fmgr::server {
+
+  std::span<const std::string_view> FreezerServer::served_service_full_names() {
+    return k_served_service_full_names;
+  }
+
+  std::vector<std::string> FreezerServer::served_rpc_names() {
+    std::vector<std::string> rpc_names;
+    const auto* pool = google::protobuf::DescriptorPool::generated_pool();
+    for (const auto name : k_served_service_full_names) {
+      const google::protobuf::ServiceDescriptor* service =
+          pool->FindServiceByName(std::string(name));
+      if (service == nullptr) {
+        throw std::logic_error(
+            fmt::format("no generated descriptor for served service '{}'; the service list and the "
+                        "generated proto code disagree",
+                        name));
+      }
+      for (int index = 0; index < service->method_count(); ++index) {
+        rpc_names.push_back(
+            fmt::format("/{}/{}", service->full_name(), service->method(index)->name()));
+      }
+    }
+    return rpc_names;
+  }
 
   FreezerServer::FreezerServer(storage::IStorageBackend& backend, auth::IAuthProvider& auth,
                                FreezerServerOptions opts)
@@ -133,9 +189,14 @@ namespace fmgr::server {
 
     // Per-RPC metrics (count by method+code, unary latency histogram) feed the
     // process-wide obs::metrics() registry exposed at /metrics (PRD §17).
+    // RpcMethodTrackerInterceptorFactory records which RPC each ServerContext is
+    // serving, which is how AuthMiddleware::authorize() (through
+    // extract_bearer) can check a handler's permission against the registration
+    // for its RPC (#60): gRPC's ServerContext exposes no method name of its own.
     std::vector<std::unique_ptr<grpc::experimental::ServerInterceptorFactoryInterface>>
         interceptor_creators;
     interceptor_creators.push_back(std::make_unique<MetricsInterceptorFactory>());
+    interceptor_creators.push_back(std::make_unique<rpc::RpcMethodTrackerInterceptorFactory>());
     builder.experimental().SetInterceptorCreators(std::move(interceptor_creators));
 
     if (opts_.tls_cert_path.empty()) {
@@ -164,15 +225,32 @@ namespace fmgr::server {
                                "tls.enabled");
     }
 
-    builder.RegisterService(&auth_svc_);
-    builder.RegisterService(&session_svc_);
-    builder.RegisterService(&lab_svc_);
-    builder.RegisterService(&box_svc_);
-    builder.RegisterService(&item_type_svc_);
-    builder.RegisterService(&sample_svc_);
-    builder.RegisterService(&role_svc_);
-    builder.RegisterService(&audit_svc_);
-    builder.RegisterService(&share_svc_);
+    // Each served service paired with its implementation, using the same name
+    // constants the coverage check below enumerates, so the two cannot drift.
+    struct ServedService {
+      std::string_view full_name;
+      grpc::Service* impl;
+    };
+    const std::array<ServedService, k_served_service_full_names.size()> served_services{{
+        {.full_name = k_auth_service, .impl = &auth_svc_},
+        {.full_name = k_session_service, .impl = &session_svc_},
+        {.full_name = k_lab_service, .impl = &lab_svc_},
+        {.full_name = k_box_service, .impl = &box_svc_},
+        {.full_name = k_item_type_service, .impl = &item_type_svc_},
+        {.full_name = k_sample_service, .impl = &sample_svc_},
+        {.full_name = k_role_service, .impl = &role_svc_},
+        {.full_name = k_audit_service, .impl = &audit_svc_},
+        {.full_name = k_share_service, .impl = &share_svc_},
+    }};
+    for (const auto& service : served_services) {
+      builder.RegisterService(service.impl);
+    }
+
+    // Fail closed (#60): a served RPC that is not in the permission registry has a
+    // gate nobody can look up, so refuse to start rather than serve it. The
+    // integration suite asserts the stronger property — the registry holds
+    // exactly these RPCs, no more.
+    rpc::AuthMiddleware::verify_registry_covers(served_rpc_names());
 
     grpc_server_ = builder.BuildAndStart();
     if (!grpc_server_) {

@@ -106,7 +106,7 @@ target_compile_options(
 
 # ---- RPC middleware (AuthMiddleware) ----
 
-add_library(freezermanager_rpc STATIC AuthMiddleware.cc)
+add_library(freezermanager_rpc STATIC AuthMiddleware.cc RpcMethodTracker.cc)
 add_library(FreezerManager::rpc ALIAS freezermanager_rpc)
 
 target_include_directories(
