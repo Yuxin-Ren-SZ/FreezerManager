@@ -33,11 +33,16 @@ describe('useCustomFieldDefinitions', () => {
       expect(result.current.isSuccess).toBe(true);
     });
 
-    expect(result.current.data?.cfds.map((cfd) => cfd.key)).toEqual([
-      'concentration',
-      'freeze_thaw_count',
-      'storage_note',
-    ]);
+    // Containment, not equality: the demo lab is shared fixture data and every
+    // feature task grows it (G3.3 added the inheritance chain and one definition
+    // per data type). What this hook owns is that the *lab's* definitions come
+    // back — the exact set is `fakeApi`'s business, and the item-type filter has
+    // its own test below.
+    const keys = result.current.data?.cfds.map((cfd) => cfd.key) ?? [];
+    expect(keys).toEqual(
+      expect.arrayContaining(['concentration', 'freeze_thaw_count', 'storage_note']),
+    );
+    expect(result.current.data?.cfds.every((cfd) => cfd.labId === 'lab-demo')).toBe(true);
   });
 
   it('asks for one item type when given one', async () => {
