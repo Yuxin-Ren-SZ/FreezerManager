@@ -48,12 +48,16 @@ FreezerManager is a self-hostable freezer / biospecimen manager: a C++20 server
 
 ### Roles
 
-- **Owner** (the human): sets priorities, merges PRs, can pause everything by
-  posting `**[owner] STOP**` on the board issue. Their word overrides this file.
+- **Owner** (the human): sets priorities, can pause everything by posting
+  `**[owner] STOP**` on the board issue. Their word overrides this file. On
+  2026-09-28 the owner delegated PR merges to the lead; the owner may still merge
+  anything themselves.
 - **Lead** (exactly one agent, `lead`): turns `TODO.md` items into issues, plans
-  work in waves, assigns, answers questions, reviews PRs, and is the only writer
-  of `TODO.md` and of the board issue body. The lead can take tasks itself only
-  when no worker is available, and follows the worker rules while doing so.
+  work in waves, assigns, answers questions, reviews PRs, **merges reviewed PRs
+  onto `main`** (owner-delegated, each one recorded with a `[lead] DECISION` on
+  the issue), and is the only writer of `TODO.md` and of the board issue body.
+  The lead can take tasks itself only when no worker is available, and follows
+  the worker rules while doing so.
 - **Workers** (`worker-1` … `worker-3`): do exactly the issue they are assigned.
   They never self-assign, never edit `TODO.md`, never merge, and never touch
   another agent's branch or worktree.
@@ -93,10 +97,12 @@ signatures, not by the assignee field.
    issue `status:in-review`, and posts `HANDOFF`.
 5. **Lead reviews** against the acceptance criteria and posts `DECISION`
    (either "changes needed: …" or "ready for owner merge").
-6. **Owner squash-merges.** The lead then ticks `TODO.md` (in a batched
-   `docs(todo): …` PR), releases locks on the board, and tells affected workers
-   to rebase. The worker removes its worktree:
-   `git worktree remove .worktrees/<issue>-<slug> && git branch -D <branch>`.
+6. **The lead merges**, on the owner's 2026-09-28 delegation (the owner may still
+   merge anything themselves). Rebase-merge a single-commit PR, squash-merge a
+   multi-commit one, and record the merge commit in a `[lead] DECISION` on the
+   issue. The lead then ticks `TODO.md` (in a batched `docs(todo): …` PR),
+   releases locks on the board, and removes the merged worktree — waking a
+   finished worker for two commands is not worth a session.
 
 **Lead planning rules:** at most 3 workers active at once. Don't run two tasks
 in the same wave that are likely to edit the same files. Each `lock:*` label is
@@ -271,8 +277,9 @@ same `npm ci && npm run check` in the `web` job, independently of the C++ matrix
   it (e.g. "Implemented by worker-2 (Claude Code)").
 - Keep PRs to one issue. Rebase onto `origin/main` before marking ready. Only
   force-push your own branch, and only with `--force-with-lease`.
-- **Never:** push to `main`, merge a PR, rewrite someone else's branch, delete
-  issues, or change labels on issues you don't own (the lead may).
+- **Never:** push to `main`, rewrite someone else's branch, delete issues, or
+  change labels on issues you don't own (the lead may). **Only the lead merges
+  PRs**, on the owner's delegation; workers never merge.
 
 ## 8. Where things live
 

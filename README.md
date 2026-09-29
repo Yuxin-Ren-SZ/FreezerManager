@@ -206,13 +206,21 @@ Prerequisites: CMake ≥ 3.25, Conan 2, Ninja, GCC 13+ or Clang 17+.
 ```sh
 conan profile detect --force
 conan install . --lockfile=conan.lock --output-folder=out/conan/dev \
-    --build=missing -s build_type=Debug -s compiler.cppstd=20
+    --build=missing -s build_type=Debug -s compiler.cppstd=20 \
+    -c tools.cmake.cmaketoolchain:user_presets=
 cmake --preset dev
 cmake --build --preset dev
 ctest --preset dev
 ```
 
-For sanitizer builds substitute `dev` with `asan`, `ubsan`, or `tsan`.
+For sanitizer builds substitute `dev` with `asan`, `ubsan`, or `tsan` — but keep
+the `-c tools.cmake.cmaketoolchain:user_presets=` on **every** `conan install`
+after the first. Conan merges all output folders into one root
+`CMakeUserPresets.json`, every Debug folder contributes a preset named
+`conan-debug`, and the next `cmake --preset` then aborts with
+`Duplicate preset: "conan-debug"`. Inside an agent worktree, use
+`scripts/agent/conan-install.sh <preset>` (AGENTS.md §4), which passes the flag
+and `--build=never` for you.
 
 > **Note:** Always pass `-s compiler.cppstd=20` to `conan install` — Conan's
 > auto-detected default profile may use an older standard, and `libpqxx`
@@ -228,7 +236,8 @@ sudo apt install gcovr
 
 # Configure, build, and test with coverage instrumentation
 conan install . --output-folder=out/conan/coverage --build=missing \
-    -s build_type=Debug -s compiler.cppstd=20
+    -s build_type=Debug -s compiler.cppstd=20 \
+    -c tools.cmake.cmaketoolchain:user_presets=
 cmake --preset coverage
 cmake --build --preset coverage
 ctest --preset coverage
