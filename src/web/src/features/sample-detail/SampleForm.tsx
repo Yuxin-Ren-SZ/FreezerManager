@@ -39,7 +39,10 @@ import type { SampleReferenceData } from './useSampleReferenceData';
  *     way.
  *  3. **Nothing is invented about PHI.** The form submits the fields it
  *     rendered and no others, so a value the server withheld is never sent
- *     back as a blank.
+ *     back as a blank. A withheld field is not merely blank, though: its
+ *     control is left **out of the payload entirely**, because an untouched
+ *     Bool control is `false` — a value — and one PHI key makes the request
+ *     authoritative for the whole envelope (#83).
  */
 
 /** What the inputs actually hold: text-ish values and checkboxes. */
@@ -231,21 +234,45 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
   const canReadPhi = useCan('phi.read', labId);
   const hasPhiDefinition = definitions.some((cfd) => cfd.isPhi);
 
+  /**
+   * Whether this form is editing PHI it was never shown.
+   *
+   * The server filters PHI out of the response for a caller without `phi.read`
+   * (`reveal_phi()`), so on an edit every PHI definition here has *no* value to
+   * show — the field list comes from the item type, not from the response. A
+   * create is different in kind: nothing is stored yet, so nothing is withheld,
+   * and writing PHI has never required `phi.read`
+   * (`PhiWriteDoesNotRequirePhiRead`). The client mirrors that rather than
+   * inventing a stricter rule.
+   */
+  const phiWithheld = isEdit && !canReadPhi;
+
   const createSample = useCreateSample(labId);
   const updateSample = useUpdateSample(labId);
   const pending = createSample.isPending || updateSample.isPending;
 
-  /** The blob the server will validate, built from the rendered fields only. */
+  /**
+   * The blob the server will validate, built from the rendered fields only.
+   *
+   * "Rendered" is not enough for PHI: a withheld field renders as an empty
+   * control, and an empty Bool is `false` — a *value*, not an absence, so it was
+   * submitted where every other type omits its key. The server treats a request
+   * carrying one PHI key as authoritative for the whole envelope (#83), so that
+   * `false` erased every PHI key the response had withheld. A field the caller
+   * could not see is a field the form has nothing truthful to say about, so it
+   * is left out and the stored envelope stays untouched.
+   */
   const wireValues = useMemo(() => {
     const values: Record<string, unknown> = {};
     for (const cfd of definitions) {
+      if (phiWithheld && cfd.isPhi) continue;
       const value = wireValue(cfd, rawValues[cfd.key] ?? defaultRaw(cfd));
       if (value !== undefined) {
         values[cfd.key] = value;
       }
     }
     return values;
-  }, [definitions, rawValues]);
+  }, [definitions, rawValues, phiWithheld]);
 
   const renderedKeys = new Set<string>([
     ...definitions.map((cfd) => cfd.key),
@@ -498,6 +525,9 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
             key={cfd.key}
             cfd={cfd}
             value={rawValues[cfd.key] ?? defaultRaw(cfd)}
+            // A value the caller cannot read is hidden, not missing: accepting
+            // an edit here would mean dropping it again on submit.
+            disabled={phiWithheld && cfd.isPhi}
             error={messageFor(cfd.key)}
             onChange={(value) => {
               setRaw(cfd.key, value);
@@ -522,11 +552,14 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
 function CustomFieldInput({
   cfd,
   value,
+  disabled,
   error,
   onChange,
 }: {
   cfd: CustomFieldDefinition;
   value: RawValue;
+  /** Set for PHI the caller cannot read — see `phiWithheld`. */
+  disabled?: boolean;
   error?: string;
   onChange: (value: RawValue) => void;
 }) {
@@ -548,6 +581,7 @@ function CustomFieldInput({
         onChange={(event) => {
           onChange(event.target.checked);
         }}
+        disabled={disabled}
         error={error}
       />
     );
@@ -566,6 +600,7 @@ function CustomFieldInput({
           { value: '', label: t('form.noChoice') },
           ...values.map((allowed) => ({ value: allowed, label: allowed })),
         ]}
+        disabled={disabled}
         error={error}
         required={cfd.required}
       />
@@ -593,6 +628,7 @@ function CustomFieldInput({
       onChange={(event) => {
         onChange(event.target.value);
       }}
+      disabled={disabled}
       error={error}
       required={cfd.required}
     />
