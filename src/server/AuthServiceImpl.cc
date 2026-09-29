@@ -92,9 +92,11 @@ namespace fmgr::server {
     // #78: none of the auth/* RPCs is permission-gated, and session.revoke — the
     // permission all six used to name — is checked by no code path here. Login
     // needs no credential at all; SubmitMfa needs a session token but
-    // deliberately not MFA; the rest need a token and MFA (validate_authed).
-    // Registering them as no_permission_required() is the accurate statement,
-    // and the gate refuses them if a handler ever starts calling authorize().
+    // deliberately not MFA; Logout needs a token and deliberately not MFA either
+    // (#62 — see validate_token_any_mfa()); the rest need a token and MFA
+    // (validate_authed). Registering them as no_permission_required() is the
+    // accurate statement, and the gate refuses them if a handler ever starts
+    // calling authorize().
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Login",
                                       rpc::RpcGate::no_permission_required());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/SubmitMfa",

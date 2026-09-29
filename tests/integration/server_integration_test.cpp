@@ -131,6 +131,11 @@ namespace fmgr::test {
 
       const std::string kEmail{"admin@example.com"};
       const std::string kMfaEmail{"mfa@example.com"};
+      // #62: a third account, TOTP-enrolled. `...003` because #78 took `...002`
+      // for its permissionless account — the two ids collided when this branch
+      // was rebased onto it, which the fixture reports as "user id already
+      // exists" from every test's SetUp().
+      const std::string kMfaUserId{"10000000-0000-0000-0000-000000000003"};
       const std::string kPassword{"hunter22"};
       // RFC 6238's test secret; the value only has to match what the seed writes
       // into `totp_secret_enc` for the account to count as MFA-enrolled.
@@ -195,7 +200,7 @@ namespace fmgr::test {
         // mfa_complete=false, which is what a browser holds after the login route
         // has already set the cookie (#62).
         const core::User mfa_user{
-            .id = core::UserId::parse("10000000-0000-0000-0000-000000000002"),
+            .id = core::UserId::parse(kMfaUserId),
             .primary_email = kMfaEmail,
             .display_name = "Test MFA User",
             .status = core::UserStatus::Active,
