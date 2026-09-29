@@ -20,8 +20,9 @@ namespace fmgr::server {
   namespace {
 
     // Validate token and enforce MFA gate without a RBAC check.
-    // Used for "self-management" RPCs (Logout, CreateApiToken, etc.) that any
-    // authenticated user may call for their own data.
+    // Used for "self-management" RPCs (CreateApiToken, ListApiTokens, …) that any
+    // authenticated user may call for their own data. Logout is the one
+    // deliberate exception — see validate_token_any_mfa().
     [[nodiscard]] auth::SessionContext validate_authed(auth::IAuthProvider& auth,
                                                        const grpc::ServerContext& ctx) {
       const auto bearer = extract_bearer(ctx);
@@ -30,6 +31,15 @@ namespace fmgr::server {
         throw auth::MfaRequired("MFA required before this operation");
       }
       return sctx;
+    }
+
+    // Validate a token *without* the MFA gate. Exactly two RPCs use this, and the
+    // pair is the whole of the exception: a session whose second factor is still
+    // pending may complete that factor (SubmitMfa) and may give the credential up
+    // (Logout). Everything else goes through validate_authed().
+    [[nodiscard]] auth::SessionContext validate_token_any_mfa(auth::IAuthProvider& auth,
+                                                              const grpc::ServerContext& ctx) {
+      return auth.validate_token(extract_bearer(ctx));
     }
 
     // Derive a per-source-IP rate-limit key from the gRPC peer string, dropping
@@ -127,8 +137,7 @@ namespace fmgr::server {
                                           const fmgr::v1::SubmitMfaRequest* req,
                                           fmgr::v1::SubmitMfaResponse* /*resp*/) {
     try {
-      const auto bearer = extract_bearer(*ctx);
-      const auto sctx = auth_.validate_token(bearer);
+      const auto sctx = validate_token_any_mfa(auth_, *ctx);
       auth_.verify_totp(sctx.session_id, req->totp_code());
       return grpc::Status::OK;
     } catch (...) {
@@ -140,7 +149,14 @@ namespace fmgr::server {
                                        const fmgr::v1::LogoutRequest* /*req*/,
                                        fmgr::v1::LogoutResponse* /*resp*/) {
     try {
-      const auto sctx = validate_authed(auth_, *ctx);
+      // Deliberately not validate_authed(): the browser login route sets the
+      // session cookie before the second factor is entered, so a pending-MFA
+      // session is a credential the UI holds. Logout only removes authority, so
+      // refusing it would leave an abandoned login with a cookie nothing can
+      // revoke (`SameSite=Strict` keeps every other page from clearing it).
+      // This is the de-escalation half of the exception documented on
+      // validate_token_any_mfa(); SubmitMfa is the other.
+      const auto sctx = validate_token_any_mfa(auth_, *ctx);
       auth_.revoke_session(sctx.session_id, make_ctx(*ctx, sctx, "logout"));
       return grpc::Status::OK;
     } catch (...) {

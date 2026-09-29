@@ -341,7 +341,7 @@ namespace fmgr::test {
       const auto login_status = auth_stub_->Login(&login_ctx, login_req, &login_resp);
       ASSERT_TRUE(login_status.ok()) << login_status.error_message();
       ASSERT_TRUE(login_resp.mfa_required());
-      const auto token = login_resp.session_token();
+      const auto& token = login_resp.session_token();
       ASSERT_FALSE(token.empty());
 
       grpc::ClientContext logout_ctx;
@@ -353,6 +353,7 @@ namespace fmgr::test {
 
       // Revoked server-side, not merely answered OK: the credential is gone, and
       // it is gone as an invalid token rather than as a still-pending session.
+      // The error message is the whole distinction, so assert on it.
       grpc::ClientContext after_ctx;
       set_bearer(after_ctx, token);
       fmgr::v1::ListApiTokensRequest list_req;
@@ -361,7 +362,6 @@ namespace fmgr::test {
       ASSERT_FALSE(after_status.ok());
       EXPECT_EQ(after_status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
       EXPECT_EQ(after_status.error_message().find("mfa_required"), std::string::npos)
-          << "the session must be revoked, not still pending MFA: "
           << after_status.error_message();
     }
 
