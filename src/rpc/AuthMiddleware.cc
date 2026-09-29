@@ -19,7 +19,7 @@ namespace fmgr::rpc {
 
     struct RpcRegistry {
       std::mutex mutex;
-      std::unordered_map<std::string, core::Permission> map;
+      std::unordered_map<std::string, RpcGate> map;
     };
 
     RpcRegistry& get_registry() {
@@ -39,6 +39,21 @@ namespace fmgr::rpc {
     }
 
   } // namespace
+
+  core::Permission RpcGate::permission() const {
+    if (!permission_.has_value()) {
+      throw std::logic_error("this RPC is registered as no_permission_required(); it has no "
+                             "permission to read (see rpc::RpcGate, #78)");
+    }
+    return *permission_;
+  }
+
+  std::string RpcGate::describe() const {
+    if (!permission_.has_value()) {
+      return "no permission required";
+    }
+    return "permission '" + permission_key(*permission_) + "'";
+  }
 
   // #60: the registry is a contract, not documentation. A handler that asks the
   // gate for a permission other than the one its RPC registered is a code defect —
@@ -61,10 +76,12 @@ namespace fmgr::rpc {
                                 " calls authorize() but is not in the permission registry; "
                                 "register it in its service constructor (#60)");
     }
-    if (registered->second != enforced) {
-      throw RpcRegistryMismatch("RPC " + call.method + " is registered as permission '" +
-                                permission_key(registered->second) +
-                                "' but its handler enforces '" + permission_key(enforced) +
+    const RpcGate& gate = registered->second;
+    // Short-circuits on the kind, so permission() is only read when there is one
+    // to read (#78).
+    if (gate.kind() != RpcGate::Kind::Permission || gate.permission() != enforced) {
+      throw RpcRegistryMismatch("RPC " + call.method + " is registered as " + gate.describe() +
+                                " but its handler enforces '" + permission_key(enforced) +
                                 "'; the registration and the authorize() call must agree (#60)");
     }
   }
@@ -132,13 +149,13 @@ namespace fmgr::rpc {
     txn.set_session_var("current_lab_ids", lab_ids);
   }
 
-  void AuthMiddleware::register_rpc(std::string rpc_name, core::Permission required_perm) {
+  void AuthMiddleware::register_rpc(std::string rpc_name, RpcGate gate) {
     auto& reg = get_registry();
     std::scoped_lock lock(reg.mutex);
-    reg.map.insert_or_assign(std::move(rpc_name), required_perm);
+    reg.map.insert_or_assign(std::move(rpc_name), gate);
   }
 
-  std::unordered_map<std::string, core::Permission> AuthMiddleware::registered_rpcs() {
+  std::unordered_map<std::string, RpcGate> AuthMiddleware::registered_rpcs() {
     auto& reg = get_registry();
     std::scoped_lock lock(reg.mutex);
     return reg.map;

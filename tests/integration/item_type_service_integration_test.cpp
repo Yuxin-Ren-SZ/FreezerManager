@@ -1415,7 +1415,10 @@ namespace fmgr::test {
       const auto registry = rpc::AuthMiddleware::registered_rpcs();
       const auto entry = registry.find(rpc);
       ASSERT_NE(entry, registry.end()) << rpc << " is missing from the RPC registry";
-      EXPECT_EQ(entry->second, expected) << rpc;
+      // #78: an entry is either a permission the gate verifies or an explicit
+      // "no permission required"; these RPCs must be the former.
+      ASSERT_EQ(entry->second.kind(), rpc::RpcGate::Kind::Permission) << rpc;
+      EXPECT_EQ(entry->second.permission(), expected) << rpc;
     }
 
     TEST_F(ItemTypeServiceTest, RegistryGatesCatalogReadsOnSampleRead) {

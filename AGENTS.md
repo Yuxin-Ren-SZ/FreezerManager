@@ -272,9 +272,14 @@ same `npm ci && npm run check` in the `web` job, independently of the C++ matrix
   a permission itself (`has_for_lab`/`has_global`, a helper such as
   `gate_role_read`/`is_system_admin`), or that needs only a token and MFA — is
   outside that check: the gate never runs, so nothing verifies its registry entry
-  yet. Register it, and say in review which of the three kinds it is; a
-  registration claiming a permission its handler never enforces is a finding, not
-  a formality.
+  at runtime. Register it as `RpcGate::no_permission_required()`, **never** as a
+  permission its handler does not check — the gate refuses such an RPC the moment
+  a handler calls `authorize()`, and
+  `ServerIntegrationTest.RpcRegistryStatesTheGateEachNonPermissionRpcHas` pins the
+  entries that state it. Say in review which credential rule the handler applies
+  (token and MFA, token only, or neither — the registry deliberately does not
+  claim one) and comment it at the registration. A registration claiming a
+  permission no code path enforces is a finding, not a formality (#78).
 - **PHI never appears** in logs, error messages, fixtures, screenshots, PR text
   or unencrypted backups.
 - **SQLite is single-writer:** return `Unavailable` on contention and let
