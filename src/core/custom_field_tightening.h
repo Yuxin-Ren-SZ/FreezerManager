@@ -207,6 +207,27 @@ namespace fmgr::core {
     return violations;
   }
 
+  // What a subtree loses when `cfd` is taken away from it and nothing else
+  // defines that key: an empty list means the definition constrained nothing, so
+  // its absence refuses nothing either. The definition's *identity* — its key,
+  // data type and scope — is deliberately not part of this: those describe the
+  // field, not which values it accepts, and a removal that leaves a subtree with
+  // no definition at all is a loosening only when something was being refused.
+  //
+  // Expressed through `tighten_violations` rather than beside it: the definition
+  // that "nothing left behind" stands for is the most permissive one of the same
+  // key — optional, non-PHI, no declared constraints — so a removal reports the
+  // constraint it drops in the same vocabulary as every other loosening, and the
+  // two can never disagree about what a constraint is (#115).
+  [[nodiscard]] inline std::vector<TighteningViolation>
+  removal_violations(const CustomFieldDefinition& cfd) {
+    auto absent = cfd;
+    absent.required = false;
+    absent.is_phi = false;
+    absent.validation_json = "{}";
+    return tighten_violations(cfd, absent);
+  }
+
 } // namespace fmgr::core
 
 #endif // FMGR_CORE_CUSTOM_FIELD_TIGHTENING_H

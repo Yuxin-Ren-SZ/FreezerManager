@@ -208,6 +208,67 @@ namespace fmgr::server {
       }
     }
 
+    // The other end of the same rule (#115). An attachment decides *which*
+    // subtree a definition constrains, so an update that changes `item_type_id`
+    // writes to two subtrees: the destination inherits something new — checked by
+    // `reject_loosening_inherited_definition` above — and the source falls back
+    // to whatever the moved row was shadowing. Checking only the destination
+    // leaves the source silently weaker, and it is a bypass no client in this
+    // repo exercises: the SPA cannot express a move, so the writers that can are
+    // the ones nothing tests.
+    //
+    // The source subtree is the node the row is attached to and everything under
+    // it, and after the move they all resolve what that node inherits once its own
+    // row is gone — the same resolution the destination check uses, so the two
+    // ends cannot disagree about the ranking. Deciding *whether* that is weaker is
+    // again the pure `core::tighten_violations`, with "nothing left behind"
+    // expressed as `core::removal_violations`.
+    //
+    // Both parameters are definitions of one key; which is the stored row and
+    // which is the write replacing it is carried by the names, not the type.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    void reject_loosening_abandoned_subtree(storage::ITransaction& txn,
+                                            const core::CustomFieldDefinition& stored,
+                                            const core::CustomFieldDefinition& proposed) {
+      if (stored.item_type_id == proposed.item_type_id) {
+        return; // not a move: the row still constrains what it constrained
+      }
+      if (!stored.item_type_id.has_value()) {
+        // A lab-global is inherited by every item type, so its source subtree is
+        // the whole lab: narrowing one onto a single node takes it away from
+        // every type outside that node's subtree, and establishing that none of
+        // them relied on it would mean sweeping every lineage in the lab on a
+        // write path. A global that constrains anything therefore stays global;
+        // the way to narrow is to leave it in place and add a tighter definition
+        // at the type. A global that constrains nothing may still be narrowed.
+        const auto lost = core::removal_violations(stored);
+        if (!lost.empty()) {
+          throw storage::ConstraintViolation(
+              "custom field '" + stored.key +
+              "' may not be narrowed from the lab to one item type: " + lost.front().message);
+        }
+        return;
+      }
+      const auto inherited =
+          storage::resolve_inherited_custom_field_defs(txn, stored.lab_id, *stored.item_type_id);
+      std::optional<core::CustomFieldDefinition> left_behind;
+      for (const auto& candidate : inherited) {
+        if (candidate.key == stored.key) {
+          left_behind = candidate;
+          break;
+        }
+      }
+      const auto violations = left_behind.has_value()
+                                  ? core::tighten_violations(stored, *left_behind)
+                                  : core::removal_violations(stored);
+      if (!violations.empty()) {
+        throw storage::ConstraintViolation(
+            "custom field '" + stored.key +
+            "' would loosen what the item type it is moved from is left with: " +
+            violations.front().message);
+      }
+    }
+
   } // namespace
 
   ItemTypeServiceImpl::ItemTypeServiceImpl(auth::IAuthProvider& auth,
@@ -504,6 +565,10 @@ namespace fmgr::server {
       if (!existing.has_value() || existing->lab_id != lab_id) {
         return {grpc::StatusCode::NOT_FOUND, "custom field definition not found"};
       }
+      // The row as it stands, before the request replaces it: `item_type_id` is
+      // part of the replacement, so a move is decided against where the row is
+      // *now* as well as where it is going (#115).
+      const auto stored = *existing;
       // Mutable fields only; lab_id and timestamps are not caller-editable.
       existing->scope_kind = from_proto_scope(wire.scope_kind());
       existing->item_type_id =
@@ -519,6 +584,7 @@ namespace fmgr::server {
       existing->is_phi = wire.is_phi();
       reject_indexed_phi(*existing);
       reject_loosening_inherited_definition(*txn, *existing);
+      reject_loosening_abandoned_subtree(*txn, stored, *existing);
       txn->repo<core::CustomFieldDefinition>().update(*existing,
                                                       make_ctx(*ctx, sctx, "update_cfd"));
       txn->commit();

@@ -191,5 +191,51 @@ namespace fmgr::core {
           tighten_violations(mixed, make_cfd("notes", FieldDataType::String, false, "{}")).empty());
     }
 
+    // What a subtree loses when the definition is taken away entirely, which is
+    // a different question from what a *replacement* may change: there is no
+    // counterpart to compare against, so the constraint that disappears has to
+    // name itself (#115).
+    TEST(CustomFieldTighteningTest, RemovingARequiredDefinitionIsAViolation) {
+      const auto cfd = make_cfd("patient_id", FieldDataType::String, /*required=*/true);
+      const auto violations = removal_violations(cfd);
+      ASSERT_EQ(violations.size(), 1U);
+      EXPECT_EQ(violations.front().constraint, "required");
+    }
+
+    TEST(CustomFieldTighteningTest, RemovingAPhiDefinitionIsAViolation) {
+      const auto cfd = make_cfd("ssn", FieldDataType::String, false, "{}", /*is_phi=*/true);
+      const auto violations = removal_violations(cfd);
+      ASSERT_EQ(violations.size(), 1U);
+      EXPECT_EQ(violations.front().constraint, "is_phi");
+    }
+
+    TEST(CustomFieldTighteningTest, RemovingADeclaredConstraintIsAViolation) {
+      const auto cfd =
+          make_cfd("notes", FieldDataType::String, false, R"({"max_length":20,"min":1})");
+      const auto constraints = [&cfd] {
+        std::vector<std::string> names;
+        for (const auto& violation : removal_violations(cfd)) {
+          names.push_back(violation.constraint);
+        }
+        return names;
+      }();
+      EXPECT_EQ(constraints, (std::vector<std::string>{"max_length", "min"}));
+    }
+
+    // The boundary, and the reason this is not `true` for every definition:
+    // removing a field that refuses nothing removes no refusal. Data type, scope
+    // and an index describe the field rather than constrain its values, so they
+    // are absent from `removal_violations` the way `indexed` is from
+    // `tighten_violations`.
+    TEST(CustomFieldTighteningTest, RemovingAnUnconstrainedDefinitionIsNotAViolation) {
+      auto cfd = make_cfd("free_text", FieldDataType::String);
+      cfd.indexed = true;
+      EXPECT_TRUE(removal_violations(cfd).empty());
+      // Unknown constraints are not constraints here either.
+      EXPECT_TRUE(removal_violations(
+                      make_cfd("free_text", FieldDataType::String, false, R"({"regex":"^a+$"})"))
+                      .empty());
+    }
+
   } // namespace
 } // namespace fmgr::core
