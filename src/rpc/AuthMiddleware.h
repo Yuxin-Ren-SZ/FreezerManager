@@ -67,6 +67,66 @@ namespace fmgr::rpc {
     using std::logic_error::logic_error;
   };
 
+  // What admits a call to an RPC — the registry's value type (#78).
+  //
+  // The registry used to map an RPC straight to a `core::Permission`, so it had
+  // no way to say "this RPC is gated by something other than a permission", and
+  // ten entries named a permission their handler never checked: `ListSessions`
+  // registered `session.revoke` while filtering to the caller's own rows,
+  // `ListLabs` registered `lab.configure` while consulting `lab.provision` for
+  // *visibility*, `VerifyAuditChain` registered `audit.read` while requiring
+  // `is_system_admin`. Each kind below states a claim the gate can act on, and
+  // no more than that:
+  //
+  //   Permission            the handler's authorize() call must name exactly
+  //                         this permission. The gate checks it on every call
+  //                         and refuses the call when it disagrees (#60), so
+  //                         this entry is verified, not documented.
+  //   NoPermissionRequired  the handler must not be permission-gated at all.
+  //                         The gate cannot see the credential rule such a
+  //                         handler applies — a bearer token and MFA for the
+  //                         self-management RPCs, a pre-MFA session token for
+  //                         SubmitMfa, nothing at all for Login — so it does not
+  //                         claim one. What it does enforce is the other half:
+  //                         an RPC registered this way whose handler calls
+  //                         authorize() is refused, so the state cannot be used
+  //                         to silence the #60 check.
+  class RpcGate {
+  public:
+    enum class Kind {
+      Permission,
+      NoPermissionRequired,
+    };
+
+    // Implicit on purpose: the permission-gated registrations keep reading as
+    // `register_rpc(name, P::SampleRead)`.
+    RpcGate(core::Permission permission) : kind_(Kind::Permission), permission_(permission) {}
+
+    [[nodiscard]] static RpcGate no_permission_required() {
+      return RpcGate(Kind::NoPermissionRequired);
+    }
+
+    [[nodiscard]] Kind kind() const {
+      return kind_;
+    }
+
+    // Precondition: kind() == Kind::Permission. Throws std::logic_error
+    // otherwise, so a gate with no permission cannot be read as if it had one.
+    [[nodiscard]] core::Permission permission() const;
+
+    // Human-readable, for the refusal message: "permission 'sample.read'" or
+    // "no permission required".
+    [[nodiscard]] std::string describe() const;
+
+    friend bool operator==(const RpcGate&, const RpcGate&) = default;
+
+  private:
+    explicit RpcGate(Kind kind) : kind_(kind) {}
+
+    Kind kind_;
+    std::optional<core::Permission> permission_;
+  };
+
   class AuthMiddleware {
   public:
     explicit AuthMiddleware(auth::IAuthProvider& auth);
@@ -115,15 +175,19 @@ namespace fmgr::rpc {
 
     // ---- RPC permission registry ----
     //
-    // Each RPC handler file registers its RPC name + required permission at
-    // startup. The registry is not write-only metadata: authorize() checks the
-    // permission a handler enforces against the entry its RPC registered, and
-    // refuses the call when they disagree (#60). verify_registry_covers() does
-    // the other half at server startup — a served RPC that is not registered
-    // cannot be looked up, so the server refuses to start rather than serve it.
-    static void register_rpc(std::string rpc_name, core::Permission required_perm);
+    // Each RPC handler file registers its RPC name + gate at startup. The
+    // registry is not write-only metadata: authorize() checks the permission a
+    // handler enforces against the entry its RPC registered, and refuses the call
+    // when they disagree (#60). verify_registry_covers() does the other half at
+    // server startup — a served RPC that is not registered cannot be looked up,
+    // so the server refuses to start rather than serve it.
+    //
+    // An RPC that does not gate through authorize() (AGENTS.md §5) registers
+    // RpcGate::no_permission_required() rather than a permission nothing checks;
+    // the gate then refuses it if a handler ever calls authorize() for it.
+    static void register_rpc(std::string rpc_name, RpcGate gate);
     // Returns a snapshot copy of the registry (safe for iteration in tests/CI).
-    [[nodiscard]] static std::unordered_map<std::string, core::Permission> registered_rpcs();
+    [[nodiscard]] static std::unordered_map<std::string, RpcGate> registered_rpcs();
 
     // Throws RpcRegistryMismatch naming every entry of `served_rpc_names` that is
     // missing from the registry. The server calls this from build(), so a new RPC
@@ -133,9 +197,11 @@ namespace fmgr::rpc {
     static void verify_registry_covers(std::span<const std::string> served_rpc_names);
 
   private:
-    // Step 0 of authorize(): throws RpcRegistryMismatch unless `enforced` is the
-    // permission registered for call's RPC. No-op when the call carries no RPC
-    // identity.
+    // Step 0 of authorize(): throws RpcRegistryMismatch unless call's RPC is
+    // registered with a Permission gate whose permission is `enforced` — a
+    // NoPermissionRequired entry is a disagreement too, so registering an
+    // authorize()-gated RPC that way refuses its calls rather than silencing the
+    // check (#78). No-op when the call carries no RPC identity.
     static void require_registry_agreement(const RpcCall& call, core::Permission enforced);
 
     auth::IAuthProvider& auth_;

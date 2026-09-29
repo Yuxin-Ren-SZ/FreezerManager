@@ -79,18 +79,24 @@ namespace fmgr::server {
       : auth_(auth), backend_(backend), middleware_(auth),
         login_limiter_(rpc::RateLimiterConfig{.capacity = k_login_rate_capacity,
                                               .refill_per_sec = k_login_rate_refill_per_sec}) {
+    // #78: none of the auth/* RPCs is permission-gated, and session.revoke — the
+    // permission all six used to name — is checked by no code path here. Login
+    // needs no credential at all; SubmitMfa needs a session token but
+    // deliberately not MFA; the rest need a token and MFA (validate_authed).
+    // Registering them as no_permission_required() is the accurate statement,
+    // and the gate refuses them if a handler ever starts calling authorize().
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Login",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcGate::no_permission_required());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/SubmitMfa",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcGate::no_permission_required());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Logout",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcGate::no_permission_required());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/CreateApiToken",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcGate::no_permission_required());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/ListApiTokens",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcGate::no_permission_required());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/RevokeApiToken",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcGate::no_permission_required());
   }
 
   grpc::Status AuthServiceImpl::Login(grpc::ServerContext* ctx, const fmgr::v1::LoginRequest* req,

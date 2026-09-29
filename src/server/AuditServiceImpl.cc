@@ -172,7 +172,12 @@ namespace fmgr::server {
     using P = core::Permission;
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/ListAuditEvents", P::AuditRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/GetAuditEvent", P::AuditRead);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/VerifyAuditChain", P::AuditRead);
+    // #78: verification is deployment-wide and system-admin only, and this repo's
+    // marker for a deployment admin is the global-only lab.provision grant (see
+    // is_system_admin() above). Registering audit.read was a permission the
+    // handler never enforced; lab.provision is the one it does, and routing the
+    // handler through authorize() makes the gate check it on every call.
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/VerifyAuditChain", P::LabProvision);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/ExportAuditLog", P::AuditExport);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/WatchAuditFeed", P::AuditRead);
   }
@@ -296,17 +301,16 @@ namespace fmgr::server {
                                                   const fmgr::v1::VerifyAuditChainRequest* /*req*/,
                                                   fmgr::v1::VerifyAuditChainResponse* resp) {
     try {
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
-      // The chain links every row globally; verifying a per-lab subset is not
-      // meaningful, so verification is deployment-wide and system-admin only.
-      // (req.lab_id is accepted for forward compatibility but does not scope the
-      // walk.)
-      if (!is_system_admin(sctx)) {
-        throw auth::PermissionDenied("audit chain verification requires a system administrator");
-      }
+      // #78: the chain links every row globally, so verification is
+      // deployment-wide and system-admin only — exactly what
+      // is_system_admin() spells by hand, and exactly authorize()'s check for a
+      // global-only permission with no lab scope. Going through the gate is
+      // what makes the registry entry a claim the gate verifies on every call
+      // instead of one nothing reads; it also applies the data-tier rate limit
+      // every other authorize() call passes through. (req.lab_id is accepted for
+      // forward compatibility but does not scope the walk.)
+      const auto sctx =
+          middleware_.authorize(extract_bearer(*ctx), core::Permission::LabProvision, std::nullopt);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);

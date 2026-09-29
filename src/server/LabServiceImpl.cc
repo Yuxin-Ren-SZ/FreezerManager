@@ -76,7 +76,12 @@ namespace fmgr::server {
       : auth_(auth), backend_(backend), middleware_(auth) {
     using P = core::Permission;
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/GetLab", P::LabConfigure);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/ListLabs", P::LabConfigure);
+    // #78: ListLabs is visibility-scoped, not permission-gated — a caller lists
+    // the labs they can see. Registering lab.configure named a permission the
+    // handler never checks; lab.provision narrows the result, it does not admit
+    // the call.
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/ListLabs",
+                                      rpc::RpcGate::no_permission_required());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/CreateLab", P::LabProvision);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/UpdateLab", P::LabConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/EnablePhi", P::LabEnablePhi);

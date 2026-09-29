@@ -23,12 +23,14 @@
 #include "rpc/AuthMiddleware.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
+#include <fmgr/v1/lab.grpc.pb.h>
 #include <fmgr/v1/sample.grpc.pb.h>
 #include <fmgr/v1/session.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -91,6 +93,7 @@ namespace fmgr::test {
         auth_stub_ = fmgr::v1::AuthService::NewStub(channel_);
         session_stub_ = fmgr::v1::SessionService::NewStub(channel_);
         sample_stub_ = fmgr::v1::SampleService::NewStub(channel_);
+        lab_stub_ = fmgr::v1::LabService::NewStub(channel_);
       }
 
       void TearDown() override {
@@ -131,6 +134,11 @@ namespace fmgr::test {
       // The lab seed_test_user() creates; its id is what the layout/sample RPCs
       // are called with (#60).
       const std::string kLabId{"20000000-0000-0000-0000-000000000001"};
+      // #78: a second account with no lab membership at all, so
+      // resolve_permissions() grants it nothing — the caller criterion 3 of the
+      // issue talks about ("authenticated but holds no permissions").
+      const std::string kNoPermissionEmail{"nobody@example.com"};
+      const std::string kNoPermissionUserId{"10000000-0000-0000-0000-000000000002"};
 
       std::filesystem::path db_path_;
       std::unique_ptr<storage::SqliteBackend> backend_;
@@ -142,6 +150,7 @@ namespace fmgr::test {
       std::unique_ptr<fmgr::v1::AuthService::Stub> auth_stub_;
       std::unique_ptr<fmgr::v1::SessionService::Stub> session_stub_;
       std::unique_ptr<fmgr::v1::SampleService::Stub> sample_stub_;
+      std::unique_ptr<fmgr::v1::LabService::Stub> lab_stub_;
 
     private:
       static void remove_sqlite_files(const std::filesystem::path& path) {
@@ -202,6 +211,22 @@ namespace fmgr::test {
         txn->repo<core::Lab>().insert(lab, ctx);
         txn->repo<core::User>().insert(user, ctx);
         txn->repo<core::LabMembership>().insert(membership, ctx);
+
+        // #78: the permissionless account. A user with no membership resolves to
+        // an empty grant set — no lab permissions, no global ones — which is the
+        // caller the non-permission RPCs must still admit and the permission-gated
+        // ones must still refuse.
+        const core::User no_permission_user{
+            .id = core::UserId::parse(kNoPermissionUserId),
+            .primary_email = kNoPermissionEmail,
+            .display_name = "No Role",
+            .status = core::UserStatus::Active,
+            .created_at = core::Timestamp::from_unix_micros(1),
+            .auth_bindings = nlohmann::json::array({
+                nlohmann::json::object({{"provider", "local"}, {"hash", password_hash}}),
+            }),
+        };
+        txn->repo<core::User>().insert(no_permission_user, ctx);
         txn->commit();
       }
     };
@@ -487,6 +512,160 @@ namespace fmgr::test {
       }
       server::set_mask_internal_errors(false);
       rpc::AuthMiddleware::register_rpc(sample_read_rpc, core::Permission::SampleRead);
+    }
+
+    // #78: the ten registrations that used to name a permission no code path
+    // enforced. Nine of them now state that they require no permission at all;
+    // the tenth, VerifyAuditChain, is genuinely gated — on the deployment-admin
+    // predicate this repo spells has_global(lab.provision) — and its handler asks
+    // authorize() for exactly that, so the gate verifies the entry on every call.
+    // This is the test that goes red when one of them claims a permission its
+    // handler does not enforce again.
+    TEST_F(ServerIntegrationTest, RpcRegistryStatesTheGateEachNonPermissionRpcHas) {
+      const auto registry = rpc::AuthMiddleware::registered_rpcs();
+
+      const std::array<std::string, 9> requires_no_permission{
+          "/fmgr.v1.AuthService/Login",           "/fmgr.v1.AuthService/SubmitMfa",
+          "/fmgr.v1.AuthService/Logout",          "/fmgr.v1.AuthService/CreateApiToken",
+          "/fmgr.v1.AuthService/ListApiTokens",   "/fmgr.v1.AuthService/RevokeApiToken",
+          "/fmgr.v1.SessionService/ListSessions", "/fmgr.v1.SessionService/RevokeSession",
+          "/fmgr.v1.LabService/ListLabs",
+      };
+      for (const auto& rpc : requires_no_permission) {
+        const auto entry = registry.find(rpc);
+        ASSERT_NE(entry, registry.end()) << rpc << " is missing from the RPC registry";
+        EXPECT_TRUE(entry->second.kind() == rpc::RpcGate::Kind::NoPermissionRequired)
+            << rpc << " is registered as " << entry->second.describe()
+            << ", i.e. it still claims a permission its handler never enforces";
+      }
+
+      const auto chain = registry.find("/fmgr.v1.AuditService/VerifyAuditChain");
+      ASSERT_NE(chain, registry.end());
+      ASSERT_EQ(chain->second.kind(), rpc::RpcGate::Kind::Permission);
+      EXPECT_EQ(chain->second.permission(), core::Permission::LabProvision)
+          << "chain verification is deployment-wide, i.e. system-admin only";
+    }
+
+    // #78 criterion 3: every one of the ten has a test pinning its actual gate.
+    // The caller below holds no permission whatsoever — it has no lab membership,
+    // so resolve_permissions() grants it nothing — and the control at the end
+    // proves that is real by showing a permission-gated RPC refuses it.
+    TEST_F(ServerIntegrationTest, PermissionlessCallerReachesEveryRpcThatRequiresNoPermission) {
+      const auto token = login(kNoPermissionEmail, kPassword);
+      ASSERT_FALSE(token.empty()) << "Login needs no permission; it is where a caller gets one";
+
+      // ListSessions: the caller's own rows, and only those.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSessionsRequest req;
+        fmgr::v1::ListSessionsResponse resp;
+        const auto status = session_stub_->ListSessions(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+        ASSERT_GE(resp.sessions_size(), 1);
+        EXPECT_EQ(resp.sessions(0).user_id(), kNoPermissionUserId);
+      }
+
+      // ListLabs: visibility-scoped, not gated — an empty membership list means
+      // an empty result, not a refusal.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListLabsRequest req;
+        fmgr::v1::ListLabsResponse resp;
+        const auto status = lab_stub_->ListLabs(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+        EXPECT_EQ(resp.labs_size(), 0) << "a caller with no membership sees no labs";
+      }
+
+      // Self-management: the caller's own API tokens, created and revoked.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListApiTokensRequest req;
+        fmgr::v1::ListApiTokensResponse resp;
+        const auto status = auth_stub_->ListApiTokens(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+        EXPECT_EQ(resp.tokens_size(), 0);
+      }
+      std::string api_token_id;
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateApiTokenRequest req;
+        req.set_name("no-role");
+        req.set_scope_json(R"(["*"])");
+        fmgr::v1::CreateApiTokenResponse resp;
+        const auto status = auth_stub_->CreateApiToken(&ctx, req, &resp);
+        ASSERT_TRUE(status.ok()) << status.error_message();
+        api_token_id = resp.api_token_id();
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::RevokeApiTokenRequest req;
+        req.set_api_token_id(api_token_id);
+        fmgr::v1::RevokeApiTokenResponse resp;
+        const auto status = auth_stub_->RevokeApiToken(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+      }
+
+      // SubmitMfa: reachable with the session token, because completing MFA is
+      // what it does. This account has no TOTP secret, so it fails on the code —
+      // an authentication error, not a permission one.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::SubmitMfaRequest req;
+        req.set_totp_code("000000");
+        fmgr::v1::SubmitMfaResponse resp;
+        const auto status = auth_stub_->SubmitMfa(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED) << status.error_message();
+      }
+
+      // Control: the same caller, same credentials, is refused where a permission
+      // is required — so the successes above are "no permission needed", not
+      // "permissions are ignored".
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSamplesRequest req;
+        req.set_lab_id(kLabId);
+        fmgr::v1::ListSamplesResponse resp;
+        const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED)
+            << status.error_message();
+      }
+
+      // Logout ends this session; re-login for the last two, which are per-session.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::LogoutRequest req;
+        fmgr::v1::LogoutResponse resp;
+        const auto status = auth_stub_->Logout(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+      }
+      const auto second = login(kNoPermissionEmail, kPassword);
+      ASSERT_FALSE(second.empty());
+      {
+        grpc::ClientContext list_ctx;
+        set_bearer(list_ctx, second);
+        fmgr::v1::ListSessionsRequest list_req;
+        fmgr::v1::ListSessionsResponse list_resp;
+        ASSERT_TRUE(session_stub_->ListSessions(&list_ctx, list_req, &list_resp).ok());
+        ASSERT_GE(list_resp.sessions_size(), 1);
+
+        // RevokeSession: its own session. session.revoke (#77) is what another
+        // user's session costs, and this caller does not hold it.
+        grpc::ClientContext ctx;
+        set_bearer(ctx, second);
+        fmgr::v1::RevokeSessionRequest req;
+        req.set_session_id(list_resp.sessions(0).id());
+        fmgr::v1::RevokeSessionResponse resp;
+        const auto status = session_stub_->RevokeSession(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+      }
     }
 
     // Security audit H-1: a burst of Login attempts from one source is throttled

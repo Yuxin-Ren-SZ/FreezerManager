@@ -499,6 +499,47 @@ namespace fmgr::rpc {
                    auth::AuthError);
     }
 
+    // ---- The non-permission registry state (#78) ----
+
+    // The new state is not a bypass. An RPC registered as requiring no permission
+    // whose handler *does* call authorize() is refused exactly like a permission
+    // mismatch — otherwise re-registering a handler this way would take it out of
+    // the #60 check, which is the failure the state exists to prevent.
+    TEST_F(AuthMiddlewareTest, AuthorizeRefusesAnRpcRegisteredAsNoPermissionRequired) {
+      AuthMiddleware::register_rpc("e3_test.NoPermissionRpc", RpcGate::no_permission_required());
+
+      try {
+        do_authorize_on(*middleware_,
+                        RpcCall{.bearer_token = "irrelevant", .method = "e3_test.NoPermissionRpc"},
+                        core::Permission::SampleRead);
+        FAIL() << "an authorize() call for a no_permission_required() RPC must be refused";
+      } catch (const RpcRegistryMismatch& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("e3_test.NoPermissionRpc"), std::string::npos) << message;
+        EXPECT_NE(message.find("no permission required"), std::string::npos) << message;
+        EXPECT_NE(message.find("sample.read"), std::string::npos) << message;
+      }
+    }
+
+    TEST_F(AuthMiddlewareTest, RpcRegistryReportsTheGateKindOfEveryEntry) {
+      AuthMiddleware::register_rpc("e3_test.GatedRpc", core::Permission::SampleWrite);
+      AuthMiddleware::register_rpc("e3_test.UngatedRpc", RpcGate::no_permission_required());
+
+      const auto snapshot = AuthMiddleware::registered_rpcs();
+      ASSERT_TRUE(snapshot.contains("e3_test.GatedRpc"));
+      ASSERT_TRUE(snapshot.contains("e3_test.UngatedRpc"));
+      EXPECT_EQ(snapshot.at("e3_test.GatedRpc").kind(), RpcGate::Kind::Permission);
+      EXPECT_EQ(snapshot.at("e3_test.GatedRpc").permission(), core::Permission::SampleWrite);
+      EXPECT_EQ(snapshot.at("e3_test.UngatedRpc").kind(), RpcGate::Kind::NoPermissionRequired);
+    }
+
+    TEST_F(AuthMiddlewareTest, NoPermissionGateRefusesToNameAPermission) {
+      const auto gate = RpcGate::no_permission_required();
+      EXPECT_EQ(gate.describe(), "no permission required");
+      EXPECT_THROW(static_cast<void>(gate.permission()), std::logic_error);
+      EXPECT_EQ(RpcGate(core::Permission::AuditRead).describe(), "permission 'audit.read'");
+    }
+
     TEST_F(AuthMiddlewareTest, RpcRegistryReturnsSnapshotForAllRegisteredRpcs) {
       const auto before = AuthMiddleware::registered_rpcs();
       EXPECT_FALSE(before.contains("e3_test.SnapshotRead"));
@@ -509,8 +550,8 @@ namespace fmgr::rpc {
 
       const auto snapshot = AuthMiddleware::registered_rpcs();
       EXPECT_GE(snapshot.size(), 2U);
-      EXPECT_EQ(snapshot.at("e3_test.SnapshotRead"), core::Permission::SampleRead);
-      EXPECT_EQ(snapshot.at("e3_test.SnapshotWrite"), core::Permission::SampleWrite);
+      EXPECT_EQ(snapshot.at("e3_test.SnapshotRead").permission(), core::Permission::SampleRead);
+      EXPECT_EQ(snapshot.at("e3_test.SnapshotWrite").permission(), core::Permission::SampleWrite);
     }
 
     TEST_F(AuthMiddlewareTest, RpcRegistryDuplicateRegistrationOverwrites) {
@@ -519,7 +560,7 @@ namespace fmgr::rpc {
 
       const auto snapshot = AuthMiddleware::registered_rpcs();
       ASSERT_TRUE(snapshot.contains("e3_test.DupRpc"));
-      EXPECT_EQ(snapshot.at("e3_test.DupRpc"), core::Permission::SampleWrite);
+      EXPECT_EQ(snapshot.at("e3_test.DupRpc").permission(), core::Permission::SampleWrite);
     }
 
     TEST_F(AuthMiddlewareTest, RegistryCoverageCheckAcceptsCoveredRpcs) {

@@ -79,10 +79,15 @@ namespace fmgr::server {
   SessionServiceImpl::SessionServiceImpl(auth::IAuthProvider& auth,
                                          storage::IStorageBackend& backend)
       : auth_(auth), backend_(backend), middleware_(auth) {
+    // #78: neither RPC is permission-gated. ListSessions filters strictly to the
+    // caller's own rows and ignores the request's user_id; RevokeSession lets a
+    // caller revoke its own session and checks session.revoke by hand only for
+    // someone else's. Registering session.revoke named a permission the gate
+    // never enforced for either of them.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SessionService/ListSessions",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcGate::no_permission_required());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SessionService/RevokeSession",
-                                      core::Permission::SessionRevoke);
+                                      rpc::RpcGate::no_permission_required());
   }
 
   grpc::Status SessionServiceImpl::ListSessions(grpc::ServerContext* ctx,
