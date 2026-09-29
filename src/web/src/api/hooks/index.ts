@@ -3,6 +3,8 @@
 // One module per service (TODO.md G1.2, G-arch 11). Feature screens import from
 // here, so a hook can move between services without touching the screens.
 
+export * from './audit';
+export * from './containers';
 export * from './labs';
 export * from './layout';
 export * from './sampleLive';

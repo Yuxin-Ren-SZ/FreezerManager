@@ -11,16 +11,19 @@ import {
 import { HttpResponse, http, type HttpHandler } from 'msw';
 import { isGrpcCode, type GrpcCode } from '../api/errors';
 import { apiRoutes, type RpcName } from '../api/routes';
+import { AuditEventSchema, type AuditEvent } from '../gen/fmgr/v1/audit_pb';
 import {
   BoxPositionSchema,
   BoxSchema,
   BoxTypeSchema,
   ContainerKind,
+  ContainerTypeSchema,
   FreezerSchema,
   StorageContainerSchema,
   type Box,
   type BoxPosition,
   type BoxType,
+  type ContainerType,
   type Freezer,
   type StorageContainer,
 } from '../gen/fmgr/v1/box_pb';
@@ -34,7 +37,12 @@ import {
   type ItemType,
 } from '../gen/fmgr/v1/item_type_pb';
 import { LabSchema, type Lab } from '../gen/fmgr/v1/lab_pb';
-import { SampleSchema, SampleStatus, type Sample } from '../gen/fmgr/v1/sample_pb';
+import {
+  CheckoutAction,
+  SampleSchema,
+  SampleStatus,
+  type Sample,
+} from '../gen/fmgr/v1/sample_pb';
 
 /**
  * The MSW fake for the whole REST surface (TODO.md G1.2, G-arch 10).
@@ -78,9 +86,14 @@ export interface DemoLab {
    */
   customFieldDefs: CustomFieldDefinition[];
   samples: Sample[];
+  /** Custom-field definitions, including the inheritance chain G3.3 resolves. */
+  cfds: CustomFieldDefinition[];
+  /** Chain of custody for the seeded samples; `audit/list` filters it. */
+  auditEvents: AuditEvent[];
   /** Layout (BoxService): the physical tree the G3.1 screen renders. */
   freezers: Freezer[];
   storageContainers: StorageContainer[];
+  containerTypes: ContainerType[];
   boxTypes: BoxType[];
   boxes: Box[];
 }
@@ -89,8 +102,16 @@ export interface DemoLab {
 /** A real `Timestamp` message, not a bare object: nested messages must be messages. */
 const seedTimestamp = () => create(TimestampSchema, { unixMicros: 1_758_931_200_000_000n });
 
-/** `rows × cols` positions, labelled `A1`… like a real box map. */
-function seedPositions(rows: number, cols: number): BoxPosition[] {
+/**
+ * `rows × cols` positions, labelled `A1`… like a real box map.
+ *
+ * `accepts` is the sorted list of container-type size classes the position
+ * takes (`BoxPosition.accepts`, filled by `BoxServiceImpl::fill_box_type` from
+ * `box_type_position_accepts`). An empty list means "no constraint is known",
+ * which is what a box type created without accepts looks like — the server then
+ * rejects every container type at that position, and only the server can say so.
+ */
+function seedPositions(rows: number, cols: number, accepts: readonly string[] = []): BoxPosition[] {
   return Array.from({ length: rows * cols }, (_, index) => {
     const row = Math.floor(index / cols) + 1;
     const col = (index % cols) + 1;
@@ -98,6 +119,7 @@ function seedPositions(rows: number, cols: number): BoxPosition[] {
       label: `${String.fromCharCode(64 + row)}${String(col)}`,
       row,
       col,
+      accepts: [...accepts],
     });
   });
 }
@@ -216,19 +238,46 @@ function seedLayout(createdAt: ReturnType<typeof seedTimestamp>) {
         createdAt,
       }),
     ],
+    containerTypes: [
+      create(ContainerTypeSchema, {
+        id: 'ct-15ml',
+        labId: 'lab-demo',
+        name: '15 mL tube',
+        sizeClass: 'tube-15',
+        createdAt,
+      }),
+      create(ContainerTypeSchema, {
+        id: 'ct-50ml',
+        labId: 'lab-demo',
+        name: '50 mL tube',
+        sizeClass: 'tube-50',
+        createdAt,
+      }),
+      create(ContainerTypeSchema, {
+        id: 'ct-second',
+        labId: 'lab-second',
+        name: 'Second lab tube',
+        sizeClass: 'tube-15',
+        createdAt,
+      }),
+    ],
     boxTypes: [
       create(BoxTypeSchema, {
         id: 'bt-96',
         labId: 'lab-demo',
         name: '96-well',
-        positions: seedPositions(8, 12),
+        // Both demo container types fit a 96-well position, so a sample that
+        // merely *has* a container type is not rejected here.
+        positions: seedPositions(8, 12, ['tube-15', 'tube-50']),
         createdAt,
       }),
       create(BoxTypeSchema, {
         id: 'bt-9',
         labId: 'lab-demo',
         name: '9-place',
-        positions: seedPositions(3, 3),
+        // Only the 15 mL tube fits: placing a 50 mL tube here is the
+        // size-class rejection the server returns as INVALID_ARGUMENT.
+        positions: seedPositions(3, 3, ['tube-15']),
         createdAt,
       }),
       create(BoxTypeSchema, {
@@ -311,13 +360,38 @@ export function createDemoLab(): DemoLab {
       }),
     ],
     itemTypes: [
-      create(ItemTypeSchema, { id: 'it-serum', labId: 'lab-demo', name: 'Serum', createdAt }),
-      create(ItemTypeSchema, { id: 'it-plasma', labId: 'lab-demo', name: 'Plasma', createdAt }),
+      // The inheritance chain G3.3 walks: Blood → {Serum, Plasma}. Inherited
+      // definitions are exactly the case a leaf-only resolver gets wrong.
+      create(ItemTypeSchema, { id: 'it-blood', labId: 'lab-demo', name: 'Blood', createdAt }),
+      create(ItemTypeSchema, {
+        id: 'it-serum',
+        labId: 'lab-demo',
+        parentId: 'it-blood',
+        name: 'Serum',
+        createdAt,
+      }),
+      create(ItemTypeSchema, {
+        id: 'it-plasma',
+        labId: 'lab-demo',
+        parentId: 'it-blood',
+        name: 'Plasma',
+        createdAt,
+      }),
+      // A leaf with a required field, kept off the item types the other feature
+      // tests use so the required rule cannot change their results.
+      create(ItemTypeSchema, {
+        id: 'it-tissue',
+        labId: 'lab-demo',
+        parentId: 'it-blood',
+        name: 'Tissue',
+        createdAt,
+      }),
       create(ItemTypeSchema, { id: 'it-dna', labId: 'lab-second', name: 'DNA', createdAt }),
     ],
-    // Two item-type fields and one lab-wide field, which is the shape
-    // `ListCustomFieldDefinitions` filters on: `item_type_id` is compared for
-    // equality, so a lab-scoped definition is absent from an item-type query.
+    // G3.2's four: two item-type fields, one lab-wide field and one in the other
+    // lab — the shape `ListCustomFieldDefinitions` filters on, since
+    // `item_type_id` is compared for equality and a lab-scoped definition is
+    // therefore absent from an item-type query.
     customFieldDefs: [
       create(CustomFieldDefinitionSchema, {
         id: 'cfd-concentration',
@@ -358,7 +432,13 @@ export function createDemoLab(): DemoLab {
         dataType: FieldDataType.TEXT,
         createdAt,
       }),
+      // G3.3 adds the inheritance chain (Blood → Serum/Plasma/Tissue), one
+      // definition per `FieldDataType`, a PHI field, a key that is redefined on
+      // the child, and a required field on an item type the other feature tests
+      // do not use.
+      ...seedCustomFieldDefinitions(createdAt),
     ],
+    auditEvents: seedAuditEvents(createdAt),
     samples: [
       seedSample({
         id: 'sample-1',
@@ -368,7 +448,17 @@ export function createDemoLab(): DemoLab {
         barcode: 'DEMO-0001',
         boxId: 'box-1',
         positionLabel: 'A1',
-        customFieldsJson: JSON.stringify({ concentration: '12.5' }),
+        volumeValue: 100,
+        volumeUnit: 'µL',
+        customFieldsJson: JSON.stringify({
+          // G3.2's browser column chooser renders this one; the rest are G3.3's,
+          // spread over the definition types and the inheritance chain.
+          concentration: '12.5',
+          notes: 'ok',
+          aliquot_count: 3,
+          is_hemolyzed: true,
+          collection_date: '2026-01-05',
+        }),
       }),
       seedSample({
         id: 'sample-2',
@@ -378,6 +468,7 @@ export function createDemoLab(): DemoLab {
         barcode: 'DEMO-0002',
         boxId: 'box-1',
         positionLabel: 'A2',
+        parentSampleId: 'sample-1',
       }),
       seedSample({
         id: 'sample-3',
@@ -390,6 +481,8 @@ export function createDemoLab(): DemoLab {
         status: SampleStatus.CHECKED_OUT,
         customFieldsJson: JSON.stringify({ freeze_thaw_count: '3' }),
       }),
+      // Depleted parents and other states are left to the tests that need them:
+      // growing this list would change every `sample/list` page assertion.
       seedSample({
         id: 'sample-4',
         labId: 'lab-second',
@@ -437,6 +530,146 @@ export function seedSamples(lab: DemoLab, count: number): DemoLab {
       }),
     ),
   };
+}
+
+/**
+ * The lab's custom-field definitions (G3.3), deliberately spread over the
+ * inheritance chain and over every `FieldDataType`:
+ *
+ * `concentration` is deliberately **not** defined here: G3.2's seed already has
+ * that key on `it-serum`, and a second definition would make "which one wins"
+ * depend on the resolver rather than on the test.
+ *
+ * | key | attached to | type | why it is here |
+ * |---|---|---|---|
+ * | `notes` | Blood **and** Serum | TEXT | the most-derived definition must win |
+ * | `aliquot_count` | Blood | INT | inherited from the parent |
+ * | `donor_name` | Blood | TEXT, PHI | server-filtered by `phi.read` |
+ * | `is_hemolyzed` | Serum | BOOL | leaf-only |
+ * | `collection_date` | Blood | DATE | inherited |
+ * | `received_at` | Blood | DATETIME | inherited |
+ * | `tube_type` | Blood | ENUM | inherited, `values` constraint |
+ * | `parent_aliquot` | Serum | REFERENCE | leaf-only UUID |
+ * | `tissue_grade` | Tissue | TEXT, required | the required rule, on an unused item type |
+ * | `ploidy` | DNA (lab-second) | TEXT | another lab's field must not leak |
+ */
+function seedCustomFieldDefinitions(createdAt: ReturnType<typeof seedTimestamp>) {
+  const cfd = (
+    init: MessageInitShape<typeof CustomFieldDefinitionSchema>,
+  ): CustomFieldDefinition =>
+    create(CustomFieldDefinitionSchema, {
+      labId: 'lab-demo',
+      scopeKind: ScopeKind.SAMPLE,
+      required: false,
+      validationJson: '{}',
+      indexed: false,
+      isPhi: false,
+      createdAt,
+      ...init,
+    });
+
+  return [
+    cfd({
+      id: 'cfd-notes-blood',
+      itemTypeId: 'it-blood',
+      key: 'notes',
+      label: 'Notes',
+      dataType: FieldDataType.TEXT,
+      validationJson: JSON.stringify({ max_length: 20 }),
+    }),
+    cfd({
+      id: 'cfd-notes-serum',
+      itemTypeId: 'it-serum',
+      key: 'notes',
+      label: 'Serum notes',
+      dataType: FieldDataType.TEXT,
+      validationJson: JSON.stringify({ max_length: 5 }),
+    }),
+    cfd({
+      id: 'cfd-aliquot-count',
+      itemTypeId: 'it-blood',
+      key: 'aliquot_count',
+      label: 'Aliquot count',
+      dataType: FieldDataType.INT,
+      validationJson: JSON.stringify({ min: 1, max: 10 }),
+    }),
+    cfd({
+      id: 'cfd-donor-name',
+      itemTypeId: 'it-blood',
+      key: 'donor_name',
+      label: 'Donor name',
+      dataType: FieldDataType.TEXT,
+      isPhi: true,
+    }),
+    cfd({
+      id: 'cfd-hemolyzed',
+      itemTypeId: 'it-serum',
+      key: 'is_hemolyzed',
+      label: 'Hemolyzed',
+      dataType: FieldDataType.BOOL,
+    }),
+    cfd({
+      id: 'cfd-collection-date',
+      itemTypeId: 'it-blood',
+      key: 'collection_date',
+      label: 'Collection date',
+      dataType: FieldDataType.DATE,
+    }),
+    cfd({
+      id: 'cfd-received-at',
+      itemTypeId: 'it-blood',
+      key: 'received_at',
+      label: 'Received at',
+      dataType: FieldDataType.DATETIME,
+    }),
+    cfd({
+      id: 'cfd-tube-type',
+      itemTypeId: 'it-blood',
+      key: 'tube_type',
+      label: 'Tube type',
+      dataType: FieldDataType.ENUM,
+      validationJson: JSON.stringify({ values: ['EDTA', 'heparin', 'plain'] }),
+    }),
+    cfd({
+      id: 'cfd-parent-aliquot',
+      itemTypeId: 'it-serum',
+      key: 'parent_aliquot',
+      label: 'Parent aliquot',
+      dataType: FieldDataType.REFERENCE,
+    }),
+    cfd({
+      id: 'cfd-tissue-grade',
+      itemTypeId: 'it-tissue',
+      key: 'tissue_grade',
+      label: 'Tissue grade',
+      dataType: FieldDataType.TEXT,
+      required: true,
+    }),
+    // Another lab's field: a resolver that keys on `key` alone would leak it.
+    cfd({ id: 'cfd-ploidy', labId: 'lab-second', key: 'ploidy', label: 'Ploidy' }),
+  ];
+}
+
+/** Chain of custody for `sample-1`, plus rows that must be filtered out. */
+function seedAuditEvents(createdAt: ReturnType<typeof seedTimestamp>) {
+  const event = (
+    init: MessageInitShape<typeof AuditEventSchema>,
+  ): AuditEvent =>
+    create(AuditEventSchema, {
+      actorUserId: 'user-1',
+      entityKind: 'sample',
+      at: createdAt,
+      ...init,
+    });
+
+  return [
+    event({ id: 'audit-1', labId: 'lab-demo', entityId: 'sample-1', action: 'sample.create' }),
+    event({ id: 'audit-2', labId: 'lab-demo', entityId: 'sample-1', action: 'sample.update' }),
+    event({ id: 'audit-3', labId: 'lab-demo', entityId: 'sample-1', action: 'sample.checkout' }),
+    // A different sample in the same lab, and the same sample id in another lab.
+    event({ id: 'audit-other', labId: 'lab-demo', entityId: 'sample-2', action: 'sample.create' }),
+    event({ id: 'audit-lab2', labId: 'lab-second', entityId: 'sample-1', action: 'sample.create' }),
+  ];
 }
 
 /** The fields a caller must supply to seed a sample; the rest come from defaults. */
@@ -639,6 +872,177 @@ function exportSamplesCsv(samples: readonly Sample[]): string {
 }
 
 /**
+ * The fake's own copy of `storage::resolve_custom_field_defs` — the *server's*
+ * inheritance rule, written independently of the screen's resolver on purpose.
+ * If the fake reused the feature's resolver, a bug in it would make every
+ * inheritance test pass for the wrong reason.
+ *
+ * Lab-global definitions apply to every item type; a definition attached to an
+ * ancestor applies to its descendants; on a duplicate `key` the most-derived
+ * definition wins (leaf > parent > … > global).
+ */
+function fakeResolveCfds(lab: DemoLab, itemTypeId: string): CustomFieldDefinition[] {
+  const lineage: string[] = [];
+  const seen = new Set<string>();
+  let cursor: string | undefined = itemTypeId;
+  while (cursor !== undefined && !seen.has(cursor)) {
+    seen.add(cursor);
+    lineage.push(cursor);
+    cursor = lab.itemTypes.find((candidate) => candidate.id === cursor)?.parentId;
+  }
+  // Rank: leaf highest, then its parent, …; lab-global definitions rank 0.
+  const rank = new Map(lineage.map((id, index) => [id, lineage.length - index]));
+  const best = new Map<string, { rank: number; cfd: CustomFieldDefinition }>();
+
+  for (const cfd of lab.customFieldDefs) {
+    if (cfd.labId !== lab.itemTypes.find((it) => it.id === itemTypeId)?.labId) continue;
+    if (cfd.scopeKind !== ScopeKind.SAMPLE) continue;
+    if (cfd.archivedAt !== undefined) continue;
+    let specificity = 0;
+    if (cfd.itemTypeId !== undefined) {
+      const found = rank.get(cfd.itemTypeId);
+      if (found === undefined) continue; // outside this lineage
+      specificity = found;
+    }
+    const slot = best.get(cfd.key);
+    if (slot === undefined || specificity >= slot.rank) {
+      best.set(cfd.key, { rank: specificity, cfd });
+    }
+  }
+  return [...best.values()].map((entry) => entry.cfd);
+}
+
+/**
+ * The server's `core::validate_custom_fields` message, rendered exactly as
+ * `prepare_custom_fields()` in `SampleServiceImpl.cc` renders it:
+ * `custom field validation failed: [key: message] […]`. Only the rules the
+ * seeded definitions exercise are implemented; anything else is the caller's
+ * problem on a real server, and the injection hook still covers it.
+ */
+function fakeFieldErrors(
+  definitions: readonly CustomFieldDefinition[],
+  values: Record<string, unknown>,
+): string[] {
+  const errors: string[] = [];
+  for (const def of definitions) {
+    const value = values[def.key];
+    const present = value !== undefined && value !== null;
+    if (def.required && !present) {
+      errors.push(`${def.key}: required field is missing or null`);
+      continue;
+    }
+    if (!present) continue;
+
+    const constraints = JSON.parse(def.validationJson || '{}') as Record<string, unknown>;
+    switch (def.dataType) {
+    case FieldDataType.TEXT:
+      if (typeof value !== 'string') {
+        errors.push(`${def.key}: expected string value`);
+      } else if (
+        typeof constraints.max_length === 'number' &&
+        value.length > constraints.max_length
+      ) {
+        errors.push(
+          `${def.key}: string length ${String(value.length)} exceeds max_length ${String(constraints.max_length)}`,
+        );
+      }
+      break;
+    case FieldDataType.INT:
+      if (typeof value !== 'number' || !Number.isInteger(value)) {
+        errors.push(`${def.key}: expected integer value`);
+      } else if (typeof constraints.min === 'number' && value < constraints.min) {
+        errors.push(`${def.key}: value is below minimum`);
+      } else if (typeof constraints.max === 'number' && value > constraints.max) {
+        errors.push(`${def.key}: value exceeds maximum`);
+      }
+      break;
+    case FieldDataType.FLOAT:
+      if (typeof value !== 'number') {
+        errors.push(`${def.key}: expected numeric value`);
+      } else if (typeof constraints.min === 'number' && value < constraints.min) {
+        errors.push(`${def.key}: value is below minimum`);
+      } else if (typeof constraints.max === 'number' && value > constraints.max) {
+        errors.push(`${def.key}: value exceeds maximum`);
+      }
+      break;
+    case FieldDataType.BOOL:
+      if (typeof value !== 'boolean') errors.push(`${def.key}: expected boolean value`);
+      break;
+    case FieldDataType.ENUM: {
+      const allowed = Array.isArray(constraints.values) ? constraints.values : undefined;
+      if (typeof value !== 'string') {
+        errors.push(`${def.key}: expected string value for enum`);
+      } else if (allowed !== undefined && !allowed.includes(value)) {
+        errors.push(`${def.key}: value '${value}' is not in the allowed enum set`);
+      }
+      break;
+    }
+    case FieldDataType.DATE:
+    case FieldDataType.DATETIME:
+    case FieldDataType.REFERENCE:
+    case FieldDataType.UNSPECIFIED:
+      // Not exercised by the seeded definitions; the injection hook covers it.
+      break;
+    }
+  }
+  return errors;
+}
+
+/** Throws the server's `INVALID_ARGUMENT` for a rejected custom-field blob. */
+function requireValidCustomFields(lab: DemoLab, itemTypeId: string, json: string): void {
+  const values = (json === '' ? {} : JSON.parse(json)) as Record<string, unknown>;
+  const errors = fakeFieldErrors(fakeResolveCfds(lab, itemTypeId), values);
+  if (errors.length > 0) {
+    const message = errors.reduce((acc, error) => `${acc} [${error}]`, 'custom field validation failed:');
+    throw new FakeRpcError('INVALID_ARGUMENT', message);
+  }
+}
+
+/** The active sample already holding `(boxId, positionLabel)`, if any. */
+function positionHolder(
+  lab: DemoLab,
+  boxId: string,
+  positionLabel: string,
+  exceptSampleId = '',
+): Sample | undefined {
+  return lab.samples.find(
+    (candidate) =>
+      candidate.id !== exceptSampleId &&
+      candidate.boxId === boxId &&
+      candidate.positionLabel === positionLabel &&
+      candidate.status !== SampleStatus.TOMBSTONED,
+  );
+}
+
+/**
+ * The `container_type size_class is not accepted at this box position` rule
+ * (`validate_sample()` in `SampleRepositories.cc`). Only enforced when both the
+ * container type and the box are in the seed, so a test that posts an id the
+ * fake has never heard of is not rejected for a reason the real server would
+ * not use.
+ */
+function requireAcceptedSizeClass(
+  lab: DemoLab,
+  boxId: string,
+  positionLabel: string,
+  containerTypeId: string,
+): void {
+  const containerType = lab.containerTypes.find((candidate) => candidate.id === containerTypeId);
+  const box = lab.boxes.find((candidate) => candidate.id === boxId);
+  const boxType = lab.boxTypes.find((candidate) => candidate.id === box?.boxTypeId);
+  const position = boxType?.positions.find((candidate) => candidate.label === positionLabel);
+  if (containerType === undefined || position === undefined || position.accepts.length === 0) {
+    return;
+  }
+  if (!position.accepts.includes(containerType.sizeClass)) {
+    throw new FakeRpcError(
+      'INVALID_ARGUMENT',
+      'container_type size_class is not accepted at this box position',
+    );
+  }
+}
+
+/**
  * The routes that answer with real demo data. Every other route in `routes.ts`
  * still gets a handler and can still be made to fail, but replies with the
  * response message's default values. A feature task that needs real data for
@@ -717,20 +1121,40 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
   },
 
   // `ListCustomFieldDefinitions` filters `item_type_id` by equality, so a
-  // lab-scoped definition is not returned for an item-type query.
+  // lab-scoped definition is not returned for an item-type query — and it does
+  // no ancestor resolution either, which is why the client walks the chain
+  // itself. The server ignores `page` here, so this route returns everything
+  // (`samplePage`'s doc comment lists the routes that really are paged).
   'custom-field-def/list': (lab, message) => {
     const { labId, itemTypeId } = fields(message) as { labId: string; itemTypeId?: string };
     requireId(labId, 'lab');
     return {
       cfds: lab.customFieldDefs.filter((cfd) => {
         if (cfd.labId !== labId) return false;
+        if (cfd.archivedAt !== undefined) return false;
         if (itemTypeId !== undefined && cfd.itemTypeId !== itemTypeId) return false;
         return true;
       }),
     };
   },
 
-  // ---- SampleService ----
+  'item-type/get': (lab, message) => {
+    const { itemTypeId } = fields(message) as { itemTypeId: string };
+    requireId(itemTypeId, 'item type');
+    const found = lab.itemTypes.find((candidate) => candidate.id === itemTypeId);
+    if (found === undefined || found.archivedAt !== undefined) {
+      throw new FakeRpcError('NOT_FOUND', 'item type not found');
+    }
+    return { itemType: found };
+  },
+
+  // `BoxServiceImpl::ListContainerTypes` ignores `page` too.
+  'container-type/list': (lab, message) => {
+    const { labId } = fields(message) as { labId: string };
+    requireId(labId, 'lab');
+    return { containerTypes: lab.containerTypes.filter((candidate) => candidate.labId === labId) };
+  },
+
   'sample/list': (lab, message) => {
     const {
       labId,
@@ -812,6 +1236,18 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     if ((init.name ?? '').trim() === '') {
       throw new FakeRpcError('INVALID_ARGUMENT', 'name is required');
     }
+    requireValidCustomFields(lab, init.itemTypeId ?? '', init.customFieldsJson ?? '{}');
+    if (init.boxId !== undefined && init.positionLabel !== undefined) {
+      if (positionHolder(lab, init.boxId, init.positionLabel) !== undefined) {
+        // `samples_position_unique` (box_id, position_label): the SQLite backend
+        // reports it as `execute sqlite sample statement: UNIQUE constraint
+        // failed: …`, Postgres with its own wording — the code is the stable part.
+        throw new FakeRpcError('ALREADY_EXISTS', 'execute sqlite sample statement: UNIQUE constraint failed: samples.box_id, samples.position_label');
+      }
+      if (init.containerTypeId !== undefined) {
+        requireAcceptedSizeClass(lab, init.boxId, init.positionLabel, init.containerTypeId);
+      }
+    }
     const created = create(SampleSchema, {
       ...init,
       id: `sample-${String(lab.samples.length + 1)}-created`,
@@ -829,6 +1265,20 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     if (incoming === undefined) throw new FakeRpcError('INVALID_ARGUMENT', 'sample is required');
     const index = lab.samples.findIndex((candidate) => candidate.id === incoming.id);
     if (index < 0) throw new FakeRpcError('NOT_FOUND', 'no such sample');
+    requireValidCustomFields(lab, incoming.itemTypeId, incoming.customFieldsJson);
+    if (incoming.boxId !== undefined && incoming.positionLabel !== undefined) {
+      if (positionHolder(lab, incoming.boxId, incoming.positionLabel, incoming.id) !== undefined) {
+        throw new FakeRpcError('ALREADY_EXISTS', 'execute sqlite sample statement: UNIQUE constraint failed: samples.box_id, samples.position_label');
+      }
+      if (incoming.containerTypeId !== undefined) {
+        requireAcceptedSizeClass(
+          lab,
+          incoming.boxId,
+          incoming.positionLabel,
+          incoming.containerTypeId,
+        );
+      }
+    }
     lab.samples[index] = incoming;
     return { sample: incoming };
   },
@@ -849,20 +1299,98 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     };
     const found = lab.samples.find((candidate) => candidate.id === sampleId);
     if (found === undefined) throw new FakeRpcError('NOT_FOUND', 'no such sample');
+    if (destBoxId !== undefined && destPosition !== undefined) {
+      if (positionHolder(lab, destBoxId, destPosition, sampleId) !== undefined) {
+        throw new FakeRpcError('ALREADY_EXISTS', 'execute sqlite sample statement: UNIQUE constraint failed: samples.box_id, samples.position_label');
+      }
+      if (found.containerTypeId !== undefined) {
+        requireAcceptedSizeClass(lab, destBoxId, destPosition, found.containerTypeId);
+      }
+    }
     if (destBoxId !== undefined) found.boxId = destBoxId;
     if (destPosition !== undefined) found.positionLabel = destPosition;
     return { sample: found };
   },
 
+  // The status machine of `storage::apply_checkout()`: CheckedOut requires
+  // Active; CheckedIn requires CheckedOut and subtracts `volume_used`
+  // (auto-depleting at zero); Discard requires Active|CheckedOut and consumes
+  // whatever is left.
+  //
+  // An illegal transition answers **FAILED_PRECONDITION**, which is this fake's
+  // contract from G1.2 (`fakeApi.test.ts`, `hooks/samples.test.tsx`) even though
+  // the C++ `ConstraintViolation` maps to INVALID_ARGUMENT in
+  // `GrpcErrorTranslation.h`. Changing it is a G1.2 decision, not a G3.3 one, so
+  // it is reported rather than edited here.
   'sample/checkout': (lab, message) => {
-    const { sampleId } = fields(message) as { sampleId: string };
+    const { sampleId, action, volumeUsed, reason } = fields(message) as {
+      sampleId: string;
+      action: CheckoutAction;
+      volumeUsed?: number;
+      reason?: string;
+    };
     const found = lab.samples.find((candidate) => candidate.id === sampleId);
     if (found === undefined) throw new FakeRpcError('NOT_FOUND', 'no such sample');
-    if (found.status !== SampleStatus.ACTIVE) {
-      throw new FakeRpcError('FAILED_PRECONDITION', 'only an active sample can be checked out');
+    if (found.status === SampleStatus.TOMBSTONED || found.status === SampleStatus.DESTROYED) {
+      throw new FakeRpcError('FAILED_PRECONDITION', 'sample is not in a checkout-eligible state');
     }
-    found.status = SampleStatus.CHECKED_OUT;
+
+    switch (action) {
+    // Before G3.3 the fake ignored `action` entirely and only ever checked the
+    // sample out, so an omitted action must keep meaning "check out" — the
+    // G1.2 tests that call `sample/checkout` with no action pin that.
+    case CheckoutAction.UNSPECIFIED:
+    case CheckoutAction.CHECKOUT:
+      if (found.status !== SampleStatus.ACTIVE) {
+        throw new FakeRpcError('FAILED_PRECONDITION', 'only an active sample can be checked out');
+      }
+      found.status = SampleStatus.CHECKED_OUT;
+      break;
+    case CheckoutAction.CHECKIN: {
+      if (found.status !== SampleStatus.CHECKED_OUT) {
+        throw new FakeRpcError('FAILED_PRECONDITION', 'only a checked-out sample can be checked in');
+      }
+      found.status = SampleStatus.ACTIVE;
+      if (volumeUsed !== undefined && found.volumeValue !== undefined) {
+        const remaining = Math.max(0, found.volumeValue - volumeUsed);
+        found.volumeValue = remaining;
+        if (remaining === 0) found.status = SampleStatus.DEPLETED;
+      }
+      break;
+    }
+    case CheckoutAction.DISCARD:
+      if (found.volumeValue !== undefined) found.volumeValue = 0;
+      found.status = SampleStatus.DESTROYED;
+      break;
+    }
+    found.lastModifiedAt = seedTimestamp();
+    // `reason` is recorded on the chain-of-custody event, which the REST surface
+    // does not expose; keeping it out of the sample row is what the server does.
+    void reason;
     return { sample: found };
+  },
+
+  // ---- AuditService: the sample's history (G3.3) ----
+  'audit/list': (lab, message) => {
+    const {
+      labId,
+      entityKind,
+      entityId,
+      page: pageRequest,
+    } = fields(message) as {
+      labId?: string;
+      entityKind?: string;
+      entityId?: string;
+      page?: JsonValue;
+    };
+    const matching = lab.auditEvents.filter((candidate) => {
+      if (labId !== undefined && candidate.labId !== labId) return false;
+      if (entityKind !== undefined && candidate.entityKind !== entityKind) return false;
+      if (entityId !== undefined && candidate.entityId !== entityId) return false;
+      return true;
+    });
+    const { slice, token } = samplePage(matching, pageRequest);
+    return { events: slice, page: { nextPageToken: token } };
   },
 };
 
