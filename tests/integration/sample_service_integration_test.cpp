@@ -177,6 +177,49 @@ namespace fmgr::test {
         return status;
       }
 
+      // One CheckoutSample call. `volume_used` and `volume_unit` are separate
+      // optionals on purpose: the whole point of #100 is what the server does
+      // when a caller sends one without the other.
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      grpc::Status checkout_sample(const std::string& token, const std::string& sample_id,
+                                   fmgr::v1::CheckoutAction action,
+                                   std::optional<double> volume_used = std::nullopt,
+                                   std::optional<std::string> volume_unit = std::nullopt,
+                                   fmgr::v1::Sample* out = nullptr) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CheckoutSampleRequest req;
+        req.set_sample_id(sample_id);
+        req.set_action(action);
+        if (volume_used.has_value()) {
+          req.set_volume_used(*volume_used);
+        }
+        if (volume_unit.has_value()) {
+          req.set_volume_unit(*volume_unit);
+        }
+        fmgr::v1::CheckoutSampleResponse resp;
+        const auto status = sample_stub_->CheckoutSample(&ctx, req, &resp);
+        if (out != nullptr) {
+          *out = resp.sample();
+        }
+        return status;
+      }
+
+      // The chain-of-custody rows stored for one sample, oldest first, read
+      // straight from storage. A claim that a check-in "recorded the volume" is
+      // a claim about `checkout_event.volume_delta`, so the assertion has to be
+      // on the row and not on the RPC's status.
+      [[nodiscard]] std::vector<core::CheckoutEvent>
+      stored_checkout_events(const std::string& sample_id) {
+        auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        auto events =
+            txn->repo<core::CheckoutEvent>().query(storage::Query<core::CheckoutEvent>::where(
+                storage::field<core::CheckoutEvent, std::string>(
+                    core::CheckoutEvent::Field::SampleId) == sample_id));
+        txn->commit();
+        return events;
+      }
+
       // Edit a lab-1 sample as the given principal, sending only what a client
       // that read the record would have to send back: identity, name and the
       // custom-field blob. `custom_fields` is what GetSample returned, verbatim,
@@ -1618,6 +1661,88 @@ namespace fmgr::test {
       fmgr::v1::CheckoutSampleResponse resp;
       ASSERT_TRUE(sample_stub_->CheckoutSample(&ctx, req, &resp).ok());
       EXPECT_EQ(resp.sample().status(), fmgr::v1::SAMPLE_STATUS_DEPLETED);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleRejectsVolumeWithoutUnit) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "vial", .volume_ul = 100}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      fmgr::v1::Sample resp;
+      const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                          /*volume_used=*/40.0, std::nullopt, &resp);
+
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      // Refused, not dropped: the sample is untouched and no event was written.
+      EXPECT_EQ(resp.id(), "");
+      fmgr::v1::Sample stored;
+      ASSERT_TRUE(get_sample(token, id, &stored).ok());
+      EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+      EXPECT_DOUBLE_EQ(stored.volume_value(), 100);
+      EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleRejectsUnitWithoutVolume) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "vial", .volume_ul = 100}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      fmgr::v1::Sample resp;
+      const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                          std::nullopt, std::string("µL"), &resp);
+
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_EQ(resp.id(), "");
+      fmgr::v1::Sample stored;
+      ASSERT_TRUE(get_sample(token, id, &stored).ok());
+      EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+      EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleRejectsUnknownVolumeUnit) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "vial", .volume_ul = 100}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      fmgr::v1::Sample resp;
+      const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                          /*volume_used=*/40.0, std::string("furlong"), &resp);
+
+      // A unit this build cannot parse is the caller's error, never INTERNAL.
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_EQ(resp.id(), "");
+      fmgr::v1::Sample stored;
+      ASSERT_TRUE(get_sample(token, id, &stored).ok());
+      EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+      EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleRecordsVolumeDeltaOnTheEvent) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "vial", .volume_ul = 100}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      fmgr::v1::Sample resp;
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                  /*volume_used=*/40.0, std::string("µL"), &resp)
+                      .ok());
+      EXPECT_DOUBLE_EQ(resp.volume_value(), 60);
+
+      // The recorded chain of custody, not the response: one CheckedOut and one
+      // CheckedIn event, and the second carries the signed delta in the
+      // sample's own unit (`storage::apply_checkout`).
+      const auto events = stored_checkout_events(id);
+      ASSERT_EQ(events.size(), 2U);
+      EXPECT_EQ(events[0].action, core::CheckoutAction::CheckedOut);
+      EXPECT_EQ(events[0].volume_delta, std::nullopt);
+      const auto& checked_in = events[1];
+      EXPECT_EQ(checked_in.action, core::CheckoutAction::CheckedIn);
+      EXPECT_EQ(checked_in.volume_delta, -40);
+      EXPECT_EQ(checked_in.volume_unit, core::VolumeUnit::Microliter);
     }
 
     TEST_F(SampleServiceTest, CheckoutDiscardDestroysSample) {

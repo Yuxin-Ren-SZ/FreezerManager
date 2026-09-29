@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
+#include <exception>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -882,13 +883,33 @@ namespace fmgr::server {
         throw auth::PermissionDenied("sample.checkout required for this lab");
       }
 
+      // Volume and unit travel together, as they do in the CSV importer
+      // (`SampleImport.cc`): a `core::Volume` has no unitless state, so half a
+      // pair is a malformed request rather than a value to drop. The previous
+      // `has_volume_used() && has_volume_unit()` answered a lone `volume_used`
+      // with `std::nullopt`, which is how the web check-in could lose a typed
+      // volume while the screen still reported success (#100).
+      if (req->has_volume_used() != req->has_volume_unit()) {
+        return {grpc::StatusCode::INVALID_ARGUMENT,
+                "volume_used and volume_unit must both be set or both empty"};
+      }
+      std::optional<core::Volume> volume_used;
+      if (req->has_volume_used()) {
+        try {
+          volume_used = core::Volume::from_raw(static_cast<std::int64_t>(req->volume_used()),
+                                               core::parse_volume_unit(req->volume_unit()));
+        } catch (const std::exception&) {
+          // A unit this build does not know is the caller's error. Without this
+          // the parser's std::invalid_argument reached the generic handler and
+          // surfaced as INTERNAL.
+          return {grpc::StatusCode::INVALID_ARGUMENT,
+                  "volume_unit: unknown unit: '" + req->volume_unit() + "'"};
+        }
+      }
+
       storage::CheckoutCommand command{
           .action = from_proto_action(req->action()),
-          .volume_used = req->has_volume_used() && req->has_volume_unit()
-                             ? std::optional<core::Volume>{core::Volume::from_raw(
-                                   static_cast<std::int64_t>(req->volume_used()),
-                                   core::parse_volume_unit(req->volume_unit()))}
-                             : std::nullopt,
+          .volume_used = volume_used,
           .reason = req->has_reason() ? std::optional<std::string>{req->reason()} : std::nullopt,
           .event_id = core::CheckoutEventId::parse(generate_uuid_v4()),
           .at = now_timestamp(),

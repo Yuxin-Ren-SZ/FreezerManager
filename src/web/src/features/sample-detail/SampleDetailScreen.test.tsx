@@ -3,11 +3,11 @@ import { act, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { Route, Routes } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import sampleDetailCopy from '../../../locales/en/sample-detail.json';
 import { auditKeys } from '../../api/hooks';
 import { SessionProvider } from '../../app/session';
-import { SampleStatus, type Sample } from '../../gen/fmgr/v1/sample_pb';
+import { CheckoutAction, SampleStatus, type Sample } from '../../gen/fmgr/v1/sample_pb';
 import { createDemoLab, fakeApi, type DemoLab } from '../../test/fakeApi';
 import { renderWithProviders } from '../../test/render';
 import { server } from '../../test/server';
@@ -31,6 +31,31 @@ import { SampleDetailScreen } from './SampleDetailScreen';
 
 const LAB_ID = 'lab-demo';
 const SAMPLE_ID = 'sample-1';
+
+/** Every request this file caused, cloned before MSW consumed it. */
+let calls: { path: string; body: () => Promise<Record<string, unknown>> }[] = [];
+
+server.events.on('request:start', ({ request }) => {
+  // One clone per request, parsed at most once: a test that asks twice must not
+  // read the same body stream twice.
+  const cloned = request.clone();
+  let parsed: Promise<Record<string, unknown>> | null = null;
+  calls.push({
+    path: new URL(request.url).pathname,
+    body: () => (parsed ??= cloned.json() as Promise<Record<string, unknown>>),
+  });
+});
+
+const CHECKOUT_PATH = '/api/v1/sample/checkout';
+
+/** The bodies of every request to one route, in the order they were sent. */
+async function bodiesFor(path: string): Promise<Record<string, unknown>[]> {
+  return Promise.all(calls.filter((call) => call.path === path).map(async (call) => call.body()));
+}
+
+beforeEach(() => {
+  calls = [];
+});
 
 interface RenderOptions {
   readonly demo?: DemoLab;
@@ -285,6 +310,9 @@ describe('SampleDetailScreen', () => {
       await click(sampleDetailCopy.actions.checkin);
 
       const dialog = await screen.findByRole('dialog');
+      // The unit opens on the sample's own unit: a `core::Volume` has no
+      // unitless state, so the form has to resolve one rather than omit it.
+      expect(within(dialog).getByLabelText(sampleDetailCopy.actions.volumeUnit)).toHaveValue('µL');
       await userEvent.type(
         within(dialog).getByLabelText(sampleDetailCopy.actions.volumeUsed),
         '40',
@@ -297,8 +325,91 @@ describe('SampleDetailScreen', () => {
         within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmCheckin }),
       );
 
+      // What the client sent: the pair. The fake enforces the server's
+      // both-or-neither rule (#100), so a lone `volume_used` cannot pass here.
+      expect(await bodiesFor(CHECKOUT_PATH)).toMatchObject([
+        {
+          sample_id: 'sample-3',
+          action: 'CHECKOUT_ACTION_CHECKIN',
+          volume_used: 40,
+          volume_unit: 'µL',
+          reason: 'aliquot',
+        },
+      ]);
+
       expect(await screen.findByText('Active')).toBeInTheDocument();
-      expect(demo.samples.find((sample) => sample.id === 'sample-3')?.volumeValue).toBe(60);
+      // The stored row and the chain-of-custody event, not the 200: the signed
+      // delta is where the consumed volume is actually kept.
+      expect(sampleById(demo, 'sample-3').volumeValue).toBe(60);
+      expect(demo.checkoutEvents).toMatchObject([
+        {
+          sampleId: 'sample-3',
+          action: CheckoutAction.CHECKIN,
+          volumeDelta: -40,
+          volumeUnit: 'µL',
+        },
+      ]);
+    });
+
+    it('subtracts an amount given in the other unit, converting to the sample unit', async () => {
+      const demo = createDemoLab();
+      sampleById(demo, 'sample-3').volumeValue = 5000;
+      sampleById(demo, 'sample-3').volumeUnit = 'µL';
+      renderDetail({ demo, sampleId: 'sample-3' });
+
+      await screen.findByRole('heading', { level: 1, name: 'Plasma A' });
+      await click(sampleDetailCopy.actions.checkin);
+
+      const dialog = await screen.findByRole('dialog');
+      await userEvent.selectOptions(
+        within(dialog).getByLabelText(sampleDetailCopy.actions.volumeUnit),
+        'mL',
+      );
+      await userEvent.type(within(dialog).getByLabelText(sampleDetailCopy.actions.volumeUsed), '2');
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmCheckin }),
+      );
+
+      expect(await bodiesFor(CHECKOUT_PATH)).toMatchObject([
+        { sample_id: 'sample-3', volume_used: 2, volume_unit: 'mL' },
+      ]);
+      // 2 mL of a sample tracked in µL is 2000 µL (`core::Volume::to_unit`).
+      expect(sampleById(demo, 'sample-3').volumeValue).toBe(3000);
+      expect(demo.checkoutEvents).toMatchObject([
+        { sampleId: 'sample-3', volumeDelta: -2000, volumeUnit: 'µL' },
+      ]);
+    });
+
+    it('does not offer a volume the server would not subtract from this sample', async () => {
+      // sample-3 tracks no volume, and `apply_checkout` ignores `volume_used`
+      // for a sample that tracks none — so an input here would be dropped
+      // silently, which is the defect this change exists to close (#100).
+      const demo = createDemoLab();
+      renderDetail({ demo, sampleId: 'sample-3' });
+
+      await screen.findByRole('heading', { level: 1, name: 'Plasma A' });
+      await click(sampleDetailCopy.actions.checkin);
+
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).queryByLabelText(sampleDetailCopy.actions.volumeUsed)).toBeNull();
+      expect(within(dialog).queryByLabelText(sampleDetailCopy.actions.volumeUnit)).toBeNull();
+
+      await userEvent.type(
+        within(dialog).getByLabelText(sampleDetailCopy.actions.reason),
+        'back in',
+      );
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmCheckin }),
+      );
+
+      expect(await screen.findByText('Active')).toBeInTheDocument();
+      const [checkin] = await bodiesFor(CHECKOUT_PATH);
+      expect(checkin).toMatchObject({
+        action: 'CHECKOUT_ACTION_CHECKIN',
+        reason: 'back in',
+      });
+      expect(checkin).not.toHaveProperty('volume_used');
+      expect(checkin).not.toHaveProperty('volume_unit');
     });
 
     it('discards a sample, which consumes the remaining volume', async () => {

@@ -23,6 +23,12 @@ import type { SampleReferenceData } from './useSampleReferenceData';
  * subtracts `volume_used`, discarding consumes whatever is left and keeps only
  * the reason, checking out takes neither. An input the server ignores would be
  * a lie about what the button does.
+ *
+ * The check-in volume is a **pair, never a half**: `core::Volume` has no
+ * unitless state, so `CheckoutSample` answers a lone `volume_used` with
+ * `INVALID_ARGUMENT` (#100). The unit control defaults to the sample's own unit
+ * and the operator can pick the other one, which `core::Volume::to_unit`
+ * converts server-side.
  */
 
 type DialogKind = 'checkin' | 'discard' | 'move' | 'delete' | null;
@@ -37,6 +43,23 @@ const FIELD = {
 
 /** HTML `step` for a fractional quantity: an attribute, not copy. */
 const STEP_ANY = 'any';
+
+/** The units `core::parse_volume_unit` accepts — the server rejects any other. */
+const VOLUME_UNITS = ['µL', 'mL'] as const;
+
+type VolumeUnit = (typeof VOLUME_UNITS)[number];
+
+/** Used only when a sample says it tracks a volume without naming a unit. */
+const DEFAULT_VOLUME_UNIT: VolumeUnit = 'µL';
+
+/** The unit a sample's volume is tracked in, or null when it names none. */
+function trackedUnit(sample: Sample): VolumeUnit | null {
+  const unit = sample.volumeUnit;
+  if (unit === undefined) {
+    return null;
+  }
+  return VOLUME_UNITS.find((candidate) => candidate === unit) ?? null;
+}
 
 export interface SampleActionsProps {
   readonly labId: string;
@@ -54,6 +77,7 @@ export function SampleActions({ labId, sample, reference, onEdit, onDeleted }: S
 
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [volumeUsed, setVolumeUsed] = useState('');
+  const [volumeUnit, setVolumeUnit] = useState<VolumeUnit>(DEFAULT_VOLUME_UNIT);
   const [reason, setReason] = useState('');
   const [destinationBoxId, setDestinationBoxId] = useState('');
   const [destinationPosition, setDestinationPosition] = useState('');
@@ -133,6 +157,21 @@ export function SampleActions({ labId, sample, reference, onEdit, onDeleted }: S
   const active = sample.status === SampleStatus.ACTIVE;
   const checkedOut = sample.status === SampleStatus.CHECKED_OUT;
 
+  /**
+   * A check-in subtracts only from a volume the sample actually tracks
+   * (`apply_checkout` ignores `volume_used` otherwise), so the field is offered
+   * only then. An input the server would ignore is the same lie as the volume
+   * that used to go missing here (#100).
+   */
+  const sampleUnit = trackedUnit(sample);
+  const tracksVolume = sample.volumeValue !== undefined && sampleUnit !== null;
+
+  /** Open check-in with the unit the sample is tracked in, not a guess. */
+  const openCheckin = () => {
+    setVolumeUnit(sampleUnit ?? DEFAULT_VOLUME_UNIT);
+    setDialog('checkin');
+  };
+
   return (
     <div className={styles.actions}>
       {canWrite ? <Button onClick={onEdit}>{t('actions.edit')}</Button> : null}
@@ -159,7 +198,7 @@ export function SampleActions({ labId, sample, reference, onEdit, onDeleted }: S
       {canCheckout && checkedOut ? (
         <Button
           onClick={() => {
-            setDialog('checkin');
+            openCheckin();
           }}
         >
           {t('actions.checkin')}
@@ -210,12 +249,17 @@ export function SampleActions({ labId, sample, reference, onEdit, onDeleted }: S
               variant="primary"
               loading={checkout.isPending}
               onClick={() => {
+                const amount = volumeUsed.trim() === '' ? null : Number(volumeUsed);
+                const consumes =
+                  tracksVolume && amount !== null && Number.isFinite(amount)
+                    ? { volumeUsed: amount, volumeUnit }
+                    : {};
                 void run(
                   () =>
                     checkout.mutateAsync({
                       sampleId: sample.id,
                       action: CheckoutAction.CHECKIN,
-                      volumeUsed: volumeUsed === '' ? undefined : Number(volumeUsed),
+                      ...consumes,
                       reason: reason === '' ? undefined : reason,
                     }),
                   'checkout',
@@ -233,17 +277,30 @@ export function SampleActions({ labId, sample, reference, onEdit, onDeleted }: S
             {String(t(formMessage.key as never, { ns: formMessage.ns }))}
           </p>
         ) : null}
-        <TextField
-          label={t('actions.volumeUsed')}
-          hint={t('actions.volumeUsedHint')}
-          type="number"
-          step={STEP_ANY}
-          value={volumeUsed}
-          onChange={(event) => {
-            setVolumeUsed(event.target.value);
-          }}
-          error={messageFor(FIELD.volumeUsed)}
-        />
+        {tracksVolume ? (
+          <>
+            <TextField
+              label={t('actions.volumeUsed')}
+              hint={t('actions.volumeUsedHint')}
+              type="number"
+              min={0}
+              step={STEP_ANY}
+              value={volumeUsed}
+              onChange={(event) => {
+                setVolumeUsed(event.target.value);
+              }}
+              error={messageFor(FIELD.volumeUsed)}
+            />
+            <Select
+              label={t('actions.volumeUnit')}
+              value={volumeUnit}
+              onChange={(event) => {
+                setVolumeUnit(event.target.value as VolumeUnit);
+              }}
+              options={VOLUME_UNITS.map((unit) => ({ value: unit, label: unit }))}
+            />
+          </>
+        ) : null}
         <TextField
           label={t('actions.reason')}
           value={reason}

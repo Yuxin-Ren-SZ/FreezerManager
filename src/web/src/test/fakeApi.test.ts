@@ -4,7 +4,7 @@ import { call } from '../api/client';
 import { ApiError, GRPC_CODES } from '../api/errors';
 import { apiRoutes, type RpcName } from '../api/routes';
 import { subscribeSse } from '../api/sse';
-import { SampleSchema, SampleStatus } from '../gen/fmgr/v1/sample_pb';
+import { SampleSchema, SampleStatus, CheckoutAction } from '../gen/fmgr/v1/sample_pb';
 import { FakeEventSource, fakeEventSource } from './fakeEventSource';
 import { createDemoLab, fakeApi, HTTP_STATUS_FOR, seedSamples } from './fakeApi';
 import { server } from './server';
@@ -331,6 +331,158 @@ describe('fakeApi error branches', () => {
     });
 
     expect(response.status).toBe(200);
+  });
+});
+
+describe('fakeApi checkout volume contract (#100)', () => {
+  /**
+   * The demo lab's `sample-3` is already checked out; give it a tracked volume
+   * so a check-in has something to subtract from.
+   */
+  function checkedOutLab() {
+    const lab = createDemoLab();
+    const sample = sampleById(lab, 'sample-3');
+    sample.volumeValue = 100;
+    sample.volumeUnit = 'µL';
+    return lab;
+  }
+
+  /** The seeded sample, by id. A missing fixture id is a broken test. */
+  function sampleById(lab: ReturnType<typeof createDemoLab>, id: string) {
+    const found = lab.samples.find((candidate) => candidate.id === id);
+    if (found === undefined) throw new Error(`fixture has no sample ${id}`);
+    return found;
+  }
+
+  it('refuses volume_used without volume_unit, as CheckoutSample now does', async () => {
+    const lab = checkedOutLab();
+    server.use(...fakeApi({ lab }));
+
+    // This is the request the shipped check-in form sent: the operator typed a
+    // volume, the server dropped it, and the screen said "checked in".
+    const error = (await call('sample/checkout', {
+      sampleId: 'sample-3',
+      action: CheckoutAction.CHECKIN,
+      volumeUsed: 40,
+    }).catch((caught: unknown) => caught)) as ApiError;
+
+    expect(error.code).toBe('INVALID_ARGUMENT');
+    expect(error.httpStatus).toBe(400);
+    // Refused, not half-applied: still checked out, volume untouched, no event.
+    expect(sampleById(lab, 'sample-3').status).toBe(SampleStatus.CHECKED_OUT);
+    expect(sampleById(lab, 'sample-3').volumeValue).toBe(100);
+    expect(lab.checkoutEvents).toEqual([]);
+  });
+
+  it('refuses volume_unit without volume_used', async () => {
+    const lab = checkedOutLab();
+    server.use(...fakeApi({ lab }));
+
+    const error = (await call('sample/checkout', {
+      sampleId: 'sample-3',
+      action: CheckoutAction.CHECKIN,
+      volumeUnit: 'µL',
+    }).catch((caught: unknown) => caught)) as ApiError;
+
+    expect(error.code).toBe('INVALID_ARGUMENT');
+    expect(sampleById(lab, 'sample-3').status).toBe(SampleStatus.CHECKED_OUT);
+    expect(lab.checkoutEvents).toEqual([]);
+  });
+
+  it('refuses a unit core::parse_volume_unit does not know', async () => {
+    const lab = checkedOutLab();
+    server.use(...fakeApi({ lab }));
+
+    const error = (await call('sample/checkout', {
+      sampleId: 'sample-3',
+      action: CheckoutAction.CHECKIN,
+      volumeUsed: 40,
+      volumeUnit: 'furlong',
+    }).catch((caught: unknown) => caught)) as ApiError;
+
+    expect(error.code).toBe('INVALID_ARGUMENT');
+    expect(sampleById(lab, 'sample-3').volumeValue).toBe(100);
+    expect(lab.checkoutEvents).toEqual([]);
+  });
+
+  it('checks in without a volume when neither field is sent', async () => {
+    const lab = checkedOutLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('sample/checkout', {
+      sampleId: 'sample-3',
+      action: CheckoutAction.CHECKIN,
+      reason: 'no volume taken',
+    });
+
+    expect(sampleById(lab, 'sample-3').status).toBe(SampleStatus.ACTIVE);
+    expect(sampleById(lab, 'sample-3').volumeValue).toBe(100);
+    // The event exists, it just carries no delta (`volume_delta` is nullopt).
+    expect(lab.checkoutEvents).toMatchObject([
+      { sampleId: 'sample-3', action: CheckoutAction.CHECKIN, reason: 'no volume taken' },
+    ]);
+    expect(lab.checkoutEvents[0]).not.toHaveProperty('volumeDelta');
+  });
+
+  it('converts the request unit into the sample unit and records the signed delta', async () => {
+    const lab = createDemoLab();
+    const sample = sampleById(lab, 'sample-3');
+    sample.volumeValue = 5000;
+    sample.volumeUnit = 'µL';
+    server.use(...fakeApi({ lab }));
+
+    // 2 mL of a sample tracked in µL is 2000 µL: `core::Volume::to_unit`.
+    await call('sample/checkout', {
+      sampleId: 'sample-3',
+      action: CheckoutAction.CHECKIN,
+      volumeUsed: 2,
+      volumeUnit: 'mL',
+    });
+
+    expect(sampleById(lab, 'sample-3').volumeValue).toBe(3000);
+    expect(lab.checkoutEvents).toMatchObject([
+      {
+        sampleId: 'sample-3',
+        action: CheckoutAction.CHECKIN,
+        volumeDelta: -2000,
+        volumeUnit: 'µL',
+      },
+    ]);
+  });
+
+  it('truncates the amount before converting, as Volume::from_raw does', async () => {
+    const lab = checkedOutLab();
+    server.use(...fakeApi({ lab }));
+
+    // `Volume::from_raw` casts `volume_used` to an integer *in the request unit*
+    // before `to_unit` runs, so 0.04 mL is raw 0 mL — 0 µL, not 40 µL. The fake
+    // must not be more generous than the server: a screen that ships 0.04 mL
+    // consumes nothing against real `freezerd`, and a test here has to say so.
+    await call('sample/checkout', {
+      sampleId: 'sample-3',
+      action: CheckoutAction.CHECKIN,
+      volumeUsed: 0.04,
+      volumeUnit: 'mL',
+    });
+
+    expect(sampleById(lab, 'sample-3').volumeValue).toBe(100);
+    expect(lab.checkoutEvents).toMatchObject([
+      { sampleId: 'sample-3', action: CheckoutAction.CHECKIN, volumeDelta: 0, volumeUnit: 'µL' },
+    ]);
+  });
+
+  it('records the discard delta as the whole remaining volume', async () => {
+    const lab = createDemoLab();
+    sampleById(lab, 'sample-1').volumeValue = 100;
+    sampleById(lab, 'sample-1').volumeUnit = 'µL';
+    server.use(...fakeApi({ lab }));
+
+    await call('sample/checkout', { sampleId: 'sample-1', action: CheckoutAction.DISCARD });
+
+    expect(sampleById(lab, 'sample-1').volumeValue).toBe(0);
+    expect(lab.checkoutEvents).toMatchObject([
+      { sampleId: 'sample-1', action: CheckoutAction.DISCARD, volumeDelta: -100, volumeUnit: 'µL' },
+    ]);
   });
 });
 
