@@ -27,7 +27,15 @@ import { isApiError } from '../../api/errors';
 
 const ITEM_TYPE_CYCLE = 'item type parent chain forms a cycle';
 
-const PHI_INDEXED = ['may not be indexed', 'mutually exclusive'];
+/**
+ * Both sentences that mean "an index on a PHI field", quoted in full: matching
+ * a fragment like `may not be indexed` would also catch an unrelated refusal
+ * that happens to share the phrase.
+ */
+const PHI_INDEXED = [
+  'a PHI custom field may not be indexed (is_phi and indexed are mutually exclusive)',
+  'PHI fields may not be indexed (see L10.3)',
+];
 
 /** `INVALID_ARGUMENT` from `check_no_cycle`: the move would close a cycle. */
 export function isItemTypeCycleRefusal(error: unknown): boolean {
@@ -43,6 +51,6 @@ export function isPhiIndexedRefusal(error: unknown): boolean {
   return (
     isApiError(error) &&
     error.code === 'INVALID_ARGUMENT' &&
-    PHI_INDEXED.every((needle) => error.message.includes(needle))
+    PHI_INDEXED.some((sentence) => error.message.includes(sentence))
   );
 }

@@ -393,6 +393,22 @@ describe('ItemTypesScreen — field definitions', () => {
     expect(lab.customFieldDefs.some((cfd) => cfd.key === 'storage_temp')).toBe(true);
   });
 
+  it('explains a duplicate field key instead of showing a raw status', async () => {
+    // `cfd_lab_scope_type_key_unique` refuses a second definition of one key on
+    // one node — the server's answer, because the form has nothing to compare
+    // against: `concentration` has no ancestor definition to tighten.
+    renderScreen();
+    await selectNode('Serum');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add field' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add field' });
+    await userEvent.type(within(dialog).getByLabelText('Key'), 'concentration');
+    await userEvent.type(within(dialog).getByLabelText('Label'), 'Concentration again');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(await screen.findByText(/already exists on this item type/i)).toBeInTheDocument();
+  });
+
   it('does not offer field edits without custom_field.define', async () => {
     renderScreen({ user: TREE_ONLY });
     await selectNode('Serum');
