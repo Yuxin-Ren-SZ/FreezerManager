@@ -31,28 +31,30 @@ namespace fmgr::storage {
     // ---- Error mapping ----
 
     [[noreturn]] void throw_pqxx_error(const pqxx::sql_error& error) {
+      // Engine text, never a client message (#123) — see storage::BackendText.
+      const BackendText engine_text{error.what()};
       const std::string_view state = error.sqlstate();
       if (state == "23505") {
-        throw UniqueViolation(error.what());
+        throw UniqueViolation(engine_text);
       }
       if (state == "23503") {
-        throw ForeignKeyViolation(error.what());
+        throw ForeignKeyViolation(engine_text);
       }
       if (state == "23514" || state == "23502" || state == "23000") {
-        throw ConstraintViolation(error.what());
+        throw ConstraintViolation(engine_text);
       }
       if (state == "40001" || state == "40P01") {
-        throw SerializationFailure(error.what());
+        throw SerializationFailure(engine_text);
       }
       // Connection-class errors (08xxx) and admin shutdown (57P01) → Unavailable.
       if (state.size() >= 2 && state.substr(0, 2) == "08") {
-        throw Unavailable(error.what());
+        throw Unavailable(engine_text);
       }
       if (state == "57P01") {
-        throw Unavailable(error.what());
+        throw Unavailable(engine_text);
       }
       // Unrecognised SQLSTATE — fall back to ConstraintViolation (safest for data-layer errors).
-      throw ConstraintViolation(error.what());
+      throw ConstraintViolation(engine_text);
     }
 
     // ---- UUID generation ----
@@ -992,7 +994,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
         // 42P01 = "undefined_table" (schema_migrations not yet created) — treat as version 0.
         // Any other error (permissions denied, connection lost, etc.) is a real failure.
         state_->release(idx);
-        throw Unavailable(err.what());
+        throw Unavailable(BackendText{err.what()});
       }
     }
     state_->release(idx);
@@ -1052,7 +1054,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
       txn.commit();
     } catch (const pqxx::sql_error& err) {
       state_->release(idx);
-      throw BackendError(BackendErrorCode::ConstraintViolation, err.what());
+      throw BackendError(BackendErrorCode::ConstraintViolation, BackendText{err.what()});
     }
     state_->release(idx);
   }

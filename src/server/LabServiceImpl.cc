@@ -2,6 +2,7 @@
 
 #include "server/LabServiceImpl.h"
 #include "server/RequestId.h"
+#include "server/UniqueConflict.h"
 
 #include "core/enums.h"
 #include "core/identity.h"
@@ -318,8 +319,21 @@ namespace fmgr::server {
           .invited_by = sctx.user_id,
           .joined_at = now_timestamp(),
       };
-      txn->repo<core::LabMembership>().insert(membership, mut);
-      txn->commit();
+      // A second invite of the same address is a membership conflict the caller
+      // can act on; the repository's own sentence ("lab_membership id already
+      // exists") names an internal entity and says nothing about which lab or
+      // user (#123). The invitation says both.
+      //
+      // Only the membership insert is wrapped. Its key is (lab_id, user_id), so
+      // the repository refuses it during insert() rather than at commit — and
+      // the user row this handler may also create keeps its own error, which a
+      // racing invite of a brand-new address can still produce.
+      commit_or_name_conflict(
+          [&] {
+            txn->repo<core::LabMembership>().insert(membership, mut);
+            txn->commit();
+          },
+          "this user is already a member of this lab");
 
       fill_lab_member(resp->mutable_member(), membership);
       return grpc::Status::OK;

@@ -64,25 +64,52 @@ namespace fmgr::server {
     return {grpc::StatusCode::RESOURCE_EXHAUSTED, error.what()};
   }
 
+  // ---- Engine text is logged, not sent (#123) ----
+  //
+  // A storage exception's what() is either a sentence we wrote for the caller or,
+  // when the engine refused the row, the class's client-safe default — the engine
+  // text itself rides in detail() (storage::BackendText). These failures are the
+  // ones where that text names a constraint, so it is worth keeping server-side:
+  // it is the only record of *which* index refused the write.
+  //
+  // Only the first line is logged. PostgreSQL's text is PQresultErrorMessage(),
+  // multi-line, and its DETAIL line carries the values that collided — which can
+  // be PHI, and PHI never goes in a log (AGENTS.md §5). The first line names the
+  // constraint without quoting a row.
+  inline void log_refused_write(const storage::BackendError& error) {
+    if (error.detail().empty()) {
+      return;
+    }
+    const auto newline = error.detail().find('\n');
+    obs::log_lifecycle(
+        obs::Level::Info,
+        fmt::format("storage refused a write: {}", error.detail().substr(0, newline)),
+        "storage.write_refused");
+  }
+
   [[nodiscard]] inline grpc::Status to_grpc_status(const storage::NotFound& error) {
     return {grpc::StatusCode::NOT_FOUND, error.what()};
   }
 
   [[nodiscard]] inline grpc::Status to_grpc_status(const storage::UniqueViolation& error) {
+    log_refused_write(error);
     return {grpc::StatusCode::ALREADY_EXISTS, error.what()};
   }
 
   [[nodiscard]] inline grpc::Status to_grpc_status(const storage::ConstraintViolation& error) {
+    log_refused_write(error);
     return {grpc::StatusCode::INVALID_ARGUMENT, error.what()};
   }
 
   [[nodiscard]] inline grpc::Status to_grpc_status(const storage::ForeignKeyViolation& error) {
+    log_refused_write(error);
     return {grpc::StatusCode::FAILED_PRECONDITION, error.what()};
   }
 
   // A serialization conflict (Postgres 40001) is transient — the client may retry
   // the whole RPC. ABORTED is the gRPC-canonical signal for that.
-  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::SerializationFailure& /*error*/) {
+  [[nodiscard]] inline grpc::Status to_grpc_status(const storage::SerializationFailure& error) {
+    log_refused_write(error);
     return {grpc::StatusCode::ABORTED, "transaction conflict; retry the request"};
   }
 

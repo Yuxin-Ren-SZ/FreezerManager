@@ -25,8 +25,9 @@ namespace fmgr::storage {
 
     // ---- SQLite helpers ----
 
-    [[nodiscard]] std::string sqlite_error(sqlite3* handle, std::string_view action) {
-      return std::string(action) + ": " + sqlite3_errmsg(handle);
+    // Engine text, never a client message (#123) — see storage::BackendText.
+    [[nodiscard]] BackendText sqlite_error(sqlite3* handle, std::string_view action) {
+      return BackendText{std::string(action) + ": " + sqlite3_errmsg(handle)};
     }
 
     [[noreturn]] void throw_sqlite_error(int code, sqlite3* handle, std::string_view action) {

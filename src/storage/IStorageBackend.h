@@ -71,41 +71,122 @@ namespace fmgr::storage {
     UnsupportedOperation,
   };
 
+  // Error text produced by the storage engine itself, rather than by us: SQLite's
+  // sqlite3_errmsg() (`UNIQUE constraint failed: index 'cfd_lab_scope_type_key_unique'`)
+  // or libpqxx's sql_error::what(), which is PQresultErrorMessage() — on
+  // PostgreSQL a multi-line string whose DETAIL line carries the *values* that
+  // collided.
+  //
+  // It describes our schema to a client that asked about its own data: it names
+  // tables, columns and indexes (#123), it can carry other rows' values, and it
+  // does not say what to change. So it must not become an exception's message.
+  // Wrapping it here is what lets an exception carry both: a client-safe
+  // sentence in what(), the engine's text in detail() for the server log.
+  struct BackendText {
+    std::string text;
+  };
+
+  // Client-safe sentence for engine text, by error class. Deliberately says what
+  // the caller can act on ("this value is taken") without pretending to know
+  // which field collided — only the service layer holds the request that would
+  // say so (#123).
+  [[nodiscard]] constexpr std::string_view default_client_message(BackendErrorCode code) noexcept {
+    switch (code) {
+    case BackendErrorCode::UniqueViolation:
+      return "a record with these values already exists";
+    case BackendErrorCode::ForeignKeyViolation:
+      return "a referenced record does not exist";
+    case BackendErrorCode::ConstraintViolation:
+      return "the request violates a storage constraint";
+    case BackendErrorCode::SerializationFailure:
+      return "transaction conflict; retry the request";
+    case BackendErrorCode::Unavailable:
+      return "storage backend unavailable";
+    case BackendErrorCode::NotFound:
+      return "record not found";
+    case BackendErrorCode::MigrationFailure:
+    case BackendErrorCode::UnsupportedOperation:
+      return "storage backend error";
+    }
+    return "storage backend error";
+  }
+
   class BackendError : public std::runtime_error {
   public:
     BackendError(BackendErrorCode code, std::string_view message)
         : std::runtime_error(std::string(message)), code_(code) {}
 
+    // Engine text: what() becomes the client-safe sentence for `code` and the
+    // text itself moves to detail(), which no client ever sees.
+    BackendError(BackendErrorCode code, BackendText backend_text)
+        : std::runtime_error(std::string(default_client_message(code))), code_(code),
+          detail_(std::move(backend_text.text)) {}
+
+    // A message we wrote, plus engine text worth keeping in the log (a service
+    // that names the field still wants the constraint that fired).
+    BackendError(BackendErrorCode code, std::string_view message, BackendText backend_text)
+        : std::runtime_error(std::string(message)), code_(code),
+          detail_(std::move(backend_text.text)) {}
+
     [[nodiscard]] constexpr BackendErrorCode code() const noexcept {
       return code_;
     }
 
+    // Engine text; empty when the message was written for clients. Never goes on
+    // the wire — log it, and note that its later lines can carry row values.
+    [[nodiscard]] const std::string& detail() const noexcept {
+      return detail_;
+    }
+
+    // The same text, wrapped, for an exception that translates and re-throws.
+    [[nodiscard]] BackendText backend_detail() const {
+      return BackendText{detail_};
+    }
+
   private:
     BackendErrorCode code_;
+    std::string detail_;
   };
 
   class UniqueViolation final : public BackendError {
   public:
     explicit UniqueViolation(std::string_view message)
         : BackendError(BackendErrorCode::UniqueViolation, message) {}
+
+    explicit UniqueViolation(BackendText backend_text)
+        : BackendError(BackendErrorCode::UniqueViolation, std::move(backend_text)) {}
+
+    // Domain message from a handler that knows the field, carrying the engine
+    // text on to the log.
+    UniqueViolation(std::string_view message, BackendText backend_text)
+        : BackendError(BackendErrorCode::UniqueViolation, message, std::move(backend_text)) {}
   };
 
   class ForeignKeyViolation final : public BackendError {
   public:
     explicit ForeignKeyViolation(std::string_view message)
         : BackendError(BackendErrorCode::ForeignKeyViolation, message) {}
+
+    explicit ForeignKeyViolation(BackendText backend_text)
+        : BackendError(BackendErrorCode::ForeignKeyViolation, std::move(backend_text)) {}
   };
 
   class SerializationFailure final : public BackendError {
   public:
     explicit SerializationFailure(std::string_view message)
         : BackendError(BackendErrorCode::SerializationFailure, message) {}
+
+    explicit SerializationFailure(BackendText backend_text)
+        : BackendError(BackendErrorCode::SerializationFailure, std::move(backend_text)) {}
   };
 
   class Unavailable final : public BackendError {
   public:
     explicit Unavailable(std::string_view message)
         : BackendError(BackendErrorCode::Unavailable, message) {}
+
+    explicit Unavailable(BackendText backend_text)
+        : BackendError(BackendErrorCode::Unavailable, std::move(backend_text)) {}
   };
 
   class NotFound final : public BackendError {
@@ -118,6 +199,9 @@ namespace fmgr::storage {
   public:
     explicit ConstraintViolation(std::string_view message)
         : BackendError(BackendErrorCode::ConstraintViolation, message) {}
+
+    explicit ConstraintViolation(BackendText backend_text)
+        : BackendError(BackendErrorCode::ConstraintViolation, std::move(backend_text)) {}
   };
 
   class MigrationFailure final : public BackendError {

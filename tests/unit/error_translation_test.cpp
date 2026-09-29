@@ -81,6 +81,71 @@ namespace fmgr::server {
       EXPECT_STREQ(status.error_message().c_str(), "duplicate sample barcode");
     }
 
+    // ---- Engine text does not reach the client (#123) ----
+    //
+    // A message *we* wrote describes the caller's own request and is what the
+    // client should show. A message the *engine* wrote describes our schema:
+    // "UNIQUE constraint failed: index 'cfd_lab_scope_type_key_unique'" on
+    // SQLite, and on PostgreSQL libpqxx's what() is PQresultErrorMessage(),
+    // whose DETAIL line carries the values that collided. Both go to the server
+    // log via detail(); neither goes on the wire.
+
+    TEST(ErrorTranslation, BackendUniqueViolationTextStaysOutOfTheClientMessage) {
+      const std::string engine_text =
+          "execute sqlite custom_field_definition statement: UNIQUE constraint failed: "
+          "index 'cfd_lab_scope_type_key_unique'";
+      const storage::UniqueViolation error{storage::BackendText{engine_text}};
+      const auto status = to_grpc_status(error);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::ALREADY_EXISTS);
+      EXPECT_EQ(status.error_message(), "a record with these values already exists");
+      EXPECT_EQ(status.error_message().find("cfd_lab_scope_type_key_unique"), std::string::npos);
+      EXPECT_EQ(status.error_message().find("UNIQUE constraint failed"), std::string::npos);
+      // The one place the engine text is still available: the server-side log.
+      EXPECT_EQ(error.detail(), engine_text);
+    }
+
+    TEST(ErrorTranslation, BackendConstraintViolationTextStaysOutOfTheClientMessage) {
+      const std::string engine_text =
+          "execute sqlite item_type statement: CHECK constraint failed: scope_kind IN (...)";
+      const storage::ConstraintViolation error{storage::BackendText{engine_text}};
+      const auto status = to_grpc_status(error);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_EQ(status.error_message(), "the request violates a storage constraint");
+      EXPECT_EQ(status.error_message().find("scope_kind"), std::string::npos);
+      EXPECT_EQ(error.detail(), engine_text);
+    }
+
+    TEST(ErrorTranslation, BackendForeignKeyViolationTextStaysOutOfTheClientMessage) {
+      const storage::ForeignKeyViolation error{
+          storage::BackendText{"execute sqlite sample statement: FOREIGN KEY constraint failed"}};
+      const auto status = to_grpc_status(error);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+      EXPECT_EQ(status.error_message(), "a referenced record does not exist");
+    }
+
+    TEST(ErrorTranslation, CurrentExceptionKeepsEngineTextOutOfTheClientMessage) {
+      try {
+        throw storage::UniqueViolation{storage::BackendText{
+            "execute sqlite sample statement: UNIQUE constraint failed: samples.position_label"}};
+      } catch (...) {
+        const auto status = current_exception_to_grpc_status();
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::ALREADY_EXISTS);
+        EXPECT_EQ(status.error_message(), "a record with these values already exists");
+        EXPECT_EQ(status.error_message().find("samples.position_label"), std::string::npos);
+      }
+    }
+
+    // A service that knows which field collided keeps its own sentence through
+    // the same path — the code is unchanged, only the text is the domain's.
+    TEST(ErrorTranslation, ServiceAuthoredUniqueViolationKeepsItsMessage) {
+      const storage::UniqueViolation error(
+          "custom field 'mrn' is already defined on this item type");
+      const auto status = to_grpc_status(error);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::ALREADY_EXISTS);
+      EXPECT_EQ(status.error_message(), "custom field 'mrn' is already defined on this item type");
+      EXPECT_TRUE(error.detail().empty());
+    }
+
     TEST(ErrorTranslation, ConstraintViolationMapsToInvalidArgument) {
       const storage::ConstraintViolation error("name must not be empty");
       const auto status = to_grpc_status(error);

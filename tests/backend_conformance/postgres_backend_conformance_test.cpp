@@ -1294,6 +1294,34 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_pg_conformance_sample_active_position_uni
       EXPECT_FALSE(definitions.front().required);
     }
 
+    // The Postgres half of the same contract (#123): what() is the portable
+    // sentence, the engine's text is kept in detail() for the server log. On this
+    // engine that text is PQresultErrorMessage(), and its DETAIL line is where
+    // the *colliding values* appear — the reason detail() is never sent and only
+    // its first line is logged.
+    //
+    // Not run locally (no FMGR_TEST_POSTGRES_URL on the owner's Mac); it compiles
+    // here and runs in CI's postgres job.
+    TEST_F(PostgresCustomFieldUniquenessConformanceTest,
+           DuplicateDefinitionKeepsTheEngineTextOutOfTheMessage) {
+      seed_lineage();
+
+      const auto first = make_conformance_cfd(31, lab_id_, node_id_, "mrn", "MRN",
+                                              /*required=*/false);
+      insert_definition(backend(), first);
+      const auto duplicate = make_conformance_cfd(32, lab_id_, node_id_, "mrn", "MRN again",
+                                                  /*required=*/true);
+
+      try {
+        insert_definition(backend(), duplicate);
+        FAIL() << "duplicate custom field definition was accepted";
+      } catch (const UniqueViolation& violation) {
+        EXPECT_EQ(std::string(violation.what()),
+                  std::string(default_client_message(BackendErrorCode::UniqueViolation)));
+        EXPECT_FALSE(violation.detail().empty());
+      }
+    }
+
     TEST_F(PostgresCustomFieldUniquenessConformanceTest,
            ArchivedDefinitionDoesNotBlockItsReplacement) {
       seed_lineage();

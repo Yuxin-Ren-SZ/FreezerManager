@@ -477,6 +477,29 @@ namespace fmgr::test {
       EXPECT_EQ(second.error_code(), grpc::StatusCode::ALREADY_EXISTS);
     }
 
+    // The code above is all a client can branch on; the message is what a client
+    // shows. A second invite of the same address is a membership conflict the
+    // caller can act on ("this person is already in the lab"), not a schema
+    // object name (#123).
+    TEST_F(LabServiceTest, InviteMemberDuplicateReportsTheMembership) {
+      const auto token = login(kAdminEmail, kPassword);
+
+      const auto invite = [&]() {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::InviteMemberRequest req;
+        req.set_lab_id(kLab1);
+        req.set_email("dup-message@example.com");
+        req.set_role_id(kMemberRoleId);
+        fmgr::v1::InviteMemberResponse resp;
+        return lab_stub_->InviteMember(&ctx, req, &resp);
+      };
+      ASSERT_TRUE(invite().ok());
+      const auto second = invite();
+      EXPECT_EQ(second.error_code(), grpc::StatusCode::ALREADY_EXISTS);
+      EXPECT_EQ(second.error_message(), "this user is already a member of this lab");
+    }
+
     TEST_F(LabServiceTest, InviteMemberRejectsMember) {
       const auto token = login(kMemberEmail, kPassword);
       grpc::ClientContext ctx;

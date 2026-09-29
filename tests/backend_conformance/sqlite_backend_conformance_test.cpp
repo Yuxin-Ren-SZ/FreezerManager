@@ -168,8 +168,10 @@ namespace fmgr::storage {
       }
     }
 
-    [[nodiscard]] std::string sqlite_error(sqlite3* handle, std::string_view action) {
-      return std::string(action) + ": " + sqlite3_errmsg(handle);
+    // Mirrors the production helper: engine text is carried as BackendText, never
+    // as the client message (#123).
+    [[nodiscard]] BackendText sqlite_error(sqlite3* handle, std::string_view action) {
+      return BackendText{std::string(action) + ": " + sqlite3_errmsg(handle)};
     }
 
     [[noreturn]] void throw_sqlite_error(int code, sqlite3* handle, std::string_view action) {
@@ -1199,6 +1201,33 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_sqlite_conformance_sample_active_position
       ASSERT_EQ(definitions.size(), 1U);
       EXPECT_EQ(definitions.front().label, "first");
       EXPECT_FALSE(definitions.front().required);
+    }
+
+    // What the storage layer hands the service layer for a refusal (#123). The
+    // code is unchanged, so this split of the text is the whole client-visible
+    // contract storage owns: what() is the portable sentence, and the engine's
+    // own text — which is where the index name lives — is kept in detail() for
+    // the server log rather than sent.
+    TEST_F(SqliteCustomFieldUniquenessConformanceTest,
+           DuplicateDefinitionKeepsTheIndexNameOutOfTheMessage) {
+      seed_lineage();
+
+      const auto first = make_conformance_cfd(31, lab_id_, node_id_, "mrn", "MRN",
+                                              /*required=*/false);
+      insert_definition(backend(), first);
+      const auto duplicate = make_conformance_cfd(32, lab_id_, node_id_, "mrn", "MRN again",
+                                                  /*required=*/true);
+
+      try {
+        insert_definition(backend(), duplicate);
+        FAIL() << "duplicate custom field definition was accepted";
+      } catch (const UniqueViolation& violation) {
+        EXPECT_EQ(std::string(violation.what()),
+                  std::string(default_client_message(BackendErrorCode::UniqueViolation)));
+        EXPECT_EQ(std::string(violation.what()).find("cfd_lab_scope_type_key_unique"),
+                  std::string::npos);
+        EXPECT_NE(violation.detail().find("cfd_lab_scope_type_key_unique"), std::string::npos);
+      }
     }
 
     // The index is partial on `archived_at_micros IS NULL`, which is what makes
