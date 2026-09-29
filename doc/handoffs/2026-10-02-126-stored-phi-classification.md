@@ -17,9 +17,8 @@ plaintext.
 **Pre-existing, stated plainly:** before #87 the same request did this *and*
 destroyed the ciphertext. #87 stopped the loss; this closes the disclosure.
 
-Branch `fix/126-stored-phi-classification`, the draft PR opened from it
-(`Closes #126`). Depends on #87, merged as `9fcc8f4`; branched from `origin/main`
-`19c6c17`.
+Branch `fix/126-stored-phi-classification`, PR **#136** (`Closes #126`). Depends
+on #87, merged as `9fcc8f4`; branched from `origin/main` `19c6c17`.
 
 **Changed:**
 
@@ -81,7 +80,9 @@ Branch `fix/126-stored-phi-classification`, the draft PR opened from it
   the unrelated-edit boundary in the same state stays green. The same applies in
   the corners: PHI mode switched off for a lab whose envelope predates that, or no
   KMS wired, now refuses the request instead of disclosing. Refusing beats
-  disclosing, and it matches the F4 rule one layer over.
+  disclosing, and it matches the F4 rule one layer over. **Recorded as a behaviour
+  change for operators in `doc/UPGRADE.md`**, because "a request that used to
+  succeed now fails" is what that section is for.
 - **The insert-only paths are untouched by purpose.** `CreateSample` and both
   import paths (`ImportSamples`, `freezerctl sample import`) insert a new row, so
   there is no stored envelope whose keys could be evidence; they take the
