@@ -1,0 +1,44 @@
+{
+  "title": "Box {{label}}",
+  "errorTitle": "The box could not be loaded",
+  "notFoundTitle": "No such box in this lab",
+  "notFoundHint": "It may have been archived, or it may belong to another lab.",
+  "noBoxTypeTitle": "This box's type is unavailable",
+  "noBoxTypeHint": "A box takes its positions from its box type, and that type is archived or belongs to another lab. The map cannot be drawn until an administrator restores it.",
+  "live": {
+    "label": "Live updates",
+    "live": "Live",
+    "connecting": "Connecting…",
+    "error": "Live updates are unavailable"
+  },
+  "grid": {
+    "label": "Positions of {{box}}",
+    "hint": "Drag a sample onto a position. With the keyboard: focus a sample, press Space to pick it up, then focus a position and press Enter to put it down. Escape puts it back.",
+    "cellFree": "{{position}} — empty",
+    "cellOccupied": "{{position}} — {{name}}, {{status}}",
+    "summary": "{{occupied}} of {{total}} positions hold a sample",
+    "gaps_one": "{{count}} cell of the grid holds no position in this box type",
+    "gaps_other": "{{count}} cells of the grid hold no position in this box type",
+    "unplaced_one": "{{count}} sample in this box is not at a declared position and is not shown above",
+    "unplaced_other": "{{count}} samples in this box are not at declared positions and are not shown above"
+  },
+  "selection": {
+    "label": "Picked-up sample",
+    "none": "No sample picked up",
+    "picked": "{{name}} picked up from {{position}}. Focus a position and press Enter to put it down.",
+    "cancel": "Put it back"
+  },
+  "move": {
+    "success": "{{name}} moved to {{position}}",
+    "positionTakenTitle": "That position is taken",
+    "positionTakenBody": "Position {{position}} already holds a sample. Move that one first, or choose a free position.",
+    "sizeMismatchTitle": "That container does not fit",
+    "sizeMismatchBody": "{{name}}'s container type is not accepted at position {{position}}. Choose a position that takes it.",
+    "failedTitle": "The move was refused"
+  },
+  "print": {
+    "mapTitle": "Box map — {{box}}",
+    "labelsTitle": "Label sheet",
+    "empty": "empty"
+  }
+}

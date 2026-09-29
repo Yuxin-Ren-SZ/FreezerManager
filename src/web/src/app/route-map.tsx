@@ -36,7 +36,7 @@ const ItemTypesScreen = lazyScreen(
   () => import('../features/item-types/ItemTypesScreen'),
   'ItemTypesScreen',
 );
-const BoxScreen = lazyScreen(() => import('../features/layout/BoxScreen'), 'BoxScreen');
+const BoxScreen = lazyScreen(() => import('../features/box/BoxScreen'), 'BoxScreen');
 const LayoutAdminScreen = lazyScreen(
   () => import('../features/layout/LayoutAdminScreen'),
   'LayoutAdminScreen',

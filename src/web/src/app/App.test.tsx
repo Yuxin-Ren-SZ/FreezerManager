@@ -17,6 +17,7 @@ import sideNavCss from './shell/SideNav.module.css?raw';
 import accountCopy from '../../locales/en/account.json';
 import auditCopy from '../../locales/en/audit.json';
 import authCopy from '../../locales/en/auth.json';
+import boxCopy from '../../locales/en/box.json';
 import homeCopy from '../../locales/en/home.json';
 import csvImportCopy from '../../locales/en/import.json';
 import itemTypesCopy from '../../locales/en/itemTypes.json';
@@ -55,7 +56,11 @@ const EXPECTED_SCREEN: Record<string, { title: string; task: string | null }> = 
   'sample-new': { title: sampleDetailCopy.form.createTitle, task: null },
   'sample-detail': { title: 'Serum A', task: null },
   layout: { title: layoutCopy.title, task: null },
-  box: { title: layoutCopy.title, task: 'G3.4' },
+  // G3.4 replaced the box placeholder too. Its heading names the box being
+  // viewed, and the fake seeds its boxes in `lab-demo` while `concretePath`
+  // visits `lab-1` — so the screen has no box to name and falls back to the id
+  // in the path, which is exactly the state the title has to survive.
+  box: { title: boxCopy.title.replace('{{label}}', 'box-1'), task: null },
   scan: { title: scanCopy.title, task: 'G3.6' },
   'csv-import': { title: csvImportCopy.title, task: 'G3.7' },
   shares: { title: sharesCopy.title, task: 'G3.13' },

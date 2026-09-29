@@ -4,6 +4,7 @@ import { initReactI18next } from 'react-i18next';
 import account from '../../locales/en/account.json';
 import audit from '../../locales/en/audit.json';
 import auth from '../../locales/en/auth.json';
+import box from '../../locales/en/box.json';
 import common from '../../locales/en/common.json';
 import home from '../../locales/en/home.json';
 import csvImport from '../../locales/en/import.json';
@@ -51,6 +52,7 @@ export const resources = {
     // `features/sample-detail/`. (Like `csvImport`/`import.json`, the variable
     // name and the namespace only have to agree in spirit.)
     'sample-detail': sampleDetail,
+    box,
     layout,
     scan,
     csvImport,
