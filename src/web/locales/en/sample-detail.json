@@ -1,0 +1,134 @@
+{
+  "title": "Sample",
+  "notFoundTitle": "That sample does not exist",
+  "errorTitle": "The sample could not be loaded",
+  "form": {
+    "createTitle": "New sample",
+    "editTitle": "Edit sample",
+    "name": "Name",
+    "barcode": "Barcode",
+    "itemType": "Item type",
+    "containerType": "Container type",
+    "box": "Box",
+    "position": "Position",
+    "volumeValue": "Volume",
+    "volumeUnit": "Volume unit",
+    "massValue": "Mass",
+    "massUnit": "Mass unit",
+    "parentSample": "Parent sample",
+    "parentSampleHint": "The id of the sample this one was taken from.",
+    "customFields": "Custom fields",
+    "customFieldsUnavailable": "Custom fields are not shown: reading field definitions needs the custom_field.define permission.",
+    "noChoice": "None",
+    "referenceHint": "A UUID.",
+    "submitCreate": "Create sample",
+    "submitUpdate": "Save changes",
+    "cancel": "Cancel",
+    "saved": "Changes saved.",
+    "requiredMark": "required"
+  },
+  "detail": {
+    "status": "Status",
+    "itemType": "Item type",
+    "barcode": "Barcode",
+    "containerType": "Container type",
+    "location": "Location",
+    "unplaced": "Not in a box",
+    "volume": "Volume",
+    "mass": "Mass",
+    "parent": "Parent: {{name}} ({{status}})",
+    "parentMissing": "Parent: {{id}} (not visible to you)",
+    "customFields": "Custom fields",
+    "noCustomFields": "This sample has no custom field values.",
+    "created": "Created",
+    "createdBy": "Created by",
+    "lastModified": "Last modified",
+    "lastModifiedBy": "Last modified by",
+    "history": "History",
+    "historyEmpty": "Nothing has happened to this sample yet.",
+    "historyFailed": "The history could not be loaded.",
+    "yes": "Yes",
+    "no": "No",
+    "unknownField": "Unrecognised field"
+  },
+  "actions": {
+    "edit": "Edit",
+    "checkout": "Check out",
+    "checkin": "Check in",
+    "discard": "Discard",
+    "move": "Move",
+    "delete": "Delete",
+    "checkinTitle": "Check in this sample",
+    "volumeUsed": "Volume used",
+    "volumeUsedHint": "Subtracted from the volume the sample holds.",
+    "reason": "Reason",
+    "confirmCheckin": "Check in",
+    "discardTitle": "Discard this sample",
+    "discardHint": "Discarding consumes whatever volume is left and cannot be undone.",
+    "confirmDiscard": "Discard",
+    "moveTitle": "Move this sample",
+    "destinationBox": "Destination box",
+    "destinationPosition": "Destination position",
+    "confirmMove": "Move",
+    "deleteTitle": "Delete this sample?",
+    "deleteBody": "The sample is marked deleted and kept for audit. Nothing else changes it back.",
+    "confirmDelete": "Delete sample",
+    "keep": "Keep"
+  },
+  "phi": {
+    "badge": "PHI",
+    "hint": "Protected health information. Only shown to a caller with phi.read."
+  },
+  "validation": {
+    "required": "This field is required.",
+    "rejected": "The server rejected this value.",
+    "tooMany": "Too many custom field values.",
+    "belowMin": "The value is below the minimum.",
+    "aboveMax": "The value is above the maximum.",
+    "beforeMin": "The date is before the earliest allowed date.",
+    "afterMax": "The date is after the latest allowed date.",
+    "text": {
+      "expected": "A text value is expected.",
+      "tooLong": "The text is longer than the field's maximum length."
+    },
+    "int": {
+      "expected": "A whole number is expected."
+    },
+    "float": {
+      "expected": "A number is expected."
+    },
+    "bool": {
+      "expected": "A yes/no value is expected."
+    },
+    "date": {
+      "expected": "A date is expected.",
+      "format": "The date must be in YYYY-MM-DD form."
+    },
+    "datetime": {
+      "expected": "A date and time are expected.",
+      "format": "The date and time must include seconds."
+    },
+    "enum": {
+      "expected": "One of the listed options is expected.",
+      "notAllowed": "That is not one of the allowed options."
+    },
+    "reference": {
+      "expected": "A UUID is expected.",
+      "invalid": "That is not a valid UUID."
+    }
+  },
+  "server": {
+    "positionTaken": "That position is already taken in this box.",
+    "sizeClassNotAccepted": "This box position does not accept that container type.",
+    "unknownPosition": "That position does not exist in this box's type.",
+    "unknownBox": "That box is not available in this lab.",
+    "unknownItemType": "That item type is not available in this lab.",
+    "tooManyFields": "The server rejected the custom field values: there are too many of them.",
+    "fieldRejected": "The server rejected this value on the field {{field}}."
+  },
+  "history": {
+    "action": "Action",
+    "actor": "By",
+    "at": "When"
+  }
+}
