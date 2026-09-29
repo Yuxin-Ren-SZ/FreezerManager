@@ -122,16 +122,18 @@ out loud.
 Run them through the script:
 
 ```sh
-npm run test           # NODE_ENV=test vitest run — 257 tests in 15 files
+npm run test           # NODE_ENV=test vitest run; prints the current file/test counts
 ```
 
 **Use `npm run test`, never a bare `npx vitest run`.** The `test` script pins
 `NODE_ENV=test` (see above); running Vitest directly inherits whatever the shell
 exports, and Vitest, Vite and React all change behaviour on an inherited
-`NODE_ENV`. With `NODE_ENV=production` exported, all 14
-`src/ui/primitives.test.tsx` tests fail, while `npm run test` is 257/257 with
-`NODE_ENV` set to `production` or unset — the script is the pin, so bypassing the
-script bypasses it. (A reviewer lost a round to exactly this during the G1.3
+`NODE_ENV`. With `NODE_ENV=production` exported, every
+test in `src/ui/primitives.test.tsx` fails, while `npm run test` passes the whole
+suite with `NODE_ENV` set to `production` or unset — the script is the pin, so
+bypassing the script bypasses it. (The counts are deliberately not written down
+here: they change with every task, and a stale number in a doc is worse than no
+number.) (A reviewer lost a round to exactly this during the G1.3
 review.)
 
 **`test.css: true` in `vite.config.ts` is load-bearing, not cosmetic.** Vitest
