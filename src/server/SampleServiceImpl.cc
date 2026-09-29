@@ -700,7 +700,24 @@ namespace fmgr::server {
       }
 
       if (caller_saw_phi) {
-        existing->phi_fields_enc_json = prepared.phi_fields_enc_json;
+        // A request can only clear a PHI key it could have named (#87). The form
+        // builds its controls from the *current* definitions, so a stored key whose
+        // definition was archived — or is otherwise absent from the current set —
+        // has no control that could send it back, and its absence from the request
+        // is not a clear. Carry those keys over; every key a definition does cover
+        // stays the request's to replace, blank or drop (#79), which is what keeps
+        // a deliberate clear working.
+        crypto::PhiFields authoritative = prepared.phi_values;
+        for (const auto& [key, value] : stored_phi) {
+          if (!prepared.current_phi_keys.contains(key)) {
+            authoritative[key] = value;
+          }
+        }
+        // A non-empty map here means the KMS is wired: every key came either from
+        // the request (prepare_custom_fields refuses PHI without a key provider) or
+        // from a stored envelope that could only have been decrypted with one.
+        existing->phi_fields_enc_json =
+            authoritative.empty() ? std::string{"{}"} : crypto::encrypt(authoritative, *kms_);
       } else if (prepared.has_non_blank_phi_value) {
         if (has_stored_phi) {
           stored_phi = crypto::decrypt(existing->phi_fields_enc_json, *kms_);
