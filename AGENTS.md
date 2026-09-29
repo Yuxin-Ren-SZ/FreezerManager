@@ -222,6 +222,14 @@ ctest --preset dev -R '^LabService' # focused
   SPDX check (`tools/check-spdx-headers.sh`) and `run-clang-tidy-17`. **Never
   run clang-tidy above `-j 2`** (it OOMs; see `doc/dev/clang-tidy.md`). If a
   tool isn't installed locally, say so in the PR rather than skipping silently.
+  On CI, clang-tidy is its own job named **`clang-tidy`** — not a step inside
+  the `dev` jobs — and it is result-cached, so a clean file is not re-linted
+  while a changed header invalidates it. **The jobs are path-gated:** a PR
+  touching only `src/web/**`, `doc/**`, `*.md`, `.nvmrc` or issue templates
+  skips the C++ matrix and clang-tidy entirely (the jobs report *skipped*, which
+  counts as passing); anything unrecognised, and every push to `main`, runs the
+  full matrix. Do not read a green run as lint coverage for a C++ change unless
+  the `clang-tidy` job ran.
 
 **Web UI (`src/web/`)** — Node, not CMake. Node 22 (repo-root `.nvmrc`) and npm
 with the committed `package-lock.json`; `npm ci` is the only supported install:
