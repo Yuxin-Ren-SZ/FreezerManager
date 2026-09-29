@@ -6,6 +6,7 @@ find_package(gRPC CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 add_library(freezermanager_rest STATIC
+  BrowserSession.cc
   JsonProtoMapping.cc
   RestGateway.cc
 )

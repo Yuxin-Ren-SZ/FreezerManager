@@ -6,9 +6,16 @@ import { ApiError, isGrpcCode, type GrpcCode } from './errors';
  * The SSE half of the API layer (TODO.md G1.2): typed frames over
  * `EventSource` for the gateway's `…/watch` routes (G-arch 5).
  *
- * Three decisions worth knowing about:
+ * Four decisions worth knowing about:
  *
- * 1. **The retry loop is ours, not the browser's.** `EventSource` reconnects on
+ * 1. **The stream authenticates with the session cookie, never a URL token.**
+ *    `EventSource` cannot set request headers, so the gateway used to accept a
+ *    bearer in `?access_token=`; G0.1 removed that, because a token in a URL
+ *    ends up in proxy and access logs. The credential is now the `HttpOnly`
+ *    `fmgr_session` cookie, which the browser attaches to a same-origin
+ *    `EventSource` on its own — so nothing here ever holds, reads or appends a
+ *    token, and the URL carries ids and cursors only (G-arch 6).
+ * 2. **The retry loop is ours, not the browser's.** `EventSource` reconnects on
  *    its own and resends `Last-Event-ID`, but that retry has no cap and no way
  *    to say "this error is permanent". So we close the stream on error and
  *    reopen it ourselves with a capped backoff, carrying the same cursor
@@ -16,12 +23,12 @@ import { ApiError, isGrpcCode, type GrpcCode } from './errors';
  *    `Last-Event-ID` is absent (`RestGateway.cc`, the audit/sample watch
  *    handlers). `Last-Event-ID` still wins if a browser-level retry happens
  *    first.
- * 2. **`event: error` is data, not a transport failure.** The gateway sends it
+ * 3. **`event: error` is data, not a transport failure.** The gateway sends it
  *    as a frame with the same `{"code","message"}` body as a unary error
  *    (`SseBridge.h`), so it arrives as a `MessageEvent` with `data`; a real
  *    transport failure arrives as a plain `Event` with none. That is how the
  *    two are told apart.
- * 3. **Fail fast on a typo.** Each route declares the query parameters it
+ * 4. **Fail fast on a typo.** Each route declares the query parameters it
  *    accepts, and an unknown one throws at subscribe time rather than being
  *    silently ignored by the gateway (which ignores unknown query params).
  */

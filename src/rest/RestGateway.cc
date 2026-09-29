@@ -3,7 +3,9 @@
 #include "rest/RestGateway.h"
 
 #include "core/uuid.h"
+#include "obs/Log.h"
 #include "obs/Metrics.h"
+#include "rest/BrowserSession.h"
 #include "rest/JsonProtoMapping.h"
 #include "rest/RestErrorTranslation.h"
 #include "rest/SseBridge.h"
@@ -38,40 +40,101 @@ namespace fmgr::rest {
       return json_response(status, body.dump());
     }
 
+    // Success response for one route. The generic case is the proto message as
+    // JSON; the overloads below decorate the two browser-session routes that do
+    // more than forward (G0.1). Overload resolution picks them by response type,
+    // which is why the `FMGR_ROUTE` macro can stay five arguments wide — the
+    // route checker in src/web/scripts/check-routes.mjs parses exactly that shape.
+    template <typename RespT>
+    [[nodiscard]] drogon::HttpResponsePtr success_response(std::string_view /*path*/,
+                                                           const RespT& response,
+                                                           const BrowserSessionConfig& /*config*/) {
+      return json_response(200, message_to_json(response));
+    }
+
+    // Login: hand the token to the browser as an HttpOnly cookie and keep it out
+    // of the body, which is the whole point of the browser session. The CSRF
+    // cookie is minted here, freshly, on every login.
+    [[nodiscard]] drogon::HttpResponsePtr success_response(std::string_view path,
+                                                           const fmgr::v1::LoginResponse& response,
+                                                           const BrowserSessionConfig& config) {
+      if (path != k_browser_login_path) {
+        // POST /api/v1/auth/login keeps its existing shape for scripts and I1:
+        // the token is in the body and no cookie is set.
+        return json_response(200, message_to_json(response));
+      }
+      const nlohmann::json body{
+          {"session_id", response.session_id()},
+          {"user_id", response.user_id()},
+          {"mfa_required", response.mfa_required()},
+      };
+      auto resp = json_response(200, body.dump());
+      resp->addCookie(session_cookie(response.session_token(), config));
+      resp->addCookie(csrf_cookie(generate_csrf_token(), config));
+      return resp;
+    }
+
+    // Logout: the RPC has already revoked the session server-side; the response
+    // additionally expires both cookies so the jar stops carrying them.
+    [[nodiscard]] drogon::HttpResponsePtr success_response(std::string_view path,
+                                                           const fmgr::v1::LogoutResponse& response,
+                                                           const BrowserSessionConfig& config) {
+      if (path != k_browser_logout_path) {
+        return json_response(200, message_to_json(response));
+      }
+      auto resp = json_response(200, message_to_json(response));
+      resp->addCookie(expired_session_cookie(config));
+      resp->addCookie(expired_csrf_cookie(config));
+      return resp;
+    }
+
     // Core forwarding step shared by every route:
+    //   CSRF/Origin gate -> 403 without touching gRPC
     //   parse JSON body -> proto request
-    //   propagate the bearer header as gRPC metadata
+    //   propagate the bearer credential (header, else session cookie) as gRPC metadata
     //   invoke the in-process gRPC handler
     //   map gRPC status / proto response back to an HTTP JSON response
     template <typename ReqT, typename RespT, typename Rpc>
-    void forward(const drogon::HttpRequestPtr& req, Callback&& callback, Rpc&& rpc) {
-      ReqT request;
-      try {
-        json_to_message(std::string(req->getBody()), request);
-      } catch (const BadJson& err) {
-        callback(error_response(400, "INVALID_ARGUMENT", err.what()));
-        return;
-      }
-
-      grpc::ClientContext client_ctx;
-      // Drogon header lookups are case-insensitive; the value is the full
-      // "Bearer <token>" string the handler's extract_bearer() expects.
-      const std::string& authz = req->getHeader("authorization");
-      if (!authz.empty()) {
-        client_ctx.AddMetadata("authorization", authz);
-      }
+    void forward(std::string_view path, const drogon::HttpRequestPtr& req, Callback&& callback,
+                 Rpc&& rpc, const BrowserSessionConfig& session_config) {
+      const BrowserRequest browser = browser_request_from(*req);
 
       // Correlation id (C-12, PRD §17): reuse a caller-supplied X-Request-Id, else
       // mint one, forward it to the gRPC handler so it reaches the audit row, and
-      // echo it back so the client can correlate the response with its logs.
+      // echo it back so the client can correlate the response with its logs. Minted
+      // before the gate so a rejected request is traceable too.
       const std::string& inbound_rid = req->getHeader("x-request-id");
       const std::string request_id = !inbound_rid.empty() ? inbound_rid : core::generate_uuid_v4();
-      client_ctx.AddMetadata("x-request-id", request_id);
 
       const auto respond = [&callback, &request_id](const drogon::HttpResponsePtr& resp) {
         resp->addHeader("X-Request-Id", request_id);
         callback(resp);
       };
+
+      if (const auto denial = csrf_denial(browser, session_config)) {
+        obs::log_event(obs::Level::Warn, *denial,
+                       obs::LogFields{.request_id = request_id, .event = "rest.csrf_denied"});
+        respond(error_response(403, "PERMISSION_DENIED", *denial));
+        return;
+      }
+
+      ReqT request;
+      try {
+        json_to_message(std::string(req->getBody()), request);
+      } catch (const BadJson& err) {
+        respond(error_response(400, "INVALID_ARGUMENT", err.what()));
+        return;
+      }
+
+      grpc::ClientContext client_ctx;
+      // Drogon header lookups are case-insensitive. The value is the full
+      // "Bearer <token>" string the handler's extract_bearer() expects — from the
+      // Authorization header when there is one, else from the session cookie.
+      const std::string authz = authorization_metadata(browser);
+      if (!authz.empty()) {
+        client_ctx.AddMetadata("authorization", authz);
+      }
+      client_ctx.AddMetadata("x-request-id", request_id);
 
       RespT response;
       const grpc::Status status = rpc(client_ctx, request, &response);
@@ -80,7 +143,7 @@ namespace fmgr::rest {
         respond(json_response(err.status_code, err.body));
         return;
       }
-      respond(json_response(200, message_to_json(response)));
+      respond(success_response(path, response, session_config));
     }
 
   } // namespace
@@ -88,21 +151,26 @@ namespace fmgr::rest {
   void RestGateway::register_routes() {
     auto& app = drogon::app();
     GatewayStubs& s = stubs_;
+    // Cookie policy for this process. Read here rather than per request so the
+    // environment is sampled once, at startup.
+    const BrowserSessionConfig session_config = BrowserSessionConfig::from_env();
 
     // Bind one POST route to one stub method. The trailing lambda adapts the
     // stub's (ctx*, req&, resp*) signature to forward()'s (ctx&, req&, resp*)
     // callable. `stub` is a GatewayStubs member; `Method` its RPC.
 #define FMGR_ROUTE(path, stub, Method, ReqT, RespT)                                                \
-  app.registerHandler(path,                                                                        \
-                      [&s](const drogon::HttpRequestPtr& req, Callback&& callback) {               \
-                        forward<fmgr::v1::ReqT, fmgr::v1::RespT>(                                  \
-                            req, std::move(callback),                                              \
-                            [&s](grpc::ClientContext& client_ctx, const fmgr::v1::ReqT& rpc_req,   \
-                                 fmgr::v1::RespT* rpc_resp) {                                      \
-                              return s.stub->Method(&client_ctx, rpc_req, rpc_resp);               \
-                            });                                                                    \
-                      },                                                                           \
-                      {drogon::Post})
+  app.registerHandler(                                                                             \
+      path,                                                                                        \
+      [&s, session_config](const drogon::HttpRequestPtr& req, Callback&& callback) {               \
+        forward<fmgr::v1::ReqT, fmgr::v1::RespT>(                                                  \
+            path, req, std::move(callback),                                                        \
+            [&s](grpc::ClientContext& client_ctx, const fmgr::v1::ReqT& rpc_req,                   \
+                 fmgr::v1::RespT* rpc_resp) {                                                      \
+              return s.stub->Method(&client_ctx, rpc_req, rpc_resp);                               \
+            },                                                                                     \
+            session_config);                                                                       \
+      },                                                                                           \
+      {drogon::Post})
 
     // ---- AuthService (login/submit-mfa work without a bearer) ----
     FMGR_ROUTE("/api/v1/auth/login", auth, Login, LoginRequest, LoginResponse);
@@ -114,6 +182,15 @@ namespace fmgr::rest {
                ListApiTokensResponse);
     FMGR_ROUTE("/api/v1/auth/api-token/revoke", auth, RevokeApiToken, RevokeApiTokenRequest,
                RevokeApiTokenResponse);
+
+    // ---- AuthService, browser session (G0.1) ----
+    // The same three RPCs, for a client that cannot hold a token: the token goes
+    // into an HttpOnly cookie instead of the body, and cookie-authenticated
+    // mutations must pass the CSRF gate above.
+    FMGR_ROUTE("/api/v1/auth/browser/login", auth, Login, LoginRequest, LoginResponse);
+    FMGR_ROUTE("/api/v1/auth/browser/submit-mfa", auth, SubmitMfa, SubmitMfaRequest,
+               SubmitMfaResponse);
+    FMGR_ROUTE("/api/v1/auth/browser/logout", auth, Logout, LogoutRequest, LogoutResponse);
 
     // ---- SessionService ----
     FMGR_ROUTE("/api/v1/session/list", session, ListSessions, ListSessionsRequest,

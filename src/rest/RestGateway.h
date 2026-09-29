@@ -10,8 +10,11 @@
 //
 // Auth: routes pass the inbound HTTP `Authorization: Bearer <token>` header
 // straight through as gRPC `authorization` metadata, so the existing
-// AuthMiddleware gate runs unchanged. auth/login + auth/submit-mfa are the only
-// routes that work without a bearer (they establish one).
+// AuthMiddleware gate runs unchanged. Without a header, the `fmgr_session`
+// cookie set by the browser-session routes is forwarded the same way, and every
+// cookie-authenticated mutation must pass the CSRF/Origin gate first (TODO.md
+// G0.1, src/rest/BrowserSession.h). auth/login + auth/submit-mfa are the only
+// routes that work without a credential (they establish one).
 #ifndef FMGR_REST_RESTGATEWAY_H
 #define FMGR_REST_RESTGATEWAY_H
 

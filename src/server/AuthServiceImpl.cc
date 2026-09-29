@@ -109,6 +109,7 @@ namespace fmgr::server {
       const auto token = auth_.authenticate(creds, {});
       resp->set_session_token(token.plaintext_token);
       resp->set_session_id(token.session_id.to_string());
+      resp->set_user_id(token.user_id.to_string());
       resp->set_mfa_required(!token.mfa_complete);
       return grpc::Status::OK;
     } catch (...) {
