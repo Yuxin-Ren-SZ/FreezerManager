@@ -11,6 +11,7 @@ import itemTypes from '../../locales/en/itemTypes.json';
 import layout from '../../locales/en/layout.json';
 import lookup from '../../locales/en/lookup.json';
 import members from '../../locales/en/members.json';
+import sampleDetail from '../../locales/en/sample-detail.json';
 import samples from '../../locales/en/samples.json';
 import scan from '../../locales/en/scan.json';
 import shares from '../../locales/en/shares.json';
@@ -45,6 +46,11 @@ export const resources = {
     home,
     lookup,
     samples,
+    // Keyed as the feature directory is named, not as the variable is: i18next
+    // takes the resource object's key as the namespace, and the feature is
+    // `features/sample-detail/`. (Like `csvImport`/`import.json`, the variable
+    // name and the namespace only have to agree in spirit.)
+    'sample-detail': sampleDetail,
     layout,
     scan,
     csvImport,
