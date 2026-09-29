@@ -1,0 +1,34 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.root {
+  display: block;
+  min-width: 0;
+}
+
+.select {
+  display: block;
+  width: 100%;
+  min-height: var(--fmgr-control-height-md);
+  padding: 0 var(--fmgr-space-2);
+  font-family: inherit;
+  font-size: var(--fmgr-font-size-base);
+  color: var(--fmgr-color-text);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border);
+  border-radius: var(--fmgr-radius-md);
+}
+
+.select:disabled {
+  color: var(--fmgr-color-text-muted);
+  background-color: var(--fmgr-color-surface);
+  cursor: not-allowed;
+}
+
+.select[aria-invalid='true'] {
+  border-color: var(--fmgr-color-danger);
+}
+
+.select:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}

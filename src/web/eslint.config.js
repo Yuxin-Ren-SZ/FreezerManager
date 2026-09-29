@@ -106,5 +106,15 @@ export default tseslint.config(
     },
   },
 
+  {
+    // Tests assert on literal text on purpose: it is the fixture, not copy
+    // that ships to a user. `i18next/no-literal-string` still applies to every
+    // file under `src/` that is not a test, which is where it earns its keep.
+    files: ['**/*.test.{ts,tsx}'],
+    rules: {
+      'i18next/no-literal-string': 'off',
+    },
+  },
+
   prettier,
 );

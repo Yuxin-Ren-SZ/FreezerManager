@@ -1,49 +1,149 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
 /*
- * Design tokens (G-arch 1). Everything is a CSS custom property so components
- * never hard-code a colour, size or radius.
+ * FreezerManager design tokens (G-arch 1).
  *
- * G1.3 grows this file into the full light/dark set with WCAG AA contrast
- * (TODO.md G1.3); the seed below is what the G1.1 placeholder page needs.
+ * Everything visual is a CSS custom property, so no component hard-codes a
+ * colour, size, radius or shadow. The light values live in `:root`; the dark
+ * theme is the same token names under `prefers-color-scheme: dark` — there is
+ * no JS theme switch and no `data-theme` attribute to get out of sync
+ * (TODO.md G1.3: "light and dark themes via `prefers-color-scheme`").
+ *
+ * Contrast is not a matter of taste here: `tokens.contrast.test.ts` reads this
+ * file back and computes every WCAG AA ratio. Change a colour and that test
+ * tells you which pair broke. Text pairs need 4.5:1 (WCAG 1.4.3); borders,
+ * focus rings and other non-text affordances need 3:1 (WCAG 1.4.11).
+ *
+ * Naming: `--fmgr-color-<role>`, where `-subtle` is a tinted background and
+ * `-text` is the label colour that sits on a filled surface of that role.
  */
 
 :root {
   color-scheme: light dark;
 
+  /* ── Typography ───────────────────────────────────────────────────────── */
   /* No hosted web fonts (G-arch 3): system stack only. */
   --fmgr-font-sans:
     system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --fmgr-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --fmgr-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  --fmgr-font-size-xs: 0.75rem;
+  --fmgr-font-size-sm: 0.875rem;
   --fmgr-font-size-base: 1rem;
+  --fmgr-font-size-lg: 1.125rem;
+  --fmgr-font-size-xl: 1.375rem;
+  --fmgr-font-size-2xl: 1.75rem;
+  --fmgr-line-height-tight: 1.25;
+  --fmgr-line-height-base: 1.5;
+  --fmgr-font-weight-normal: 400;
+  --fmgr-font-weight-medium: 500;
+  --fmgr-font-weight-semibold: 600;
 
+  /* ── Space ────────────────────────────────────────────────────────────── */
   --fmgr-space-1: 0.25rem;
   --fmgr-space-2: 0.5rem;
   --fmgr-space-3: 0.75rem;
   --fmgr-space-4: 1rem;
+  --fmgr-space-5: 1.25rem;
   --fmgr-space-6: 1.5rem;
   --fmgr-space-8: 2rem;
+  --fmgr-space-10: 2.5rem;
 
+  /* ── Shape & elevation ────────────────────────────────────────────────── */
   --fmgr-radius-sm: 0.25rem;
   --fmgr-radius-md: 0.5rem;
+  --fmgr-radius-lg: 0.75rem;
+  --fmgr-radius-full: 999px;
+  --fmgr-shadow-sm: 0 1px 2px rgb(10 14 18 / 12%);
+  --fmgr-shadow-md: 0 4px 16px rgb(10 14 18 / 18%);
 
+  /* ── Layering ─────────────────────────────────────────────────────────── */
+  --fmgr-z-sticky: 10;
+  --fmgr-z-overlay: 100;
+  --fmgr-z-toast: 200;
+
+  /* ── Component metrics ────────────────────────────────────────────────── */
+  --fmgr-control-height-sm: 1.75rem;
+  --fmgr-control-height-md: 2.25rem;
+  --fmgr-control-height-lg: 2.75rem;
+  --fmgr-focus-ring-width: 2px;
+  --fmgr-focus-ring-offset: 2px;
+  --fmgr-topbar-height: 3.25rem;
+  /* Side nav collapses to a horizontal strip on narrow screens (360 px). */
+  --fmgr-sidenav-width: 15rem;
+  --fmgr-content-max-width: 90rem;
+
+  /* ── Colour: surfaces and text ────────────────────────────────────────── */
   --fmgr-color-bg: #ffffff;
-  --fmgr-color-surface: #f4f6f8;
-  --fmgr-color-text: #14181d;
-  --fmgr-color-text-muted: #4d5761;
-  --fmgr-color-border: #ccd3db;
-  --fmgr-color-accent: #0b5cad;
-  --fmgr-color-danger: #a4262c;
+  --fmgr-color-surface: #eef2f6;
+  --fmgr-color-surface-raised: #ffffff;
+  --fmgr-color-text: #141a1f;
+  --fmgr-color-text-muted: #525d68;
+  --fmgr-color-border: #7b8794;
+  --fmgr-color-border-subtle: #c8d1da;
+  --fmgr-color-overlay: rgb(10 14 18 / 50%);
+
+  /* ── Colour: accent (primary actions, links, focus) ───────────────────── */
+  --fmgr-color-accent: #0b5394;
+  --fmgr-color-accent-hover: #083f72;
+  --fmgr-color-accent-text: #ffffff;
+  --fmgr-color-accent-subtle: #dceaf8;
+  --fmgr-color-focus-ring: #0b5394;
+
+  /* ── Colour: status roles ─────────────────────────────────────────────── */
+  --fmgr-color-danger: #a01a24;
+  --fmgr-color-danger-hover: #7d121b;
+  --fmgr-color-danger-text: #ffffff;
+  --fmgr-color-danger-subtle: #fbe3e5;
+  --fmgr-color-success: #14663a;
+  --fmgr-color-success-subtle: #dff3e6;
+  --fmgr-color-warning: #7a4b00;
+  --fmgr-color-warning-subtle: #fdf0d5;
+  --fmgr-color-info: #0b5394;
+  --fmgr-color-info-subtle: #dceaf8;
+  --fmgr-color-neutral: #2b333b;
+  --fmgr-color-neutral-subtle: #e4e9ee;
+
+  /* ── Colour: live-connection indicator ────────────────────────────────── */
+  --fmgr-color-live: #14663a;
+  --fmgr-color-connecting: #7a4b00;
+  --fmgr-color-offline: #525d68;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --fmgr-color-bg: #14181d;
-    --fmgr-color-surface: #1d2329;
-    --fmgr-color-text: #f2f5f7;
-    --fmgr-color-text-muted: #b3bcc5;
-    --fmgr-color-border: #3a444e;
-    --fmgr-color-accent: #6cb2f2;
-    --fmgr-color-danger: #f08a90;
+    --fmgr-shadow-sm: 0 1px 2px rgb(0 0 0 / 45%);
+    --fmgr-shadow-md: 0 4px 16px rgb(0 0 0 / 55%);
+    --fmgr-color-overlay: rgb(0 0 0 / 65%);
+
+    --fmgr-color-bg: #10151a;
+    --fmgr-color-surface: #1a2128;
+    --fmgr-color-surface-raised: #222b33;
+    --fmgr-color-text: #eef3f7;
+    --fmgr-color-text-muted: #a7b3bf;
+    --fmgr-color-border: #7d8b99;
+    --fmgr-color-border-subtle: #39434d;
+
+    --fmgr-color-accent: #7fb9f5;
+    --fmgr-color-accent-hover: #a5cdf8;
+    --fmgr-color-accent-text: #0b1b2b;
+    --fmgr-color-accent-subtle: #16283c;
+    --fmgr-color-focus-ring: #7fb9f5;
+
+    --fmgr-color-danger: #ff9ba2;
+    --fmgr-color-danger-hover: #ffbcc1;
+    --fmgr-color-danger-text: #3a0a0e;
+    --fmgr-color-danger-subtle: #3a1418;
+    --fmgr-color-success: #7fd6a1;
+    --fmgr-color-success-subtle: #17301f;
+    --fmgr-color-warning: #f2c979;
+    --fmgr-color-warning-subtle: #33280f;
+    --fmgr-color-info: #a8cdf5;
+    --fmgr-color-info-subtle: #16283c;
+    --fmgr-color-neutral: #dde4ea;
+    --fmgr-color-neutral-subtle: #2b343d;
+
+    --fmgr-color-live: #7fd6a1;
+    --fmgr-color-connecting: #f2c979;
+    --fmgr-color-offline: #a7b3bf;
   }
 }

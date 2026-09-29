@@ -1,0 +1,47 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.root {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fmgr-space-1);
+  padding: 0 var(--fmgr-space-2);
+  font-size: var(--fmgr-font-size-xs);
+  font-weight: var(--fmgr-font-weight-semibold);
+  line-height: var(--fmgr-line-height-tight);
+  /* 1.6em of the xs size: tall enough to look like a chip, short enough for a
+     dense grid row. */
+  padding-block: 0.2rem;
+  border: 1px solid transparent;
+  border-radius: var(--fmgr-radius-full);
+  white-space: nowrap;
+}
+
+.neutral {
+  color: var(--fmgr-color-neutral);
+  background-color: var(--fmgr-color-neutral-subtle);
+  border-color: var(--fmgr-color-neutral-subtle);
+}
+
+.info {
+  color: var(--fmgr-color-info);
+  background-color: var(--fmgr-color-info-subtle);
+  border-color: var(--fmgr-color-info-subtle);
+}
+
+.success {
+  color: var(--fmgr-color-success);
+  background-color: var(--fmgr-color-success-subtle);
+  border-color: var(--fmgr-color-success-subtle);
+}
+
+.warning {
+  color: var(--fmgr-color-warning);
+  background-color: var(--fmgr-color-warning-subtle);
+  border-color: var(--fmgr-color-warning-subtle);
+}
+
+.danger {
+  color: var(--fmgr-color-danger);
+  background-color: var(--fmgr-color-danger-subtle);
+  border-color: var(--fmgr-color-danger-subtle);
+}
