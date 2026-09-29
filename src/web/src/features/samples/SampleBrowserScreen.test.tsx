@@ -36,11 +36,11 @@ const SAMPLES_PATH = `/labs/${LAB_ID}/samples`;
 const ADMIN: CurrentUser = STUB_CURRENT_USER_ALL_PERMISSIONS;
 
 /**
- * A member who can read samples but not define custom fields.
+ * A ReadOnly member: `sample.read` and nothing else.
  *
- * `custom-field-def/list` requires `custom_field.define`, so this is the user
- * whose column chooser has no custom columns — the case the screen has to
- * degrade into rather than fail on.
+ * Since #69 `custom-field-def/list` is gated on `sample.read`, not
+ * `custom_field.define`, so this is the user whose column chooser *does* have
+ * the custom columns. It is the case the screen was silently breaking for.
  */
 const READ_ONLY: CurrentUser = {
   ...STUB_CURRENT_USER,
@@ -49,6 +49,24 @@ const READ_ONLY: CurrentUser = {
     ...lab,
     labId: LAB_ID,
     permissions: ['sample.read'],
+  })),
+};
+
+/**
+ * Holds the define permission but not `sample.read`.
+ *
+ * The guard that keeps the fix from becoming "everyone sees everything": the
+ * gate keys on `sample.read`, so holding `custom_field.define` is not enough to
+ * open the definitions. No built-in role produces this pair — the point is that
+ * the screen must not open the catalog for a caller the server would refuse.
+ */
+const WITHOUT_SAMPLE_READ: CurrentUser = {
+  ...STUB_CURRENT_USER,
+  permissions: ['custom_field.define'],
+  labs: STUB_CURRENT_USER.labs.map((lab) => ({
+    ...lab,
+    labId: LAB_ID,
+    permissions: ['custom_field.define'],
   })),
 };
 
@@ -537,8 +555,25 @@ describe('SampleBrowserScreen', () => {
       expect(within(serumRow).getByRole('cell', { name: '3' })).toBeInTheDocument();
     });
 
-    it('degrades to the base columns for a member without custom_field.define', async () => {
+    it('offers the custom columns to a member whose only permission is sample.read', async () => {
       renderScreen({ user: READ_ONLY });
+      await screen.findByRole('table', { name: samplesCopy.table.caption });
+
+      // The definitions are a second request, so the columns appear with them.
+      // A Member whose form rendered with no custom fields is the bug (#76).
+      await waitFor(() => {
+        expect(within(table()).getByRole('cell', { name: '12.5' })).toBeInTheDocument();
+      });
+
+      await userEvent.click(screen.getByText('Columns'));
+
+      expect(
+        screen.getByRole('checkbox', { name: 'Show or hide the Concentration column' }),
+      ).toBeInTheDocument();
+    });
+
+    it('leaves the custom columns off for a caller without sample.read', async () => {
+      renderScreen({ user: WITHOUT_SAMPLE_READ });
       await screen.findByRole('table', { name: samplesCopy.table.caption });
 
       await userEvent.click(screen.getByText('Columns'));
