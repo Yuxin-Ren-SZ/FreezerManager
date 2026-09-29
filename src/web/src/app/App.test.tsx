@@ -40,17 +40,17 @@ import sharesCopy from '../../locales/en/shares.json';
  * they are the same placeholder until G3.3 splits them, and there is nothing
  * for a test to tell apart.
  *
- * `task: null` means the real screen has replaced the placeholder (G3.1 is the
- * first): it no longer renders its TODO id, so the assertion below flips to
- * "the placeholder sentence is gone", which is what catches a route quietly
- * reverted to `PlaceholderScreen`.
+ * `task: null` means the real screen has replaced the placeholder (G3.1's
+ * layout tree and G3.2's sample browser so far): it no longer renders its TODO
+ * id, so the assertion below flips to "the placeholder sentence is gone", which
+ * is what catches a route quietly reverted to `PlaceholderScreen`.
  */
 const EXPECTED_SCREEN: Record<string, { title: string; task: string | null }> = {
   login: { title: authCopy.title, task: 'G2.1' },
   'login-mfa': { title: authCopy.title, task: 'G2.1' },
   home: { title: homeCopy.title, task: 'G4.2' },
   lookup: { title: lookupCopy.title, task: 'G3.5' },
-  samples: { title: samplesCopy.title, task: 'G3.2' },
+  samples: { title: samplesCopy.title, task: null },
   'sample-new': { title: samplesCopy.title, task: 'G3.3' },
   'sample-detail': { title: samplesCopy.title, task: 'G3.3' },
   layout: { title: layoutCopy.title, task: null },
@@ -456,9 +456,13 @@ describe('error boundary', () => {
 
 describe('placeholder screens', () => {
   it('name the TODO item that replaces them', async () => {
-    renderApp({ path: `/labs/${LAB_ID}/samples`, user: user(['sample.read']) });
+    // The samples route used to be the example here; G3.2 replaced it, so this
+    // now uses a route that is still a placeholder (the scan screen, G3.6).
+    renderApp({ path: `/labs/${LAB_ID}/scan`, user: user(['sample.checkout']) });
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Samples' })).toBeInTheDocument();
-    expect(screen.getByText(/G3\.2/)).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: scanCopy.title }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/G3\.6/)).toBeInTheDocument();
   });
 });

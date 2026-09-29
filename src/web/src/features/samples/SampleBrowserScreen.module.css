@@ -1,0 +1,66 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-4);
+  max-width: var(--fmgr-content-max-width);
+}
+
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--fmgr-space-3);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fmgr-font-size-xl);
+  line-height: var(--fmgr-line-height-tight);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--fmgr-space-3);
+}
+
+.note {
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.live {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+/* The filter bar wraps rather than scrolls: a narrow window is a phone, and a
+   horizontal scroller would hide the filter the user is looking for. */
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: var(--fmgr-space-3);
+  padding: var(--fmgr-space-3);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-md);
+}
+
+.count {
+  display: flex;
+  gap: var(--fmgr-space-3);
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.exportError {
+  margin: 0;
+  color: var(--fmgr-color-danger);
+}

@@ -13,7 +13,8 @@
     "itemTypeAny": "Any item type",
     "box": "Box",
     "boxAny": "Any box",
-    "clear": "Clear filters"
+    "clear": "Clear filters",
+    "barcodeHint": "Matches the whole barcode. Use Search for a fragment."
   },
   "columns": {
     "name": "Name",

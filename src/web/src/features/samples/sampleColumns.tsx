@@ -31,7 +31,8 @@ import { placementKind, placementPath } from './placement';
 const EMPTY_CELL = '\u2014';
 
 /** Lifecycle state to badge tone; an unknown state stays neutral. */
-const STATUS_TONE: Readonly<Record<number, BadgeTone>> = {
+/** Partial on purpose: a newer server may send a status this bundle does not know. */
+const STATUS_TONE: Readonly<Partial<Record<number, BadgeTone>>> = {
   [SampleStatus.ACTIVE]: 'success',
   [SampleStatus.CHECKED_OUT]: 'info',
   [SampleStatus.DEPLETED]: 'warning',
@@ -41,9 +42,9 @@ const STATUS_TONE: Readonly<Record<number, BadgeTone>> = {
 
 export interface SampleColumnsOptions {
   readonly labId: string;
-  /** `samples` namespace. */
-  readonly t: TFunction;
-  /** The default namespace, for `enums.*`. */
+  /** The `samples` namespace, so a missing key is a type error. */
+  readonly t: TFunction<'samples'>;
+  /** The default namespace, for `enums.SampleStatus.*`. */
   readonly tEnums: TFunction;
   readonly itemTypes: readonly ItemType[];
   /** The lab's field definitions; one column each, in server order. */
@@ -101,7 +102,9 @@ export function buildSampleColumns({
       accessorKey: 'name',
       header: t('columns.name'),
       cell: ({ row }) => (
-        <Link to={`/labs/${encodeURIComponent(labId)}/samples/${encodeURIComponent(row.original.id)}`}>
+        <Link
+          to={`/labs/${encodeURIComponent(labId)}/samples/${encodeURIComponent(row.original.id)}`}
+        >
           {row.original.name}
         </Link>
       ),
@@ -145,7 +148,9 @@ export function buildSampleColumns({
         if (volumeValue === undefined) {
           return EMPTY_CELL;
         }
-        return `${String(volumeValue)} ${volumeUnit}`.trim();
+        // A value without a unit is still a value: "12.5", not "12.5 undefined".
+        const value = String(volumeValue);
+        return volumeUnit === undefined || volumeUnit === '' ? value : `${value} ${volumeUnit}`;
       },
     },
     {
@@ -157,7 +162,9 @@ export function buildSampleColumns({
       id: customFieldColumnId(cfd.key),
       header: cfd.isPhi ? t('columns.phi', { label: cfd.label }) : cfd.label,
       cell: ({ row }: { row: { original: Sample } }) => {
-        const value = formatCustomFieldValue(parseCustomFields(row.original.customFieldsJson)[cfd.key]);
+        const value = formatCustomFieldValue(
+          parseCustomFields(row.original.customFieldsJson)[cfd.key],
+        );
         return value === '' ? EMPTY_CELL : value;
       },
     })),

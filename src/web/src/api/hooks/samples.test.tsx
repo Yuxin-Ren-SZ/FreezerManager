@@ -159,9 +159,9 @@ describe('useExportSamples', () => {
     server.use(...fakeApi({ fail: { 'sample/export': 'PERMISSION_DENIED' } }));
 
     const { result } = renderHook(() => useExportSamples('lab-demo'), { wrapper: createWrapper() });
-    const error = (await act(() => result.current.mutateAsync({}).catch(
-      (caught: unknown) => caught,
-    ))) as ApiError;
+    const error = (await act(() =>
+      result.current.mutateAsync({}).catch((caught: unknown) => caught),
+    )) as ApiError;
 
     expect(error.code).toBe('PERMISSION_DENIED');
   });

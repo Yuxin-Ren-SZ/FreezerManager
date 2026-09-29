@@ -46,7 +46,11 @@ describe('placementKind', () => {
     // upper part of the path is best effort.
     expect(
       placementKind(
-        path({ placed: true, partial: true, segments: [{ kind: 'box', label: 'Box A', containerKind: null }] }),
+        path({
+          placed: true,
+          partial: true,
+          segments: [{ kind: 'box', label: 'Box A', containerKind: null }],
+        }),
       ),
     ).toBe('placed');
   });

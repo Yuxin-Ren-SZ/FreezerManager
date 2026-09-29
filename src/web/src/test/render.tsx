@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, type RenderOptions, type RenderResult } from '@testing-library/react';
 import type { ReactElement, ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
+import { SessionProvider, type CurrentUser } from '../app/session';
 
 /**
  * `renderWithProviders()` (TODO.md G1.2): the one render helper every screen
@@ -18,6 +19,14 @@ export interface ProvidersOptions {
   readonly queryClient?: QueryClient;
   /** Initial URL for the `MemoryRouter` wrapper. */
   readonly route?: string;
+  /**
+   * The session `auth/whoami` would return (G-arch 6). Pass it for a screen
+   * that gates an affordance with `useCan()`; leave it out and there is no
+   * session context at all, which is what the screens that never ask for one
+   * expect — adding a provider to their environment would change what they are
+   * tested against.
+   */
+  readonly user?: CurrentUser | null;
 }
 
 export function createTestQueryClient(): QueryClient {
@@ -32,12 +41,21 @@ export function createTestQueryClient(): QueryClient {
 /** The provider stack on its own, for `renderHook(fn, { wrapper })`. */
 export function createWrapper(options: ProvidersOptions = {}) {
   const queryClient = options.queryClient ?? createTestQueryClient();
+  // One loader identity for the whole tree: a fresh function on every render
+  // would restart `SessionProvider`'s effect on every commit.
+  const loadSession = () => Promise.resolve(options.user ?? null);
 
   return function Wrapper({ children }: { children: ReactNode }) {
-    return (
+    const tree = (
       <QueryClientProvider client={queryClient}>
         <MemoryRouter initialEntries={[options.route ?? '/']}>{children}</MemoryRouter>
       </QueryClientProvider>
+    );
+
+    return options.user === undefined ? (
+      tree
+    ) : (
+      <SessionProvider loadSession={loadSession}>{tree}</SessionProvider>
     );
   };
 }
@@ -51,10 +69,10 @@ export function renderWithProviders(
   options: ProvidersOptions & Omit<RenderOptions, 'wrapper'> = {},
 ): RenderWithProvidersResult {
   const queryClient = options.queryClient ?? createTestQueryClient();
-  const { route, queryClient: _ignored, ...renderOptions } = options;
+  const { route, queryClient: _ignored, user, ...renderOptions } = options;
 
   return {
-    ...render(ui, { wrapper: createWrapper({ queryClient, route }), ...renderOptions }),
+    ...render(ui, { wrapper: createWrapper({ queryClient, route, user }), ...renderOptions }),
     queryClient,
   };
 }

@@ -4,12 +4,7 @@ import { useEffect, useState } from 'react';
 import { SampleStatus, SampleSchema, type Sample } from '../../gen/fmgr/v1/sample_pb';
 import type { ApiError } from '../errors';
 import type { ResponseOf } from '../routes';
-import {
-  subscribeSse,
-  type EventSourceLike,
-  type SseParamsOf,
-  type SseRetryPolicy,
-} from '../sse';
+import { subscribeSse, type EventSourceLike, type SseParamsOf, type SseRetryPolicy } from '../sse';
 import { sampleKeys, type SampleListFilters } from './samples';
 
 /**
@@ -105,16 +100,17 @@ export function mergeSampleFrame(
   filters: SampleListFilters,
 ): SampleListData {
   const { pages } = data;
-  const lastIndex = pages.length - 1;
   const belongs = belongsInList(sample, filters);
-  let found = false;
 
+  // A page object is replaced only when the row was in it, so identity tells us
+  // whether the client had already loaded this sample (a `let found` assigned
+  // inside the callback would be invisible to the type-checker, which then
+  // reads the later `!found` as always true).
   const nextPages = pages.map((response) => {
     const position = response.samples.findIndex((candidate) => candidate.id === sample.id);
     if (position < 0) {
       return response;
     }
-    found = true;
 
     const samples = [...response.samples];
     if (belongs) {
@@ -126,17 +122,13 @@ export function mergeSampleFrame(
     }
     return { ...response, samples };
   });
+  const found = nextPages.some((page, index) => page !== pages[index]);
 
   // See rule 3: only a row the server has already told us is the last one can be
   // appended, and only when the loaded window actually reaches the end.
-  const lastPage = pages[lastIndex];
-  if (
-    !found &&
-    belongs &&
-    lastPage !== undefined &&
-    (lastPage.page?.nextPageToken ?? '') === ''
-  ) {
-    nextPages[lastIndex] = { ...lastPage, samples: [...lastPage.samples, sample] };
+  const lastPage = pages.at(-1);
+  if (!found && belongs && lastPage !== undefined && (lastPage.page?.nextPageToken ?? '') === '') {
+    nextPages[nextPages.length - 1] = { ...lastPage, samples: [...lastPage.samples, sample] };
   }
 
   return { ...data, pages: nextPages };
@@ -163,7 +155,11 @@ export function applySampleFrame(queryClient: QueryClient, labId: string, sample
 }
 
 /** The feed's query parameters: only the ones the route understands. */
-function feedParams(labId: string, boxId?: string, itemTypeId?: string): SseParamsOf<'sample/watch'> {
+function feedParams(
+  labId: string,
+  boxId?: string,
+  itemTypeId?: string,
+): SseParamsOf<'sample/watch'> {
   return {
     lab_id: labId,
     ...(boxId === undefined || boxId === '' ? {} : { box_id: boxId }),
@@ -190,9 +186,10 @@ export function useSampleLive({
       return;
     }
 
-    setStatus('connecting');
-    setError(null);
-
+    // No synchronous `setStatus('connecting')` here: React 19's lint (rightly)
+    // treats setState in an effect body as a cascading render. The three
+    // callbacks below are the only writers, and a resubscribe keeps the last
+    // state the stream reported until the new one says something.
     return subscribeSse('sample/watch', {
       schema: SampleSchema,
       params: feedParams(labId, boxId, itemTypeId),
