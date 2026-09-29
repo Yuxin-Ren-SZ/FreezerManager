@@ -62,10 +62,10 @@ namespace fmgr::rest {
       trantor::EventLoop* loop = nullptr;
       std::vector<std::weak_ptr<SseStreamState>> streams; // loop thread only
 
-      template <typename F> void post(F&& fn) {
+      template <typename F> void post(F&& func) {
         const std::lock_guard<std::mutex> lock(mu);
         if (loop != nullptr) {
-          loop->queueInLoop(std::forward<F>(fn));
+          loop->queueInLoop(std::forward<F>(func));
         }
       }
     };
@@ -76,22 +76,81 @@ namespace fmgr::rest {
       if (!guard) {
         guard = std::make_shared<SseLoopGuard>();
         guard->loop = trantor::EventLoop::getEventLoopOfCurrentThread();
-        guard->loop->runOnQuit([g = guard] {
+        guard->loop->runOnQuit([owned_guard = guard] {
           {
-            const std::lock_guard<std::mutex> lock(g->mu);
-            g->loop = nullptr;
+            const std::lock_guard<std::mutex> lock(owned_guard->mu);
+            owned_guard->loop = nullptr;
           }
-          for (const auto& weak : g->streams) {
+          for (const auto& weak : owned_guard->streams) {
             if (auto state = weak.lock()) {
               state->alive = false;
               state->ctx->TryCancel(); // release a parked Read so the worker exits
               state->stream.reset();   // ~ResponseStream closes on this (live) loop
             }
           }
-          g->streams.clear();
+          owned_guard->streams.clear();
         });
       }
       return guard;
+    }
+
+    // Worker-thread half of one watch stream: read until the stream ends or the
+    // stream is cancelled, handing every frame to the loop through `guard`.
+    template <typename RespT, typename OpenReader, typename FrameFn>
+    void sse_read_loop(const std::shared_ptr<SseStreamState>& state,
+                       const std::shared_ptr<SseLoopGuard>& guard, trantor::TimerId keepalive,
+                       OpenReader open_reader, FrameFn frame_fn) {
+      auto reader = open_reader(*state->ctx);
+      RespT message;
+      while (state->alive.load() && reader->Read(&message)) {
+        std::string frame = frame_fn(message);
+        guard->post([state, frame = std::move(frame)] {
+          if (state->stream && !state->stream->send(frame)) {
+            state->alive = false;
+            state->ctx->TryCancel();
+          }
+        });
+      }
+      const grpc::Status status = reader->Finish();
+      guard->post([state, status, keepalive] {
+        trantor::EventLoop::getEventLoopOfCurrentThread()->invalidateTimer(keepalive);
+        if (!state->stream) {
+          return;
+        }
+        if (state->alive && !status.ok()) {
+          const auto err = to_http_error(status);
+          state->stream->send("event: error\ndata: " + err.body + "\n\n");
+        }
+        state->stream->close();
+      });
+    }
+
+    // Loop-thread half: claim the response stream, register it with this loop's
+    // guard, start the keepalive timer and hand the gRPC reads to the worker.
+    template <typename RespT, typename OpenReader, typename FrameFn>
+    void start_sse_stream(drogon::ResponseStreamPtr raw_stream, const std::string& authz,
+                          OpenReader open_reader, FrameFn frame_fn) {
+      auto* loop = trantor::EventLoop::getEventLoopOfCurrentThread();
+      auto guard = sse_guard_for_current_loop();
+      auto state = std::make_shared<SseStreamState>();
+      state->stream = std::shared_ptr<drogon::ResponseStream>(std::move(raw_stream));
+      state->ctx = std::make_unique<grpc::ClientContext>();
+      if (!authz.empty()) {
+        state->ctx->AddMetadata("authorization", authz);
+      }
+      std::erase_if(guard->streams, [](const auto& weak) { return weak.expired(); });
+      guard->streams.push_back(state);
+
+      const trantor::TimerId keepalive = loop->runEvery(k_sse_keepalive_seconds, [state] {
+        if (state->alive && state->stream && !state->stream->send(":keepalive\n\n")) {
+          state->alive = false;
+          state->ctx->TryCancel(); // unblock a parked Read so the worker exits
+        }
+      });
+
+      std::thread(sse_read_loop<RespT, OpenReader, FrameFn>, state, guard, keepalive, open_reader,
+                  frame_fn)
+          .detach();
     }
 
   } // namespace detail
@@ -115,50 +174,9 @@ namespace fmgr::rest {
     }
 
     auto resp = drogon::HttpResponse::newAsyncStreamResponse(
-        [authz, open_reader, frame_fn](drogon::ResponseStreamPtr raw_stream) {
-          auto* loop = trantor::EventLoop::getEventLoopOfCurrentThread();
-          auto guard = detail::sse_guard_for_current_loop();
-          auto state = std::make_shared<detail::SseStreamState>();
-          state->stream = std::shared_ptr<drogon::ResponseStream>(std::move(raw_stream));
-          state->ctx = std::make_unique<grpc::ClientContext>();
-          if (!authz.empty()) {
-            state->ctx->AddMetadata("authorization", authz);
-          }
-          std::erase_if(guard->streams, [](const auto& weak) { return weak.expired(); });
-          guard->streams.push_back(state);
-
-          const trantor::TimerId keepalive = loop->runEvery(k_sse_keepalive_seconds, [state] {
-            if (state->alive && state->stream && !state->stream->send(":keepalive\n\n")) {
-              state->alive = false;
-              state->ctx->TryCancel(); // unblock a parked Read so the worker exits
-            }
-          });
-
-          std::thread([state, guard, keepalive, open_reader, frame_fn] {
-            auto reader = open_reader(*state->ctx);
-            RespT message;
-            while (state->alive.load() && reader->Read(&message)) {
-              std::string frame = frame_fn(message);
-              guard->post([state, frame = std::move(frame)] {
-                if (state->stream && !state->stream->send(frame)) {
-                  state->alive = false;
-                  state->ctx->TryCancel();
-                }
-              });
-            }
-            const grpc::Status status = reader->Finish();
-            guard->post([state, status, keepalive] {
-              trantor::EventLoop::getEventLoopOfCurrentThread()->invalidateTimer(keepalive);
-              if (!state->stream) {
-                return;
-              }
-              if (state->alive && !status.ok()) {
-                const auto err = to_http_error(status);
-                state->stream->send("event: error\ndata: " + err.body + "\n\n");
-              }
-              state->stream->close();
-            });
-          }).detach();
+        [authz, open_reader, frame_fn](drogon::ResponseStreamPtr raw_stream) mutable {
+          detail::start_sse_stream<RespT>(std::move(raw_stream), authz, std::move(open_reader),
+                                          std::move(frame_fn));
         },
         /*disableKickoffTimeout=*/true);
 
