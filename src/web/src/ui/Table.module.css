@@ -1,0 +1,95 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-2);
+  min-width: 0;
+}
+
+.columnPicker {
+  align-self: flex-end;
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.columnPickerSummary {
+  padding: var(--fmgr-space-1) var(--fmgr-space-2);
+  font-weight: var(--fmgr-font-weight-medium);
+  border: 1px solid var(--fmgr-color-border);
+  border-radius: var(--fmgr-radius-md);
+  cursor: pointer;
+}
+
+.columnPickerSummary:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+.columnList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-1);
+  margin-top: var(--fmgr-space-2);
+  padding: var(--fmgr-space-2);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-md);
+  box-shadow: var(--fmgr-shadow-sm);
+}
+
+.scroll {
+  min-width: 0;
+  overflow: auto;
+}
+
+.table {
+  width: 100%;
+  /* `separate` keeps the header's bottom border with the sticky cell; with
+     `collapse` the border scrolls away from the header it belongs to. */
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.caption {
+  padding-bottom: var(--fmgr-space-2);
+  font-size: var(--fmgr-font-size-lg);
+  font-weight: var(--fmgr-font-weight-semibold);
+  text-align: left;
+  color: var(--fmgr-color-text);
+}
+
+.head {
+  position: sticky;
+  top: 0;
+  z-index: var(--fmgr-z-sticky);
+}
+
+.head .cell {
+  background-color: var(--fmgr-color-surface);
+  border-bottom: 1px solid var(--fmgr-color-border);
+  font-weight: var(--fmgr-font-weight-semibold);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.cell {
+  padding: var(--fmgr-space-2) var(--fmgr-space-3);
+  text-align: left;
+  border-bottom: 1px solid var(--fmgr-color-border-subtle);
+}
+
+.row:hover .cell {
+  background-color: var(--fmgr-color-surface);
+}
+
+.empty {
+  padding: var(--fmgr-space-6) var(--fmgr-space-3);
+  color: var(--fmgr-color-text-muted);
+  text-align: center;
+}
+
+.spacer {
+  padding: 0;
+  border: 0;
+}
