@@ -20,10 +20,12 @@ export interface RenderAppOptions {
  * Renders the real app — providers and the real route table — into a memory
  * router, so a test can assert what a user at a given URL would see.
  *
- * This lives in `src/app/` rather than `src/test/` on purpose: until G1.2
- * (#42) merges, `src/test/` belongs to another agent's task, and this helper
- * is temporary scaffolding that should move there with the rest of the shared
- * fakes (see the G1.3 handoff note).
+ * `src/test/render.tsx` (G1.2) and this file are not duplicates: that one
+ * mounts a single component in the provider stack, which is what a component
+ * test wants. This one boots the whole application — the real route table, the
+ * real providers, a real navigation history — which is the only way to assert
+ * "a user at this URL sees this screen". It lives beside the router because it
+ * is the router's test entry point.
  */
 export function renderApp(options: RenderAppOptions = {}) {
   const { path = '/', user = null, sessionError, connection = 'live' } = options;
