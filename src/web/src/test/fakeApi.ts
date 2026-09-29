@@ -70,6 +70,51 @@ import { CheckoutAction, SampleSchema, SampleStatus, type Sample } from '../gen/
  * (AGENTS.md §5).
  */
 
+/**
+ * One row of the chain of custody `storage::apply_checkout()` appends
+ * (`core::CheckoutEvent`). The volume lands *here*, not only on the sample row:
+ * `volumeDelta` is signed and expressed in the sample's own unit, so negative
+ * is consumed — the same convention the C++ struct documents.
+ */
+export interface CheckoutEventRecord {
+  sampleId: string;
+  action: CheckoutAction;
+  /** Signed quantity change in the sample's unit; absent when nothing moved. */
+  volumeDelta?: number;
+  volumeUnit?: string;
+  reason?: string;
+}
+
+/** The units `core::parse_volume_unit` accepts — anything else is refused. */
+const VOLUME_UNITS = ['mL', 'µL'] as const;
+
+type VolumeUnit = (typeof VOLUME_UNITS)[number];
+
+function isVolumeUnit(value: string): value is VolumeUnit {
+  return (VOLUME_UNITS as readonly string[]).includes(value);
+}
+
+/**
+ * `core::Volume::to_unit` in miniature. `rawValue` is an integer count as
+ * `Volume::from_raw` stores it, and µL → mL truncates toward zero exactly as
+ * the C++ integer division does.
+ *
+ * An unknown *target* is a broken fixture rather than a server answer, so it
+ * throws instead of guessing: subtracting the wrong amount silently is the
+ * failure mode this fake exists to make impossible.
+ */
+function convertVolume(rawValue: number, from: VolumeUnit, to: string): number {
+  if (from === to) {
+    return rawValue;
+  }
+  if (!isVolumeUnit(to)) {
+    throw new Error(
+      `fakeApi: sample volume_unit '${to}' is not a unit core::parse_volume_unit accepts`,
+    );
+  }
+  return from === 'mL' ? rawValue * 1_000 : Math.trunc(rawValue / 1_000);
+}
+
 export interface DemoLab {
   labs: Lab[];
   itemTypes: ItemType[];
@@ -86,6 +131,12 @@ export interface DemoLab {
   samples: Sample[];
   /** Chain of custody for the seeded samples; `audit/list` filters it. */
   auditEvents: AuditEvent[];
+  /**
+   * The events `storage::apply_checkout()` appends. A separate list because
+   * `checkout_event` is a separate table from `audit_event`, and it is the only
+   * place the consumed volume is recorded (#100).
+   */
+  checkoutEvents: CheckoutEventRecord[];
   /** Layout (BoxService): the physical tree the G3.1 screen renders. */
   freezers: Freezer[];
   storageContainers: StorageContainer[];
@@ -435,6 +486,7 @@ export function createDemoLab(): DemoLab {
       ...seedCustomFieldDefinitions(createdAt),
     ],
     auditEvents: seedAuditEvents(createdAt),
+    checkoutEvents: [],
     samples: [
       seedSample({
         id: 'sample-1',
@@ -1568,23 +1620,48 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
   // (auto-depleting at zero); Discard requires Active|CheckedOut and consumes
   // whatever is left.
   //
+  // The volume pair is **both or neither**, mirroring
+  // `SampleServiceImpl::CheckoutSample` (#100): a `core::Volume` has no
+  // unitless state, so a lone `volume_used` is INVALID_ARGUMENT rather than a
+  // value the server quietly drops. Before this the fake applied the volume
+  // regardless of the unit, which is exactly how the web check-in could lose a
+  // typed volume against real `freezerd` with every test still green.
+  //
   // An illegal transition answers **FAILED_PRECONDITION**, which is this fake's
   // contract from G1.2 (`fakeApi.test.ts`, `hooks/samples.test.tsx`) even though
   // the C++ `ConstraintViolation` maps to INVALID_ARGUMENT in
   // `GrpcErrorTranslation.h`. Changing it is a G1.2 decision, not a G3.3 one, so
   // it is reported rather than edited here.
   'sample/checkout': (lab, message) => {
-    const { sampleId, action, volumeUsed, reason } = fields(message) as {
+    const { sampleId, action, volumeUsed, volumeUnit, reason } = fields(message) as {
       sampleId: string;
       action: CheckoutAction;
       volumeUsed?: number;
+      volumeUnit?: string;
       reason?: string;
     };
     const found = lab.samples.find((candidate) => candidate.id === sampleId);
     if (found === undefined) throw new FakeRpcError('NOT_FOUND', 'no such sample');
+
+    // Field validation runs before the transition, as it does in the handler, so
+    // a malformed pair never changes the sample's state.
+    if ((volumeUsed === undefined) !== (volumeUnit === undefined)) {
+      throw new FakeRpcError(
+        'INVALID_ARGUMENT',
+        'volume_used and volume_unit must both be set or both empty',
+      );
+    }
+    if (volumeUnit !== undefined && !isVolumeUnit(volumeUnit)) {
+      throw new FakeRpcError('INVALID_ARGUMENT', `volume_unit: unknown unit: '${volumeUnit}'`);
+    }
+
     if (found.status === SampleStatus.TOMBSTONED || found.status === SampleStatus.DESTROYED) {
       throw new FakeRpcError('FAILED_PRECONDITION', 'sample is not in a checkout-eligible state');
     }
+
+    // Signed change in the sample's own unit, exactly as `apply_checkout` signs
+    // it; `undefined` when the transition moved no volume.
+    let volumeDelta: number | undefined;
 
     switch (action) {
       // Before G3.3 the fake ignored `action` entirely and only ever checked the
@@ -1605,22 +1682,43 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
           );
         }
         found.status = SampleStatus.ACTIVE;
-        if (volumeUsed !== undefined && found.volumeValue !== undefined) {
-          const remaining = Math.max(0, found.volumeValue - volumeUsed);
+        // `volume_used` is only subtracted when the sample tracks a volume, as
+        // in `apply_checkout`. The pair rule above means the two request fields
+        // are present or absent together.
+        if (
+          volumeUsed !== undefined &&
+          volumeUnit !== undefined &&
+          found.volumeValue !== undefined &&
+          found.volumeUnit !== undefined
+        ) {
+          const used = convertVolume(Math.trunc(volumeUsed), volumeUnit, found.volumeUnit);
+          const previous = found.volumeValue;
+          const remaining = Math.max(0, previous - used);
+          volumeDelta = remaining - previous; // negative = consumed
           found.volumeValue = remaining;
           if (remaining === 0) found.status = SampleStatus.DEPLETED;
         }
         break;
       }
       case CheckoutAction.DISCARD:
-        if (found.volumeValue !== undefined) found.volumeValue = 0;
+        if (found.volumeValue !== undefined) {
+          volumeDelta = -found.volumeValue;
+          found.volumeValue = 0;
+        }
         found.status = SampleStatus.DESTROYED;
         break;
     }
     found.lastModifiedAt = seedTimestamp();
-    // `reason` belongs to the chain-of-custody event, not the sample row
-    // (`storage::apply_checkout`), so it is appended the same way the server
-    // appends it — which also gives the history section something to render.
+    // `reason` and the volume delta belong to the chain-of-custody event, not
+    // the sample row (`storage::apply_checkout`), so both are appended the same
+    // way the server appends them — which also gives the history section
+    // something to render.
+    lab.checkoutEvents.push({
+      sampleId,
+      action,
+      ...(volumeDelta === undefined ? {} : { volumeDelta, volumeUnit: found.volumeUnit }),
+      ...(reason === undefined ? {} : { reason }),
+    });
     lab.auditEvents.push(
       create(AuditEventSchema, {
         id: `audit-${sampleId}-${String(lab.auditEvents.length + 1)}`,

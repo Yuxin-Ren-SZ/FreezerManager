@@ -62,6 +62,7 @@
     "checkinTitle": "Check in this sample",
     "volumeUsed": "Volume used",
     "volumeUsedHint": "Subtracted from the volume the sample holds.",
+    "volumeUnit": "Unit",
     "reason": "Reason",
     "confirmCheckin": "Check in",
     "discardTitle": "Discard this sample",
