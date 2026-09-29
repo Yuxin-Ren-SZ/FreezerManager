@@ -19,6 +19,7 @@
 #include "storage/sqlite/SqliteBackend.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
+#include <fmgr/v1/role.grpc.pb.h>
 #include <fmgr/v1/session.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
@@ -45,13 +46,23 @@ namespace fmgr::test {
              ("fmgr-session-test-" + std::to_string(counter.fetch_add(1)) + ".db");
     }
 
-    // Three principals in one lab:
-    //   - admin: SystemAdmin (holds session.revoke)
-    //   - alice: Member (holds no session.revoke)
-    //   - bob  : Member (holds no session.revoke)
+    // Principals across two labs:
+    //   - admin     : SystemAdmin in lab1 (holds session.revoke deployment-wide)
+    //   - alice     : Member in lab1 (holds no session.revoke)
+    //   - bob       : Member in lab1 (holds no session.revoke)
+    //   - lab_admin : LabAdmin in lab1 (holds user.manage_roles there, and is
+    //                 the principal that could mint a custom role carrying
+    //                 session.revoke while the permission was lab-grantable)
+    //   - supervisor: lab1 membership whose *custom* role carries session.revoke.
+    //                 Seeded directly, because that grant is exactly what the
+    //                 API used to allow: a deployment upgraded from the
+    //                 vulnerable version can still hold the row.
+    //   - carol     : Member in lab2 only -- a session the lab1 principals have
+    //                 no membership relationship with.
     //
-    // `bob` is the attacker in the cross-user tests and `alice` the target;
-    // `admin` pins the one cross-user path the API documents as intended.
+    // `bob`/`supervisor` are the attackers in the cross-user tests and
+    // `alice`/`carol` the targets; `admin` pins the one cross-user path the API
+    // documents as intended, and `lab_admin` pins the lab scope of the grant.
     class SessionServiceTest : public ::testing::Test {
     protected:
       void SetUp() override {
@@ -75,6 +86,7 @@ namespace fmgr::test {
         channel_ = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
         auth_stub_ = fmgr::v1::AuthService::NewStub(channel_);
         session_stub_ = fmgr::v1::SessionService::NewStub(channel_);
+        role_stub_ = fmgr::v1::RoleService::NewStub(channel_);
       }
 
       void TearDown() override {
@@ -122,6 +134,37 @@ namespace fmgr::test {
         return session_stub_->RevokeSession(&ctx, req, &resp);
       }
 
+      // Create a custom (lab-owned) role as the bearer; returns its id, or an
+      // empty string when the call failed.
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      [[nodiscard]] std::string create_role(const std::string& token, const std::string& lab,
+                                            const std::string& name) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateRoleRequest req;
+        req.set_lab_id(lab);
+        req.set_kind(fmgr::v1::ROLE_KIND_MEMBER);
+        req.set_name(name);
+        req.set_description("custom role");
+        fmgr::v1::CreateRoleResponse resp;
+        const auto status = role_stub_->CreateRole(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+        return resp.role().id();
+      }
+
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      [[nodiscard]] grpc::Status grant_permission(const std::string& token,
+                                                  const std::string& role_id,
+                                                  const std::string& permission_key) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::GrantPermissionRequest req;
+        req.set_role_id(role_id);
+        req.set_permission_key(permission_key);
+        fmgr::v1::GrantPermissionResponse resp;
+        return role_stub_->GrantPermission(&ctx, req, &resp);
+      }
+
       // "Is this token still usable?" — the observable effect a forced logout
       // has on the target. ListSessions is the cheapest authenticated call that
       // needs no seeded reference data.
@@ -145,7 +188,15 @@ namespace fmgr::test {
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kAliceEmail{"alice@example.com"};
       const std::string kBobEmail{"bob@example.com"};
+      const std::string kLabAdminEmail{"labadmin@example.com"};
+      const std::string kSupervisorEmail{"supervisor@example.com"};
+      const std::string kCarolEmail{"carol@example.com"};
       const std::string kPassword{"hunter22"};
+      const std::string kLab1{"20000000-0000-0000-0000-000000000001"};
+      const std::string kLab2{"20000000-0000-0000-0000-000000000002"};
+      // Lab-owned custom role carrying session.revoke, as a deployment running
+      // the vulnerable classification could have created through the API.
+      const std::string kLegacyRevokerRoleId{"40000000-0000-0000-0000-000000000001"};
 
       std::filesystem::path db_path_;
       std::unique_ptr<storage::SqliteBackend> backend_;
@@ -156,6 +207,7 @@ namespace fmgr::test {
       std::shared_ptr<grpc::Channel> channel_;
       std::unique_ptr<fmgr::v1::AuthService::Stub> auth_stub_;
       std::unique_ptr<fmgr::v1::SessionService::Stub> session_stub_;
+      std::unique_ptr<fmgr::v1::RoleService::Stub> role_stub_;
 
     private:
       static void remove_sqlite_files(const std::filesystem::path& path) {
@@ -179,17 +231,26 @@ namespace fmgr::test {
 
       void seed() {
         const auto hash = provider_->hash_password(kPassword);
-        const core::LabId lab_id = core::LabId::parse("20000000-0000-0000-0000-000000000001");
+        const core::LabId lab1 = core::LabId::parse(kLab1);
+        const core::LabId lab2 = core::LabId::parse(kLab2);
         const core::UserId admin_id = core::UserId::parse("10000000-0000-0000-0000-000000000001");
         const core::UserId alice_id = core::UserId::parse("10000000-0000-0000-0000-000000000002");
         const core::UserId bob_id = core::UserId::parse("10000000-0000-0000-0000-000000000003");
+        const core::UserId lab_admin_id =
+            core::UserId::parse("10000000-0000-0000-0000-000000000004");
+        const core::UserId supervisor_id =
+            core::UserId::parse("10000000-0000-0000-0000-000000000005");
+        const core::UserId carol_id = core::UserId::parse("10000000-0000-0000-0000-000000000006");
+        const core::RoleId legacy_role_id = core::RoleId::parse(kLegacyRevokerRoleId);
 
-        const core::Lab lab{
-            .id = lab_id,
-            .name = "Session Lab",
-            .contact = "test@example.com",
-            .created_at = core::Timestamp::from_unix_micros(1),
-            .settings_json = nlohmann::json::object(),
+        const auto make_lab = [](const core::LabId& id, const std::string& name) {
+          return core::Lab{
+              .id = id,
+              .name = name,
+              .contact = "test@example.com",
+              .created_at = core::Timestamp::from_unix_micros(1),
+              .settings_json = nlohmann::json::object(),
+          };
         };
         const auto make_user = [&hash](const core::UserId& id, const std::string& email) {
           return core::User{
@@ -203,14 +264,16 @@ namespace fmgr::test {
               }),
           };
         };
-        const auto make_membership = [&lab_id](const core::UserId& uid, core::RoleKind kind) {
+        const auto make_membership = [](const core::UserId& uid, const core::LabId& lab,
+                                        const core::RoleId& role_id) {
           return core::LabMembership{
               .user_id = uid,
-              .lab_id = lab_id,
-              .role_id = core::builtin_role_id(kind),
+              .lab_id = lab,
+              .role_id = role_id,
               .joined_at = core::Timestamp::from_unix_micros(1),
           };
         };
+        const auto builtin = [](core::RoleKind kind) { return core::builtin_role_id(kind); };
         const storage::MutationContext ctx{
             .actor_user_id = core::UserId::parse("00000000-0000-0000-0000-000000000000"),
             .actor_session_id = "seed",
@@ -218,16 +281,45 @@ namespace fmgr::test {
             .reason = "test setup",
         };
         auto txn = backend_->begin(storage::IsolationLevel::Serializable);
-        txn->repo<core::Lab>().insert(lab, ctx);
+        txn->repo<core::Lab>().insert(make_lab(lab1, "Session Lab One"), ctx);
+        txn->repo<core::Lab>().insert(make_lab(lab2, "Session Lab Two"), ctx);
         txn->repo<core::User>().insert(make_user(admin_id, kAdminEmail), ctx);
         txn->repo<core::User>().insert(make_user(alice_id, kAliceEmail), ctx);
         txn->repo<core::User>().insert(make_user(bob_id, kBobEmail), ctx);
+        txn->repo<core::User>().insert(make_user(lab_admin_id, kLabAdminEmail), ctx);
+        txn->repo<core::User>().insert(make_user(supervisor_id, kSupervisorEmail), ctx);
+        txn->repo<core::User>().insert(make_user(carol_id, kCarolEmail), ctx);
         txn->repo<core::LabMembership>().insert(
-            make_membership(admin_id, core::RoleKind::SystemAdmin), ctx);
-        txn->repo<core::LabMembership>().insert(make_membership(alice_id, core::RoleKind::Member),
-                                                ctx);
-        txn->repo<core::LabMembership>().insert(make_membership(bob_id, core::RoleKind::Member),
-                                                ctx);
+            make_membership(admin_id, lab1, builtin(core::RoleKind::SystemAdmin)), ctx);
+        txn->repo<core::LabMembership>().insert(
+            make_membership(alice_id, lab1, builtin(core::RoleKind::Member)), ctx);
+        txn->repo<core::LabMembership>().insert(
+            make_membership(bob_id, lab1, builtin(core::RoleKind::Member)), ctx);
+        txn->repo<core::LabMembership>().insert(
+            make_membership(lab_admin_id, lab1, builtin(core::RoleKind::LabAdmin)), ctx);
+        txn->repo<core::LabMembership>().insert(
+            make_membership(carol_id, lab2, builtin(core::RoleKind::Member)), ctx);
+        // The custom lab role and the supervisor's membership in it. Seeded at
+        // the repository layer rather than through CreateRole/GrantPermission
+        // because the point of the test that reads it is that such a row must
+        // stay inert even when it exists.
+        txn->repo<core::Role>().insert(
+            core::Role{
+                .id = legacy_role_id,
+                .lab_id = lab1,
+                .kind = core::RoleKind::Member,
+                .name = "session-revoker",
+                .description = "lab-owned role with session.revoke",
+                .is_builtin = false,
+                .created_at = core::Timestamp::from_unix_micros(1),
+            },
+            ctx);
+        txn->repo<core::RolePermission>().insert(
+            core::RolePermission{.role_id = legacy_role_id,
+                                 .permission = core::Permission::SessionRevoke},
+            ctx);
+        txn->repo<core::LabMembership>().insert(
+            make_membership(supervisor_id, lab1, legacy_role_id), ctx);
         txn->commit();
       }
     };
@@ -265,6 +357,42 @@ namespace fmgr::test {
 
       EXPECT_EQ(foreign.error_code(), missing.error_code());
       EXPECT_EQ(foreign.error_message(), missing.error_message());
+    }
+
+    // ---- The exception must not be reachable from lab scope ----
+
+    // session.revoke is deployment-level: the catalog describes it as "revoke
+    // another user's sessions" and the proto allows it only to a SystemAdmin.
+    // A LabAdmin holds user.manage_roles for its own lab, so if the permission
+    // is lab-grantable it can mint itself a custom role carrying it -- and,
+    // because RevokeSessionRequest carries no lab, spend it deployment-wide.
+    TEST_F(SessionServiceTest, LabAdminCannotGrantSessionRevokeToALabRole) {
+      const auto lab_admin = login(kLabAdminEmail, kPassword);
+      const auto role_id = create_role(lab_admin.token, kLab1, "session-revoker-attempt");
+      ASSERT_FALSE(role_id.empty());
+
+      const auto status = grant_permission(lab_admin.token, role_id, "session.revoke");
+
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::FAILED_PRECONDITION)
+          << status.error_message();
+    }
+
+    // The regression test for the classification: even when a lab-owned role
+    // carrying session.revoke exists -- the row the vulnerable version could
+    // create, which an upgraded deployment still holds -- holding it must not
+    // unlock a cross-user revoke. The grant is inert because a global-only
+    // permission reaches global_permissions only through a SystemAdmin-kind
+    // role, and a lab admin cannot mint one of those.
+    TEST_F(SessionServiceTest, LabScopedSessionRevokeGrantCannotRevokeAnotherUsersSession) {
+      const auto supervisor = login(kSupervisorEmail, kPassword);
+      const auto carol = login(kCarolEmail, kPassword);
+      ASSERT_TRUE(token_is_usable(supervisor.token));
+      ASSERT_TRUE(token_is_usable(carol.token));
+
+      const auto status = revoke(supervisor.token, carol.session_id);
+
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED) << status.error_message();
+      EXPECT_TRUE(token_is_usable(carol.token));
     }
 
     // ---- The normal logout path must not regress ----
