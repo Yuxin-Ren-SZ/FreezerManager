@@ -42,8 +42,9 @@ Spec: PRD §9 (flows), F6.4/F6.5, TODO.md §Section G → G3.3. Branch
 - `src/web/src/features/sample-detail/SampleCreateScreen.tsx`,
   `useSampleReferenceData.ts` — the create route, and the shared reference-data
   composition (item types, definitions, container types, layout).
-- `src/web/src/api/hooks/{itemTypes,containers,audit}.ts` — the three reads G1.2
-  did not provide, plus `useCustomFieldDefinitions`'s deliberate lab-wide call.
+- `src/web/src/api/hooks/{containers,audit}.ts` — the two reads G1.2 did not
+  provide. Item types and custom-field definitions are **G3.2's** hooks in
+  `labs.ts` (see Decisions), so this branch adds no third copy.
 - `src/app/route-map.tsx` — **only** the two `sample-new` / `sample-detail`
   entries' imports. The route objects, their `task: 'G3.3'` and their
   permissions are unchanged, and nothing else in the array was touched, so
@@ -52,7 +53,10 @@ Spec: PRD §9 (flows), F6.4/F6.5, TODO.md §Section G → G3.3. Branch
   `'sample-detail'` to match the feature directory.
 - `src/app/App.test.tsx` — the two `EXPECTED_SCREEN` rows for my routes
   (`task: null`, the real headings).
-- `src/test/fakeApi.ts`, `src/test/session.ts` — see Decisions.
+- `src/test/fakeApi.ts`, `src/test/session.ts` — see Decisions. G3.2 had
+  already extended the same file, so the rebase merged its `customFieldDefs`
+  list and unpaged list resolvers with this slice's `auditEvents`, its real
+  enforcement in `sample/create|update|move`, and its two new routes.
 
 **Decisions:**
 
@@ -81,6 +85,20 @@ Spec: PRD §9 (flows), F6.4/F6.5, TODO.md §Section G → G3.3. Branch
 - **Discard takes a reason, not a volume.** `storage::apply_checkout` ignores
   `volume_used` for `Destroyed` and consumes whatever is left, so the dialog says
   so rather than offering an input the server discards.
+- **G3.2 (#55) merged while #59 was paused, and it had already built three of
+  the things this branch added.** The rebase preferred G3.2's version
+  everywhere it existed: `useItemTypes` / `useCustomFieldDefinitions` (theirs,
+  in `labs.ts`, with the `custom_field.define` gate as an option), the
+  `DemoLab` definitions field name (`customFieldDefs`), and the unpaged list
+  resolvers. My duplicate `concentration` definition was dropped — G3.2's is
+  the same key, label and data type on `it-serum`. `audit/list` is the one
+  route of mine that pages, because `AuditServiceImpl` really does set
+  `next_page_token` while `ItemTypeServiceImpl` and `BoxServiceImpl` ignore
+  `page`. Two of G3.2's assertions were relaxed with the shared seed
+  (`labs.test.tsx` now uses `arrayContaining` plus a lab-scoping check;
+  `SampleBrowserScreen.test.tsx` scopes a cell lookup to Serum A's row, since
+  two samples now hold a `3`), and both were exact expectations over fixture
+  data another task grows. The route map took no conflict.
 - **Two findings, both on #59 and both needing a lead decision** — the
   `custom_field.define` gap (a Member cannot read the definitions the form needs;
   interim behaviour is a visible notice, not a silent omission) and the
@@ -91,11 +109,12 @@ Spec: PRD §9 (flows), F6.4/F6.5, TODO.md §Section G → G3.3. Branch
 
 - `customFields.test.ts` (38), `serverErrors.test.ts` (18),
   `SampleForm.test.tsx` (18), `SampleDetailScreen.test.tsx` (28),
-  `api/hooks/reference.test.tsx` (6).
+  `api/hooks/reference.test.tsx` (4 — the two routes this slice added; the
+  item-type and definition assertions are G3.2's `labs.test.tsx`).
 - `npm run check` → exit 0 with `NODE_ENV=production` exported, and exit 0 with
   it unset: `gen` + `check:routes` + `lint` + `typecheck` + `format:check` +
-  `test` (406/406 in 24 files) + `build` (initial JS 207.2 KiB gzipped, budget
-  250 KiB), identical artifact hash `9ee58413208818ff1681f1b6ff3b9c3a` both
+  `test` (**510/510 in 32 files**, on `origin/main` as of G3.2's merge) +
+  `build`, identical artifact hash `013fe217ab1e58055b00740742c54c5b` both
   times.
 - **Guards proven able to fail** by planting six violations and watching the
   relevant test go red: leaf-only inheritance (7 tests), a dropped `max_length`
@@ -123,6 +142,12 @@ Spec: PRD §9 (flows), F6.4/F6.5, TODO.md §Section G → G3.3. Branch
 - `features/samples/{SampleCreateScreen,SampleDetailScreen}.tsx` are now
   unreferenced G1.3 placeholders. They are in G3.2's directory, so they were left
   alone; whoever touches `features/samples/` next can delete them.
-- Initial JS is at **207.2 / 250 KiB gzipped**. No screen is lazy today (G3.1's
-  layout tree is imported the same way); when the budget gets tight, lazy
-  `import()` for feature screens is the lever `doc/dev/web.md` already points at.
+- **Initial JS is now 244.7 / 250 KiB gzipped — 5.3 KiB of headroom.** It was
+  207.2 before G3.2 (#55) and this slice landed, and both added screens the
+  route map imports statically. `npm run check` passes, but the next web task
+  that adds a screen or a dependency will very likely fail the build. I did not
+  measure the per-task split, and making it lazy is not this issue's change to
+  make: `AppRoute.element` is a `ReactNode`, so it needs a `React.lazy` +
+  `Suspense` boundary in `router.tsx`/`route-map.tsx` — the same file G3.2 had
+  just edited. Worth a lead-filed task before G3.4/G3.5/G3.6 land; lazy
+  `import()` for feature screens is the lever `doc/dev/web.md` already names.
