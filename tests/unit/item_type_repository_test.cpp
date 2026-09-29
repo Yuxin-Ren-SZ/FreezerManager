@@ -402,6 +402,70 @@ namespace fmgr::storage {
             },
             UniqueViolation);
       }
+
+      // The other half of the same index: attached to one node rather than
+      // lab-global, so `item_type_id` is set instead of NULL. Two definitions of
+      // one key on one node are the same-rank pair `resolve_custom_field_defs`
+      // never compares — the schema has to be what rules it out (#116). Written
+      // in both orders so a "last write wins" tie-break cannot pass this.
+      const auto node = make_item_type(152, lab_id, std::nullopt, "blood");
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::ItemType>().insert(node, mutation_context());
+        txn->commit();
+      }
+      const auto on_node_first = make_cfd(153, lab_id, node.id, "node_key");
+      const auto on_node_duplicate = make_cfd(154, lab_id, node.id, "node_key");
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CustomFieldDefinition>().insert(on_node_first, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_THROW(
+            {
+              txn->repo<core::CustomFieldDefinition>().insert(on_node_duplicate,
+                                                              mutation_context());
+              txn->commit();
+            },
+            UniqueViolation);
+      }
+
+      const auto reversed_node_first = make_cfd(155, lab_id, node.id, "reversed_key");
+      const auto reversed_duplicate = make_cfd(156, lab_id, node.id, "reversed_key");
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CustomFieldDefinition>().insert(reversed_node_first, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_THROW(
+            {
+              txn->repo<core::CustomFieldDefinition>().insert(reversed_duplicate,
+                                                              mutation_context());
+              txn->commit();
+            },
+            UniqueViolation);
+      }
+
+      // The winner is the definition the first write produced, in either order.
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      const auto stored =
+          txn->repo<core::CustomFieldDefinition>().query(Query<core::CustomFieldDefinition>::where(
+              field<core::CustomFieldDefinition, core::LabId>(
+                  core::CustomFieldDefinition::Field::LabId) == lab_id));
+      ASSERT_EQ(stored.size(), 3U); // one row per key: dup_key, node_key, reversed_key
+      for (const auto& cfd : stored) {
+        if (cfd.key == "node_key") {
+          EXPECT_EQ(cfd.id, on_node_first.id);
+        } else if (cfd.key == "reversed_key") {
+          EXPECT_EQ(cfd.id, reversed_node_first.id);
+        } else if (cfd.key == "dup_key") {
+          EXPECT_EQ(cfd.id, cfd1.id);
+        }
+      }
     }
 
     TEST_P(ItemTypeRepositoryTest, CustomFieldDefinitionQueryIncludeTombstoned) {

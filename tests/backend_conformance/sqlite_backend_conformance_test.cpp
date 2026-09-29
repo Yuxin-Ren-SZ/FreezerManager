@@ -4,8 +4,14 @@
 
 #include "core/enums.h"
 #include "core/ids.h"
+#include "core/item_type.h"
 #include "core/timestamp.h"
+#include "storage/CustomFieldResolver.h"
+#include "storage/IdentityTraits.h"
+#include "storage/ItemTypeTraits.h"
 #include "storage/detail/QuerySqlBuilder.h"
+#include "storage/sqlite/IdentityRepositories.h"
+#include "storage/sqlite/ItemTypeRepositories.h"
 
 #include "test_helpers.h"
 #include <gtest/gtest.h>
@@ -113,6 +119,30 @@ namespace fmgr::storage {
           .actor_session_id = "sqlite-conformance-session",
           .request_id = "sqlite-conformance-request",
           .reason = "sqlite backend conformance test",
+      };
+    }
+
+    // A sample-scoped definition with a caller-chosen label, so a test can tell
+    // the two candidates of one key apart by reading back what survived.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    [[nodiscard]] core::CustomFieldDefinition
+    make_conformance_cfd(std::uint64_t id_low_bits, core::LabId lab_id,
+                         std::optional<core::ItemTypeId> item_type_id, std::string key,
+                         std::string label, bool required) {
+      return core::CustomFieldDefinition{
+          .id = id_from_low<core::CustomFieldDefinitionId>(id_low_bits),
+          .lab_id = lab_id,
+          .scope_kind = core::ScopeKind::Sample,
+          .item_type_id = item_type_id,
+          .key = std::move(key),
+          .label = std::move(label),
+          .data_type = core::FieldDataType::String,
+          .required = required,
+          .validation_json = "{}",
+          .indexed = false,
+          .is_phi = false,
+          .created_at =
+              core::Timestamp::from_unix_micros(300 + static_cast<std::int64_t>(id_low_bits)),
       };
     }
 
@@ -998,6 +1028,207 @@ CREATE UNIQUE INDEX IF NOT EXISTS fmgr_sqlite_conformance_sample_active_position
       EXPECT_TRUE(transaction->repo<SqliteConformanceSample>()
                       .find_by_id(id_from_low<core::SampleId>(900))
                       .has_value());
+    }
+
+    // =====================================================================
+    // #116: two same-rank CustomFieldDefinitions of one key
+    // =====================================================================
+    //
+    // `resolve_custom_field_defs` ranks candidates and keeps the most specific,
+    // but two definitions of one key *at the same rank* are never compared — the
+    // tie-break keeps whichever row iterates last. Whether that is reachable at
+    // all is a property of the schema, not of the resolver: migration 7's
+    // partial unique index `cfd_lab_scope_type_key_unique` is supposed to make
+    // the tie impossible. These tests pin that on the *domain* schema, so the
+    // index under test is the one production deploys, and they run in both
+    // insertion orders because "whichever row iterates last" is exactly what
+    // must not decide the answer. The Postgres twin asserts the same thing on the
+    // other backend; the risk this guards is precisely that they disagree.
+    class SqliteCustomFieldUniquenessConformanceTest : public ::testing::Test {
+    protected:
+      void SetUp() override {
+        db_path_ = database_path("cfd-uniqueness");
+        std::filesystem::remove(db_path_);
+        backend_ = std::make_unique<SqliteBackend>(
+            SqliteBackendOptions{.database_path = db_path_.string()});
+        register_identity_repositories(*backend_);
+        register_item_type_repositories(*backend_);
+        backend_->migrate_to_latest();
+      }
+
+      void TearDown() override {
+        backend_.reset();
+        std::filesystem::remove(db_path_);
+        std::filesystem::remove(db_path_.string() + "-wal");
+        std::filesystem::remove(db_path_.string() + "-shm");
+      }
+
+      [[nodiscard]] IStorageBackend& backend() {
+        return *backend_;
+      }
+
+      // One lab and one item type, committed first: a CustomFieldDefinition
+      // insert validates its lab and item_type_id against the *persisted* rows.
+      void seed_lineage() {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Lab>().insert(
+            core::Lab{.id = lab_id_,
+                      .name = "Lab",
+                      .contact = "lab@example.org",
+                      .created_at = core::Timestamp::from_unix_micros(100),
+                      .settings_json = nlohmann::json::object()},
+            mutation_context());
+        txn->repo<core::ItemType>().insert(
+            core::ItemType{.id = node_id_,
+                           .lab_id = lab_id_,
+                           .parent_id = std::nullopt,
+                           .name = "blood",
+                           .created_at = core::Timestamp::from_unix_micros(101)},
+            mutation_context());
+        txn->commit();
+      }
+
+      static void insert_definition(IStorageBackend& backend,
+                                    const core::CustomFieldDefinition& cfd) {
+        auto txn = backend.begin(IsolationLevel::Serializable);
+        txn->repo<core::CustomFieldDefinition>().insert(cfd, mutation_context());
+        txn->commit();
+      }
+
+      // The live (non-tombstoned) definitions of `key` in this lab.
+      [[nodiscard]] std::vector<core::CustomFieldDefinition>
+      live_definitions(const std::string& key) {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        std::vector<core::CustomFieldDefinition> matches;
+        for (const auto& cfd : txn->repo<core::CustomFieldDefinition>().query(
+                 Query<core::CustomFieldDefinition>::where(
+                     field<core::CustomFieldDefinition, core::LabId>(
+                         core::CustomFieldDefinition::Field::LabId) == lab_id_))) {
+          if (cfd.key == key) {
+            matches.push_back(cfd);
+          }
+        }
+        return matches;
+      }
+
+      // What the server hands to core::validate_custom_fields for this node.
+      [[nodiscard]] std::vector<core::CustomFieldDefinition> resolved() {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        return resolve_custom_field_defs(*txn, lab_id_, node_id_);
+      }
+
+      const core::LabId lab_id_ = id_from_low<core::LabId>(1161);
+      const core::ItemTypeId node_id_ = id_from_low<core::ItemTypeId>(1162);
+
+    private:
+      std::filesystem::path db_path_;
+      std::unique_ptr<SqliteBackend> backend_;
+    };
+
+    // The property is order-independent even though the survivor is not: the
+    // first write of a key wins, the second is refused, and the resolver agrees
+    // with the table. Reversing which definition is written first must flip the
+    // survivor and nothing else.
+    TEST_F(SqliteCustomFieldUniquenessConformanceTest,
+           SameRankDefinitionsOfOneKeyAreRefusedInEitherInsertionOrder) {
+      seed_lineage();
+
+      // Order A: "alpha" first. A duplicate written afterwards must be refused.
+      const auto alpha =
+          make_conformance_cfd(1, lab_id_, node_id_, "same_rank_a", "alpha", /*required=*/false);
+      insert_definition(backend(), alpha);
+      const auto alpha_duplicate =
+          make_conformance_cfd(2, lab_id_, node_id_, "same_rank_a", "beta", /*required=*/true);
+      EXPECT_THROW(insert_definition(backend(), alpha_duplicate), UniqueViolation);
+
+      // Order B: "beta" first. The same pair, insertion order reversed.
+      const auto beta =
+          make_conformance_cfd(3, lab_id_, node_id_, "same_rank_b", "beta", /*required=*/true);
+      insert_definition(backend(), beta);
+      const auto beta_duplicate =
+          make_conformance_cfd(4, lab_id_, node_id_, "same_rank_b", "alpha", /*required=*/false);
+      EXPECT_THROW(insert_definition(backend(), beta_duplicate), UniqueViolation);
+
+      // Defined outcome, both orders: exactly one live row, the first one, and
+      // the resolver returns exactly that one — not "whichever iterated last".
+      const auto first_key_rows = live_definitions("same_rank_a");
+      ASSERT_EQ(first_key_rows.size(), 1U);
+      EXPECT_EQ(first_key_rows.front().label, "alpha");
+      EXPECT_FALSE(first_key_rows.front().required);
+
+      const auto second_key_rows = live_definitions("same_rank_b");
+      ASSERT_EQ(second_key_rows.size(), 1U);
+      EXPECT_EQ(second_key_rows.front().label, "beta");
+      EXPECT_TRUE(second_key_rows.front().required);
+
+      const auto definitions = resolved();
+      ASSERT_EQ(definitions.size(), 2U);
+      for (const auto& cfd : definitions) {
+        if (cfd.key == "same_rank_a") {
+          EXPECT_EQ(cfd.label, "alpha");
+          EXPECT_FALSE(cfd.required);
+        } else if (cfd.key == "same_rank_b") {
+          EXPECT_EQ(cfd.label, "beta");
+          EXPECT_TRUE(cfd.required);
+        } else {
+          ADD_FAILURE() << "unexpected resolved key: " << cfd.key;
+        }
+      }
+    }
+
+    // The same pair one rank lower: both definitions lab-global, so
+    // `item_type_id` is NULL. A unique index without the COALESCE sentinel would
+    // let these coexist on both engines (NULLs compare distinct), which is the
+    // half of the constraint most likely to rot silently.
+    TEST_F(SqliteCustomFieldUniquenessConformanceTest,
+           SameRankLabGlobalDefinitionsOfOneKeyAreRefusedInEitherInsertionOrder) {
+      seed_lineage();
+
+      const auto first = make_conformance_cfd(11, lab_id_, std::nullopt, "global_key", "first",
+                                              /*required=*/false);
+      insert_definition(backend(), first);
+      const auto duplicate = make_conformance_cfd(12, lab_id_, std::nullopt, "global_key", "second",
+                                                  /*required=*/true);
+      EXPECT_THROW(insert_definition(backend(), duplicate), UniqueViolation);
+
+      const auto rows = live_definitions("global_key");
+      ASSERT_EQ(rows.size(), 1U);
+      EXPECT_EQ(rows.front().label, "first");
+
+      const auto definitions = resolved();
+      ASSERT_EQ(definitions.size(), 1U);
+      EXPECT_EQ(definitions.front().label, "first");
+      EXPECT_FALSE(definitions.front().required);
+    }
+
+    // The index is partial on `archived_at_micros IS NULL`, which is what makes
+    // "archive the old definition, define the key again" legal. A constraint
+    // that forgot the predicate would break that path instead.
+    TEST_F(SqliteCustomFieldUniquenessConformanceTest,
+           ArchivedDefinitionDoesNotBlockItsReplacement) {
+      seed_lineage();
+
+      const auto original =
+          make_conformance_cfd(21, lab_id_, node_id_, "redefined", "old", /*required=*/false);
+      insert_definition(backend(), original);
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::CustomFieldDefinition>().soft_delete(original.id, mutation_context());
+        txn->commit();
+      }
+
+      const auto replacement =
+          make_conformance_cfd(22, lab_id_, node_id_, "redefined", "new", /*required=*/true);
+      insert_definition(backend(), replacement);
+
+      const auto rows = live_definitions("redefined");
+      ASSERT_EQ(rows.size(), 1U);
+      EXPECT_EQ(rows.front().label, "new");
+
+      const auto definitions = resolved();
+      ASSERT_EQ(definitions.size(), 1U);
+      EXPECT_EQ(definitions.front().label, "new");
+      EXPECT_TRUE(definitions.front().required);
     }
 
   } // namespace

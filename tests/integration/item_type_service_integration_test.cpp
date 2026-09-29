@@ -1643,5 +1643,97 @@ namespace fmgr::test {
                         core::Permission::CustomFieldDefine);
     }
 
+    // =====================================================================
+    // #116: two same-rank definitions of one key — the create/update paths
+    // =====================================================================
+    //
+    // The resolver keeps one definition per key and, between two candidates of
+    // the *same* rank, keeps whichever row it iterates last — so if the write
+    // paths let a same-rank pair exist, the effective definition (a `required`
+    // or `is_phi` flag among them) is decided by storage iteration order. These
+    // tests pin what the paths as they actually are do about it: the second
+    // write is refused, and the refusal is a client-visible ALREADY_EXISTS
+    // rather than a masked INTERNAL. Both insertion orders are exercised because
+    // "the last one written wins" would pass a one-sided test while being the
+    // very non-determinism this is about.
+
+    TEST_F(ItemTypeServiceTest, CreateCfdRefusesASecondDefinitionOfOneKeyOnOneNodeEitherOrder) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto node = create_item_type(token, kLab1, "blood");
+
+      // Order A: loose first, tight second. The duplicate tightens what the
+      // *node* holds, and #103 compares a write against what the node
+      // *inherits* (its own rows excluded), so nothing but the schema's
+      // uniqueness can refuse this one.
+      EXPECT_TRUE(create_cfd_spec(
+                      token, kLab1,
+                      CfdWriteSpec{.item_type_id = node, .key = "same_rank_a", .required = false})
+                      .ok());
+      const auto duplicate_tight = create_cfd_spec(
+          token, kLab1, CfdWriteSpec{.item_type_id = node, .key = "same_rank_a", .required = true});
+      EXPECT_EQ(duplicate_tight.error_code(), grpc::StatusCode::ALREADY_EXISTS)
+          << duplicate_tight.error_message();
+
+      // Order B: the same pair written the other way round.
+      EXPECT_TRUE(create_cfd_spec(
+                      token, kLab1,
+                      CfdWriteSpec{.item_type_id = node, .key = "same_rank_b", .required = true})
+                      .ok());
+      const auto duplicate_loose = create_cfd_spec(
+          token, kLab1,
+          CfdWriteSpec{.item_type_id = node, .key = "same_rank_b", .required = false});
+      EXPECT_EQ(duplicate_loose.error_code(), grpc::StatusCode::ALREADY_EXISTS)
+          << duplicate_loose.error_message();
+
+      // Defined outcome, both orders: the first write survived, unmodified, and
+      // the refused one left nothing behind.
+      const auto first = stored_cfd(token, node, "same_rank_a");
+      ASSERT_TRUE(first.has_value());
+      EXPECT_FALSE(first->required());
+      const auto second = stored_cfd(token, node, "same_rank_b");
+      ASSERT_TRUE(second.has_value());
+      EXPECT_TRUE(second->required());
+    }
+
+    TEST_F(ItemTypeServiceTest, CreateCfdRefusesASecondLabGlobalDefinitionOfOneKey) {
+      const auto token = login(kAdminEmail, kPassword);
+
+      // `item_type_id` is NULL for a lab-global definition. A unique index
+      // without the COALESCE sentinel would treat two NULLs as distinct and let
+      // both through, so this half is worth saying out loud through the API too.
+      EXPECT_TRUE(create_cfd_spec(token, kLab1, CfdWriteSpec{.key = "global_key"}).ok());
+      const auto duplicate =
+          create_cfd_spec(token, kLab1, CfdWriteSpec{.key = "global_key", .required = true});
+      EXPECT_EQ(duplicate.error_code(), grpc::StatusCode::ALREADY_EXISTS)
+          << duplicate.error_message();
+
+      const auto stored = stored_cfd(token, "", "global_key");
+      ASSERT_TRUE(stored.has_value());
+      EXPECT_FALSE(stored->required());
+    }
+
+    TEST_F(ItemTypeServiceTest, UpdateCfdRefusesMovingADefinitionOntoAnExistingKey) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto node = create_item_type(token, kLab1, "blood");
+
+      const auto kept = make_cfd(token, kLab1, CfdWriteSpec{.item_type_id = node, .key = "kept"});
+      const auto moved = make_cfd(token, kLab1, CfdWriteSpec{.item_type_id = node, .key = "moved"});
+
+      // The update path carries `key`, so it is a second way to create a
+      // same-rank pair — and the one a client that never creates duplicates can
+      // still reach by renaming.
+      const auto status =
+          update_cfd_spec(token, kLab1, moved, CfdWriteSpec{.item_type_id = node, .key = "kept"});
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::ALREADY_EXISTS) << status.error_message();
+
+      // The refusal is atomic: neither definition changed.
+      const auto kept_after = stored_cfd(token, node, "kept");
+      ASSERT_TRUE(kept_after.has_value());
+      EXPECT_EQ(kept_after->id(), kept);
+      const auto moved_after = stored_cfd(token, node, "moved");
+      ASSERT_TRUE(moved_after.has_value());
+      EXPECT_EQ(moved_after->id(), moved);
+    }
+
   } // namespace
 } // namespace fmgr::test

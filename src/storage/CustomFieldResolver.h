@@ -4,7 +4,9 @@
 // given ItemType, merging the lab's global definitions with every definition
 // attached to an ancestor in the item-type taxonomy (PRD §4.3). A descendant
 // inherits all ancestor fields; on a duplicate `key` the most-derived definition
-// wins (a child may tighten validation). The result is the `definitions` argument
+// wins (a child may tighten validation), and two *live* definitions of one key
+// cannot be at the same rank because the write paths refuse the second one
+// (`cfd_lab_scope_type_key_unique`, #116). The result is the `definitions` argument
 // expected by core::validate_custom_fields, which itself performs no resolution.
 //
 // `resolve_inherited_custom_field_defs` is the same ranking with the node itself
@@ -68,9 +70,27 @@ namespace fmgr::storage {
     }
 
     // The most-derived sample-scoped definition per key among the lab's rows
-    // attached to a ranked item type, or globally. Ties keep the last row the
-    // query returns, which is the resolver's historical `>=` and what the SPA's
-    // `itemTypeModel.ts` mirrors.
+    // attached to a ranked item type, or globally.
+    //
+    // No two candidates can share a rank (#116): the schema's partial unique
+    // index `cfd_lab_scope_type_key_unique` (migration 7, the same definition on
+    // both backends) makes (lab_id, scope_kind, COALESCE(item_type_id, ''), key)
+    // unique among live rows, which is exactly the tuple a same-rank pair would
+    // have to share — two lab-globals collide through the '' sentinel, two rows
+    // on one node collide outright. Everything else this loop admits differs in
+    // `item_type_id`, and every node of a lineage has its own rank, so two rows
+    // of one key can only differ in rank. That is the case `rank >=` (and `rank
+    // >`) resolves, and why the tie branch is unreachable rather than merely
+    // unlikely: the index is the rule, not this comparison.
+    //
+    // If that index is ever dropped the tie comes back, and it comes back
+    // non-deterministically — the row kept would be whichever the query returns
+    // last, which can differ between backends and after a vacuum, and a
+    // `required` or `is_phi` flag deciding that way is not cosmetic. So the
+    // index is pinned from both sides: `tests/backend_conformance/`'s
+    // `*CustomFieldUniquenessConformanceTest` (SQLite and PostgreSQL, both
+    // insertion orders, lab-global and one-node pairs) and
+    // `ItemTypeRepositoryTest.CustomFieldDefinitionUniqueKeyPerLabScopeType`.
     [[nodiscard]] inline std::vector<core::CustomFieldDefinition>
     best_definitions_per_key(ITransaction& txn, const core::LabId& lab_id,
                              const std::unordered_map<std::string, int>& ranks) {
