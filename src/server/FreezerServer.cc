@@ -11,6 +11,15 @@
 #include "server/MetricsInterceptor.h"
 #include "server/RateLimitInterceptor.h"
 
+#include <fmgr/v1/audit.grpc.pb.h>
+#include <fmgr/v1/auth.grpc.pb.h>
+#include <fmgr/v1/box.grpc.pb.h>
+#include <fmgr/v1/item_type.grpc.pb.h>
+#include <fmgr/v1/lab.grpc.pb.h>
+#include <fmgr/v1/role.grpc.pb.h>
+#include <fmgr/v1/sample.grpc.pb.h>
+#include <fmgr/v1/session.grpc.pb.h>
+#include <fmgr/v1/share.grpc.pb.h>
 #include <fmt/format.h>
 #include <google/protobuf/descriptor.h>
 #include <grpcpp/grpcpp.h>
@@ -61,57 +70,47 @@ namespace {
     return contents;
   }
 
-  // The gRPC services this server serves. Each name is used twice: to build
-  // served_service_full_names() — the list the startup coverage check and its
-  // test enumerate — and to pair a service with its implementation in build().
-  // Declaring them once keeps the two from drifting, and the pair array in
-  // build() is sized by this list, so adding a service without listing it here
-  // does not compile.
-  constexpr std::string_view k_auth_service = "fmgr.v1.AuthService";
-  constexpr std::string_view k_session_service = "fmgr.v1.SessionService";
-  constexpr std::string_view k_lab_service = "fmgr.v1.LabService";
-  constexpr std::string_view k_box_service = "fmgr.v1.BoxService";
-  constexpr std::string_view k_item_type_service = "fmgr.v1.ItemTypeService";
-  constexpr std::string_view k_sample_service = "fmgr.v1.SampleService";
-  constexpr std::string_view k_role_service = "fmgr.v1.RoleService";
-  constexpr std::string_view k_audit_service = "fmgr.v1.AuditService";
-  constexpr std::string_view k_share_service = "fmgr.v1.ShareService";
-
-  constexpr std::array<std::string_view, 9> k_served_service_full_names{{
-      k_auth_service,
-      k_session_service,
-      k_lab_service,
-      k_box_service,
-      k_item_type_service,
-      k_sample_service,
-      k_role_service,
-      k_audit_service,
-      k_share_service,
-  }};
+  // The gRPC services this server serves are declared once, in
+  // FreezerServer::served_services(): each row pairs a service's implementation
+  // with the full name its generated proto class declares. build() registers from
+  // those rows and served_rpc_names() enumerates the very same rows, so the set
+  // that is registered and the set the #60 coverage check inspects cannot drift
+  // (#80).
 
 } // namespace
 
 namespace fmgr::server {
 
-  std::span<const std::string_view> FreezerServer::served_service_full_names() {
-    return k_served_service_full_names;
+  std::array<FreezerServer::ServedService, FreezerServer::k_served_service_count>
+  FreezerServer::served_services() {
+    return {{
+        {fmgr::v1::AuthService::service_full_name(), auth_svc_},
+        {fmgr::v1::SessionService::service_full_name(), session_svc_},
+        {fmgr::v1::LabService::service_full_name(), lab_svc_},
+        {fmgr::v1::BoxService::service_full_name(), box_svc_},
+        {fmgr::v1::ItemTypeService::service_full_name(), item_type_svc_},
+        {fmgr::v1::SampleService::service_full_name(), sample_svc_},
+        {fmgr::v1::RoleService::service_full_name(), role_svc_},
+        {fmgr::v1::AuditService::service_full_name(), audit_svc_},
+        {fmgr::v1::ShareService::service_full_name(), share_svc_},
+    }};
   }
 
   std::vector<std::string> FreezerServer::served_rpc_names() {
     std::vector<std::string> rpc_names;
     const auto* pool = google::protobuf::DescriptorPool::generated_pool();
-    for (const auto name : k_served_service_full_names) {
-      const google::protobuf::ServiceDescriptor* service =
-          pool->FindServiceByName(std::string(name));
-      if (service == nullptr) {
+    for (const auto& service : served_services()) {
+      const google::protobuf::ServiceDescriptor* descriptor =
+          pool->FindServiceByName(std::string(service.full_name));
+      if (descriptor == nullptr) {
         throw std::logic_error(
-            fmt::format("no generated descriptor for served service '{}'; the service list and the "
-                        "generated proto code disagree",
-                        name));
+            fmt::format("no generated descriptor for served service '{}'; the served service list "
+                        "and the generated proto code disagree",
+                        service.full_name));
       }
-      for (int index = 0; index < service->method_count(); ++index) {
+      for (int index = 0; index < descriptor->method_count(); ++index) {
         rpc_names.push_back(
-            fmt::format("/{}/{}", service->full_name(), service->method(index)->name()));
+            fmt::format("/{}/{}", descriptor->full_name(), descriptor->method(index)->name()));
       }
     }
     return rpc_names;
@@ -225,25 +224,10 @@ namespace fmgr::server {
                                "tls.enabled");
     }
 
-    // Each served service paired with its implementation, using the same name
-    // constants the coverage check below enumerates, so the two cannot drift.
-    struct ServedService {
-      std::string_view full_name;
-      grpc::Service* impl;
-    };
-    const std::array<ServedService, k_served_service_full_names.size()> served_services{{
-        {.full_name = k_auth_service, .impl = &auth_svc_},
-        {.full_name = k_session_service, .impl = &session_svc_},
-        {.full_name = k_lab_service, .impl = &lab_svc_},
-        {.full_name = k_box_service, .impl = &box_svc_},
-        {.full_name = k_item_type_service, .impl = &item_type_svc_},
-        {.full_name = k_sample_service, .impl = &sample_svc_},
-        {.full_name = k_role_service, .impl = &role_svc_},
-        {.full_name = k_audit_service, .impl = &audit_svc_},
-        {.full_name = k_share_service, .impl = &share_svc_},
-    }};
-    for (const auto& service : served_services) {
-      builder.RegisterService(service.impl);
+    // Register every served service, from the same rows served_rpc_names()
+    // enumerates for the coverage check below (#80).
+    for (const auto& service : served_services()) {
+      builder.RegisterService(&service.impl);
     }
 
     // Fail closed (#60): a served RPC that is not in the permission registry has a

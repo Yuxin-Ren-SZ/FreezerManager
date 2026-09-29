@@ -20,10 +20,10 @@
 
 #include <grpcpp/grpcpp.h>
 
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -119,20 +119,38 @@ namespace fmgr::server {
     // Only valid after build() returns.
     [[nodiscard]] std::shared_ptr<grpc::Channel> in_process_channel();
 
-    // Full names of the gRPC services this server serves ("fmgr.v1.SampleService"),
-    // in registration order. build() registers exactly these and refuses to start
-    // unless every RPC they expose is in the AuthMiddleware permission registry
-    // (#60), so this list is what "served" means for that check and for
-    // ServerIntegrationTest.
-    [[nodiscard]] static std::span<const std::string_view> served_service_full_names();
-
     // Every RPC this server serves, as the gRPC full method names the registry is
     // keyed by ("/fmgr.v1.SampleService/ListSamples"), enumerated from the
-    // generated protobuf descriptors of served_service_full_names(). Throws
-    // std::logic_error if a served service has no generated descriptor.
-    [[nodiscard]] static std::vector<std::string> served_rpc_names();
+    // generated protobuf descriptors of the services served_services() registers.
+    // build() refuses to start unless the AuthMiddleware permission registry covers
+    // every one of them (#60), so this is what "served" means for that check and
+    // for ServerIntegrationTest. Throws std::logic_error if a served service has
+    // no generated descriptor.
+    //
+    // Non-static, unlike the list of names it replaced: the served set is the
+    // server's own implementations, so enumerating it needs the instance (#80).
+    [[nodiscard]] std::vector<std::string> served_rpc_names();
 
   private:
+    // One row per served gRPC service — the single list of them (#80). The full
+    // name is the proto's own ("fmgr.v1.SampleService", read from the generated
+    // XService class and never retyped here) and `impl` is the implementation
+    // build() registers for it. Both halves live in the same row, so a service
+    // cannot be added to one without the other: this used to take two
+    // hand-maintained parallel lists linked only by array size, and a row missing
+    // from the second compiled into a null registration (a segfault in build()).
+    struct ServedService {
+      std::string_view full_name;
+      // A reference, deliberately: a row left out then cannot be value-initialized
+      // into a null implementation, so a count that disagrees with the rows fails
+      // the build instead of crashing the server at startup.
+      grpc::Service& impl;
+    };
+    static constexpr std::size_t k_served_service_count = 9;
+    // The served services, in registration order. build() registers every row and
+    // served_rpc_names() enumerates the very same rows, so the two cannot drift.
+    [[nodiscard]] std::array<ServedService, k_served_service_count> served_services();
+
     FreezerServerOptions opts_;
     // The live backend, retained so build() can hand it to the backup scheduler.
     storage::IStorageBackend& backend_;
