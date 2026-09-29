@@ -54,25 +54,35 @@ namespace fmgr::rpc {
 
   core::Permission RpcGate::permission() const {
     if (!permission_.has_value()) {
-      throw std::logic_error("this RPC is registered as " + describe() +
-                             "; it has no permission to read (see rpc::RpcGate, #78)");
+      // Deliberately not describe()'s wording: describe() asks this accessor for
+      // the value, so a message that called back into it would recurse if a gate
+      // were ever reached in the empty state this guard exists to refuse.
+      throw std::logic_error(
+          "this RpcGate declares a credential rule, not a permission (see rpc::RpcGate, #78)");
     }
     return *permission_;
   }
 
   CredentialRule RpcGate::credential_rule() const {
     if (!credential_.has_value()) {
-      throw std::logic_error("this RPC is registered as " + describe() +
-                             "; it declares no credential rule to read (see rpc::RpcGate, #119)");
+      // Same reason as permission() above: no call back into describe().
+      throw std::logic_error("this RpcGate declares a permission, not a credential rule (see "
+                             "rpc::RpcGate, #119)");
     }
     return *credential_;
   }
 
   std::string RpcGate::describe() const {
+    // Exactly one of the two optionals is engaged, because the private
+    // constructors each set one — but that is an invariant, not a check, and
+    // dereferencing *the other* optional is something neither a reader nor
+    // clang-tidy's bugprone-unchecked-optional-access can verify. Ask the accessor
+    // instead: it reads the optional it is about and refuses an empty one
+    // (#127 review).
     if (permission_.has_value()) {
-      return "permission '" + permission_key(*permission_) + "'";
+      return "permission '" + permission_key(permission()) + "'";
     }
-    return "credential rule '" + std::string(to_key(*credential_)) + "'";
+    return "credential rule '" + std::string(to_key(credential_rule())) + "'";
   }
 
   // #60: the registry is a contract, not documentation. A handler that asks the
@@ -218,12 +228,13 @@ namespace fmgr::rpc {
     return ctx;
   }
 
-  void AuthMiddleware::admit_no_credential(const RpcCall& call) const {
+  void AuthMiddleware::admit_no_credential(const RpcCall& call) {
     // The declaration is the whole of the enforcement here: there is no credential
     // to validate, so what the gate can refuse is a registration that claims one.
     // call.bearer_token is deliberately unread — a caller of Login need not have a
     // credential, and must not be refused for the Authorization header it did or
-    // did not send.
+    // did not send. Static for that same reason: nothing here needs the instance
+    // (#127 review).
     require_credential_agreement(call, CredentialRule::None);
   }
 

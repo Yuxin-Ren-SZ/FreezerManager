@@ -231,7 +231,12 @@ namespace fmgr::rpc {
     // rule. `call`'s bearer token is deliberately unread — a caller of Login need
     // not have one, and must not be refused for the Authorization header it did
     // or did not send. Returns nothing: there is no session to describe.
-    void admit_no_credential(const RpcCall& call) const;
+    //
+    // Static, unlike authorize() and authenticate(): there is no credential to
+    // validate, so this one needs nothing from the middleware instance. The
+    // difference is the useful part — it is what says the other two are the ones
+    // that talk to IAuthProvider.
+    static void admit_no_credential(const RpcCall& call);
 
     // ---- Global data-tier rate limiting ----
     //

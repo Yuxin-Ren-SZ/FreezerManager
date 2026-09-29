@@ -93,7 +93,7 @@ namespace fmgr::server {
     // is what ties the handler to its registration, so a registration that ever
     // claimed a credential rule would refuse every login rather than widen
     // silently (#119).
-    middleware_.admit_no_credential(
+    rpc::AuthMiddleware::admit_no_credential(
         rpc::RpcCall{.bearer_token = {}, .method = rpc_method_name(*ctx)});
     // Throttle by source IP before doing any work (notably the expensive
     // Argon2id verify). Caps credential-spray / account-enumeration volume that

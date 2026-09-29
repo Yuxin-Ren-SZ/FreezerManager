@@ -624,15 +624,15 @@ namespace fmgr::rpc {
       AuthMiddleware::register_rpc("e3_test.AnonymousRpc", RpcGate::no_credential());
       // No token, and a token nobody validated: both admitted, because the None
       // rule validates nothing. The call is the declaration.
-      EXPECT_NO_THROW(middleware_->admit_no_credential(
+      EXPECT_NO_THROW(AuthMiddleware::admit_no_credential(
           RpcCall{.bearer_token = "", .method = "e3_test.AnonymousRpc"}));
-      EXPECT_NO_THROW(middleware_->admit_no_credential(
+      EXPECT_NO_THROW(AuthMiddleware::admit_no_credential(
           RpcCall{.bearer_token = "not-a-token", .method = "e3_test.AnonymousRpc"}));
 
       // An RPC that declares a credential cannot be admitted anonymously.
       AuthMiddleware::register_rpc("e3_test.NotAnonymousRpc", RpcGate::token_only());
       try {
-        middleware_->admit_no_credential(
+        AuthMiddleware::admit_no_credential(
             RpcCall{.bearer_token = "", .method = "e3_test.NotAnonymousRpc"});
         FAIL() << "an anonymous admission for a token_only RPC must be refused";
       } catch (const RpcRegistryMismatch& error) {
@@ -659,7 +659,8 @@ namespace fmgr::rpc {
       EXPECT_THROW(do_authenticate_on(*middleware_, RpcCall{.bearer_token = "", .method = ""},
                                       CredentialRule::TokenAndMfa),
                    auth::AuthError);
-      EXPECT_NO_THROW(middleware_->admit_no_credential(RpcCall{.bearer_token = "", .method = ""}));
+      EXPECT_NO_THROW(
+          AuthMiddleware::admit_no_credential(RpcCall{.bearer_token = "", .method = ""}));
     }
 
     TEST_F(AuthMiddlewareTest, RpcGateReportsTheGateKindAndCredentialRuleOfEveryEntry) {
