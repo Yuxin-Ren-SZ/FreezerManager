@@ -305,8 +305,10 @@ namespace fmgr::test {
       }
 
       // Run one ImportSamples call. Returns the gRPC status; `resp` always holds
-      // the body so a caller can assert on header_error/rows.
-      grpc::Status import_csv(const std::string& token, const std::string& csv, bool dry_run,
+      // the body so a caller can assert on header_error/rows. `dry_run` sits
+      // between the two strings so neither pair is adjacent: clang-tidy's
+      // bugprone-easily-swappable-parameters is enforced on this file.
+      grpc::Status import_csv(const std::string& token, bool dry_run, const std::string& csv,
                               fmgr::v1::ImportSamplesResponse* resp) {
         grpc::ClientContext ctx;
         set_bearer(ctx, token);
@@ -1776,9 +1778,9 @@ namespace fmgr::test {
     TEST_F(SampleServiceTest, ImportSamplesStoresPhiTaggedKeyEncryptedAtRest) {
       const auto admin = login(kAdminEmail, kPassword);
       fmgr::v1::ImportSamplesResponse resp;
-      ASSERT_TRUE(import_csv(admin,
+      ASSERT_TRUE(import_csv(admin, false,
                              import_csv_with_custom_fields(R"({"mrn":"MRN-555","strain":"EC-1"})"),
-                             false, &resp)
+                             &resp)
                       .ok())
           << resp.header_error();
       ASSERT_TRUE(resp.committed());
@@ -1804,7 +1806,7 @@ namespace fmgr::test {
       const auto admin = login(kAdminEmail, kPassword);
       fmgr::v1::ImportSamplesResponse resp;
       ASSERT_TRUE(
-          import_csv(admin, import_csv_with_custom_fields(R"({"mrn":"MRN-555"})"), false, &resp)
+          import_csv(admin, false, import_csv_with_custom_fields(R"({"mrn":"MRN-555"})"), &resp)
               .ok())
           << resp.header_error();
       ASSERT_TRUE(resp.committed());
