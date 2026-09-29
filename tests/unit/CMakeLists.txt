@@ -5,6 +5,7 @@ add_executable(
   freezermanager_core_unit_tests
   box_types_test.cpp
   core_value_types_test.cpp
+  custom_field_tightening_test.cpp
   custom_field_validator_test.cpp
   freezer_types_test.cpp
   identity_types_test.cpp

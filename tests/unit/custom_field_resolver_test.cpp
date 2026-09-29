@@ -310,5 +310,68 @@ namespace fmgr::storage {
       EXPECT_TRUE(resolved.empty());
     }
 
+    // ---- Inherited resolution (#103) ----
+    //
+    // The parent a write is compared against is what the node *inherits*, so the
+    // node's own row must not participate. `resolve_custom_field_defs` returns
+    // exactly that row once the node defines the key — which is why the
+    // tightening check cannot reuse it.
+
+    TEST_F(CustomFieldResolverTest, InheritedResolutionExcludesTheNodesOwnDefinition) {
+      const auto lab_id = id_from_low<core::LabId>(100);
+      const auto root_id = id_from_low<core::ItemTypeId>(1);
+      const auto leaf_id = id_from_low<core::ItemTypeId>(2);
+      seed({make_item_type(1, lab_id, std::nullopt, "root"),
+            make_item_type(2, lab_id, root_id, "leaf")},
+           {make_cfd(1, lab_id, root_id, "notes", core::FieldDataType::String, /*required=*/true),
+            make_cfd(2, lab_id, leaf_id, "notes", core::FieldDataType::String,
+                     /*required=*/false)});
+
+      auto txn = backend_->begin(IsolationLevel::Serializable);
+      const auto effective = resolve_custom_field_defs(*txn, lab_id, leaf_id);
+      ASSERT_EQ(effective.size(), 1U);
+      EXPECT_FALSE(effective[0].required); // the leaf's own row wins, as it should
+
+      const auto inherited = resolve_inherited_custom_field_defs(*txn, lab_id, leaf_id);
+      ASSERT_EQ(inherited.size(), 1U);
+      EXPECT_EQ(inherited[0].key, "notes");
+      EXPECT_TRUE(inherited[0].required); // the root's row is what the write shadows
+    }
+
+    TEST_F(CustomFieldResolverTest, InheritedResolutionKeepsGlobalsAndStrictAncestorsOnly) {
+      const auto lab_id = id_from_low<core::LabId>(100);
+      const auto root_id = id_from_low<core::ItemTypeId>(1);
+      const auto mid_id = id_from_low<core::ItemTypeId>(2);
+      const auto leaf_id = id_from_low<core::ItemTypeId>(3);
+      const auto sibling_id = id_from_low<core::ItemTypeId>(4);
+      seed({make_item_type(1, lab_id, std::nullopt, "root"),
+            make_item_type(2, lab_id, root_id, "mid"), make_item_type(3, lab_id, mid_id, "leaf"),
+            make_item_type(4, lab_id, root_id, "sibling")},
+           {make_cfd(1, lab_id, std::nullopt, "global_field"),
+            make_cfd(2, lab_id, root_id, "from_root"), make_cfd(3, lab_id, mid_id, "from_mid"),
+            make_cfd(4, lab_id, leaf_id, "own"), make_cfd(5, lab_id, sibling_id, "from_sibling")});
+
+      auto txn = backend_->begin(IsolationLevel::Serializable);
+      const auto inherited = resolve_inherited_custom_field_defs(*txn, lab_id, leaf_id);
+      std::set<std::string> keys;
+      for (const auto& cfd : inherited) {
+        keys.insert(cfd.key);
+      }
+      EXPECT_EQ(keys, (std::set<std::string>{"from_mid", "from_root", "global_field"}));
+    }
+
+    TEST_F(CustomFieldResolverTest, InheritedResolutionAtARootKeepsOnlyLabGlobals) {
+      const auto lab_id = id_from_low<core::LabId>(100);
+      const auto root_id = id_from_low<core::ItemTypeId>(1);
+      seed({make_item_type(1, lab_id, std::nullopt, "root")},
+           {make_cfd(1, lab_id, std::nullopt, "global_field"),
+            make_cfd(2, lab_id, root_id, "root_own")});
+
+      auto txn = backend_->begin(IsolationLevel::Serializable);
+      const auto inherited = resolve_inherited_custom_field_defs(*txn, lab_id, root_id);
+      ASSERT_EQ(inherited.size(), 1U);
+      EXPECT_EQ(inherited[0].key, "global_field");
+    }
+
   } // namespace
 } // namespace fmgr::storage

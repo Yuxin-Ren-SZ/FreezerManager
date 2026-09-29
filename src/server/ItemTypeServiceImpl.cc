@@ -3,11 +3,13 @@
 #include "server/ItemTypeServiceImpl.h"
 #include "server/RequestId.h"
 
+#include "core/custom_field_tightening.h"
 #include "core/custom_field_validator.h"
 #include "core/item_type.h"
 #include "core/permissions.h"
 #include "core/uuid.h"
 #include "server/GrpcErrorTranslation.h"
+#include "storage/CustomFieldResolver.h"
 #include "storage/IStorageBackend.h"
 #include "storage/ItemTypeTraits.h"
 
@@ -172,6 +174,37 @@ namespace fmgr::server {
       if (cfd.is_phi && cfd.indexed) {
         throw storage::ConstraintViolation(
             "a PHI custom field may not be indexed (is_phi and indexed are mutually exclusive)");
+      }
+    }
+
+    // N5: a definition attached to an item type shadows whatever that node
+    // inherits for the same key — an ancestor's definition or a lab-global one —
+    // and may tighten it but not loosen it. Without this the rule holds only
+    // where G3.9's form runs, so `freezerctl`, the Qt client or anything on
+    // REST/gRPC could store an override that drops a requirement (#103).
+    //
+    // Which definition is shadowed is the resolver's ranking
+    // (`storage::resolve_inherited_custom_field_defs`, the node's ancestors plus
+    // the lab globals, most-derived per key); whether the write is a loosening
+    // is the pure `core::tighten_violations`. A lab-global definition has no
+    // parent to shadow and is skipped.
+    void reject_loosening_inherited_definition(storage::ITransaction& txn,
+                                               const core::CustomFieldDefinition& proposed) {
+      if (!proposed.item_type_id.has_value()) {
+        return;
+      }
+      const auto inherited = storage::resolve_inherited_custom_field_defs(txn, proposed.lab_id,
+                                                                          *proposed.item_type_id);
+      for (const auto& parent : inherited) {
+        if (parent.key != proposed.key) {
+          continue;
+        }
+        const auto violations = core::tighten_violations(parent, proposed);
+        if (!violations.empty()) {
+          throw storage::ConstraintViolation(
+              "custom field '" + proposed.key +
+              "' would loosen the definition it inherits: " + violations.front().message);
+        }
       }
     }
 
@@ -426,6 +459,7 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+      reject_loosening_inherited_definition(*txn, cfd);
 
       // Cap the number of definitions per entity so a lab admin cannot define
       // thousands of fields and degrade every sample create/update (review F-9).
@@ -484,6 +518,7 @@ namespace fmgr::server {
       existing->indexed = wire.indexed();
       existing->is_phi = wire.is_phi();
       reject_indexed_phi(*existing);
+      reject_loosening_inherited_definition(*txn, *existing);
       txn->repo<core::CustomFieldDefinition>().update(*existing,
                                                       make_ctx(*ctx, sctx, "update_cfd"));
       txn->commit();
