@@ -11,6 +11,19 @@ import {
 import { HttpResponse, http, type HttpHandler } from 'msw';
 import { isGrpcCode, type GrpcCode } from '../api/errors';
 import { apiRoutes, type RpcName } from '../api/routes';
+import {
+  BoxPositionSchema,
+  BoxSchema,
+  BoxTypeSchema,
+  ContainerKind,
+  FreezerSchema,
+  StorageContainerSchema,
+  type Box,
+  type BoxPosition,
+  type BoxType,
+  type Freezer,
+  type StorageContainer,
+} from '../gen/fmgr/v1/box_pb';
 import { TimestampSchema } from '../gen/fmgr/v1/common/types_pb';
 import { ItemTypeSchema, type ItemType } from '../gen/fmgr/v1/item_type_pb';
 import { LabSchema, type Lab } from '../gen/fmgr/v1/lab_pb';
@@ -43,16 +56,222 @@ export interface DemoLab {
   labs: Lab[];
   itemTypes: ItemType[];
   samples: Sample[];
+  /** Layout (BoxService): the physical tree the G3.1 screen renders. */
+  freezers: Freezer[];
+  storageContainers: StorageContainer[];
+  boxTypes: BoxType[];
+  boxes: Box[];
 }
 
 /** A seeded, in-memory demo lab. Pass your own to `fakeApi({ lab })` to inspect it. */
 /** A real `Timestamp` message, not a bare object: nested messages must be messages. */
 const seedTimestamp = () => create(TimestampSchema, { unixMicros: 1_758_931_200_000_000n });
 
+/** `rows × cols` positions, labelled `A1`… like a real box map. */
+function seedPositions(rows: number, cols: number): BoxPosition[] {
+  return Array.from({ length: rows * cols }, (_, index) => {
+    const row = Math.floor(index / cols) + 1;
+    const col = (index % cols) + 1;
+    return create(BoxPositionSchema, {
+      label: `${String.fromCharCode(64 + row)}${col}`,
+      row,
+      col,
+    });
+  });
+}
+
+/**
+ * The seeded storage layout (`lab-demo`) from G3.1:
+ *
+ * ```
+ * Freezer A ─ Rack 1 ─┬ Drawer 1 ─┬ Box A (96 positions)
+ *                     │           └ Box B (96 positions)
+ *                     ├ Drawer 2
+ *                     └ Old tower            (archived)
+ * Freezer B ─ Rack 2 ── Shelf 1 ─── Box C (9 positions)
+ * Old freezer                                (archived)
+ * ```
+ *
+ * The archived rows are seeded on purpose: the list RPCs have no
+ * `include_archived` field, so the server sends them and the *client* is what
+ * hides them — a fake that filtered them out would make that test vacuous.
+ * `box-1` and `box-2` are the boxes `samples` already sits in.
+ */
+function seedLayout(createdAt: ReturnType<typeof seedTimestamp>) {
+  const archivedAt = seedTimestamp();
+
+  const layout = {
+    freezers: [
+      create(FreezerSchema, {
+        id: 'fz-front',
+        labId: 'lab-demo',
+        name: 'Freezer A',
+        location: 'Room 101',
+        layoutRootId: 'ct-rack-1',
+        createdAt,
+      }),
+      create(FreezerSchema, {
+        id: 'fz-back',
+        labId: 'lab-demo',
+        name: 'Freezer B',
+        location: 'Room 102',
+        layoutRootId: 'ct-rack-2',
+        createdAt,
+      }),
+      create(FreezerSchema, {
+        id: 'fz-old',
+        labId: 'lab-demo',
+        name: 'Old freezer',
+        layoutRootId: 'ct-rack-1',
+        createdAt,
+        archivedAt,
+      }),
+      create(FreezerSchema, {
+        id: 'fz-second',
+        labId: 'lab-second',
+        name: 'Second freezer',
+        layoutRootId: 'ct-second-root',
+        createdAt,
+      }),
+    ],
+    storageContainers: [
+      create(StorageContainerSchema, {
+        id: 'ct-rack-1',
+        labId: 'lab-demo',
+        kind: ContainerKind.RACK,
+        name: 'Rack 1',
+        createdAt,
+      }),
+      create(StorageContainerSchema, {
+        id: 'ct-drawer-1',
+        labId: 'lab-demo',
+        parentId: 'ct-rack-1',
+        kind: ContainerKind.DRAWER,
+        name: 'Drawer 1',
+        label: 'Top drawer',
+        orderingIndex: 0,
+        createdAt,
+      }),
+      create(StorageContainerSchema, {
+        id: 'ct-drawer-2',
+        labId: 'lab-demo',
+        parentId: 'ct-rack-1',
+        kind: ContainerKind.DRAWER,
+        name: 'Drawer 2',
+        orderingIndex: 1,
+        createdAt,
+      }),
+      create(StorageContainerSchema, {
+        id: 'ct-tower-old',
+        labId: 'lab-demo',
+        parentId: 'ct-rack-1',
+        kind: ContainerKind.TOWER,
+        name: 'Old tower',
+        orderingIndex: 2,
+        createdAt,
+        archivedAt,
+      }),
+      create(StorageContainerSchema, {
+        id: 'ct-rack-2',
+        labId: 'lab-demo',
+        kind: ContainerKind.RACK,
+        name: 'Rack 2',
+        createdAt,
+      }),
+      create(StorageContainerSchema, {
+        id: 'ct-shelf-1',
+        labId: 'lab-demo',
+        parentId: 'ct-rack-2',
+        kind: ContainerKind.SHELF,
+        name: 'Shelf 1',
+        createdAt,
+      }),
+      create(StorageContainerSchema, {
+        id: 'ct-second-root',
+        labId: 'lab-second',
+        kind: ContainerKind.RACK,
+        name: 'Second rack',
+        createdAt,
+      }),
+    ],
+    boxTypes: [
+      create(BoxTypeSchema, {
+        id: 'bt-96',
+        labId: 'lab-demo',
+        name: '96-well',
+        positions: seedPositions(8, 12),
+        createdAt,
+      }),
+      create(BoxTypeSchema, {
+        id: 'bt-9',
+        labId: 'lab-demo',
+        name: '9-place',
+        positions: seedPositions(3, 3),
+        createdAt,
+      }),
+      create(BoxTypeSchema, {
+        id: 'bt-old',
+        labId: 'lab-demo',
+        name: 'Legacy 4-place',
+        positions: seedPositions(2, 2),
+        createdAt,
+        archivedAt,
+      }),
+    ],
+    boxes: [
+      create(BoxSchema, {
+        id: 'box-1',
+        labId: 'lab-demo',
+        boxTypeId: 'bt-96',
+        storageContainerId: 'ct-drawer-1',
+        label: 'Box A',
+        barcode: 'BOX-0001',
+        createdAt,
+      }),
+      create(BoxSchema, {
+        id: 'box-2',
+        labId: 'lab-demo',
+        boxTypeId: 'bt-96',
+        storageContainerId: 'ct-drawer-1',
+        label: 'Box B',
+        createdAt,
+      }),
+      create(BoxSchema, {
+        id: 'box-3',
+        labId: 'lab-demo',
+        boxTypeId: 'bt-9',
+        storageContainerId: 'ct-shelf-1',
+        label: 'Box C',
+        createdAt,
+      }),
+      create(BoxSchema, {
+        id: 'box-old',
+        labId: 'lab-demo',
+        boxTypeId: 'bt-old',
+        storageContainerId: 'ct-drawer-1',
+        label: 'Old box',
+        createdAt,
+        archivedAt,
+      }),
+      create(BoxSchema, {
+        id: 'box-second',
+        labId: 'lab-second',
+        boxTypeId: 'bt-9',
+        storageContainerId: 'ct-second-root',
+        label: 'Second box',
+        createdAt,
+      }),
+    ],
+  };
+
+  return layout;
+}
+
 export function createDemoLab(): DemoLab {
   const createdAt = seedTimestamp();
 
   return {
+    ...seedLayout(createdAt),
     labs: [
       create(LabSchema, {
         id: 'lab-demo',
@@ -211,6 +430,61 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     const found = lab.labs.find((candidate) => candidate.id === labId);
     if (found === undefined) throw new FakeRpcError('NOT_FOUND', 'no such lab');
     return { lab: found };
+  },
+
+  // ---- BoxService: the layout tree (G3.1) ----
+  //
+  // Each list RPC is lab-scoped and has no `include_archived` field, so the
+  // archived rows come back and the client decides. `parent_id` /
+  // `storage_container_id` are optional filters, exactly as in the proto.
+  'freezer/list': (lab, message) => {
+    const { labId, page: pageRequest } = fields(message) as { labId: string; page?: JsonValue };
+    requireId(labId, 'lab');
+    const matching = lab.freezers.filter((freezer) => freezer.labId === labId);
+    const { slice, token } = paginate(matching, pageRequest);
+    return { freezers: slice, page: page(token, matching.length) };
+  },
+
+  'storage-container/list': (lab, message) => {
+    const { labId, parentId, page: pageRequest } = fields(message) as {
+      labId: string;
+      parentId?: string;
+      page?: JsonValue;
+    };
+    requireId(labId, 'lab');
+    const matching = lab.storageContainers.filter((container) => {
+      if (container.labId !== labId) return false;
+      if (parentId !== undefined && container.parentId !== parentId) return false;
+      return true;
+    });
+    const { slice, token } = paginate(matching, pageRequest);
+    return { containers: slice, page: page(token, matching.length) };
+  },
+
+  'box-type/list': (lab, message) => {
+    const { labId, page: pageRequest } = fields(message) as { labId: string; page?: JsonValue };
+    requireId(labId, 'lab');
+    const matching = lab.boxTypes.filter((boxType) => boxType.labId === labId);
+    const { slice, token } = paginate(matching, pageRequest);
+    return { boxTypes: slice, page: page(token, matching.length) };
+  },
+
+  'box/list': (lab, message) => {
+    const { labId, storageContainerId, page: pageRequest } = fields(message) as {
+      labId: string;
+      storageContainerId?: string;
+      page?: JsonValue;
+    };
+    requireId(labId, 'lab');
+    const matching = lab.boxes.filter((box) => {
+      if (box.labId !== labId) return false;
+      if (storageContainerId !== undefined && box.storageContainerId !== storageContainerId) {
+        return false;
+      }
+      return true;
+    });
+    const { slice, token } = paginate(matching, pageRequest);
+    return { boxes: slice, page: page(token, matching.length) };
   },
 
   'item-type/list': (lab, message) => {
