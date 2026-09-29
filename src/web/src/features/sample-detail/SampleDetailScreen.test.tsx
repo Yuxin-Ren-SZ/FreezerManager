@@ -380,6 +380,34 @@ describe('SampleDetailScreen', () => {
       ]);
     });
 
+    it('refuses a volume the sample cannot record instead of reporting a check-in (#111)', async () => {
+      const demo = createDemoLab();
+      sampleById(demo, 'sample-3').volumeValue = 100;
+      sampleById(demo, 'sample-3').volumeUnit = 'µL';
+      renderDetail({ demo, sampleId: 'sample-3' });
+
+      await screen.findByRole('heading', { level: 1, name: 'Plasma A' });
+      await click(sampleDetailCopy.actions.checkin);
+
+      const dialog = await screen.findByRole('dialog');
+      // Half a microlitre is not a quantity `core::Volume` can hold. The server
+      // answers INVALID_ARGUMENT, so the screen has to say so — the defect was
+      // a check-in that reported success and subtracted nothing.
+      await userEvent.type(
+        within(dialog).getByLabelText(sampleDetailCopy.actions.volumeUsed),
+        '0.5',
+      );
+      await userEvent.click(
+        within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmCheckin }),
+      );
+
+      expect(await within(dialog).findByRole('alert')).toBeInTheDocument();
+      // Nothing was applied: still checked out, volume untouched, no event.
+      expect(sampleById(demo, 'sample-3').status).toBe(SampleStatus.CHECKED_OUT);
+      expect(sampleById(demo, 'sample-3').volumeValue).toBe(100);
+      expect(demo.checkoutEvents).toEqual([]);
+    });
+
     it('does not offer a volume the server would not subtract from this sample', async () => {
       // sample-3 tracks no volume, and `apply_checkout` ignores `volume_used`
       // for a sample that tracks none — so an input here would be dropped

@@ -95,15 +95,22 @@ function isVolumeUnit(value: string): value is VolumeUnit {
 }
 
 /**
- * `core::Volume::to_unit` in miniature. `rawValue` is an integer count as
- * `Volume::from_raw` stores it, and µL → mL truncates toward zero exactly as
- * the C++ integer division does.
+ * `core::Volume::to_unit` and `core::Volume::converts_exactly_to` in miniature:
+ * `rawValue` expressed in `to`, or `null` when the conversion would lose part of
+ * it. µL → mL truncates toward zero exactly as the C++ integer division does,
+ * and refining has to stay inside the raw count's exact range — the C++ guards
+ * its 64-bit one, this guards JavaScript's safe integers, which is the closest
+ * thing it has.
+ *
+ * A `null` is a refusal, not a rounding: the server subtracts the exact amount
+ * or answers `INVALID_ARGUMENT`, and a fake that quietly rounded here would be
+ * more generous than `freezerd` in precisely the way #111 was filed for.
  *
  * An unknown *target* is a broken fixture rather than a server answer, so it
  * throws instead of guessing: subtracting the wrong amount silently is the
  * failure mode this fake exists to make impossible.
  */
-function convertVolume(rawValue: number, from: VolumeUnit, to: string): number {
+function exactVolumeConversion(rawValue: number, from: VolumeUnit, to: string): number | null {
   if (from === to) {
     return rawValue;
   }
@@ -112,7 +119,11 @@ function convertVolume(rawValue: number, from: VolumeUnit, to: string): number {
       `fakeApi: sample volume_unit '${to}' is not a unit core::parse_volume_unit accepts`,
     );
   }
-  return from === 'mL' ? rawValue * 1_000 : Math.trunc(rawValue / 1_000);
+  if (from === 'µL') {
+    return rawValue % 1_000 === 0 ? rawValue / 1_000 : null;
+  }
+  const refined = rawValue * 1_000;
+  return Number.isSafeInteger(refined) ? refined : null;
 }
 
 export interface DemoLab {
@@ -1627,6 +1638,12 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
   // regardless of the unit, which is exactly how the web check-in could lose a
   // typed volume against real `freezerd` with every test still green.
   //
+  // A volume is then either subtracted **exactly** or refused (#111): a whole
+  // number of the stated unit, and one that converts into the sample's unit
+  // without truncation. Both were silent before — `0.04 mL` truncated to raw 0,
+  // and `500 µL` against an mL-tracked sample converted to `used = 0` — so the
+  // check-in succeeded and subtracted nothing.
+  //
   // An illegal transition answers **FAILED_PRECONDITION**, which is this fake's
   // contract from G1.2 (`fakeApi.test.ts`, `hooks/samples.test.tsx`) even though
   // the C++ `ConstraintViolation` maps to INVALID_ARGUMENT in
@@ -1658,14 +1675,44 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     // `volume_used: must not be negative` instead of letting the subtraction
     // invert and *add* stock (#112), and the fake mirrors that so the client and
     // the server cannot disagree about it. The sign is read from the raw number,
-    // as the handler reads it, because `Math.trunc` below would otherwise turn
-    // -0.5 into a well-formed 0.
+    // as the handler reads it, because the cast would otherwise turn -0.5 into a
+    // well-formed 0.
     if (volumeUsed !== undefined && volumeUsed < 0) {
       throw new FakeRpcError('INVALID_ARGUMENT', 'volume_used: must not be negative');
+    }
+    // Nor can it be a fraction of the unit it is stated in: the domain stores an
+    // integer count and the server reads the rule off the raw double, as it
+    // reads the sign. Truncating is how a typed `0.04 mL` became 0 and subtracted
+    // nothing while the screen said "checked in" (#111).
+    if (volumeUsed !== undefined && volumeUnit !== undefined && !Number.isInteger(volumeUsed)) {
+      throw new FakeRpcError(
+        'INVALID_ARGUMENT',
+        `volume_used: must be a whole number of ${volumeUnit} (got ${volumeUsed})`,
+      );
+    }
+    if (volumeUsed !== undefined && !Number.isSafeInteger(volumeUsed)) {
+      throw new FakeRpcError('INVALID_ARGUMENT', 'volume_used: is too large to represent');
     }
 
     if (found.status === SampleStatus.TOMBSTONED || found.status === SampleStatus.DESTROYED) {
       throw new FakeRpcError('FAILED_PRECONDITION', 'sample is not in a checkout-eligible state');
+    }
+
+    // The consumption in the sample's own unit, computed once before the switch
+    // because `apply_checkout` asserts representability before its own switch:
+    // `to_unit` converts µL → mL by integer division, so `500 µL` against a vial
+    // tracked in mL is `used = 0` — the check-in answers OK and subtracts
+    // nothing (#111). Refused here rather than truncated, so the fake cannot be
+    // more generous than the server.
+    let used: number | undefined;
+    if (volumeUsed !== undefined && volumeUnit !== undefined && found.volumeUnit !== undefined) {
+      used = exactVolumeConversion(volumeUsed, volumeUnit, found.volumeUnit);
+      if (used === null) {
+        throw new FakeRpcError(
+          'INVALID_ARGUMENT',
+          `volume_used: ${volumeUsed} ${volumeUnit} cannot be represented in ${found.volumeUnit} without truncation`,
+        );
+      }
     }
 
     // Signed change in the sample's own unit, exactly as `apply_checkout` signs
@@ -1692,15 +1739,9 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
         }
         found.status = SampleStatus.ACTIVE;
         // `volume_used` is only subtracted when the sample tracks a volume, as
-        // in `apply_checkout`. The pair rule above means the two request fields
-        // are present or absent together.
-        if (
-          volumeUsed !== undefined &&
-          volumeUnit !== undefined &&
-          found.volumeValue !== undefined &&
-          found.volumeUnit !== undefined
-        ) {
-          const used = convertVolume(Math.trunc(volumeUsed), volumeUnit, found.volumeUnit);
+        // in `apply_checkout`; `used` above is set exactly when the request and
+        // the sample both carry one, and it is already in the sample's unit.
+        if (used !== undefined && found.volumeValue !== undefined) {
           const previous = found.volumeValue;
           const remaining = Math.max(0, previous - used);
           volumeDelta = remaining - previous; // negative = consumed

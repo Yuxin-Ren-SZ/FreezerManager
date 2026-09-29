@@ -488,25 +488,53 @@ describe('fakeApi checkout volume contract (#100)', () => {
     ]);
   });
 
-  it('truncates the amount before converting, as Volume::from_raw does', async () => {
+  it('refuses a fractional amount instead of truncating it to nothing (#111)', async () => {
     const lab = checkedOutLab();
     server.use(...fakeApi({ lab }));
 
-    // `Volume::from_raw` casts `volume_used` to an integer *in the request unit*
-    // before `to_unit` runs, so 0.04 mL is raw 0 mL — 0 µL, not 40 µL. The fake
-    // must not be more generous than the server: a screen that ships 0.04 mL
-    // consumes nothing against real `freezerd`, and a test here has to say so.
-    await call('sample/checkout', {
+    // `core::Volume` is an integer count of a unit, so `Volume::from_raw` cast
+    // `0.04 mL` to raw 0: the check-in answered OK, consumed nothing and the
+    // screen said "checked in". It is now refused, and the fake refuses it the
+    // same way — a fake that rounded here would be more generous than the
+    // server in exactly the way this issue was filed for.
+    const error = (await call('sample/checkout', {
       sampleId: 'sample-3',
       action: CheckoutAction.CHECKIN,
       volumeUsed: 0.04,
       volumeUnit: 'mL',
-    });
+    }).catch((caught: unknown) => caught)) as ApiError;
 
+    expect(error.code).toBe('INVALID_ARGUMENT');
+    expect(error.message).toContain('volume_used');
+    // Refused, not applied as a smaller amount: still checked out, volume
+    // untouched, no chain-of-custody row.
+    expect(sampleById(lab, 'sample-3').status).toBe(SampleStatus.CHECKED_OUT);
     expect(sampleById(lab, 'sample-3').volumeValue).toBe(100);
-    expect(lab.checkoutEvents).toMatchObject([
-      { sampleId: 'sample-3', action: CheckoutAction.CHECKIN, volumeDelta: 0, volumeUnit: 'µL' },
-    ]);
+    expect(lab.checkoutEvents).toEqual([]);
+  });
+
+  it('refuses a µL amount an mL-tracked sample cannot represent (#111)', async () => {
+    const lab = createDemoLab();
+    const sample = sampleById(lab, 'sample-3');
+    sample.volumeValue = 50;
+    sample.volumeUnit = 'mL';
+    server.use(...fakeApi({ lab }));
+
+    // No fraction anywhere: `to_unit` divides µL by 1000, so 500 µL against an
+    // mL-tracked vial is `used = 0`. The unit mismatch alone used to make the
+    // check-in a successful no-op.
+    const error = (await call('sample/checkout', {
+      sampleId: 'sample-3',
+      action: CheckoutAction.CHECKIN,
+      volumeUsed: 500,
+      volumeUnit: 'µL',
+    }).catch((caught: unknown) => caught)) as ApiError;
+
+    expect(error.code).toBe('INVALID_ARGUMENT');
+    expect(error.message).toContain('volume_used');
+    expect(sampleById(lab, 'sample-3').status).toBe(SampleStatus.CHECKED_OUT);
+    expect(sampleById(lab, 'sample-3').volumeValue).toBe(50);
+    expect(lab.checkoutEvents).toEqual([]);
   });
 
   it('records the discard delta as the whole remaining volume', async () => {
