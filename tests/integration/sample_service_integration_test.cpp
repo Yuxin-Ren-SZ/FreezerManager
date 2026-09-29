@@ -245,6 +245,7 @@ namespace fmgr::test {
       // Overwrite a sample's stored PHI envelope straight through storage, so a
       // test can plant the state the read path already treats as broken: an
       // envelope whose wrapped DEK names a KEK this server does not hold.
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       void put_stored_phi_envelope(const std::string& sample_id, const std::string& envelope) {
         auto txn = backend_->begin(storage::IsolationLevel::Serializable);
         const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(sample_id));
