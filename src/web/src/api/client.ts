@@ -59,6 +59,18 @@ export function readCookie(name: string): string | null {
       try {
         return decodeURIComponent(raw);
       } catch {
+        // Returning `null` — not `raw` — is deliberate; do not "fix" this to
+        // forward the undecoded value.
+        //
+        // The gateway sets `fmgr_csrf` as 32 bytes of base64url, an alphabet
+        // with no `%`, so decoding is a no-op for every value it can produce
+        // and this branch is unreachable in normal operation. It is reachable
+        // for a cookie someone else planted. Sending the raw value would
+        // forward exactly the string the gateway compares against, so a
+        // planted `fmgr_csrf=100%` would satisfy the double-submit check and
+        // the CSRF gate would pass on an attacker-chosen token. Sending no
+        // header instead means no ambient credential is used and the request
+        // is rejected with a 403. Failing closed is strictly safer.
         return null;
       }
     }
