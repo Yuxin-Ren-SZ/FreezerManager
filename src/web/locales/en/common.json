@@ -4,5 +4,32 @@
       "title": "Web UI scaffold",
       "body": "The SPA toolchain is wired up: Vite, React, TypeScript (strict), React Router, TanStack Query, TanStack Table, react-i18next, CSS Modules and Vitest. Feature screens land in src/features/<name>/ from G1.2 on."
     }
+  },
+  "errors": {
+    "UNKNOWN": "Something went wrong. Try again, and include the request id if it keeps happening.",
+    "CANCELLED": "The request was cancelled.",
+    "INVALID_ARGUMENT": "The server rejected that input. Check the values and try again.",
+    "DEADLINE_EXCEEDED": "The server took too long to answer. Try again.",
+    "NOT_FOUND": "That item no longer exists. It may have been deleted by someone else.",
+    "ALREADY_EXISTS": "That already exists. Reload the page to see the current state.",
+    "PERMISSION_DENIED": "You do not have permission to do that.",
+    "RESOURCE_EXHAUSTED": "The server is busy. Wait a moment and try again.",
+    "FAILED_PRECONDITION": "That action is not allowed in the current state. Reload the page and try again.",
+    "ABORTED": "That change conflicted with someone else’s. Reload the page and try again.",
+    "OUT_OF_RANGE": "That value is outside the range the server accepts.",
+    "UNIMPLEMENTED": "This server version does not support that yet.",
+    "INTERNAL": "The server hit an internal error. If it keeps happening, report the request id.",
+    "UNAVAILABLE": "The server could not be reached. Check your connection; the page will keep trying.",
+    "UNAUTHENTICATED": "Your session has expired. Sign in again."
+  },
+  "enums": {
+    "SampleStatus": {
+      "SAMPLE_STATUS_UNSPECIFIED": "Unknown",
+      "SAMPLE_STATUS_ACTIVE": "Active",
+      "SAMPLE_STATUS_CHECKED_OUT": "Checked out",
+      "SAMPLE_STATUS_DEPLETED": "Depleted",
+      "SAMPLE_STATUS_DESTROYED": "Destroyed",
+      "SAMPLE_STATUS_TOMBSTONED": "Deleted"
+    }
   }
 }
