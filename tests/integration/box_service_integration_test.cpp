@@ -45,14 +45,21 @@ namespace fmgr::test {
              ("fmgr-box-test-" + std::to_string(counter.fetch_add(1)) + ".db");
     }
 
-    // Three principals across two labs:
+    // Four principals across two labs:
     //   - admin   : SystemAdmin in lab1 (holds FreezerConfigure/BoxConfigure/SampleRead)
     //   - member  : Member in lab1 (holds SampleRead but NOT Freezer/BoxConfigure)
+    //   - readonly: ReadOnly in lab1 (holds SampleRead + AuditRead only)
     //   - outsider: SystemAdmin in lab2 only (holds nothing for lab1)
     //
-    // Freezer/Box-config RPCs use `member` as the negative principal; the
-    // SampleRead-gated read RPCs (ListBoxes/GetBox) use `outsider`, which also
-    // exercises cross-lab isolation.
+    // Mutating Freezer/Box-config RPCs use `member` as the negative principal;
+    // the SampleRead-gated read RPCs (ListBoxes/GetBox) use `outsider`, which
+    // also exercises cross-lab isolation.
+    //
+    // The layout read RPCs (ListFreezers/ListStorageContainers/ListBoxTypes) are
+    // gated on SampleRead so a Member can interpret a sample's location (#54);
+    // `readonly` asserts that this reaches the read-only role too, and
+    // `ListContainerTypesStillRejectsMember` pins the boundary deliberately NOT
+    // relaxed.
     class BoxServiceTest : public ::testing::Test {
     protected:
       void SetUp() override {
@@ -179,6 +186,7 @@ namespace fmgr::test {
 
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kMemberEmail{"member@example.com"};
+      const std::string kReadOnlyEmail{"readonly@example.com"};
       const std::string kOutsiderEmail{"outsider@example.com"};
       const std::string kPassword{"hunter22"};
       const std::string kLab1{"20000000-0000-0000-0000-000000000001"};
@@ -221,6 +229,8 @@ namespace fmgr::test {
         const core::LabId lab2 = core::LabId::parse(kLab2);
         const core::UserId admin_id = core::UserId::parse("10000000-0000-0000-0000-000000000001");
         const core::UserId member_id = core::UserId::parse("10000000-0000-0000-0000-000000000002");
+        const core::UserId readonly_id =
+            core::UserId::parse("10000000-0000-0000-0000-000000000004");
         const core::UserId outsider_id =
             core::UserId::parse("10000000-0000-0000-0000-000000000003");
 
@@ -265,11 +275,14 @@ namespace fmgr::test {
         txn->repo<core::Lab>().insert(make_lab(lab2, "Lab Two"), ctx);
         txn->repo<core::User>().insert(make_user(admin_id, kAdminEmail), ctx);
         txn->repo<core::User>().insert(make_user(member_id, kMemberEmail), ctx);
+        txn->repo<core::User>().insert(make_user(readonly_id, kReadOnlyEmail), ctx);
         txn->repo<core::User>().insert(make_user(outsider_id, kOutsiderEmail), ctx);
         txn->repo<core::LabMembership>().insert(
             make_membership(admin_id, lab1, core::RoleKind::SystemAdmin), ctx);
         txn->repo<core::LabMembership>().insert(
             make_membership(member_id, lab1, core::RoleKind::Member), ctx);
+        txn->repo<core::LabMembership>().insert(
+            make_membership(readonly_id, lab1, core::RoleKind::ReadOnly), ctx);
         txn->repo<core::LabMembership>().insert(
             make_membership(outsider_id, lab2, core::RoleKind::SystemAdmin), ctx);
         txn->commit();
@@ -390,16 +403,53 @@ namespace fmgr::test {
       EXPECT_GE(resp.freezers_size(), 1);
     }
 
-    TEST_F(BoxServiceTest, ListFreezersRejectsMember) {
-      const auto token = login(kMemberEmail, kPassword);
+    // #54: the layout read RPCs are gated on sample.read, the permission the
+    // REST route and the SPA `layout` route already declare, so a Member can
+    // interpret a sample's location. This member holds no configure permission.
+    TEST_F(BoxServiceTest, ListFreezersAllowsMember) {
+      const auto admin = login(kAdminEmail, kPassword);
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, admin);
+        fmgr::v1::CreateFreezerRequest req;
+        req.set_lab_id(kLab1);
+        req.set_name("ULT-80");
+        fmgr::v1::CreateFreezerResponse resp;
+        ASSERT_TRUE(box_stub_->CreateFreezer(&ctx, req, &resp).ok());
+      }
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
       grpc::ClientContext ctx;
-      set_bearer(ctx, token);
+      set_bearer(ctx, member);
       fmgr::v1::ListFreezersRequest req;
       req.set_lab_id(kLab1);
       fmgr::v1::ListFreezersResponse resp;
       const auto status = box_stub_->ListFreezers(&ctx, req, &resp);
-      EXPECT_FALSE(status.ok());
-      EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_GE(resp.freezers_size(), 1);
+    }
+
+    TEST_F(BoxServiceTest, ListFreezersAllowsReadOnly) {
+      const auto admin = login(kAdminEmail, kPassword);
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, admin);
+        fmgr::v1::CreateFreezerRequest req;
+        req.set_lab_id(kLab1);
+        req.set_name("ULT-80");
+        fmgr::v1::CreateFreezerResponse resp;
+        ASSERT_TRUE(box_stub_->CreateFreezer(&ctx, req, &resp).ok());
+      }
+      const auto readonly_user = login(kReadOnlyEmail, kPassword);
+      ASSERT_FALSE(readonly_user.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, readonly_user);
+      fmgr::v1::ListFreezersRequest req;
+      req.set_lab_id(kLab1);
+      fmgr::v1::ListFreezersResponse resp;
+      const auto status = box_stub_->ListFreezers(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_GE(resp.freezers_size(), 1);
     }
 
     TEST_F(BoxServiceTest, UpdateFreezerChangesNameForAdmin) {
@@ -550,16 +600,34 @@ namespace fmgr::test {
       EXPECT_GE(resp.containers_size(), 1);
     }
 
-    TEST_F(BoxServiceTest, ListStorageContainersRejectsMember) {
-      const auto token = login(kMemberEmail, kPassword);
+    TEST_F(BoxServiceTest, ListStorageContainersAllowsMember) {
+      const auto admin = login(kAdminEmail, kPassword);
+      create_container(admin, kLab1, "Rack A");
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
       grpc::ClientContext ctx;
-      set_bearer(ctx, token);
+      set_bearer(ctx, member);
       fmgr::v1::ListStorageContainersRequest req;
       req.set_lab_id(kLab1);
       fmgr::v1::ListStorageContainersResponse resp;
       const auto status = box_stub_->ListStorageContainers(&ctx, req, &resp);
-      EXPECT_FALSE(status.ok());
-      EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_GE(resp.containers_size(), 1);
+    }
+
+    TEST_F(BoxServiceTest, ListStorageContainersAllowsReadOnly) {
+      const auto admin = login(kAdminEmail, kPassword);
+      create_container(admin, kLab1, "Rack A");
+      const auto readonly_user = login(kReadOnlyEmail, kPassword);
+      ASSERT_FALSE(readonly_user.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, readonly_user);
+      fmgr::v1::ListStorageContainersRequest req;
+      req.set_lab_id(kLab1);
+      fmgr::v1::ListStorageContainersResponse resp;
+      const auto status = box_stub_->ListStorageContainers(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_GE(resp.containers_size(), 1);
     }
 
     TEST_F(BoxServiceTest, UpdateStorageContainerChangesNameForAdmin) {
@@ -764,16 +832,89 @@ namespace fmgr::test {
       EXPECT_GE(resp.box_types_size(), 1);
     }
 
-    TEST_F(BoxServiceTest, ListBoxTypesRejectsMember) {
-      const auto token = login(kMemberEmail, kPassword);
+    TEST_F(BoxServiceTest, ListBoxTypesAllowsMember) {
+      const auto admin = login(kAdminEmail, kPassword);
+      create_box_type(admin, kLab1);
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
       grpc::ClientContext ctx;
-      set_bearer(ctx, token);
+      set_bearer(ctx, member);
       fmgr::v1::ListBoxTypesRequest req;
       req.set_lab_id(kLab1);
       fmgr::v1::ListBoxTypesResponse resp;
       const auto status = box_stub_->ListBoxTypes(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_GE(resp.box_types_size(), 1);
+    }
+
+    TEST_F(BoxServiceTest, ListBoxTypesAllowsReadOnly) {
+      const auto admin = login(kAdminEmail, kPassword);
+      create_box_type(admin, kLab1);
+      const auto readonly_user = login(kReadOnlyEmail, kPassword);
+      ASSERT_FALSE(readonly_user.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, readonly_user);
+      fmgr::v1::ListBoxTypesRequest req;
+      req.set_lab_id(kLab1);
+      fmgr::v1::ListBoxTypesResponse resp;
+      const auto status = box_stub_->ListBoxTypes(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_GE(resp.box_types_size(), 1);
+    }
+
+    // The boundary this change deliberately does NOT move: container *type*
+    // definitions stay behind box.configure, because they are not part of the
+    // layout read set the Qt client and the SPA layout screen consume. Pinned so
+    // a later "relax all the reads" commit has to argue with a red test.
+    TEST_F(BoxServiceTest, ListContainerTypesStillRejectsMember) {
+      const auto token = login(kMemberEmail, kPassword);
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ListContainerTypesRequest req;
+      req.set_lab_id(kLab1);
+      fmgr::v1::ListContainerTypesResponse resp;
+      const auto status = box_stub_->ListContainerTypes(&ctx, req, &resp);
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    // The acceptance criterion that a positive-only test would miss: relaxing
+    // the reads must not relax the writes. A Member reads the layout and is then
+    // still refused when archiving a freezer.
+    TEST_F(BoxServiceTest, MemberCanReadLayoutButStillCannotArchiveFreezer) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string freezer_id;
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, admin);
+        fmgr::v1::CreateFreezerRequest req;
+        req.set_lab_id(kLab1);
+        req.set_name("ULT-80");
+        fmgr::v1::CreateFreezerResponse resp;
+        ASSERT_TRUE(box_stub_->CreateFreezer(&ctx, req, &resp).ok());
+        freezer_id = resp.freezer().id();
+      }
+
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::ListFreezersRequest req;
+        req.set_lab_id(kLab1);
+        fmgr::v1::ListFreezersResponse resp;
+        EXPECT_TRUE(box_stub_->ListFreezers(&ctx, req, &resp).ok());
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, member);
+        fmgr::v1::ArchiveFreezerRequest req;
+        req.set_freezer_id(freezer_id);
+        fmgr::v1::ArchiveFreezerResponse resp;
+        const auto status = box_stub_->ArchiveFreezer(&ctx, req, &resp);
+        EXPECT_FALSE(status.ok());
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+      }
     }
 
     // =====================================================================
