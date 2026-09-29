@@ -202,14 +202,16 @@ namespace fmgr::test {
 
       FILE* cert_file = std::fopen(out.cert_path.string().c_str(), "wb");
       const bool cert_ok = cert_file != nullptr && PEM_write_X509(cert_file, cert) == 1;
-      if (cert_file != nullptr)
+      if (cert_file != nullptr) {
         std::fclose(cert_file);
+      }
       FILE* key_file = std::fopen(out.key_path.string().c_str(), "wb");
       const bool key_ok =
           key_file != nullptr &&
           PEM_write_PrivateKey(key_file, pkey, nullptr, nullptr, 0, nullptr, nullptr) == 1;
-      if (key_file != nullptr)
+      if (key_file != nullptr) {
         std::fclose(key_file);
+      }
 
       X509_free(cert);
       EVP_PKEY_free(pkey);
@@ -221,7 +223,7 @@ namespace fmgr::test {
 
     [[nodiscard]] std::string read_file(const std::filesystem::path& path) {
       std::ifstream file(path, std::ios::binary);
-      return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+      return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
     }
 
     void write_file(const std::filesystem::path& path, const std::string& contents) {
@@ -478,7 +480,8 @@ namespace fmgr::test {
     TEST_F(GrpcTlsTest, ExpiredCertThrows) {
       // notAfter is 1 hour in the past.
       const auto expired = make_self_signed_cert(dir_ / "expired", "localhost",
-                                                 /*not_before=*/-7200, /*not_after=*/-3600);
+                                                 /*not_before_offset_sec=*/-7200,
+                                                 /*not_after_offset_sec=*/-3600);
       auto opts = tls_opts();
       opts.tls_cert_path = expired.cert_path.string();
       opts.tls_key_path = expired.key_path.string();

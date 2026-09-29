@@ -425,7 +425,7 @@ namespace fmgr::test {
 
       grpc::ClientContext ctx;
       fmgr::v1::LoginRequest req;
-      req.set_email(std::string(64 * 1024, 'a') + "@example.com");
+      req.set_email(std::string(std::size_t{64} * 1024, 'a') + "@example.com");
       req.set_password("irrelevant");
       fmgr::v1::LoginResponse resp;
       const auto status = stub->Login(&ctx, req, &resp);
