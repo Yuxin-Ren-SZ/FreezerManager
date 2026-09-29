@@ -272,6 +272,10 @@ namespace fmgr::test {
 
     using Headers = std::vector<std::pair<std::string, std::string>>;
 
+    // `path` and `json_body` are both `const std::string&` and therefore
+    // swappable in principle; the call sites below all pass a literal path and a
+    // serialized body, so the risk is a misspelled path, not a silent mix-up.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     [[nodiscard]] HttpResult post_with(const std::string& path, const std::string& json_body,
                                        const Headers& headers) {
       auto* env = RestGatewayEnv::instance;
@@ -1017,7 +1021,11 @@ namespace fmgr::test {
         ::close(fd);
         return {};
       }
-      std::string request = "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+      std::string request;
+      request.reserve(path.size() + 64);
+      request += "GET ";
+      request += path;
+      request += " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
       for (const auto& [name, value] : headers) {
         request += name + ": " + value + "\r\n";
       }
@@ -1056,6 +1064,12 @@ namespace fmgr::test {
     }
 
     // Bearer variant kept for the tests that predate the browser session.
+    //
+    // `path` and `bearer` are adjacent `const std::string&` parameters and so are
+    // swappable in principle. The call sites pass a `/api/v1/...` path and a token,
+    // and a mix-up would fail the read rather than pass it: the path is what the
+    // server routes on, and a token there never matches a route.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     [[nodiscard]] std::string sse_read_until(const std::string& path, const std::string& bearer,
                                              const std::string& needle,
                                              const std::function<void()>& trigger,

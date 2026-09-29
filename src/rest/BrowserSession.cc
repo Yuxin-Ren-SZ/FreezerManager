@@ -5,7 +5,6 @@
 #include <sodium.h>
 
 #include <array>
-#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <string>
@@ -34,10 +33,10 @@ namespace fmgr::rest {
 
       const std::size_t full_triples = len / 3;
       for (std::size_t triple = 0; triple < full_triples; ++triple) {
-        const std::size_t at = triple * 3;
-        const std::uint32_t chunk = (static_cast<std::uint32_t>(data[at]) << 16U) |
-                                    (static_cast<std::uint32_t>(data[at + 1]) << 8U) |
-                                    static_cast<std::uint32_t>(data[at + 2]);
+        const std::size_t offset = triple * 3;
+        const std::uint32_t chunk = (static_cast<std::uint32_t>(data[offset]) << 16U) |
+                                    (static_cast<std::uint32_t>(data[offset + 1]) << 8U) |
+                                    static_cast<std::uint32_t>(data[offset + 2]);
         out.push_back(k_base64url_alphabet[(chunk >> 18U) & 0x3FU]);
         out.push_back(k_base64url_alphabet[(chunk >> 12U) & 0x3FU]);
         out.push_back(k_base64url_alphabet[(chunk >> 6U) & 0x3FU]);
@@ -125,42 +124,6 @@ namespace fmgr::rest {
     return base64url_encode(buffer.data(), buffer.size());
   }
 
-  std::unordered_map<std::string, std::string> parse_cookie_header(std::string_view header) {
-    std::unordered_map<std::string, std::string> jar;
-
-    std::size_t pos = 0;
-    while (pos <= header.size()) {
-      const auto separator = header.find(';', pos);
-      std::string_view pair = header.substr(
-          pos, separator == std::string_view::npos ? std::string_view::npos : separator - pos);
-      const auto equals = pair.find('=');
-      if (equals != std::string_view::npos) {
-        std::string_view name = pair.substr(0, equals);
-        std::string_view value = pair.substr(equals + 1);
-        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front())) != 0) {
-          name.remove_prefix(1);
-        }
-        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back())) != 0) {
-          name.remove_suffix(1);
-        }
-        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front())) != 0) {
-          value.remove_prefix(1);
-        }
-        while (!value.empty() && std::isspace(static_cast<unsigned char>(value.back())) != 0) {
-          value.remove_suffix(1);
-        }
-        if (!name.empty()) {
-          jar[std::string(name)] = std::string(value);
-        }
-      }
-      if (separator == std::string_view::npos) {
-        break;
-      }
-      pos = separator + 1;
-    }
-    return jar;
-  }
-
   drogon::Cookie session_cookie(std::string token, const BrowserSessionConfig& config) {
     drogon::Cookie cookie{std::string(k_session_cookie_name), std::move(token)};
     cookie.setPath(std::string(k_session_cookie_path));
@@ -199,6 +162,15 @@ namespace fmgr::rest {
     BrowserRequest out;
     out.method = std::string(drogon::to_string_view(req.method()));
     out.authorization = req.getHeader("authorization");
+    // Cookie lookup is Drogon's, deliberately. This module used to carry its own
+    // `parse_cookie_header` ("later duplicates win") — dead code, since nothing
+    // here called it, and the security review filed it as exactly that. Reading
+    // the two cookies by name is also the safer default: a duplicate `fmgr_csrf`
+    // cannot help an attacker, because the double-submit check compares the
+    // header against whichever value the *browser* would have sent, and the
+    // `Origin` check above runs first and independently of any cookie. If a
+    // future change needs control over duplicate-cookie resolution, bring the
+    // parser back together with the caller that depends on it.
     out.session_cookie = req.getCookie(std::string(k_session_cookie_name));
     out.csrf_cookie = req.getCookie(std::string(k_csrf_cookie_name));
     out.csrf_header = req.getHeader(std::string(k_csrf_header_name));

@@ -34,7 +34,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 
 namespace fmgr::rest {
 
@@ -78,11 +77,6 @@ namespace fmgr::rest {
   // 32 random bytes, base64url, unpadded (43 characters). URL- and cookie-safe by
   // construction, which is what lets the SPA echo it in a header unencoded.
   [[nodiscard]] std::string generate_csrf_token();
-
-  // Parse a `Cookie:` header value into name -> value. Later duplicates win, the
-  // same way a browser's jar would resolve them.
-  [[nodiscard]] std::unordered_map<std::string, std::string>
-  parse_cookie_header(std::string_view header);
 
   // `fmgr_session=<token>; HttpOnly; Secure; SameSite=Strict; Path=/api`, and no
   // `Max-Age`: server-side idle and absolute expiry are the real limits, so the

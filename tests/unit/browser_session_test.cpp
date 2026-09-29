@@ -148,35 +148,6 @@ namespace fmgr::rest {
       EXPECT_NE(generate_csrf_token(), generate_csrf_token());
     }
 
-    // ---- Cookie header parsing ----
-
-    TEST_F(BrowserSessionTest, ParseCookieHeaderSplitsOnSemicolonsAndTrimsWhitespace) {
-      const auto jar = parse_cookie_header("fmgr_session=abc;  fmgr_csrf=def ;other=ghi");
-
-      ASSERT_EQ(jar.size(), 3U);
-      EXPECT_EQ(jar.at("fmgr_session"), "abc");
-      EXPECT_EQ(jar.at("fmgr_csrf"), "def");
-      EXPECT_EQ(jar.at("other"), "ghi");
-    }
-
-    TEST_F(BrowserSessionTest, ParseCookieHeaderKeepsEqualsSignsInsideTheValue) {
-      const auto jar = parse_cookie_header("a=b=c");
-
-      ASSERT_EQ(jar.size(), 1U);
-      EXPECT_EQ(jar.at("a"), "b=c");
-    }
-
-    TEST_F(BrowserSessionTest, ParseCookieHeaderIgnoresEmptyAndValuelessParts) {
-      const auto jar = parse_cookie_header(";  ; fmgr_session=abc; =orphan;");
-
-      ASSERT_EQ(jar.size(), 1U);
-      EXPECT_EQ(jar.at("fmgr_session"), "abc");
-    }
-
-    TEST_F(BrowserSessionTest, ParseCookieHeaderOfEmptyStringIsEmpty) {
-      EXPECT_TRUE(parse_cookie_header("").empty());
-    }
-
     // ---- Bearer resolution: Authorization header wins over the cookie ----
 
     TEST_F(BrowserSessionTest, AuthorizationHeaderWinsOverTheSessionCookie) {
