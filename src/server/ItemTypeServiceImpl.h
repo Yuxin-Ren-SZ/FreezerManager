@@ -12,10 +12,15 @@
 namespace fmgr::server {
 
   // ItemTypeService — the lab's item-type taxonomy and custom-field catalog.
-  // The two resources are gated by distinct lab-scoped permissions: ItemType by
-  // ItemTypeDefine, CustomFieldDefinition by CustomFieldDefine (neither is global —
-  // see core::is_global_only_permission), so each gate resolves against the
-  // request's lab.
+  //
+  // Read/write split (#69): the catalog *reads* (ListItemTypes, GetItemType,
+  // ListCustomFieldDefinitions) are gated on SampleRead, because a generated
+  // sample form and the sample detail screen are built from them and a Member
+  // holds sample.read but neither define permission. The *writes* keep the
+  // resource permission: ItemType by ItemTypeDefine, CustomFieldDefinition by
+  // CustomFieldDefine. Every permission is lab-scoped (neither define permission
+  // is global — see core::is_global_only_permission), so each gate resolves
+  // against the owning lab.
   //
   // RPCs whose request carries the lab id directly (List*/Create*/Update*) gate
   // up-front via AuthMiddleware::authorize. RPCs that carry only an entity id
