@@ -26,6 +26,12 @@ eager, every feature screen is fetched when its route is first rendered, and
 - `src/ui/index.ts` — `Table`, `TableColumn`, `TableFeatures` and `TableProps`
   are no longer re-exported, with the measurement in the comment so nobody adds
   the line back by accident.
+- `src/ui/Table.tsx` — `onEndReached`'s docstring now states the boundary the
+  #58 review derived (the lead's F1, folded in here): a transition-only trigger
+  is enough only while `endReachedThreshold` stays below the caller's page size,
+  and a caller must not set a threshold at or above it, or a full page leaves
+  `atEnd` true and the list stops loading silently. Docstring only — no
+  behaviour change, and it stayed one paragraph rather than growing the task.
 - `src/features/samples/SampleBrowserScreen.tsx`, `sampleColumns.tsx` — import
   `Table` / `TableColumn` from `../../ui/Table`.
 - `scripts/check-bundle-size.mjs` — two guards beyond the budget (below).
@@ -111,11 +117,12 @@ NODE_ENV=production npm run check # exit 0 — 408 tests in 28 files, 1 pre-exis
 
 ## Known limits and follow-ups
 
-- **Ordering: this branch needs #58 (G3.2) merged first.** The barrel change is
-  what makes `SampleBrowserScreen.tsx` and `sampleColumns.tsx` import
-  `../../ui/Table`; that edit and PR #58 cannot land in either order without the
-  other. Measured on `a1c048f` + this change, then rebased on `origin/main` once
-  G3.2 landed.
+- **Ordering: #58 (G3.2) had to merge first, and did** (`8ef6b69`). The barrel
+  change is what makes `SampleBrowserScreen.tsx` and `sampleColumns.tsx` import
+  `../../ui/Table`, so the two PRs could not land in the other order: #64 first
+  would have broken #58's imports the moment it landed. Every number above was
+  measured on `a1c048f` + this change, then re-measured after the rebase onto
+  `origin/main` at `8ef6b69`, where the tree is byte-identical to `a1c048f`.
 - **Guard 3 only knows the two TanStack packages.** A third heavy kit piece would
   need its own marker, and the markers are string literals inside those packages
   (the `fnName` of the core row-model feature, the virtualizer's option names),
@@ -127,6 +134,12 @@ NODE_ENV=production npm run check # exit 0 — 408 tests in 28 files, 1 pre-exis
   imports every `locales/en/*.json` eagerly, 2.5 KiB gzipped in total). Not worth
   splitting at this size, and doing it would need `addResourceBundle` before
   render; recorded here so a future task measures before deciding.
+- **Recorded, not acted on: the lead's F2 from the #58 review.** Now that
+  `src/test/setup.ts` installs `FakeEventSource` globally, the real constructor
+  path is untestable by construction, so a future test asserting that **no** SSE
+  subscription happened must assert on `FakeEventSource.all()` rather than on the
+  absence of a global — otherwise it passes for the wrong reason. Out of scope
+  here; it needs the test that does not exist yet.
 - **`doc/dev/web.md:99` still says "257 tests in 15 files"** for `npm run test`
   (it is 408 in 28). Stale before this task; left alone to keep the PR to one
   issue.

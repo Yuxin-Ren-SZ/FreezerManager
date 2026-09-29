@@ -49,6 +49,19 @@ export interface TableProps<TData extends RowData> {
    * It says nothing about whether more rows exist — that is the caller's
    * `hasNextPage` — so guard the fetch with both that and "not already
    * fetching".
+   *
+   * **A transition-only trigger is enough only while `endReachedThreshold`
+   * stays below the caller's page size.** `atEnd` is
+   * `lastWindowedIndex >= data.length - 1 - endReachedThreshold`, and
+   * `lastWindowedIndex` is at most `data.length - 1`; so appending `P` rows can
+   * leave `atEnd` true — no new edge, no next page — only when
+   * `endReachedThreshold >= P`. Below that, every append produces a fresh
+   * false→true edge and the list keeps loading. A caller must therefore not set
+   * a threshold at or above its page size: with the default of 5 and the sample
+   * browser's 100-row pages there is a wide margin, but a caller paging 5 at a
+   * time would stop loading **silently** on a full page. (A *short* page is
+   * harmless either way: the server sends no next `page_token`, so
+   * `hasNextPage` is false and the caller's own guard is what stops it.)
    */
   onEndReached?: () => void;
   /** Rows from the end at which `onEndReached` fires. */
