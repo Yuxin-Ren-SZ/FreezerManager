@@ -5,7 +5,7 @@ import { create } from '@bufbuild/protobuf';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { BoxTypeSchema, type BoxType } from '../../gen/fmgr/v1/box_pb';
+import { BoxPositionSchema, BoxTypeSchema, type BoxType } from '../../gen/fmgr/v1/box_pb';
 import { SampleSchema, SampleStatus, type Sample } from '../../gen/fmgr/v1/sample_pb';
 import {
   buildBoxGrid,
@@ -223,11 +223,39 @@ describe('buildBoxGrid — occupancy', () => {
  *
  * The mixed Eppendorf template is 3×5 with holes at (2,3) and (2,4), so it is
  * the template where all three wrong answers differ from the right one.
+ *
+ * **The shipped files cannot pin `col + 1` on their own**, though: both mixed
+ * holes sit at the *end* of their row, and a rectangle step that lands on one
+ * of them and gives up returns the same `null` the right rule does. The fixture
+ * below puts a hole in the middle of a row, where "the next cell to the right"
+ * and "one column further along" finally disagree.
  */
 
 /** The shipped mixed template — 13 positions, two holes — as a grid. */
 function mixedGrid(): BoxGrid {
   return buildBoxGrid(seedTemplate('mixed_eppendorf.json'), []);
+}
+
+/**
+ * A 2×3 rectangle with the middle column declared by nothing:
+ *
+ * ```
+ * A1 ·  A3
+ * B1 ·  B3
+ * ```
+ */
+function holedBoxType(): BoxType {
+  return create(BoxTypeSchema, {
+    id: 'bt-holed',
+    labId: LAB_ID,
+    name: 'Rack with a missing middle column',
+    positions: [
+      create(BoxPositionSchema, { label: 'A1', row: 0, col: 0 }),
+      create(BoxPositionSchema, { label: 'A3', row: 0, col: 2 }),
+      create(BoxPositionSchema, { label: 'B1', row: 1, col: 0 }),
+      create(BoxPositionSchema, { label: 'B3', row: 1, col: 2 }),
+    ],
+  });
 }
 
 /** The cell at a declared coordinate, or a thrown error naming it. */
@@ -291,6 +319,24 @@ describe('cellInDirection — stepping over the declared positions', () => {
     const after = grid.positions.at(grid.positions.indexOf(a5.position) + 1);
     expect(after?.label).toBe('B1');
     expect(cellInDirection(grid, a5, 'right')).toBeNull();
+  });
+
+  it('steps to the next declared position when a hole sits inside the row', () => {
+    const grid = buildBoxGrid(holedBoxType(), []);
+
+    // Column 1 is declared by no position, so "one column further along" from
+    // A1 is the hole (0,1) — and the next cell to the right is A3.
+    expect(grid.cols).toEqual([0, 2]);
+    expect(grid.cells.filter((cell) => cell !== null)).toHaveLength(4);
+
+    expect(label(cellInDirection(grid, need(grid, 0, 0), 'right'))).toBe('A3');
+    expect(label(cellInDirection(grid, need(grid, 0, 2), 'left'))).toBe('A1');
+    expect(label(cellInDirection(grid, need(grid, 0, 0), 'down'))).toBe('B1');
+    expect(label(cellInDirection(grid, need(grid, 1, 2), 'up'))).toBe('A3');
+    // The row's ends are its declared ends, on both sides of the hole.
+    expect(label(cellAtRowEdge(grid, need(grid, 0, 2), 'start'))).toBe('A1');
+    expect(label(cellAtRowEdge(grid, need(grid, 0, 0), 'end'))).toBe('A3');
+    expect(label(gridEdgeCell(grid, 'end'))).toBe('B3');
   });
 
   it('never lands on a hole, and always on the nearest position in that direction', () => {
