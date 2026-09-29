@@ -1788,6 +1788,77 @@ namespace fmgr::test {
       EXPECT_EQ(checked_in.volume_unit, core::VolumeUnit::Microliter);
     }
 
+    TEST_F(SampleServiceTest, CheckoutSampleRejectsNegativeVolumeUsedAndLeavesStockUntouched) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "vial", .volume_ul = 100}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      fmgr::v1::Sample resp;
+      const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                          /*volume_used=*/-40.0, std::string("µL"), &resp);
+
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_EQ(resp.id(), "");
+      // The stored volume is the assertion that matters: -40 µL used to pass the
+      // arithmetic as `remaining = 100 - (-40)` and leave the vial holding 140 µL,
+      // so a status-only test cannot tell "refused" from "silently applied".
+      fmgr::v1::Sample stored;
+      ASSERT_TRUE(get_sample(token, id, &stored).ok());
+      EXPECT_DOUBLE_EQ(stored.volume_value(), 100);
+      EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+      // No check-in event either: nothing happened, so nothing is in the chain of
+      // custody beyond the check-out.
+      const auto events = stored_checkout_events(id);
+      ASSERT_EQ(events.size(), 1U);
+      EXPECT_EQ(events[0].action, core::CheckoutAction::CheckedOut);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleRefusesANegativeVolumeBelowTheUnitGranularity) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "vial", .volume_ul = 100}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      fmgr::v1::Sample resp;
+      const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                          /*volume_used=*/-0.5, std::string("µL"), &resp);
+
+      // -0.5 truncates to raw 0 on the way into `core::Volume`, so a check on the
+      // constructed volume alone would accept this as a no-op. Sign is a property
+      // of the request, so it is read off the wire value: still negative, still
+      // refused (#112).
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      fmgr::v1::Sample stored;
+      ASSERT_TRUE(get_sample(token, id, &stored).ok());
+      EXPECT_DOUBLE_EQ(stored.volume_value(), 100);
+      EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+      EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleAcceptsExplicitZeroVolumeAsARecordedNoOp) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "vial", .volume_ul = 100}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      fmgr::v1::Sample resp;
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                  /*volume_used=*/0.0, std::string("µL"), &resp)
+                      .ok());
+      EXPECT_DOUBLE_EQ(resp.volume_value(), 100);
+
+      // Zero is a legal consumption — "checked in, nothing used" — and it is
+      // distinguishable from "no volume supplied at all": the event carries a
+      // signed delta of 0 rather than no delta. That distinction is why the sign
+      // check refuses `< 0` and not `<= 0`.
+      const auto events = stored_checkout_events(id);
+      ASSERT_EQ(events.size(), 2U);
+      EXPECT_EQ(events[1].action, core::CheckoutAction::CheckedIn);
+      ASSERT_TRUE(events[1].volume_delta.has_value());
+      EXPECT_EQ(events[1].volume_delta, 0);
+    }
+
     TEST_F(SampleServiceTest, CheckoutDiscardDestroysSample) {
       const auto token = login(kAdminEmail, kPassword);
       std::string id;

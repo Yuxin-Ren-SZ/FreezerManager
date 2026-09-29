@@ -68,9 +68,11 @@ namespace fmgr::storage {
   struct CheckoutCommand {
     core::CheckoutAction action;
     // Quantity consumed on this transition, expressed in any volume unit; it is
-    // converted to the sample's unit before subtraction. Ignored when the sample
-    // tracks no volume. Only meaningful for CheckedIn (CheckedOut consumes
-    // nothing; Destroyed consumes whatever remains).
+    // converted to the sample's unit before subtraction. Must not be negative —
+    // a negative consumption is a different operation, and this one refuses it
+    // rather than performing the inverse (#112). Ignored when the sample tracks
+    // no volume. Only meaningful for CheckedIn (CheckedOut consumes nothing;
+    // Destroyed consumes whatever remains).
     std::optional<core::Volume> volume_used;
     std::optional<std::string> reason;
     core::CheckoutEventId event_id;
@@ -103,6 +105,15 @@ namespace fmgr::storage {
     if (sample.status == core::SampleStatus::Tombstoned ||
         sample.status == core::SampleStatus::Destroyed) {
       throw ConstraintViolation("sample is not in a checkout-eligible state");
+    }
+
+    // `volume_used` is a quantity *consumed*, so it cannot be negative: the
+    // subtraction in the CheckedIn arm below would invert and add to the vial
+    // while the event recorded a positive `volume_delta` (#112). Asserted here
+    // rather than only at the RPC boundary because this is the operation that
+    // does the arithmetic — a caller reaching it any other way is refused too.
+    if (command.volume_used.has_value() && command.volume_used->raw_value() < 0) {
+      throw ConstraintViolation("volume_used: must not be negative");
     }
 
     // volume_delta records the signed quantity change (negative = consumed), in

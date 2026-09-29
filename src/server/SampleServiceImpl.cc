@@ -145,6 +145,47 @@ namespace fmgr::server {
       }
     }
 
+    // The optional (volume_used, volume_unit) pair of a checkout request.
+    //
+    // Volume and unit travel together, as they do in the CSV importer
+    // (`SampleImport.cc`): a `core::Volume` has no unitless state, so half a pair
+    // is a malformed request rather than a value to drop. The previous
+    // `has_volume_used() && has_volume_unit()` answered a lone `volume_used`
+    // with `std::nullopt`, which is how the web check-in could lose a typed
+    // volume while the screen still reported success (#100).
+    //
+    // The wire type is a `double` and the domain type is an integer count of a
+    // unit, so this is also where a value that means nothing to the operation is
+    // refused instead of coerced into one: `volume_used` is a *consumption*, and
+    // a negative one is not a smaller consumption but the inverse operation —
+    // left alone it flips the subtraction in `storage::apply_checkout` and adds
+    // stock (#112). The sign is checked on the raw `double` because the cast
+    // below truncates toward zero, so `-0.5` would otherwise reach storage as a
+    // well-formed `0` and be accepted as a no-op.
+    [[nodiscard]] std::optional<core::Volume>
+    parse_volume_used(const fmgr::v1::CheckoutSampleRequest& req) {
+      if (req.has_volume_used() != req.has_volume_unit()) {
+        throw storage::ConstraintViolation(
+            "volume_used and volume_unit must both be set or both empty");
+      }
+      if (!req.has_volume_used()) {
+        return std::nullopt;
+      }
+      if (req.volume_used() < 0) {
+        throw storage::ConstraintViolation("volume_used: must not be negative");
+      }
+      try {
+        return core::Volume::from_raw(static_cast<std::int64_t>(req.volume_used()),
+                                      core::parse_volume_unit(req.volume_unit()));
+      } catch (const std::exception&) {
+        // A unit this build does not know is the caller's error. Without this
+        // the parser's std::invalid_argument reached the generic handler and
+        // surfaced as INTERNAL.
+        throw storage::ConstraintViolation("volume_unit: unknown unit: '" + req.volume_unit() +
+                                           "'");
+      }
+    }
+
     // ---- Marshalling: core entity -> protobuf message ----
 
     void fill_sample(fmgr::v1::Sample* out, const core::Sample& sample) {
@@ -811,29 +852,9 @@ namespace fmgr::server {
         throw auth::PermissionDenied("sample.checkout required for this lab");
       }
 
-      // Volume and unit travel together, as they do in the CSV importer
-      // (`SampleImport.cc`): a `core::Volume` has no unitless state, so half a
-      // pair is a malformed request rather than a value to drop. The previous
-      // `has_volume_used() && has_volume_unit()` answered a lone `volume_used`
-      // with `std::nullopt`, which is how the web check-in could lose a typed
-      // volume while the screen still reported success (#100).
-      if (req->has_volume_used() != req->has_volume_unit()) {
-        return {grpc::StatusCode::INVALID_ARGUMENT,
-                "volume_used and volume_unit must both be set or both empty"};
-      }
-      std::optional<core::Volume> volume_used;
-      if (req->has_volume_used()) {
-        try {
-          volume_used = core::Volume::from_raw(static_cast<std::int64_t>(req->volume_used()),
-                                               core::parse_volume_unit(req->volume_unit()));
-        } catch (const std::exception&) {
-          // A unit this build does not know is the caller's error. Without this
-          // the parser's std::invalid_argument reached the generic handler and
-          // surfaced as INTERNAL.
-          return {grpc::StatusCode::INVALID_ARGUMENT,
-                  "volume_unit: unknown unit: '" + req->volume_unit() + "'"};
-        }
-      }
+      // Volume and unit are validated as a pair, and a negative consumption is
+      // refused there rather than applied in reverse (#100, #112).
+      const auto volume_used = parse_volume_used(*req);
 
       storage::CheckoutCommand command{
           .action = from_proto_action(req->action()),
