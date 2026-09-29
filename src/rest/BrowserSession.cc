@@ -200,6 +200,16 @@ namespace fmgr::rest {
       return std::nullopt;
     }
 
+    // A *missing* `Origin` is deliberately allowed. `/auth/browser/login` is
+    // unauthenticated, so there is no `fmgr_session` cookie to double-submit and
+    // no bearer token to skip on: this check is that route's only defence. What
+    // it relies on: every current browser sends `Origin` on a cross-site POST (a
+    // form post from another site carries no cookies at all under
+    // `SameSite=Strict`, which is why this runs before the cookie check), while
+    // non-browser callers — curl, the CLI, a script — send none and are not what
+    // CSRF defends against. Refusing an absent `Origin` would break those callers
+    // without stopping a browser, which cannot omit it here. `Origin: null` is
+    // *present*, matches neither branch below, and is refused.
     if (!req.origin.empty()) {
       const std::string authority = origin_authority(req.origin);
       const bool host_matches = !req.host.empty() && authority == lowercase(req.host);

@@ -87,7 +87,11 @@ namespace fmgr::test {
 
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kMemberEmail{"member@example.com"};
+      const std::string kMfaEmail{"mfa@example.com"};
       const std::string kPassword{"hunter22"};
+      // RFC 6238's test secret: enrolling it is what makes a session start with
+      // `mfa_required=true` (#62).
+      static constexpr std::string_view kTotpSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
       const std::string kLabId{"20000000-0000-0000-0000-000000000001"};
 
       [[nodiscard]] std::string base_url() const {
@@ -196,8 +200,10 @@ namespace fmgr::test {
         const core::LabId lab_id = core::LabId::parse(kLabId);
         const core::UserId admin_id = core::UserId::parse("10000000-0000-0000-0000-000000000001");
         const core::UserId member_id = core::UserId::parse("10000000-0000-0000-0000-000000000002");
+        const core::UserId mfa_id = core::UserId::parse("10000000-0000-0000-0000-000000000003");
 
-        const auto make_user = [&hash](const core::UserId& id, const std::string& email) {
+        const auto make_user = [&hash](const core::UserId& id, const std::string& email,
+                                       std::optional<std::string> totp = std::nullopt) {
           return core::User{
               .id = id,
               .primary_email = email,
@@ -207,6 +213,7 @@ namespace fmgr::test {
               .auth_bindings = nlohmann::json::array({
                   nlohmann::json::object({{"provider", "local"}, {"hash", hash}}),
               }),
+              .totp_secret_enc = std::move(totp),
           };
         };
         const auto make_membership = [&lab_id](const core::UserId& uid, core::RoleKind kind) {
@@ -234,9 +241,12 @@ namespace fmgr::test {
         txn->repo<core::Lab>().insert(lab, ctx);
         txn->repo<core::User>().insert(make_user(admin_id, kAdminEmail), ctx);
         txn->repo<core::User>().insert(make_user(member_id, kMemberEmail), ctx);
+        txn->repo<core::User>().insert(make_user(mfa_id, kMfaEmail, std::string(kTotpSecret)), ctx);
         txn->repo<core::LabMembership>().insert(
             make_membership(admin_id, core::RoleKind::SystemAdmin), ctx);
         txn->repo<core::LabMembership>().insert(make_membership(member_id, core::RoleKind::Member),
+                                                ctx);
+        txn->repo<core::LabMembership>().insert(make_membership(mfa_id, core::RoleKind::Member),
                                                 ctx);
         txn->commit();
       }
@@ -1003,6 +1013,51 @@ namespace fmgr::test {
       const auto after = post_with("/api/v1/lab/get", req.dump(), session.headers());
       EXPECT_EQ(after.status, 401) << after.raw;
       EXPECT_EQ(after.body.value("code", std::string{}), "UNAUTHENTICATED");
+    }
+
+    // The login route sets the cookies before the second factor is entered, so a
+    // user who abandons the TOTP prompt holds a credential. Logout is a
+    // de-escalation and must therefore work for that pending session — otherwise
+    // the cookie is unrevocable, and `SameSite=Strict` means nothing else can
+    // clear it (#62).
+    TEST(RestGatewayBrowserSession, PendingMfaLogoutRevokesTheSessionAndExpiresBothCookies) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = browser_login(env->kMfaEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+      ASSERT_TRUE(session.login.body.value("mfa_required", false)) << session.login.raw;
+      // The cookie is set even though the second factor is outstanding: that is
+      // the whole reason this test exists.
+      ASSERT_FALSE(session.session.empty());
+
+      // Every other cookie-authenticated call is still refused as pending MFA.
+      const nlohmann::json list{{"lab_id", env->kLabId}};
+      const auto gated = post_with("/api/v1/sample/list", list.dump(), session.headers());
+      ASSERT_EQ(gated.status, 401) << gated.raw;
+      EXPECT_NE(gated.body.value("message", std::string{}).find("mfa_required"), std::string::npos)
+          << gated.raw;
+
+      const auto logout = post_with("/api/v1/auth/browser/logout", "{}", session.headers());
+      ASSERT_EQ(logout.status, 200) << logout.raw;
+
+      ASSERT_EQ(logout.cookies.count("fmgr_session"), 1U);
+      const auto& session_cookie = logout.cookies.at("fmgr_session");
+      EXPECT_TRUE(session_cookie.value().empty());
+      EXPECT_EQ(session_cookie.maxAge(), std::optional<int>{0});
+      EXPECT_TRUE(session_cookie.isHttpOnly());
+
+      ASSERT_EQ(logout.cookies.count("fmgr_csrf"), 1U);
+      const auto& csrf_cookie = logout.cookies.at("fmgr_csrf");
+      EXPECT_TRUE(csrf_cookie.value().empty());
+      EXPECT_EQ(csrf_cookie.maxAge(), std::optional<int>{0});
+      EXPECT_FALSE(csrf_cookie.isHttpOnly());
+
+      // Revoked server-side and no longer pending: the same cookie is now simply
+      // invalid, not a session waiting for TOTP.
+      const auto after = post_with("/api/v1/sample/list", list.dump(), session.headers());
+      EXPECT_EQ(after.status, 401) << after.raw;
+      EXPECT_EQ(after.body.value("code", std::string{}), "UNAUTHENTICATED");
+      EXPECT_EQ(after.body.value("message", std::string{}).find("mfa_required"), std::string::npos)
+          << after.raw;
     }
 
     TEST(RestGatewayBrowserSession, SubmitMfaIsCookieAuthenticatedAndCsrfGuarded) {

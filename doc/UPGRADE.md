@@ -172,6 +172,11 @@ cookie-authenticated mutating request must echo the CSRF cookie in
 explain why. `FMGR_WEB_ORIGIN` names an additional accepted origin when it
 cannot.
 
+**A session whose second factor is still pending can call `logout` (`#62`).** The
+browser login route sets `fmgr_session` before TOTP is entered, so refusing the
+logout would leave that cookie unrevocable; every other RPC still answers
+`mfa_required` for such a session.
+
 ### `session.revoke` is deployment level (`#77`, merged 2026-09-29)
 
 `session.revoke` moved into the global-only permission set. **A lab-scoped role
