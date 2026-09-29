@@ -177,11 +177,14 @@ export function ItemTypesScreen() {
         });
         toast.show({ tone: 'success', title: t('itemTypeForm.renamed', { name: values.name }) });
       } else {
-        await admin.createItemType.mutateAsync({
+        const created = await admin.createItemType.mutateAsync({
           labId,
           parentId: values.parentId ?? undefined,
           name: values.name,
         });
+        // Open the node that was just created: it has no fields yet, and that
+        // is the next thing the admin came here to add.
+        setSelectedId(created.itemType?.id ?? null);
         toast.show({ tone: 'success', title: t('itemTypeForm.created', { name: values.name }) });
       }
       setNodeDialog(null);
@@ -194,7 +197,10 @@ export function ItemTypesScreen() {
       }
       toast.show({
         tone: 'danger',
-        title: t('itemTypeForm.createTitle'),
+        title:
+          dialog.kind === 'rename'
+            ? t('itemTypeForm.renameTitle', { name: dialog.node.name })
+            : t('itemTypeForm.createTitle'),
         description: apiErrorMessage(tCommon, error),
       });
     }

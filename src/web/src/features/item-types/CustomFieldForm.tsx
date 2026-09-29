@@ -359,8 +359,8 @@ export function CustomFieldForm({
 
         {messages.length > 0 ? (
           <ul className={styles.problems} role="alert">
-            {messages.map((message) => (
-              <li key={message}>{message}</li>
+            {messages.map((message, index) => (
+              <li key={`${String(index)}:${message}`}>{message}</li>
             ))}
           </ul>
         ) : null}

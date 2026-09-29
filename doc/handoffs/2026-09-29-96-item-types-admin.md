@@ -122,7 +122,7 @@ PR **#97**.
   unset NODE_ENV; npm run check       # exit 0 — 44 files, 691 tests passed
   ```
 
-  Both runs build the same artifact (`dist/assets/index-Das4rWzC.js`), initial
+  Both runs build the same artifact (`dist/assets/index-Cr9l3_3o.js`), initial
   JS **162.4 KiB gzipped** of the 250 KiB budget. Lint reports **0 errors** (one
   pre-existing `react-hooks/incompatible-library` warning in `src/ui/Table.tsx`).
 
