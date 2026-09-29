@@ -135,6 +135,7 @@ namespace fmgr::storage {
 
     // A sample-scoped definition with a caller-chosen label, so a test can tell
     // the two candidates of one key apart by reading back what survived.
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     [[nodiscard]] core::CustomFieldDefinition
     make_conformance_cfd(std::uint64_t id_low_bits, core::LabId lab_id,
                          std::optional<core::ItemTypeId> item_type_id, std::string key,
