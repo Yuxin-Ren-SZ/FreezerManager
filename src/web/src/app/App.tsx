@@ -10,12 +10,15 @@ import { stubSessionLoader } from './stubSession';
  * The application root: providers outside the router, so a route error still has
  * the toast host and the session it needs to explain itself.
  *
- * TODO(G1.2/G2.1): two stubs are wired here and nowhere else.
- *   - `stubSessionLoader` becomes the `auth/whoami` call.
+ * TODO(G2.1): two stubs are wired here and nowhere else, and neither is
+ * finished by the G1.2 merge — `src/api/sse.ts` and the `auth/whoami` client
+ * exist now, but nothing calls them from the shell yet.
+ *   - `stubSessionLoader` (see `stubSession.ts`) becomes the `auth/whoami`
+ *     call; the RPC itself is G0.2.
  *   - `connectionStatus` becomes the state of the SSE wrapper in
  *     `src/api/sse.ts`. It is `'offline'` rather than `'live'` today because
- *     there is no live connection yet, and an indicator that always says "Live"
- *     is worse than no indicator at all.
+ *     nothing has opened a stream, and an indicator that always says "Live" is
+ *     worse than no indicator at all.
  */
 export function App() {
   const [router] = useState(createAppRouter);

@@ -1,14 +1,62 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { render, screen, within } from '@testing-library/react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { AppErrorBoundary, ErrorBoundary } from './ErrorBoundary';
+import { AppProviders } from './providers';
+import { RouteGuard } from './guards';
 import { ALL_PERMISSIONS, type PermissionKey } from './permissions';
 import { ROUTES, type AppRoute } from './route-map';
 import type { CurrentUser, LabMembership } from './session';
 import { renderApp } from './testing';
 import appShellCss from './shell/AppShell.module.css?raw';
 import sideNavCss from './shell/SideNav.module.css?raw';
+import accountCopy from '../../locales/en/account.json';
+import auditCopy from '../../locales/en/audit.json';
+import authCopy from '../../locales/en/auth.json';
+import homeCopy from '../../locales/en/home.json';
+import csvImportCopy from '../../locales/en/import.json';
+import itemTypesCopy from '../../locales/en/itemTypes.json';
+import layoutCopy from '../../locales/en/layout.json';
+import lookupCopy from '../../locales/en/lookup.json';
+import membersCopy from '../../locales/en/members.json';
+import samplesCopy from '../../locales/en/samples.json';
+import scanCopy from '../../locales/en/scan.json';
+import sharesCopy from '../../locales/en/shares.json';
+
+/**
+ * What each route in the map must render: the title declared by the namespace
+ * that screen is supposed to own, and the TODO id that will replace it.
+ *
+ * This is an independent restatement of the mapping, not a copy of it — which
+ * is the whole point. A route wired to the wrong namespace, or to a namespace
+ * belonging to another feature task, disagrees with this table.
+ *
+ * Screens that share a namespace *and* a task (`sample-new` / `sample-detail`,
+ * both G3.3 under `samples`) are indistinguishable by design at this stage:
+ * they are the same placeholder until G3.3 splits them, and there is nothing
+ * for a test to tell apart.
+ */
+const EXPECTED_SCREEN: Record<string, { title: string; task: string }> = {
+  login: { title: authCopy.title, task: 'G2.1' },
+  'login-mfa': { title: authCopy.title, task: 'G2.1' },
+  home: { title: homeCopy.title, task: 'G4.2' },
+  lookup: { title: lookupCopy.title, task: 'G3.5' },
+  samples: { title: samplesCopy.title, task: 'G3.2' },
+  'sample-new': { title: samplesCopy.title, task: 'G3.3' },
+  'sample-detail': { title: samplesCopy.title, task: 'G3.3' },
+  layout: { title: layoutCopy.title, task: 'G3.1' },
+  box: { title: layoutCopy.title, task: 'G3.4' },
+  scan: { title: scanCopy.title, task: 'G3.6' },
+  'csv-import': { title: csvImportCopy.title, task: 'G3.7' },
+  shares: { title: sharesCopy.title, task: 'G3.13' },
+  'admin-layout': { title: layoutCopy.title, task: 'G3.8' },
+  'item-types': { title: itemTypesCopy.title, task: 'G3.9' },
+  members: { title: membersCopy.title, task: 'G3.10' },
+  audit: { title: auditCopy.title, task: 'G3.12' },
+  account: { title: accountCopy.title, task: 'G3.11' },
+};
 
 const LAB_ID = 'lab-1';
 
@@ -66,17 +114,36 @@ describe('app shell', () => {
   });
 
   it.each(ROUTES.map((route) => [route.id, route] as const))(
-    'renders the %s screen from the route map',
-    async (_id, route) => {
+    'renders the %s screen from the route map, and only that screen',
+    async (id, route) => {
+      const expected = EXPECTED_SCREEN[id];
+
       renderApp({ path: concretePath(route), user: user(ALL_PERMISSIONS) });
 
-      // Every placeholder owns exactly one level-1 heading from its own
-      // namespace. A missing route would render the 404 page instead, which has
-      // no level-1 heading.
-      expect(await screen.findByRole('heading', { level: 1 })).toBeInTheDocument();
+      // Asserting that *a* level-1 heading exists would not catch a screen
+      // wired to the wrong path: a copy-paste in the route map — `/labs/:labId/
+      // audit` rendering the samples screen — would still pass. So the heading
+      // has to be the one this route's namespace declares, and the body has to
+      // name this route's TODO id.
+      //
+      // The expected title is read from the namespace's own JSON rather than
+      // written out here, so renaming a screen is not a test failure; wiring a
+      // route to the wrong namespace is.
+      expect(
+        await screen.findByRole('heading', { level: 1, name: expected.title }),
+      ).toBeInTheDocument();
+      // The id is interpolated into the placeholder sentence, so match on
+      // containment rather than on a text node that is exactly the id.
+      expect(screen.getByText(expected.task, { exact: false })).toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'Page not found' })).not.toBeInTheDocument();
     },
   );
+
+  it('has an explicit expectation for every route in the map', () => {
+    // Adding a route without deciding what it renders is the failure this
+    // catches, rather than the test above quietly skipping it.
+    expect(Object.keys(EXPECTED_SCREEN).sort()).toEqual(ROUTES.map((route) => route.id).sort());
+  });
 
   it('renders the 404 page inside the shell for an address that is not in the map', async () => {
     renderApp({ path: '/no/such/place', user: user(ALL_PERMISSIONS) });
@@ -119,6 +186,40 @@ describe('app shell', () => {
         'You are not a member of any lab yet, so there is nothing to show at this address.',
       ),
     ).toBeInTheDocument();
+  });
+
+  it('still applies the lab check to a route that needs no permission', async () => {
+    // No route is scoped *and* permission-free today, so the ordering inside
+    // `RouteGuard` makes no difference to the real map — which is exactly why
+    // it needs a synthetic route to be tested at all. With the "no permission
+    // required" shortcut first, this screen would render against a `:labId`
+    // that nobody checked the user belongs to.
+    const scopedButOpen: AppRoute = {
+      id: 'scoped-but-open',
+      path: '/labs/:labId/open',
+      task: 'G0.0',
+      element: <p>open screen</p>,
+      permissions: null,
+      scoped: true,
+      layout: 'shell',
+      nav: null,
+    };
+
+    render(
+      <AppProviders connectionStatus="live" loadSession={() => Promise.resolve(user([], []))}>
+        <MemoryRouter initialEntries={[`/labs/${LAB_ID}/open`]}>
+          <Routes>
+            <Route
+              path="/labs/:labId/open"
+              element={<RouteGuard route={scopedButOpen}>{scopedButOpen.element}</RouteGuard>}
+            />
+          </Routes>
+        </MemoryRouter>
+      </AppProviders>,
+    );
+
+    expect(await screen.findByText(/not a member of any lab/)).toBeInTheDocument();
+    expect(screen.queryByText('open screen')).not.toBeInTheDocument();
   });
 });
 

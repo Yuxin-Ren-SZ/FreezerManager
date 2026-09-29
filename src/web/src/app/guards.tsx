@@ -68,10 +68,12 @@ export function RouteGuard({ route, children }: { route: AppRoute; children: Rea
   const params = useParams();
   const labId = params.labId ?? selectedLabId ?? null;
 
-  if (route.permissions === null) {
-    return children;
-  }
-
+  // The lab check comes *before* the "no permission required" shortcut, not
+  // after it. Today no route is both `permissions: null` and `scoped: true`, so
+  // the order makes no difference — which is exactly why it is worth fixing
+  // now: the first such route would otherwise render with no lab check at all,
+  // and a `:labId` nothing validated is how a screen ends up showing another
+  // lab's data shell.
   let membership: LabMembership | null = null;
   if (route.scoped) {
     // Signed in but a member of nothing: the screen exists and there is no lab
@@ -84,6 +86,10 @@ export function RouteGuard({ route, children }: { route: AppRoute; children: Rea
     if (membership === null) {
       return <NoAccess notAMember />;
     }
+  }
+
+  if (route.permissions === null) {
+    return children;
   }
 
   const allowed = route.permissions.some((permission) =>

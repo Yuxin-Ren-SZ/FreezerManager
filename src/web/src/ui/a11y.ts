@@ -7,12 +7,14 @@ import { axe } from 'vitest-axe';
  *
  * `vitest-axe` is used through its exported `axe` runner rather than its
  * `toHaveNoViolations` matcher on purpose: the matcher has to be registered
- * with `expect.extend` from the shared setup file, and until G1.2 (#42) lands,
- * `src/test/` belongs to another agent's task. The runner is the same axe-core
- * either way; only the failure formatting differs.
+ * with `expect.extend` from the shared setup file, and when this was written
+ * `src/test/` belonged to another agent's task. That constraint is gone now
+ * (#42 merged), so this is a tidy-up rather than a fix — the runner is the same
+ * axe-core and only the failure formatting differs.
  *
- * TODO(G1.2): when `src/test/setup.ts` is ours to edit, register the matcher
- * there and drop this file.
+ * TODO(#46): register `toHaveNoViolations` in `src/test/setup.ts` and delete
+ * this file. Tracked as its own issue because it touches the shared test setup,
+ * not because anything here is wrong.
  */
 export async function expectNoA11yViolations(container: Element): Promise<void> {
   const results = await axe(container, {

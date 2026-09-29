@@ -3,12 +3,18 @@ import type { CurrentUser } from './session';
 import { ALL_PERMISSIONS } from './permissions';
 
 /**
- * TODO(G1.2): replace with `auth/whoami`.
+ * TODO(G2.1, blocked on G0.2): replace with the `auth/whoami` call.
  *
- * G1.3 runs alongside G1.2 and TODO.md says explicitly that this task "can run
- * alongside G1.2, using a stubbed current user until G1.2's fakes land". This
- * is that stub, and it is deliberately one file with one export so that
- * deleting it is a one-line change in `App.tsx`.
+ * Two tasks, not one, and naming both matters: **G0.2** adds the
+ * `AuthService.WhoAmI` RPC and the `/api/v1/auth/whoami` route the SPA reads,
+ * and **G2.1** is what swaps this stub for that call (TODO.md §Section G:
+ * "At app load the SPA calls `auth/whoami`"). G1.2, which is what an earlier
+ * version of this comment named, has merged and shipped neither — a marker
+ * pointing at a finished task is how a stub becomes permanent.
+ *
+ * The stub exists because TODO.md allows G1.3 to run alongside the API layer
+ * "using a stubbed current user until G1.2's fakes land". It is deliberately
+ * one file with one export, so deleting it is a one-line change in `App.tsx`.
  *
  * It is a *development* stub, not a fallback: nothing here authenticates
  * anybody, and the server still rejects every call the SPA makes without a
