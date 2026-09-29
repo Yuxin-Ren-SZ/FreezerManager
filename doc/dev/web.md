@@ -139,6 +139,12 @@ CORS headers. There is no separate API host to point at.
    'PERMISSION_DENIED' } })`); every screen tests its `UNAUTHENTICATED`,
    `PERMISSION_DENIED`, conflict and network-failure branches, not just the happy
    path.
+   `fakeApi()` answers **every** route in `routes.ts`, but only the routes with a
+   resolver in `fakeApi.ts` return real data — the rest reply with the response
+   message's *defaults*. So `box/list` is an empty list, not an error: an
+   assertion like "the grid is empty" can pass for the wrong reason against a
+   route nobody has implemented yet. Assert on the specific data you seeded, or
+   add a resolver, rather than treating an empty result as proof.
 8. **Adding a dependency** needs the `lock:deps` label (it covers
    `src/web/package.json` and `package-lock.json` since G1.1) and a one-line
    justification in the PR. No CDN assets, hosted web fonts, analytics or

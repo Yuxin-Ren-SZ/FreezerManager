@@ -16,7 +16,9 @@
 //   * `routes.ts` has a path the gateway does not serve,
 //   * a route's RPC method or service does not match the C++ line,
 //   * a route key is not `<noun>/<verb>` derived from its own path,
-//   * a streaming `…/watch` handler is missing from `src/api/sse.ts`.
+//   * a streaming `…/watch` handler is missing from `src/api/sse.ts`,
+//   * a `registerHandler(...)` path is neither a feed nor on the allowlist, or a
+//     handler is registered through a variable and would be invisible here.
 //
 // It also fails when it cannot parse one of the two sides: a checker that
 // silently finds no routes would pass forever, which is the same class of bug
@@ -226,12 +228,49 @@ for (const [path, route] of web) {
 // --------------------------------------------------------------- SSE routes --
 
 // The gateway bridges the server-streaming feeds with `registerHandler` rather
-// than FMGR_ROUTE, so they need their own (much smaller) check: every path the
-// gateway streams must be one the SPA subscribes to.
+// than FMGR_ROUTE, so they need their own check. Everything that is not an
+// FMGR_ROUTE goes through `registerHandler`: the feeds, the health probes and
+// the metrics endpoint. Only the `/watch` ones are the SPA's business, so every
+// literal registration must be a feed or on the allowlist.
+const NON_STREAMING_HANDLER_PATHS = ['/api/v1/health', '/healthz', '/metrics'];
+
+// The `FMGR_ROUTE` macro body registers a handler from its `path` parameter, so
+// exactly one registration has no literal path. Nothing else may do that: a
+// feed bound through a variable or a helper would be invisible to this checker
+// while it still printed `ok`, which is the same "passes while wrong" shape as
+// the always-exit-0 `npm run gen` stub.
+const NON_LITERAL_REGISTRATIONS = 1;
+
+const handlerOccurrences = (gatewaySource.match(/registerHandler\(/g) ?? []).length;
+const handlerLiterals = [...gatewaySource.matchAll(/registerHandler\(\s*"([^"]+)"/g)].map(
+  (match) => match[1],
+);
+
 const streamed = new Set();
-for (const match of gatewaySource.matchAll(/registerHandler\(\s*"([^"]+\/watch)"/g)) {
-  streamed.add(match[1]);
+for (const path of handlerLiterals) {
+  if (path.endsWith('/watch')) {
+    streamed.add(path);
+  } else if (!NON_STREAMING_HANDLER_PATHS.includes(path)) {
+    problems.push(
+      `${gatewayPath}: registerHandler("${path}") is neither a streaming …/watch feed nor on ` +
+        `NON_STREAMING_HANDLER_PATHS in scripts/check-routes.mjs — put it on one of the two`,
+    );
+  }
 }
+
+if (handlerOccurrences - handlerLiterals.length !== NON_LITERAL_REGISTRATIONS) {
+  problems.push(
+    `${gatewayPath}: ${handlerOccurrences} registerHandler(...) calls but only ` +
+      `${handlerLiterals.length} have a literal path, so a registration through a variable is ` +
+      `invisible to this checker (expected exactly ${NON_LITERAL_REGISTRATIONS}, the FMGR_ROUTE ` +
+      `macro body)`,
+  );
+}
+
+if (streamed.size === 0) {
+  problems.push(`${gatewayPath}: no registerHandler("…/watch") feeds found at all`);
+}
+
 const subscribed = new Set(
   [...sseSource.matchAll(/path:\s*'([^']+\/watch)'/g)].map((match) => match[1]),
 );
