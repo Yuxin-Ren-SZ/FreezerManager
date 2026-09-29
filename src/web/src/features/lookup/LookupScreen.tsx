@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent, ReactNode, SyntheticEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { isApiError } from '../../api/errors';
 import { apiErrorMessage, enumLabel } from '../../api/helpers';
 import { useCheckoutSample } from '../../api/hooks';
@@ -54,6 +54,9 @@ import styles from './LookupScreen.module.css';
  *    are five different answers**, and the screen says which one it is. "No
  *    match" is not an error state, and "not in a box yet" is not "location
  *    unavailable" — G3.2's `placement.ts` draws the same three-way line.
+ *  - **`?q=` is answered, not ignored.** The shell's global lookup box
+ *    navigates here with the term in the URL (G1.3), so arriving from the top
+ *    bar looks the term up instead of opening an empty field.
  */
 
 /** Lifecycle state to badge tone, as in `sampleColumns.tsx`. */
@@ -78,6 +81,11 @@ export function LookupScreen() {
   const { t: tCommon } = useTranslation();
   const { selectedLabId } = useLabs();
   const labId = selectedLabId ?? '';
+  const [searchParams] = useSearchParams();
+
+  // The shell's global lookup box navigates to `/lookup?q=…` (G1.3), so the
+  // screen has to answer the question it was handed instead of opening empty.
+  const routedQuery = (searchParams.get('q') ?? '').trim();
 
   const inputRef = useRef<HTMLInputElement>(null);
   const fieldId = useId();
@@ -86,12 +94,35 @@ export function LookupScreen() {
   const cardHeadingId = useId();
 
   /** The term that was submitted — what the query and the copy refer to. */
-  const [term, setTerm] = useState('');
+  const [term, setTerm] = useState(routedQuery);
   /** What is in the field right now, so a half-typed term hides the last answer. */
-  const [typed, setTyped] = useState('');
+  const [typed, setTyped] = useState(routedQuery);
   const [activeIndex, setActiveIndex] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<unknown>(null);
+
+  // A *second* trip through the top bar changes `?q=` without remounting this
+  // screen. Adjusting the state during render is React's own answer to "a prop
+  // changed": an effect would paint the previous query's answer first.
+  const [answeredQuery, setAnsweredQuery] = useState(routedQuery);
+  if (routedQuery !== answeredQuery) {
+    setAnsweredQuery(routedQuery);
+    if (routedQuery !== '') {
+      setTerm(routedQuery);
+      setTyped(routedQuery);
+      setActiveIndex(0);
+      setSelectedId(null);
+    }
+  }
+
+  // The field is uncontrolled — its value is the scanner's, not React's — so a
+  // new routed query has to be written into the DOM element itself.
+  useEffect(() => {
+    if (routedQuery === '' || inputRef.current === null) {
+      return;
+    }
+    inputRef.current.value = routedQuery;
+  }, [routedQuery]);
 
   const search = useQuery({
     queryKey: lookupKeys.search(labId, term),
@@ -414,6 +445,7 @@ export function LookupScreen() {
           aria-label={t('field.label')}
           aria-describedby={hintId}
           placeholder={t('field.placeholder')}
+          defaultValue={routedQuery}
           autoComplete="off"
           autoCorrect="off"
           spellCheck={false}

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { create } from '@bufbuild/protobuf';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { beforeEach, describe, expect, it } from 'vitest';
 import lookupCopy from '../../../locales/en/lookup.json';
 import type { GrpcCode } from '../../api/errors';
@@ -93,6 +95,10 @@ function renderScreen(
     demo?: DemoLab;
     user?: CurrentUser;
     fail?: Partial<Record<RpcName, GrpcCode>>;
+    /** Initial URL, for the `?q=` the shell's lookup box writes. */
+    route?: string;
+    /** Anything to render next to the screen — a link to navigate with, say. */
+    extra?: ReactNode;
   } = {},
 ) {
   server.use(
@@ -105,8 +111,9 @@ function renderScreen(
   return renderWithProviders(
     <LabProvider>
       <LookupScreen />
+      {options.extra}
     </LabProvider>,
-    { user: options.user ?? ADMIN },
+    { user: options.user ?? ADMIN, route: options.route ?? '/lookup' },
   );
 }
 
@@ -205,6 +212,32 @@ describe('LookupScreen', () => {
 
     const card = await screen.findByRole('region', { name: 'Plasma A' });
     expect(within(card).getByText('DEMO-0003')).toBeInTheDocument();
+  });
+
+  it('answers the query the shell lookup box put in the URL', async () => {
+    // `GlobalLookup` navigates to `/lookup?q=…`; landing on an empty field
+    // would silently drop what the user typed in the top bar.
+    renderScreen({ route: `/lookup?q=${BARCODE_TERM}` });
+
+    const card = await screen.findByRole('region', { name: BARCODE_NAME });
+    expect(within(card).getByText(BARCODE_TERM)).toBeInTheDocument();
+    expect(field().value).toBe(BARCODE_TERM);
+    // And the loop still holds: the answer arrives ready for the next scan.
+    expect(document.activeElement).toBe(field());
+    expect(field().selectionEnd).toBe(BARCODE_TERM.length);
+  });
+
+  it('answers a new URL query without remounting the screen', async () => {
+    renderScreen({
+      route: `/lookup?q=${BARCODE_TERM}`,
+      extra: <Link to="/lookup?q=DEMO-0002">next query</Link>,
+    });
+    await screen.findByRole('region', { name: BARCODE_NAME });
+
+    fireEvent.click(screen.getByRole('link', { name: 'next query' }));
+
+    expect(await screen.findByRole('region', { name: 'Serum B' })).toBeInTheDocument();
+    expect(field().value).toBe('DEMO-0002');
   });
 
   it('lists several hits and can be driven with the arrow keys and Enter alone', async () => {

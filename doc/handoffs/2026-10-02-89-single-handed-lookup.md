@@ -29,7 +29,10 @@ test that was watched failing against a planted violation:
   `LOOKUP_PAGE_SIZE = 25` with `hasMore`, and `lookupKeys` nested under
   `sampleKeys.all(labId)`.
 - `src/web/src/features/lookup/LookupScreen.tsx` (rewritten from the G1.3
-  placeholder) and `LookupScreen.module.css` (new) — the screen.
+  placeholder) and `LookupScreen.module.css` (new) — the screen. It also answers
+  `?q=`: the shell's global lookup box navigates to `/lookup?q=…` (G1.3), so
+  arriving from the top bar looks the term up instead of opening an empty field,
+  including a second trip that changes `?q=` without remounting.
 - `src/web/src/features/lookup/lookupSearch.test.ts` (10 tests) and
   `LookupScreen.test.tsx` (17 tests) (new).
 - `src/web/locales/en/lookup.json` — the screen's copy (the G1.3 `placeholder`
@@ -85,28 +88,33 @@ in the fake.
 - **No new dependency and no shared-file edit beyond the one App table row.**
 
 **Tests:** `lookupSearch.test.ts` (transport-level: request order, request count,
-bodies) and `LookupScreen.test.tsx` (the loop and the five answers).
+bodies) and `LookupScreen.test.tsx` (the loop, the five answers, and the `?q=`
+the shell writes).
 
 Red first: both files were written and run before the implementation existed
 (`Test Files 2 failed (2)`, `Tests 17 failed (17)` — the unit file failed to
-import). Green after, focused:
+import; the two `?q=` tests came later and were red the same way, for the same
+reason). Green after, focused:
 
 ```sh
 $ npm run test -- src/features/lookup
- ✓ src/features/lookup/lookupSearch.test.ts (10 tests) 64ms
- ✓ src/features/lookup/LookupScreen.test.tsx (17 tests) 472ms
+ ✓ src/features/lookup/lookupSearch.test.ts (10 tests)
+ ✓ src/features/lookup/LookupScreen.test.tsx (19 tests)
  Test Files  2 passed (2)
-      Tests  27 passed (27)
+      Tests  29 passed (29)
 ```
 
-**Planted violations — each applied to the working tree, observed red, reverted:**
+**Planted violations — each applied to the working tree, observed red, reverted.**
+Re-run on the final tree, so the numbers are the ones this branch ships (29
+focused tests):
 
 1. Removed `input.select()` and kept `input.focus()`:
 
    ```
-   FAIL  LookupScreen.test.tsx > hands the field back focused with its text selected after every lookup
+   × hands the field back focused with its text selected after every lookup
    AssertionError: expected 9 to be +0 // Object.is equality
-   Tests  1 failed | 26 passed (27)
+   Test Files  1 failed | 1 passed (2)
+        Tests  1 failed | 28 passed (29)
    ```
 
    `selectionStart` stays at the end of the text, so the next scan would append
@@ -119,23 +127,27 @@ $ npm run test -- src/features/lookup
    ```
    × is not swallowed by a scanner burst, and searches the whole barcode exactly once
    TestingLibraryElementError: Unable to find role="region" and name "Serum A"
-   Tests  14 failed | 3 passed (17)      # screen file
+   ⎯⎯ Failed Tests 16 ⎯⎯
    ```
 
-   The burst's Enter searched the stale copy — nothing was found at all.
+   The burst's Enter searched the stale copy — nothing was found at all, in 16 of
+   the 29 tests.
 
 3. Free text searched before the exact barcode:
 
    ```
-   × answers an exact barcode with one request and never a free-text search
-   AssertionError: expected 'query' to be 'barcode'
+   × answers an exact barcode with one request and never a free-text search   (expected 'query' to be 'barcode')
+   × falls back to the free-text query only when the barcode search found nothing
+   × takes the exact barcode over a name that contains the same characters
+   × answers the query the shell lookup box put in the URL
+   × answers a new URL query without remounting the screen
    × is not swallowed by a scanner burst…
-   AssertionError: expected { lab_id: 'lab-demo', …(2) } to match object { barcode: 'DEMO-0001' }
-   Tests  4 failed | 23 passed (27)
+       AssertionError: expected { lab_id: 'lab-demo', …(2) } to match object { barcode: 'DEMO-0001' }
+   ⎯⎯ Failed Tests 6 ⎯⎯
    ```
 
-   The second failure is the request body: the scanner's request carried
-   `query`, i.e. the search answered a name match for a scan.
+   The last failure is the request body: the scanner's request carried `query`,
+   i.e. the search answered a name match for a scan.
 
 Green on the final tree:
 
@@ -144,13 +156,12 @@ $ env -u NODE_ENV npm run check          # exit 0
 check-routes: ok — 70 unary routes and 2 SSE routes agree between RestGateway.cc, routes.ts and sse.ts
 ✖ 1 problem (0 errors, 1 warning)        # pre-existing, src/ui/Table.tsx react-hooks/incompatible-library
  Test Files  36 passed (36)
-      Tests  546 passed (546)
+      Tests  548 passed (548)
 check-bundle-size: initial JS 159.5 KiB gzipped, budget 250 KiB
-✓ built in 314ms
 
 $ NODE_ENV=production npm run check      # exit 0
  Test Files  36 passed (36)
-      Tests  546 passed (546)
+      Tests  548 passed (548)
 check-bundle-size: initial JS 159.5 KiB gzipped, budget 250 KiB
 ```
 
@@ -174,12 +185,12 @@ the same `npm ci && npm run check`.
 - **A very broad name search shows the first 25 matches** and says so. Paging the
   pick list (or a "keep typing" nudge) is G3.2's browser territory; a lookup that
   matched 400 samples is a search problem, not a scan.
-- **`lookup?q=` (the shell's global lookup box) is not yet consumed by this
-  screen.** `GlobalLookup` navigates to `/lookup?q=…`, and G1.3 registered the
-  parameter for the single-handed flow; wiring it would mean this screen reading
-  `useSearchParams` and seeding the field and the search from it. It is one
-  behaviour on top of a tested search and it belongs to whoever owns the shell
-  flow (the parameter is already in the URL, so nothing is lost meanwhile).
+- **`?q=` is consumed, which is one step past the issue's acceptance criteria.**
+  It was added because the shell already ships the entry point that writes it
+  (`GlobalLookup` → `/lookup?q=…`), and a screen that dropped the term the user
+  typed in the top bar would look broken at the exact moment the flow starts.
+  The screen still does not *write* `q` on submit: the URL keeps carrying what
+  the shell put there, and the term stays in the field for the next scan.
 - **No check-in from the card.** The card offers the one action the issue names
   (check out); a checked-out sample shows a disabled button with the reason, and
   the sample's own detail screen (linked from the card's title) has the full
