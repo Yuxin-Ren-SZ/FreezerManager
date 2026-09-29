@@ -47,27 +47,32 @@ namespace fmgr::storage::detail {
   // Map a libpqxx SQL error onto the portable BackendError hierarchy. Mirrors the
   // mapping used by PostgresBackend's audit/migration paths so callers see the
   // same error codes regardless of which layer raised them.
+  //
+  // error.what() is PQresultErrorMessage(): a schema object name on the first
+  // line and the colliding row values in DETAIL. It is engine text, so it goes
+  // into BackendText and never onto the wire (#123).
   [[noreturn]] inline void throw_pqxx_error(const pqxx::sql_error& error) {
+    const BackendText engine_text{error.what()};
     const std::string_view state = error.sqlstate();
     if (state == "23505") {
-      throw UniqueViolation(error.what());
+      throw UniqueViolation(engine_text);
     }
     if (state == "23503") {
-      throw ForeignKeyViolation(error.what());
+      throw ForeignKeyViolation(engine_text);
     }
     if (state == "23514" || state == "23502" || state == "23000") {
-      throw ConstraintViolation(error.what());
+      throw ConstraintViolation(engine_text);
     }
     if (state == "40001" || state == "40P01") {
-      throw SerializationFailure(error.what());
+      throw SerializationFailure(engine_text);
     }
     if (state.starts_with("08")) {
-      throw Unavailable(error.what());
+      throw Unavailable(engine_text);
     }
     if (state == "57P01") {
-      throw Unavailable(error.what());
+      throw Unavailable(engine_text);
     }
-    throw ConstraintViolation(error.what());
+    throw ConstraintViolation(engine_text);
   }
 
   // Append one query-builder parameter (carried as nlohmann::json) to a

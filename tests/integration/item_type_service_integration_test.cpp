@@ -843,6 +843,102 @@ namespace fmgr::test {
       EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
     }
 
+    // ---- duplicate writes name the caller's field (#123) ----
+    //
+    // A duplicate is a client error: the caller's next action is "change the
+    // key", and the only thing the status code can say is ALREADY_EXISTS. So the
+    // *message* is the contract under test here — it has to name the value the
+    // caller supplied, not the index the engine refused the row on. The engine's
+    // own text ("UNIQUE constraint failed: index 'cfd_lab_scope_type_key_unique'")
+    // names a schema object the caller cannot see and says nothing about which
+    // field collided.
+
+    TEST_F(ItemTypeServiceTest, CreateCfdDuplicateKeyReportsTheKey) {
+      const auto token = login(kAdminEmail, kPassword);
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::CreateCfdRequest req;
+      auto* const cfd = req.mutable_cfd();
+      cfd->set_lab_id(kLab1);
+      cfd->set_scope_kind(fmgr::v1::SCOPE_KIND_SAMPLE);
+      cfd->set_key("mrn");
+      cfd->set_label("MRN");
+      cfd->set_data_type(fmgr::v1::FIELD_DATA_TYPE_TEXT);
+      fmgr::v1::CreateCfdResponse resp;
+      ASSERT_TRUE(item_type_stub_->CreateCustomFieldDefinition(&ctx, req, &resp).ok());
+
+      grpc::ClientContext duplicate_ctx;
+      set_bearer(duplicate_ctx, token);
+      fmgr::v1::CreateCfdResponse duplicate_resp;
+      const auto status =
+          item_type_stub_->CreateCustomFieldDefinition(&duplicate_ctx, req, &duplicate_resp);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::ALREADY_EXISTS);
+      EXPECT_EQ(status.error_message(), "custom field 'mrn' is already defined on scope 'sample'");
+    }
+
+    TEST_F(ItemTypeServiceTest, CreateCfdDuplicateKeyOnItemTypeReportsTheKey) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto item_type_id = create_item_type(token, kLab1, "blood");
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::CreateCfdRequest req;
+      auto* const cfd = req.mutable_cfd();
+      cfd->set_lab_id(kLab1);
+      cfd->set_scope_kind(fmgr::v1::SCOPE_KIND_SAMPLE);
+      cfd->set_item_type_id(item_type_id);
+      cfd->set_key("mrn");
+      cfd->set_label("MRN");
+      cfd->set_data_type(fmgr::v1::FIELD_DATA_TYPE_TEXT);
+      fmgr::v1::CreateCfdResponse resp;
+      ASSERT_TRUE(item_type_stub_->CreateCustomFieldDefinition(&ctx, req, &resp).ok());
+
+      grpc::ClientContext duplicate_ctx;
+      set_bearer(duplicate_ctx, token);
+      fmgr::v1::CreateCfdResponse duplicate_resp;
+      const auto status =
+          item_type_stub_->CreateCustomFieldDefinition(&duplicate_ctx, req, &duplicate_resp);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::ALREADY_EXISTS);
+      EXPECT_EQ(status.error_message(), "custom field 'mrn' is already defined on this item type");
+    }
+
+    TEST_F(ItemTypeServiceTest, UpdateCfdOntoAnExistingKeyReportsTheKey) {
+      const auto token = login(kAdminEmail, kPassword);
+      create_cfd(token, kLab1, "mrn"); // the key that is already taken
+      const auto moved_id = create_cfd(token, kLab1, "consent");
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::UpdateCfdRequest req;
+      auto* const cfd = req.mutable_cfd();
+      cfd->set_id(moved_id);
+      cfd->set_lab_id(kLab1);
+      cfd->set_scope_kind(fmgr::v1::SCOPE_KIND_SAMPLE);
+      cfd->set_key("mrn");
+      cfd->set_label("Consent");
+      cfd->set_data_type(fmgr::v1::FIELD_DATA_TYPE_TEXT);
+      fmgr::v1::UpdateCfdResponse resp;
+      const auto status = item_type_stub_->UpdateCustomFieldDefinition(&ctx, req, &resp);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::ALREADY_EXISTS);
+      EXPECT_EQ(status.error_message(), "custom field 'mrn' is already defined on scope 'sample'");
+    }
+
+    TEST_F(ItemTypeServiceTest, CreateItemTypeDuplicateNameReportsTheName) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(create_item_type(token, kLab1, "blood").empty());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::CreateItemTypeRequest req;
+      req.set_lab_id(kLab1);
+      req.set_name("blood");
+      fmgr::v1::CreateItemTypeResponse resp;
+      const auto status = item_type_stub_->CreateItemType(&ctx, req, &resp);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::ALREADY_EXISTS);
+      EXPECT_EQ(status.error_message(), "an item type named 'blood' already exists in this lab");
+    }
+
     TEST_F(ItemTypeServiceTest, ListCfdsFiltersByItemType) {
       const auto token = login(kAdminEmail, kPassword);
       const auto item_type_id = create_item_type(token, kLab1, "blood");

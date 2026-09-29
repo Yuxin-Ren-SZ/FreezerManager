@@ -2,6 +2,7 @@
 
 #include "server/ItemTypeServiceImpl.h"
 #include "server/RequestId.h"
+#include "server/UniqueConflict.h"
 
 #include "core/custom_field_tightening.h"
 #include "core/custom_field_validator.h"
@@ -14,6 +15,7 @@
 #include "storage/ItemTypeTraits.h"
 
 #include <fmgr/v1/item_type.grpc.pb.h>
+#include <fmt/format.h>
 #include <grpcpp/grpcpp.h>
 
 #include <array>
@@ -289,6 +291,19 @@ namespace fmgr::server {
       }
     }
 
+    // Sentence for a duplicate custom-field definition (#123). The index behind
+    // it is (lab_id, scope_kind, COALESCE(item_type_id,''), key), so a collision
+    // is always "this key, in this scope, on this item type" — which is what the
+    // caller has to change. Naming the scope as well as the item type keeps the
+    // two cases apart: a key defined globally does not collide with the same key
+    // defined on one item type.
+    [[nodiscard]] std::string cfd_conflict_message(const core::CustomFieldDefinition& cfd) {
+      const auto where = cfd.item_type_id.has_value()
+                             ? std::string("this item type")
+                             : fmt::format("scope '{}'", core::to_string(cfd.scope_kind));
+      return fmt::format("custom field '{}' is already defined on {}", cfd.key, where);
+    }
+
   } // namespace
 
   ItemTypeServiceImpl::ItemTypeServiceImpl(auth::IAuthProvider& auth,
@@ -402,8 +417,14 @@ namespace fmgr::server {
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
-      txn->repo<core::ItemType>().insert(item_type, make_ctx(*ctx, sctx, "create_item_type"));
-      txn->commit();
+      // A duplicate name is a client error the caller can fix by renaming; the
+      // index that refuses it (item_types_lab_name_unique) is not (#123).
+      commit_or_name_conflict(
+          [&] {
+            txn->repo<core::ItemType>().insert(item_type, make_ctx(*ctx, sctx, "create_item_type"));
+            txn->commit();
+          },
+          fmt::format("an item type named '{}' already exists in this lab", item_type.name));
 
       fill_item_type(resp->mutable_item_type(), item_type);
       return grpc::Status::OK;
@@ -433,8 +454,13 @@ namespace fmgr::server {
                                       req->item_type().parent_id())}
                                 : std::nullopt;
       existing->name = req->item_type().name();
-      txn->repo<core::ItemType>().update(*existing, make_ctx(*ctx, sctx, "update_item_type"));
-      txn->commit();
+      // Same duplicate-name rule as create, and the same client-facing sentence (#123).
+      commit_or_name_conflict(
+          [&] {
+            txn->repo<core::ItemType>().update(*existing, make_ctx(*ctx, sctx, "update_item_type"));
+            txn->commit();
+          },
+          fmt::format("an item type named '{}' already exists in this lab", existing->name));
 
       fill_item_type(resp->mutable_item_type(), *existing);
       return grpc::Status::OK;
@@ -558,9 +584,13 @@ namespace fmgr::server {
             "custom field limit reached: an entity may have at most " +
             std::to_string(core::k_max_custom_fields_per_entity) + " custom fields");
       }
-      txn->repo<core::CustomFieldDefinition>().insert(cfd, make_ctx(*ctx, sctx, "create_cfd"));
-      txn->commit();
-
+      commit_or_name_conflict(
+          [&] {
+            txn->repo<core::CustomFieldDefinition>().insert(cfd,
+                                                            make_ctx(*ctx, sctx, "create_cfd"));
+            txn->commit();
+          },
+          cfd_conflict_message(cfd));
       fill_cfd(resp->mutable_cfd(), cfd);
       return grpc::Status::OK;
     } catch (...) {
@@ -605,9 +635,13 @@ namespace fmgr::server {
       reject_indexed_phi(*existing);
       reject_loosening_inherited_definition(*txn, *existing);
       reject_loosening_abandoned_definition(*txn, stored, *existing);
-      txn->repo<core::CustomFieldDefinition>().update(*existing,
-                                                      make_ctx(*ctx, sctx, "update_cfd"));
-      txn->commit();
+      commit_or_name_conflict(
+          [&] {
+            txn->repo<core::CustomFieldDefinition>().update(*existing,
+                                                            make_ctx(*ctx, sctx, "update_cfd"));
+            txn->commit();
+          },
+          cfd_conflict_message(*existing));
 
       fill_cfd(resp->mutable_cfd(), *existing);
       return grpc::Status::OK;

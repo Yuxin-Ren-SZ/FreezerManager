@@ -23,13 +23,16 @@ namespace fmgr::storage::detail {
     sqlite3_stmt* stmt = nullptr;
     if (sqlite3_prepare_v2(handle, sql.data(), static_cast<int>(sql.size()), &stmt, nullptr) !=
         SQLITE_OK) {
-      throw ConstraintViolation(std::string("bump authz_version: ") + sqlite3_errmsg(handle));
+      // Engine text, never a client message (#123) — see storage::BackendText.
+      throw ConstraintViolation(
+          BackendText{std::string("bump authz_version: ") + sqlite3_errmsg(handle)});
     }
     sqlite3_bind_text(stmt, 1, id_str.c_str(), static_cast<int>(id_str.size()), SQLITE_TRANSIENT);
     const int step_result = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
     if (step_result != SQLITE_DONE) {
-      throw ConstraintViolation(std::string("bump authz_version: ") + sqlite3_errmsg(handle));
+      throw ConstraintViolation(
+          BackendText{std::string("bump authz_version: ") + sqlite3_errmsg(handle)});
     }
   }
 

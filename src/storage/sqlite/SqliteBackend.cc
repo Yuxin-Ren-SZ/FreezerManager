@@ -38,7 +38,8 @@ namespace fmgr::storage {
     [[noreturn]] void throw_sqlite_error(int code, sqlite3* handle, std::string_view action) {
       const auto extended_code = sqlite3_extended_errcode(handle);
       const auto effective_code = extended_code == SQLITE_OK ? code : extended_code;
-      const std::string message = std::string(action) + ": " + sqlite_message(handle);
+      // Engine text, never a client message (#123) — see storage::BackendText.
+      const BackendText message{std::string(action) + ": " + sqlite_message(handle)};
       switch (effective_code) {
       case SQLITE_CONSTRAINT_UNIQUE:
       case SQLITE_CONSTRAINT_PRIMARYKEY:
