@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { screen, within } from '@testing-library/react';
+import { act, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
 import { Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import sampleDetailCopy from '../../../locales/en/sample-detail.json';
+import { auditKeys } from '../../api/hooks';
 import { SessionProvider } from '../../app/session';
 import { SampleStatus, type Sample } from '../../gen/fmgr/v1/sample_pb';
 import { createDemoLab, fakeApi, type DemoLab } from '../../test/fakeApi';
@@ -137,7 +139,10 @@ describe('SampleDetailScreen', () => {
     it('does not render a PHI field the response does not contain', async () => {
       renderDetail();
 
-      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+      // Wait for the definitions, not just the sample: before they arrive there
+      // is nothing that *could* render, so the assertions below would hold
+      // vacuously.
+      await screen.findByText('Concentration');
 
       // `donor_name` is a PHI definition on Blood, and sample-1 has no value
       // for it: the server withheld it, so nothing may appear — not an empty
@@ -221,15 +226,39 @@ describe('SampleDetailScreen', () => {
     });
 
     it('does not fetch the history without audit.read', async () => {
-      // `onUnhandledRequest: 'error'` turns a stray `audit/list` into a test
-      // failure, so serving no handler for it is the assertion.
-      const demo = createDemoLab();
-      const handlers = fakeApi({ lab: demo });
-      server.use(...handlers.filter((handler) => !handler.info.header.includes('audit/list')));
+      // Serving no handler would *not* be an assertion: MSW's
+      // `onUnhandledRequest: 'error'` only logs, and the request would pass
+      // through unnoticed. So the handler that answers also records that it was
+      // asked — a guard whose failure mode is visible.
+      let auditRequested = false;
+      server.use(
+        http.post('/api/v1/audit/list', () => {
+          auditRequested = true;
+          return HttpResponse.json({ events: [], page: {} });
+        }),
+      );
 
-      renderDetail({ user: currentUserWith(['sample.read']) });
+      const { queryClient } = renderDetail({ user: currentUserWith(['sample.read']) });
 
       expect(await screen.findByRole('heading', { level: 1, name: 'Serum A' })).toBeInTheDocument();
+
+      // Give a request that *was* issued time to reach the handler. Without
+      // this flush an assertion of absence would pass no matter what — the very
+      // failure mode this test exists to avoid (a disabled query and a query
+      // that has not fired yet look identical).
+      await act(async () => {
+        await new Promise((resolve) => {
+          setTimeout(resolve, 25);
+        });
+      });
+
+      // TanStack creates the cache entry when the observer mounts either way,
+      // so `status` is what distinguishes "never enabled" (pending forever)
+      // from "answered".
+      expect(queryClient.getQueryState(auditKeys.entity(LAB_ID, 'sample', SAMPLE_ID))?.status).toBe(
+        'pending',
+      );
+      expect(auditRequested).toBe(false);
     });
   });
 
