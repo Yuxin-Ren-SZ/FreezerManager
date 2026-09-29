@@ -192,6 +192,12 @@ namespace fmgr::server {
     struct PreparedCustomFields {
       std::string custom_fields_json{"{}"};  // non-PHI, validated
       std::string phi_fields_enc_json{"{}"}; // AEAD envelope; "{}" when no PHI
+      // True when the incoming blob actually carried a PHI-tagged key. Only the
+      // caller can turn that into a decision, because it also needs its own
+      // phi.read status: an update that does not mention PHI means "clear it" to
+      // a caller that was shown the fields, and "leave it alone" to one that
+      // never was. See UpdateSample.
+      bool phi_keys_present{false};
     };
 
     // Validate the combined incoming custom fields, then split them: PHI-tagged
@@ -236,6 +242,7 @@ namespace fmgr::server {
         }
       }
       prepared.custom_fields_json = non_phi.dump();
+      prepared.phi_keys_present = !phi.empty();
 
       if (!phi.empty()) {
         const auto lab = txn.repo<core::Lab>().find_by_id(lab_id);
@@ -618,6 +625,10 @@ namespace fmgr::server {
       const auto prepared =
           prepare_custom_fields(*txn, lab_id, item_type_id, req->custom_fields_json(), kms_);
       sample.custom_fields_json = prepared.custom_fields_json;
+      // A new row has no stored envelope to protect, so the prepared one is
+      // always the truth here — including for a caller without phi.read that
+      // supplies PHI keys, which is allowed on write (see
+      // PhiWriteDoesNotRequirePhiRead).
       sample.phi_fields_enc_json = prepared.phi_fields_enc_json;
       txn->repo<core::Sample>().insert(sample, make_ctx(*ctx, sctx, "create_sample"));
       txn->commit();
@@ -688,7 +699,22 @@ namespace fmgr::server {
       const auto prepared =
           prepare_custom_fields(*txn, lab_id, item_type_id, wire.custom_fields_json(), kms_);
       existing->custom_fields_json = prepared.custom_fields_json;
-      existing->phi_fields_enc_json = prepared.phi_fields_enc_json;
+      // "The caller did not supply PHI" is not "the sample has no PHI": the
+      // request is authoritative for PHI only when the caller could have seen
+      // the fields, which is exactly reveal_phi()'s disclosure condition — it
+      // merges them into the response for a caller holding phi.read, and only
+      // when a KMS is wired to decrypt them with. Everyone else's request cannot
+      // mention PHI, so writing the prepared (empty) envelope over the stored one
+      // would destroy the sample's PHI on any unrelated edit. A caller that did
+      // see the fields stays authoritative, and one whose request carries no PHI
+      // key at all deliberately clears the envelope. A request that does carry
+      // PHI keys is honored either way — PHI write has never required phi.read
+      // (PhiWriteDoesNotRequirePhiRead).
+      const bool caller_saw_phi =
+          kms_ != nullptr && sctx.has_for_lab(lab_id, core::Permission::PhiRead);
+      if (prepared.phi_keys_present || caller_saw_phi) {
+        existing->phi_fields_enc_json = prepared.phi_fields_enc_json;
+      }
       existing->last_modified_by = sctx.user_id;
       existing->last_modified_at = now_timestamp();
 
