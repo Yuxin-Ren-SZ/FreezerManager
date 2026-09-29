@@ -143,7 +143,52 @@ export interface DemoLab {
   containerTypes: ContainerType[];
   boxTypes: BoxType[];
   boxes: Box[];
+  /** The browser-session state `auth/*` reads and mutates (G2.1). */
+  auth: FakeAuth;
 }
+
+/**
+ * The accounts the `auth/*` routes accept.
+ *
+ * Synthetic credentials, deliberately not shared with any real deployment: the
+ * login route's whole job is to separate an accepted password from a refused
+ * one, and a fake that accepts everything (or answers with the response
+ * message's defaults, which is what an unimplemented resolver did) makes every
+ * "wrong password" branch untestable while looking tested.
+ */
+export interface FakeAuthAccount {
+  readonly userId: string;
+  readonly email: string;
+  readonly password: string;
+  /** `true` when the account has a TOTP secret — login answers `mfa_required`. */
+  readonly requiresMfa: boolean;
+}
+
+export interface FakeAuth {
+  readonly accounts: readonly FakeAuthAccount[];
+  /**
+   * The account whose password was accepted and whose TOTP code is still
+   * outstanding — the session the browser holds between `login` and
+   * `submit-mfa`. `null` when no login is half-finished.
+   *
+   * This is the fake's stand-in for the session cookie: jsdom's `fetch` does not
+   * apply `Set-Cookie` to `document.cookie`, so the real cookie jar cannot be
+   * modelled here. What matters for the tests is the *state* it implies.
+   */
+  pendingMfaUserId: string | null;
+}
+
+/** The password `fakeApi()` accepts for every seeded account. */
+export const DEMO_PASSWORD = 'demo-password';
+
+/** The TOTP code `fakeApi()` accepts (`submit-mfa`). */
+export const DEMO_TOTP_CODE = '123456';
+
+/** The account without a second factor: password login is enough. */
+export const DEMO_USER_EMAIL = 'demo@example.test';
+
+/** The account with TOTP: login answers `mfa_required: true`. */
+export const DEMO_MFA_EMAIL = 'mfa@example.test';
 
 /** A seeded, in-memory demo lab. Pass your own to `fakeApi({ lab })` to inspect it. */
 /** A real `Timestamp` message, not a bare object: nested messages must be messages. */
@@ -539,6 +584,23 @@ export function createDemoLab(): DemoLab {
         barcode: 'DEMO-0004',
       }),
     ],
+    auth: {
+      accounts: [
+        {
+          userId: 'user-demo',
+          email: DEMO_USER_EMAIL,
+          password: DEMO_PASSWORD,
+          requiresMfa: false,
+        },
+        {
+          userId: 'user-mfa',
+          email: DEMO_MFA_EMAIL,
+          password: DEMO_PASSWORD,
+          requiresMfa: true,
+        },
+      ],
+      pendingMfaUserId: null,
+    },
   };
 }
 
@@ -768,6 +830,62 @@ export class FakeRpcError extends Error {
 const fields = (message: Message): Record<string, unknown> => message;
 
 type Resolver = (lab: DemoLab, message: Message) => MessageInitShape<DescMessage> | undefined;
+
+/**
+ * `AuthServiceImpl::Login` / `LocalAuthProvider::authenticate`: an unknown email
+ * and a wrong password are the *same* refusal on purpose (no account
+ * enumeration), and both are `UNAUTHENTICATED`.
+ */
+function passwordLogin(lab: DemoLab, message: Message, options: { withToken: boolean }) {
+  const { email, password } = fields(message) as { email: string; password: string };
+  const account = lab.auth.accounts.find((candidate) => candidate.email === email);
+  if (account?.password !== password) {
+    throw new FakeRpcError('UNAUTHENTICATED', 'invalid email or password');
+  }
+
+  // The second factor is still outstanding until `submit-mfa` is accepted.
+  lab.auth.pendingMfaUserId = account.requiresMfa ? account.userId : null;
+
+  return {
+    ...(options.withToken ? { sessionToken: `token-${account.userId}` } : {}),
+    sessionId: `session-${account.userId}`,
+    userId: account.userId,
+    mfaRequired: account.requiresMfa,
+  };
+}
+
+/**
+ * `LocalAuthProvider::verify_totp`: `InvalidCredentials` — `UNAUTHENTICATED`
+ * with no `mfa_required:` prefix — for a missing session, an already-complete
+ * one and a wrong code alike. The prefix distinction is why the SPA cannot read
+ * "wrong code" out of the status alone and has to re-ask who it is.
+ */
+function verifyTotp(lab: DemoLab, message: Message) {
+  const { totpCode } = fields(message) as { totpCode: string };
+  const pending = lab.auth.pendingMfaUserId;
+  if (pending === null) {
+    throw new FakeRpcError('UNAUTHENTICATED', 'invalid session for TOTP verification');
+  }
+  if (totpCode !== DEMO_TOTP_CODE) {
+    throw new FakeRpcError('UNAUTHENTICATED', 'invalid TOTP code');
+  }
+  lab.auth.pendingMfaUserId = null;
+  return {};
+}
+
+/**
+ * The routes a session with an outstanding second factor may still call, and
+ * the reason the server registers them `token_only`/`no_credential` (#62): a
+ * half-finished login must be resumable *and* abandonable.
+ */
+const PENDING_MFA_EXEMPT_ROUTES: ReadonlySet<RpcName> = new Set([
+  'auth/login',
+  'auth/browser/login',
+  'auth/submit-mfa',
+  'auth/browser/submit-mfa',
+  'auth/logout',
+  'auth/browser/logout',
+]);
 
 /**
  * Paging for `sample/list` — the one route this fake serves whose service
@@ -1232,6 +1350,33 @@ function nextFakeId(prefix: string, taken: readonly { id: string }[]): string {
  * own, and it keeps the fake one place.
  */
 const resolvers: Partial<Record<RpcName, Resolver>> = {
+  // ---- AuthService: the browser session (G2.1, gateway G0.1) ----
+  //
+  // `Login` answers a token in the body for `/auth/login` (scripts, the CLI)
+  // and no token for `/auth/browser/login`, where the gateway moves it into an
+  // `HttpOnly` cookie — see `RestGateway.cc`'s `success_response` overload. Both
+  // set the fake's pending-MFA state, because both are the same RPC.
+  'auth/login': (lab, message) => passwordLogin(lab, message, { withToken: true }),
+  'auth/browser/login': (lab, message) => passwordLogin(lab, message, { withToken: false }),
+
+  // `SubmitMfa` holds a token but not a completed second factor (#62), so it
+  // answers the only question it can: is a code still outstanding, and is this
+  // the right one? A code with no half-finished login behind it is refused the
+  // way `verify_totp` refuses a session it cannot find.
+  'auth/submit-mfa': (lab, message) => verifyTotp(lab, message),
+  'auth/browser/submit-mfa': (lab, message) => verifyTotp(lab, message),
+
+  // `Logout` is token-only for the same #62 reason: an abandoned login must be
+  // able to give the credential up. It therefore also clears the pending state.
+  'auth/logout': (lab) => {
+    lab.auth.pendingMfaUserId = null;
+    return {};
+  },
+  'auth/browser/logout': (lab) => {
+    lab.auth.pendingMfaUserId = null;
+    return {};
+  },
+
   // ---- The un-paged lists: the server ignores `page`, so these do too ----
   'lab/list': (lab) => ({ labs: lab.labs }),
 
@@ -1829,6 +1974,20 @@ export function fakeApi(options: FakeApiOptions = {}): HttpHandler[] {
       }
 
       try {
+        // Every RPC that needs a completed second factor — `AuthMiddleware`'s
+        // `CredentialRule::TokenAndMfa` — refuses a pending-MFA session with
+        // `UNAUTHENTICATED` and the `mfa_required: ` prefix. The routes below are
+        // the #62 exception: finishing the login, giving the credential up and
+        // logging in again are exactly what a half-finished session may still
+        // call. Without this, a test could log in with an MFA account, never
+        // submit a code, and still read lab data that production refuses.
+        if (lab.auth.pendingMfaUserId !== null && !PENDING_MFA_EXEMPT_ROUTES.has(rpc as RpcName)) {
+          return errorResponse(
+            'UNAUTHENTICATED',
+            'mfa_required: MFA required before this operation',
+          );
+        }
+
         const resolved = resolvers[rpc as RpcName]?.(lab, parsed);
         const response = create(route.output, resolved ?? {});
         return HttpResponse.json(toJson(route.output, response, { useProtoFieldName: true }));

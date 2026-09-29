@@ -45,9 +45,7 @@ export function currentUserWith(
     userId: 'user-1',
     email: 'user@example.test',
     displayName: 'Test User',
-    sessionId: 'session-1',
-    mfaComplete: true,
-    expiresAt: '4102444800000000',
+    isSystemAdmin: false,
     permissions: options.globalPermissions ?? [],
     labs: labIds.map(membership),
   };

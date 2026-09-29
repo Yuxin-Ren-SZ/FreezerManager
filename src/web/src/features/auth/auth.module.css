@@ -1,0 +1,82 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/*
+ * Both auth screens are `bare` routes: they render outside the app shell, which
+ * is why they centre themselves in the page rather than in a screen slot.
+ */
+
+.page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--fmgr-space-6) var(--fmgr-space-4);
+  background: var(--fmgr-color-surface);
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-4);
+  width: 100%;
+  max-width: 24rem;
+  padding: var(--fmgr-space-6);
+  border: 1px solid var(--fmgr-color-border);
+  border-radius: var(--fmgr-radius-lg);
+  background: var(--fmgr-color-bg);
+  box-shadow: var(--fmgr-shadow-sm);
+}
+
+.brand {
+  margin: 0;
+  font-size: var(--fmgr-font-size-sm);
+  font-weight: var(--fmgr-font-weight-medium);
+  letter-spacing: 0.02em;
+  color: var(--fmgr-color-text-muted);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fmgr-font-size-xl);
+  font-weight: var(--fmgr-font-weight-semibold);
+  line-height: var(--fmgr-line-height-tight);
+}
+
+.prompt {
+  margin: 0;
+  font-size: var(--fmgr-font-size-sm);
+  color: var(--fmgr-color-text-muted);
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-4);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--fmgr-space-3);
+}
+
+.alert,
+.notice {
+  margin: 0;
+  padding: var(--fmgr-space-3);
+  border-radius: var(--fmgr-radius-md);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.alert {
+  border-left: 4px solid var(--fmgr-color-danger);
+  background: var(--fmgr-color-danger-subtle);
+  color: var(--fmgr-color-text);
+}
+
+.notice {
+  border-left: 4px solid var(--fmgr-color-warning);
+  background: var(--fmgr-color-warning-subtle);
+  color: var(--fmgr-color-text);
+}

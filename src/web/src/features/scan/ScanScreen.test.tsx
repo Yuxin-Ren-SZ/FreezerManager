@@ -7,7 +7,8 @@ import type { GrpcCode } from '../../api/errors';
 import type { RpcName } from '../../api/routes';
 import { LabProvider } from '../../app/labs';
 import type { CurrentUser } from '../../app/session';
-import { STUB_CURRENT_USER, STUB_CURRENT_USER_ALL_PERMISSIONS } from '../../app/stubSession';
+import { ALL_PERMISSIONS } from '../../app/permissions';
+import { currentUserWith } from '../../test/session';
 import { SampleSchema, SampleStatus } from '../../gen/fmgr/v1/sample_pb';
 import { createDemoLab, fakeApi, type DemoLab } from '../../test/fakeApi';
 import { renderWithProviders } from '../../test/render';
@@ -43,17 +44,10 @@ const ACTIVE_NAME = 'Serum A';
 const CHECKED_OUT_BARCODE = 'DEMO-0003';
 
 /** Every permission the catalog has, in the demo lab. */
-const ADMIN: CurrentUser = {
-  ...STUB_CURRENT_USER_ALL_PERMISSIONS,
-  labs: STUB_CURRENT_USER_ALL_PERMISSIONS.labs.map((lab) => ({ ...lab, labId: LAB_ID })),
-};
+const ADMIN: CurrentUser = currentUserWith(ALL_PERMISSIONS, { labId: LAB_ID });
 
 /** Signed in with a read grant but no lab membership: nothing to scan into. */
-const NO_LAB: CurrentUser = {
-  ...STUB_CURRENT_USER,
-  permissions: ['sample.read'],
-  labs: [],
-};
+const NO_LAB: CurrentUser = currentUserWith([], { labs: [], globalPermissions: ['sample.read'] });
 
 /** Every request this file caused, cloned before MSW consumed it. */
 let calls: { path: string; body: () => Promise<Record<string, unknown>> }[] = [];

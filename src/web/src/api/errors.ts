@@ -71,3 +71,32 @@ export class ApiError extends Error {
 export function isApiError(value: unknown): value is ApiError {
   return value instanceof ApiError;
 }
+
+/**
+ * The prefix `GrpcErrorTranslation.h` puts on a refusal whose cause is a session
+ * that exists but has not finished its second factor:
+ *
+ * ```cpp
+ * to_grpc_status(const auth::MfaRequired& error) {
+ *   return {grpc::StatusCode::UNAUTHENTICATED, std::string("mfa_required: ") + error.what()};
+ * }
+ * ```
+ *
+ * It is the **only** thing that separates "enter your code" from "sign in
+ * again": both arrive as `UNAUTHENTICATED`, and a wrong TOTP code
+ * (`InvalidCredentials`) is that same status with no prefix. The SPA therefore
+ * never guesses from the status alone.
+ */
+export const MFA_REQUIRED_PREFIX = 'mfa_required:';
+
+/**
+ * Whether a failure is `auth::MfaRequired` on the wire — a session whose second
+ * factor is still outstanding, which is a resumable state, not a sign-out.
+ */
+export function isMfaRequired(cause: unknown): boolean {
+  return (
+    cause instanceof ApiError &&
+    cause.code === 'UNAUTHENTICATED' &&
+    cause.message.startsWith(MFA_REQUIRED_PREFIX)
+  );
+}
