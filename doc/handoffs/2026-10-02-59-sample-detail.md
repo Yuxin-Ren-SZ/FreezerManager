@@ -113,9 +113,11 @@ Spec: PRD §9 (flows), F6.4/F6.5, TODO.md §Section G → G3.3. Branch
   item-type and definition assertions are G3.2's `labs.test.tsx`).
 - `npm run check` → exit 0 with `NODE_ENV=production` exported, and exit 0 with
   it unset: `gen` + `check:routes` + `lint` + `typecheck` + `format:check` +
-  `test` (**510/510 in 32 files**, on `origin/main` as of G3.2's merge) +
-  `build`, identical artifact hash `013fe217ab1e58055b00740742c54c5b` both
-  times.
+  `test` (**510/510 in 32 files**) + `build`, identical entry artifact
+  `index-rz0_zS5r.js`, md5 `85da72ab2f47160042ef8d269b07f786`, both times.
+  Build on current `origin/main` (which now includes #64's entry-chunk split):
+  initial JS **158.6 KiB gzipped**, budget 250 KiB, and the guard reports
+  `24 JS chunks for 17 feature screens, 3 chunk(s) before first paint`.
 - **Guards proven able to fail** by planting six violations and watching the
   relevant test go red: leaf-only inheritance (7 tests), a dropped `max_length`
   rule (2), an unattributed size-class rejection (2), a history section ignoring
@@ -139,15 +141,23 @@ Spec: PRD §9 (flows), F6.4/F6.5, TODO.md §Section G → G3.3. Branch
 - The item type is fixed once a sample exists (the form disables the select):
   changing it would re-generate the field list under values that no longer belong
   to it, and the server keys PHI partitioning off the type.
-- `features/samples/{SampleCreateScreen,SampleDetailScreen}.tsx` are now
-  unreferenced G1.3 placeholders. They are in G3.2's directory, so they were left
-  alone; whoever touches `features/samples/` next can delete them.
-- **Initial JS is now 244.7 / 250 KiB gzipped — 5.3 KiB of headroom.** It was
-  207.2 before G3.2 (#55) and this slice landed, and both added screens the
-  route map imports statically. `npm run check` passes, but the next web task
-  that adds a screen or a dependency will very likely fail the build. I did not
-  measure the per-task split, and making it lazy is not this issue's change to
-  make: `AppRoute.element` is a `ReactNode`, so it needs a `React.lazy` +
-  `Suspense` boundary in `router.tsx`/`route-map.tsx` — the same file G3.2 had
-  just edited. Worth a lead-filed task before G3.4/G3.5/G3.6 land; lazy
-  `import()` for feature screens is the lever `doc/dev/web.md` already names.
+- The two G1.3 placeholders in `features/samples/` are **deleted** — #64's
+  chunking guard requires every `src/features/*/*Screen.tsx` to be a dynamic
+  entry, and two files no route imports cannot be. See above.
+- **The entry chunk is 158.6 / 250 KiB gzipped; this slice adds ~2.9 KiB to it
+  and 8.3 KiB of lazy chunks per route.** #64 landed while this branch was in
+  review and split every feature screen out of the entry chunk, so the two G3.3
+  screens go through `lazyScreen(...)` like the other 17:
+  `SampleDetailScreen-*.js` is 10.6 kB raw / 3.4 kB gzip,
+  `useSampleReferenceData-*.js` (shared by both screens) 14.3 kB raw /
+  5.0 kB gzip, `SampleCreateScreen-*.js` 0.9 kB raw / 0.5 kB gzip. The ~2.9 KiB
+  that remains in the entry is this slice's locale namespace — `i18n.ts` bundles
+  every `locales/en/*.json` eagerly by G-arch 1's design — plus the two lazy
+  wrappers. Before #64 the same two screens were static imports and the entry
+  measured 244.7 KiB, which is the failure #64 fixed.
+- **#64's guard also forced a deletion inside G3.2's directory.** It requires
+  every `src/features/*/*Screen.tsx` to be a dynamic manifest entry, so the two
+  G1.3 placeholders this slice routed away from
+  (`features/samples/SampleCreateScreen.tsx`, `…/SampleDetailScreen.tsx`) failed
+  it: nothing imports a screen that no longer has a route. They are deleted
+  rather than re-imported to satisfy the guard.
