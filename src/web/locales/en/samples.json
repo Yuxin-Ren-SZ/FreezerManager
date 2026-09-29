@@ -1,4 +1,54 @@
 {
   "title": "Samples",
-  "placeholder": "This screen is a placeholder. {{task}} fills it in."
+  "placeholder": "This screen is a placeholder. {{task}} fills it in.",
+  "filters": {
+    "legend": "Filters",
+    "search": "Search",
+    "searchHint": "Searches sample names and barcodes. Custom fields and PHI are never searched.",
+    "searchTooShort": "Type at least two characters to search.",
+    "barcode": "Barcode",
+    "status": "Status",
+    "statusAny": "Any status",
+    "itemType": "Item type",
+    "itemTypeAny": "Any item type",
+    "box": "Box",
+    "boxAny": "Any box",
+    "clear": "Clear filters"
+  },
+  "columns": {
+    "name": "Name",
+    "barcode": "Barcode",
+    "status": "Status",
+    "itemType": "Item type",
+    "location": "Location",
+    "volume": "Volume",
+    "created": "Created",
+    "phi": "{{label}} (PHI)"
+  },
+  "placement": {
+    "unplaced": "Not in a box",
+    "unknown": "Location unavailable"
+  },
+  "table": {
+    "caption": "Samples in this lab",
+    "emptyTitle": "This lab has no samples yet",
+    "emptyHint": "Samples appear here once they have been created or imported.",
+    "emptyFilteredTitle": "No samples match these filters",
+    "emptyFilteredHint": "Clear a filter, or widen the search, to see more rows.",
+    "loaded_one": "{{count}} row loaded",
+    "loaded_other": "{{count}} rows loaded",
+    "more": "More rows available"
+  },
+  "live": {
+    "live": "Live updates on",
+    "connecting": "Connecting to live updates…",
+    "error": "Live updates are not available"
+  },
+  "export": {
+    "action": "Export CSV",
+    "pending": "Preparing the export…",
+    "errorTitle": "The export failed",
+    "note": "The export contains the whole lab, not only the rows these filters show."
+  },
+  "errorTitle": "The samples could not be loaded"
 }

@@ -5,4 +5,5 @@
 
 export * from './labs';
 export * from './layout';
+export * from './sampleLive';
 export * from './samples';
