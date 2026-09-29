@@ -80,11 +80,9 @@ the review doc.
 
 | ID | Sev | Area | Anchor | Fix sketch | Target |
 |----|-----|------|--------|-----------|--------|
-| C-9 | **Critical** | Server | `FreezerServer.cc:68` | Implement TLS cert loading (path is an active `throw`, not a stub). **Pre-deployment blocker for any non-loopback bind.** | M5; gate remote deploy |
 | C-1 | High | Auth | `LocalAuthProvider.cc:752` | Lockout map is in-memory, resets on restart → persist failed-attempt state (DB table + TTL) or external limiter. | first prod tag (M3.5/M4) |
 | C-7 | High | Audit | `CanonicalJson.cc:13` | Canonical JSON not RFC 8785; nlohmann version drift can break the audit chain. Pin algorithm + CI golden-vector test, or implement JCS. | before 1.0 (M7) |
 | C-3 | Medium | Auth | `LocalAuthProvider.cc:272` | `totp_secret_enc` stored/used plaintext despite `_enc`. Encrypt under master KEK via existing `FieldCipher`. | M5 |
-| C-10 | Medium | Server | `FreezerServer.cc` build / no cap | No gRPC inbound message cap → set `ResourceQuota`/`MaxReceiveMessageSize` on `ServerBuilder`, configurable via `FreezerServerOptions` (~10 MiB default). | M3.5 (DoS) |
 | C-11 | Medium | Server | `GrpcErrorTranslation.h` | `INTERNAL` may leak raw error text (schema probing). Mask in prod, log real error server-side. | M3.5 |
 | C-12 | Low | Server | `SampleServiceImpl.cc:47` | `request_id = ""`. Extract `x-request-id` from gRPC metadata → `MutationContext::request_id`. | M3.5 (§17 obs) |
 | C-2 | Low | Auth | `validate_token()` | Sessions not IP/UA-bound; no replay detection. Optional IP-binding, off by default (NAT-friendly). | backlog / v2 |
@@ -92,6 +90,12 @@ the review doc.
 | C-6 | Low | KMS | `KeyringKms.h:43` | Raw KEK bytes in `std::vector`, no mlock. Wrap in `SecureBuffer` (`sodium_mlock`/`memzero`, optional `mprotect`). | M5 |
 | C-8 | Low | Storage | `QuerySqlBuilder.h:216` | Sort direction is the only non-parameterized SQL fragment (enum-gated, safe now). Add `static_assert`/stern comment so a future string-typed sort can't inject. | quick, any slice |
 | C-5 | Info | Auth | `Totp.cc:161` | TOTP code compare `==` not constant-time. Switch to `sodium_memcmp` (robust if digit count grows). | quick, any slice |
+
+Resolved since this review: **C-9** — gRPC TLS implemented with fail-closed
+cert loading and optional mTLS. **C-10** — the inbound cap existed but its units
+were the real bug: split into `max_grpc_memory_bytes` and `max_grpc_threads`, with
+a send cap added. Both in `aa44d6d`; see
+`doc/handoffs/2026-09-28-27-m35-grpc-tls.md`.
 
 ---
 
@@ -555,9 +559,13 @@ until these are done. Order matters: 1 → 2 → 3 → (open a test PR, see
     client speak. Any breaking change to a `.proto` must increment the
     `v1` package label.
 
-- [ ] **F4. TLS configuration**. (In progress: PR #27, gRPC TLS.) TLS 1.3 only; HSTS; modern ciphers.
-      Self-signed cert for dev, documented refusal-to-start without a
-      cert in production mode (`FMGR_ENV=production`).
+- [~] **F4. TLS configuration**. gRPC TLS landed (`aa44d6d`):
+      `FMGR_TLS_CERT` / `FMGR_TLS_KEY`, optional mTLS via `FMGR_TLS_CLIENT_CA`,
+      fail-closed certificate loading, and `FMGR_ENV=production` refusing to start
+      a plaintext listener without `FMGR_REQUIRE_TLS`. Remaining: HSTS, an explicit
+      TLS-1.3-only / cipher-suite policy, and the same production guard for the
+      REST listener, which still logs "REST (plaintext) listening" — see the
+      handoff note.
 
 - [~] **F5. Health/metrics endpoints**. (Routes + tests exist; default
       localhost binding of `/metrics` unverified.) `/health` (liveness + readiness),
@@ -827,7 +835,7 @@ real `freezerd` safely until G0.1–G0.3 land.
 
 ### G1 — SPA foundation
 
-- [ ] **G1.1. Scaffold `src/web/`, its toolchain and a CI job.**
+- [x] **G1.1. Scaffold `src/web/`, its toolchain and a CI job.**
   - Create a Vite + React + TypeScript (strict) app with every G-arch baseline
     dependency, the ESLint and Prettier configs, Vitest + React Testing
     Library + MSW, and react-i18next with `locales/en/common.json` and the
@@ -855,7 +863,7 @@ real `freezerd` safely until G0.1–G0.3 land.
     SPDX check covers web files; an agent new to the repo can start the dev
     loop from `doc/dev/web.md` alone.
 
-- [ ] **G1.2. API layer: codegen, client, SSE and test fakes.**
+- [x] **G1.2. API layer: codegen, client, SSE and test fakes.**
   - `npm run gen` runs `buf generate` over `../../proto` into `src/gen/`.
     `build`, `test` and `typecheck` run it first.
   - `src/api/routes.ts` maps each RPC to its REST path. `npm run check`
@@ -886,7 +894,7 @@ real `freezerd` safely until G0.1–G0.3 land.
     cleanup, the route checker failing on a planted mismatch, and per-RPC
     fault injection in the fakes.
 
-- [ ] **G1.3. App shell and UI kit.**
+- [x] **G1.3. App shell and UI kit.**
   - Providers (QueryClient, i18n, router, current-lab context), a top bar
     (lab picker, user menu, live-connection indicator), side nav, an error
     boundary, toasts, a 404 page and a "no access" page.
@@ -1495,7 +1503,9 @@ its own server item before a G task can be written:
       regex check) forbids non-tr()-wrapped string literals in
       widget constructors and `setText()` calls.
 
-- [ ] **P3. Web i18n scaffolding.** (Delivered by G1.1.) `react-i18next` integrated;
+- [x] **P3. Web i18n scaffolding.** (Delivered by G1.1; keys live in
+      `locales/en/<namespace>.json` per G-arch 11, not the single
+      `locales/en.json` this line originally named.) `react-i18next` integrated;
       `src/web/locales/en.json` committed; ESLint rule
       `i18next/no-literal-string` enabled. Translation keys follow
       `feature.context.string-id` convention.
