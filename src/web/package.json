@@ -18,9 +18,10 @@
     "lint": "eslint .",
     "pretypecheck": "npm run gen",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "check:routes": "node scripts/check-routes.mjs",
     "format:check": "prettier --check .",
     "format": "prettier --write .",
-    "check": "npm run gen && npm run lint && npm run typecheck && npm run format:check && npm run test && npm run build"
+    "check": "npm run gen && npm run check:routes && npm run lint && npm run typecheck && npm run format:check && npm run test && npm run build"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.15.0",
