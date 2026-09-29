@@ -1,0 +1,101 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.root {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--fmgr-space-2);
+  font-family: inherit;
+  font-weight: var(--fmgr-font-weight-medium);
+  line-height: var(--fmgr-line-height-tight);
+  text-align: center;
+  text-decoration: none;
+  border: 1px solid transparent;
+  border-radius: var(--fmgr-radius-md);
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.root:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.root:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+.block {
+  display: flex;
+  width: 100%;
+}
+
+.label {
+  display: inline-block;
+}
+
+.spinner {
+  flex: none;
+}
+
+/* ── sizes ──────────────────────────────────────────────────────────────── */
+
+.sm {
+  min-height: var(--fmgr-control-height-sm);
+  padding: 0 var(--fmgr-space-2);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.md {
+  min-height: var(--fmgr-control-height-md);
+  padding: 0 var(--fmgr-space-3);
+  font-size: var(--fmgr-font-size-base);
+}
+
+.lg {
+  min-height: var(--fmgr-control-height-lg);
+  padding: 0 var(--fmgr-space-4);
+  font-size: var(--fmgr-font-size-lg);
+}
+
+/* ── variants ───────────────────────────────────────────────────────────── */
+
+.primary {
+  color: var(--fmgr-color-accent-text);
+  background-color: var(--fmgr-color-accent);
+}
+
+.primary:hover:not(:disabled) {
+  background-color: var(--fmgr-color-accent-hover);
+}
+
+.secondary {
+  color: var(--fmgr-color-text);
+  background-color: var(--fmgr-color-surface-raised);
+  border-color: var(--fmgr-color-border);
+}
+
+.secondary:hover:not(:disabled) {
+  background-color: var(--fmgr-color-surface);
+}
+
+.danger {
+  color: var(--fmgr-color-danger-text);
+  background-color: var(--fmgr-color-danger);
+}
+
+.danger:hover:not(:disabled) {
+  background-color: var(--fmgr-color-danger-hover);
+}
+
+.ghost {
+  color: var(--fmgr-color-text);
+  background-color: transparent;
+}
+
+.ghost:hover:not(:disabled) {
+  background-color: var(--fmgr-color-surface);
+}

@@ -1,0 +1,16 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.root {
+  display: inline-block;
+  min-width: 1.5em;
+  padding: 0.1em 0.4em;
+  font-family: var(--fmgr-font-mono);
+  font-size: 0.85em;
+  line-height: var(--fmgr-line-height-tight);
+  text-align: center;
+  color: var(--fmgr-color-text);
+  background-color: var(--fmgr-color-surface);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-bottom-width: 2px;
+  border-radius: var(--fmgr-radius-sm);
+}

@@ -1,0 +1,23 @@
+{
+  "spinner": {
+    "loading": "Loading…"
+  },
+  "dialog": {
+    "close": "Close"
+  },
+  "toast": {
+    "region": "Notifications",
+    "dismiss": "Dismiss notification"
+  },
+  "select": {
+    "placeholder": "Choose an option"
+  },
+  "table": {
+    "columns": "Columns",
+    "toggleColumn": "Show or hide the {{column}} column",
+    "empty": "Nothing to show"
+  },
+  "tabs": {
+    "label": "Sections"
+  }
+}

@@ -33,5 +33,11 @@ export default defineConfig({
     setupFiles: ['src/test/setup.ts'],
     include: ['src/**/*.test.{ts,tsx}'],
     restoreMocks: true,
+    // Process CSS instead of stubbing it. Two things depend on this: CSS
+    // modules hand back their real scoped class names, and `import css from
+    // './x.css?raw'` returns the file's text rather than an empty string (which
+    // is what silently made `tokens.contrast.test.ts` vacuous when it used the
+    // `?raw` import under the default `css: false`).
+    css: true,
   },
 });
