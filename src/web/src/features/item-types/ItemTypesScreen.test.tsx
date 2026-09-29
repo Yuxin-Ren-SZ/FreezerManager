@@ -329,6 +329,53 @@ describe('ItemTypesScreen — field definitions', () => {
     );
   });
 
+  it('allows narrowing an inherited constraint further, and saves it', async () => {
+    // The permissive direction for validation: `cfd-notes-serum` already
+    // narrows Blood's `max_length: 20` to 5, and 3 is a tightening of that.
+    const { lab } = renderScreen();
+    capture('/api/v1/custom-field-def/update');
+    await selectNode('Serum');
+
+    await userEvent.click(
+      within(fieldRow('Defined here', 'Serum notes')).getByRole('button', {
+        name: 'Edit Serum notes',
+      }),
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'Edit Serum notes' });
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+    await userEvent.clear(within(dialog).getByLabelText('Maximum length'));
+    await userEvent.type(within(dialog).getByLabelText('Maximum length'), '3');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(async () => {
+      expect(await seen('/api/v1/custom-field-def/update')).toHaveLength(1);
+    });
+    const body = (await seen('/api/v1/custom-field-def/update')).at(0);
+    expect(body?.cfd).toMatchObject({ id: 'cfd-notes-serum', validation_json: '{"max_length":3}' });
+    expect(lab.customFieldDefs.find((cfd) => cfd.id === 'cfd-notes-serum')?.validationJson).toBe(
+      '{"max_length":3}',
+    );
+  });
+
+  it('refuses to widen an inherited constraint, and says which one', async () => {
+    renderScreen();
+    capture('/api/v1/custom-field-def/update');
+    await selectNode('Serum');
+
+    await userEvent.click(
+      within(fieldRow('Defined here', 'Serum notes')).getByRole('button', {
+        name: 'Edit Serum notes',
+      }),
+    );
+    const dialog = await screen.findByRole('dialog', { name: 'Edit Serum notes' });
+    await userEvent.clear(within(dialog).getByLabelText('Maximum length'));
+    await userEvent.type(within(dialog).getByLabelText('Maximum length'), '50');
+
+    expect(within(dialog).getByText(/limits this field to max length 20/i)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(await seen('/api/v1/custom-field-def/update')).toEqual([]);
+  });
+
   it('refuses is_phi together with indexed and says why', async () => {
     renderScreen({ user: PHI_ADMIN });
     capture('/api/v1/custom-field-def/create');
