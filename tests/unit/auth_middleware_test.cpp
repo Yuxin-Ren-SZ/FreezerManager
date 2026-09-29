@@ -42,7 +42,9 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <utility>
 
 namespace fmgr::rpc {
   namespace {
@@ -118,6 +120,13 @@ namespace fmgr::rpc {
                                          core::Permission perm,
                                          std::optional<core::LabId> lab = std::nullopt) {
       return mw.authorize(call, perm, lab);
+    }
+
+    // Same, for the credential gate (#119) that the nine non-permission RPCs use.
+    // Also non-[[nodiscard]] so EXPECT_THROW can discard the context.
+    auth::SessionContext do_authenticate_on(AuthMiddleware& mw, const RpcCall& call,
+                                            CredentialRule rule) {
+      return mw.authenticate(call, rule);
     }
 
     // ---- Fixture ----
@@ -499,45 +508,188 @@ namespace fmgr::rpc {
                    auth::AuthError);
     }
 
-    // ---- The non-permission registry state (#78) ----
+    // ---- The credential rules (#119) ----
+    //
+    // The nine RPCs outside the permission gate never call authorize(), so before
+    // #119 nothing observed their registrations during a call: the credential rule
+    // was declared in the registry and applied by hand in each handler, and the
+    // two could drift with the suite green. authenticate() /
+    // admit_no_credential() are the gate for them, and these tests are what keeps
+    // a handler's claim and its registration in step.
 
-    // The new state is not a bypass. An RPC registered as requiring no permission
-    // whose handler *does* call authorize() is refused exactly like a permission
-    // mismatch — otherwise re-registering a handler this way would take it out of
-    // the #60 check, which is the failure the state exists to prevent.
-    TEST_F(AuthMiddlewareTest, AuthorizeRefusesAnRpcRegisteredAsNoPermissionRequired) {
-      AuthMiddleware::register_rpc("e3_test.NoPermissionRpc", RpcGate::no_permission_required());
-
-      try {
-        do_authorize_on(*middleware_,
-                        RpcCall{.bearer_token = "irrelevant", .method = "e3_test.NoPermissionRpc"},
-                        core::Permission::SampleRead);
-        FAIL() << "an authorize() call for a no_permission_required() RPC must be refused";
-      } catch (const RpcRegistryMismatch& error) {
-        const std::string message = error.what();
-        EXPECT_NE(message.find("e3_test.NoPermissionRpc"), std::string::npos) << message;
-        EXPECT_NE(message.find("no permission required"), std::string::npos) << message;
-        EXPECT_NE(message.find("sample.read"), std::string::npos) << message;
+    // Neither state is a bypass, in either direction.
+    TEST_F(AuthMiddlewareTest, AuthorizeRefusesAnRpcRegisteredWithACredentialRule) {
+      const std::array<std::pair<std::string_view, RpcGate>, 3> gates{{
+          {std::string_view{"e3_test.NoCredentialRpc"}, RpcGate::no_credential()},
+          {std::string_view{"e3_test.TokenOnlyRpc"}, RpcGate::token_only()},
+          {std::string_view{"e3_test.TokenAndMfaRpc"}, RpcGate::token_and_mfa()},
+      }};
+      for (const auto& [name, gate] : gates) {
+        AuthMiddleware::register_rpc(std::string(name), gate);
+        try {
+          do_authorize_on(*middleware_, RpcCall{.bearer_token = "irrelevant", .method = std::string(name)},
+                          core::Permission::SampleRead);
+          FAIL() << name << ": an authorize() call for a credential-rule RPC must be refused";
+        } catch (const RpcRegistryMismatch& error) {
+          const std::string message = error.what();
+          EXPECT_NE(message.find(std::string(name)), std::string::npos) << message;
+          EXPECT_NE(message.find(gate.describe()), std::string::npos) << message;
+          EXPECT_NE(message.find("sample.read"), std::string::npos) << message;
+        }
       }
     }
 
-    TEST_F(AuthMiddlewareTest, RpcRegistryReportsTheGateKindOfEveryEntry) {
+    TEST_F(AuthMiddlewareTest, CredentialGateRefusesAnRpcRegisteredWithAPermission) {
+      AuthMiddleware::register_rpc("e3_test.PermissionGatedRpc", core::Permission::SampleRead);
+      try {
+        do_authenticate_on(
+            *middleware_,
+            RpcCall{.bearer_token = "irrelevant", .method = "e3_test.PermissionGatedRpc"},
+            CredentialRule::TokenAndMfa);
+        FAIL() << "a Permission entry whose handler asks the credential gate is never enforced";
+      } catch (const RpcRegistryMismatch& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("e3_test.PermissionGatedRpc"), std::string::npos) << message;
+        EXPECT_NE(message.find("permission 'sample.read'"), std::string::npos) << message;
+        EXPECT_NE(message.find("'token_and_mfa'"), std::string::npos) << message;
+      }
+    }
+
+    // The gate applies the rule; the handler only states which one it needs.
+    TEST_F(AuthMiddlewareTest, AuthenticateAppliesTheRuleTheRpcDeclares) {
+      AuthMiddleware::register_rpc("e3_test.PendingMfaOk", RpcGate::token_only());
+      AuthMiddleware::register_rpc("e3_test.PendingMfaRefused", RpcGate::token_and_mfa());
+
+      // A pending-MFA session is exactly what TokenOnly admits…
+      ASSERT_FALSE(lab_admin_token_.mfa_complete);
+      auth::SessionContext ctx;
+      EXPECT_NO_THROW(ctx = do_authenticate_on(
+                          *middleware_,
+                          RpcCall{.bearer_token = lab_admin_token_.plaintext_token,
+                                  .method = "e3_test.PendingMfaOk"},
+                          CredentialRule::TokenOnly));
+      EXPECT_FALSE(ctx.mfa_complete);
+
+      // …and exactly what TokenAndMfa refuses.
+      EXPECT_THROW(do_authenticate_on(*middleware_,
+                                      RpcCall{.bearer_token = lab_admin_token_.plaintext_token,
+                                              .method = "e3_test.PendingMfaRefused"},
+                                      CredentialRule::TokenAndMfa),
+                   auth::MfaRequired);
+
+      // A session whose factor is complete passes the same rule.
+      const auto completed = lab_admin_mfa_complete();
+      EXPECT_NO_THROW(do_authenticate_on(*middleware_,
+                                         RpcCall{.bearer_token = completed.plaintext_token,
+                                                 .method = "e3_test.PendingMfaRefused"},
+                                         CredentialRule::TokenAndMfa));
+    }
+
+    // The planted disagreement: this is the test that goes red when a handler
+    // starts requiring something other than what its RPC registered.
+    TEST_F(AuthMiddlewareTest, AuthenticateRefusesAHandlerWhoseRuleDisagreesWithTheRegistration) {
+      AuthMiddleware::register_rpc("e3_test.DeclaredTokenOnly", RpcGate::token_only());
+      const auto completed = lab_admin_mfa_complete();
+      try {
+        do_authenticate_on(*middleware_,
+                           RpcCall{.bearer_token = completed.plaintext_token,
+                                   .method = "e3_test.DeclaredTokenOnly"},
+                           CredentialRule::TokenAndMfa);
+        FAIL() << "a handler demanding MFA from a token_only registration must be refused";
+      } catch (const RpcRegistryMismatch& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("e3_test.DeclaredTokenOnly"), std::string::npos) << message;
+        EXPECT_NE(message.find("credential rule 'token_only'"), std::string::npos) << message;
+        EXPECT_NE(message.find("'token_and_mfa'"), std::string::npos) << message;
+      }
+    }
+
+    // A registry disagreement must not become a pass for a bad credential.
+    TEST_F(AuthMiddlewareTest, AuthenticateStillRefusesAnInvalidCredential) {
+      AuthMiddleware::register_rpc("e3_test.TokenOnlyRpcForBadToken", RpcGate::token_only());
+      EXPECT_THROW(do_authenticate_on(*middleware_,
+                                      RpcCall{.bearer_token = "not-a-valid-token-at-all",
+                                              .method = "e3_test.TokenOnlyRpcForBadToken"},
+                                      CredentialRule::TokenOnly),
+                   auth::AuthError);
+      EXPECT_THROW(do_authenticate_on(*middleware_,
+                                      RpcCall{.bearer_token = "",
+                                              .method = "e3_test.TokenOnlyRpcForBadToken"},
+                                      CredentialRule::TokenOnly),
+                   auth::AuthError);
+    }
+
+    TEST_F(AuthMiddlewareTest, AdmitNoCredentialNeedsNoTokenAndRefusesAnyOtherRule) {
+      AuthMiddleware::register_rpc("e3_test.AnonymousRpc", RpcGate::no_credential());
+      // No token, and a token nobody validated: both admitted, because the None
+      // rule validates nothing. The call is the declaration.
+      EXPECT_NO_THROW(middleware_->admit_no_credential(
+          RpcCall{.bearer_token = "", .method = "e3_test.AnonymousRpc"}));
+      EXPECT_NO_THROW(middleware_->admit_no_credential(
+          RpcCall{.bearer_token = "not-a-token", .method = "e3_test.AnonymousRpc"}));
+
+      // An RPC that declares a credential cannot be admitted anonymously.
+      AuthMiddleware::register_rpc("e3_test.NotAnonymousRpc", RpcGate::token_only());
+      try {
+        middleware_->admit_no_credential(
+            RpcCall{.bearer_token = "", .method = "e3_test.NotAnonymousRpc"});
+        FAIL() << "an anonymous admission for a token_only RPC must be refused";
+      } catch (const RpcRegistryMismatch& error) {
+        const std::string message = error.what();
+        EXPECT_NE(message.find("e3_test.NotAnonymousRpc"), std::string::npos) << message;
+        EXPECT_NE(message.find("credential rule 'token_only'"), std::string::npos) << message;
+        EXPECT_NE(message.find("'no_credential'"), std::string::npos) << message;
+      }
+    }
+
+    TEST_F(AuthMiddlewareTest, AuthenticateRefusesToReturnAContextForTheNoneRule) {
+      // There is no session to describe for a rule that requires no credential, so
+      // asking authenticate() for it is a misuse rather than an empty success.
+      AuthMiddleware::register_rpc("e3_test.NoneRuleRpc", RpcGate::no_credential());
+      EXPECT_THROW(do_authenticate_on(*middleware_,
+                                      RpcCall{.bearer_token = "", .method = "e3_test.NoneRuleRpc"},
+                                      CredentialRule::None),
+                   std::logic_error);
+    }
+
+    TEST_F(AuthMiddlewareTest, CredentialGateSkipsTheRegistryCheckWithoutRpcIdentity) {
+      // Not inside a served RPC (unit tests, tooling): there is no registration
+      // this call could contradict, so the credential work is all that is left.
+      EXPECT_THROW(do_authenticate_on(*middleware_, RpcCall{.bearer_token = "", .method = ""},
+                                      CredentialRule::TokenAndMfa),
+                   auth::AuthError);
+      EXPECT_NO_THROW(middleware_->admit_no_credential(RpcCall{.bearer_token = "", .method = ""}));
+    }
+
+    TEST_F(AuthMiddlewareTest, RpcGateReportsTheGateKindAndCredentialRuleOfEveryEntry) {
       AuthMiddleware::register_rpc("e3_test.GatedRpc", core::Permission::SampleWrite);
-      AuthMiddleware::register_rpc("e3_test.UngatedRpc", RpcGate::no_permission_required());
+      AuthMiddleware::register_rpc("e3_test.UngatedRpc", RpcGate::no_credential());
+      AuthMiddleware::register_rpc("e3_test.TokenOnlyEntry",
+                                   RpcGate::credential(CredentialRule::TokenOnly));
 
       const auto snapshot = AuthMiddleware::registered_rpcs();
       ASSERT_TRUE(snapshot.contains("e3_test.GatedRpc"));
       ASSERT_TRUE(snapshot.contains("e3_test.UngatedRpc"));
+      ASSERT_TRUE(snapshot.contains("e3_test.TokenOnlyEntry"));
       EXPECT_EQ(snapshot.at("e3_test.GatedRpc").kind(), RpcGate::Kind::Permission);
       EXPECT_EQ(snapshot.at("e3_test.GatedRpc").permission(), core::Permission::SampleWrite);
-      EXPECT_EQ(snapshot.at("e3_test.UngatedRpc").kind(), RpcGate::Kind::NoPermissionRequired);
+      EXPECT_EQ(snapshot.at("e3_test.UngatedRpc").kind(), RpcGate::Kind::Credential);
+      EXPECT_EQ(snapshot.at("e3_test.UngatedRpc").credential_rule(), CredentialRule::None);
+      EXPECT_EQ(snapshot.at("e3_test.TokenOnlyEntry").credential_rule(), CredentialRule::TokenOnly);
     }
 
-    TEST_F(AuthMiddlewareTest, NoPermissionGateRefusesToNameAPermission) {
-      const auto gate = RpcGate::no_permission_required();
-      EXPECT_EQ(gate.describe(), "no permission required");
-      EXPECT_THROW(static_cast<void>(gate.permission()), std::logic_error);
-      EXPECT_EQ(RpcGate(core::Permission::AuditRead).describe(), "permission 'audit.read'");
+    TEST_F(AuthMiddlewareTest, RpcGateDescribesItselfAndRefusesToBeMisread) {
+      const auto permission_gate = RpcGate(core::Permission::AuditRead);
+      EXPECT_EQ(permission_gate.describe(), "permission 'audit.read'");
+      EXPECT_THROW(static_cast<void>(permission_gate.credential_rule()), std::logic_error);
+
+      const auto token_only = RpcGate::token_only();
+      EXPECT_EQ(token_only.kind(), RpcGate::Kind::Credential);
+      EXPECT_EQ(token_only.credential_rule(), CredentialRule::TokenOnly);
+      EXPECT_EQ(token_only.describe(), "credential rule 'token_only'");
+      EXPECT_EQ(to_key(CredentialRule::None), "no_credential");
+      EXPECT_EQ(to_key(CredentialRule::TokenAndMfa), "token_and_mfa");
+      EXPECT_THROW(static_cast<void>(token_only.permission()), std::logic_error);
     }
 
     TEST_F(AuthMiddlewareTest, RpcRegistryReturnsSnapshotForAllRegisteredRpcs) {

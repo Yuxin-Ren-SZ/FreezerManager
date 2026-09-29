@@ -176,6 +176,24 @@ namespace fmgr::server {
     return std::string(header->substr(prefix.size()));
   }
 
+  // The "Bearer <token>" value of the Authorization header. Throws
+  // auth::InvalidCredentials when the header is missing or malformed.
+  [[nodiscard]] inline std::string bearer_token(const grpc::ServerContext& ctx) {
+    const auto& metadata = ctx.client_metadata();
+    const auto it = metadata.find("authorization");
+    return it == metadata.end()
+               ? parse_bearer(std::nullopt)
+               : parse_bearer(std::string_view(it->second.data(), it->second.size()));
+  }
+
+  // The full name of the RPC being served, for AuthMiddleware's registry checks.
+  // Reads no credential and throws nothing: a handler whose RPC declares it needs
+  // no credential (#119, Login) must not be refused for an Authorization header it
+  // was never going to read, so an absent or malformed one is not an error here.
+  [[nodiscard]] inline std::string rpc_method_name(const grpc::ServerContext& ctx) {
+    return rpc::RpcMethodTracker::lookup(static_cast<const grpc::ServerContextBase*>(&ctx));
+  }
+
   // Extract "Bearer <token>" from gRPC request metadata, together with the full
   // name of the RPC being served (rpc::RpcCall).
   //
@@ -189,13 +207,7 @@ namespace fmgr::server {
   //
   // Throws auth::InvalidCredentials if header is missing or malformed.
   [[nodiscard]] inline rpc::RpcCall extract_bearer(const grpc::ServerContext& ctx) {
-    const auto& metadata = ctx.client_metadata();
-    const auto it = metadata.find("authorization");
-    const std::string token =
-        it == metadata.end() ? parse_bearer(std::nullopt)
-                             : parse_bearer(std::string_view(it->second.data(), it->second.size()));
-    const auto* context = static_cast<const grpc::ServerContextBase*>(&ctx);
-    return rpc::RpcCall{.bearer_token = token, .method = rpc::RpcMethodTracker::lookup(context)};
+    return rpc::RpcCall{.bearer_token = bearer_token(ctx), .method = rpc_method_name(ctx)};
   }
 
 } // namespace fmgr::server
