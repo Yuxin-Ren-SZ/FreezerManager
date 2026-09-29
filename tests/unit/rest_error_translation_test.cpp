@@ -49,6 +49,48 @@ namespace fmgr::rest {
       EXPECT_EQ(nlohmann::json::parse(err.body).at("code"), "OK");
     }
 
+    // #140: a pending second factor and an expired session are both
+    // UNAUTHENTICATED — deliberately, so no RPC's authentication semantics change
+    // — but a client that must resume the TOTP prompt instead of dead-ending has
+    // to tell them apart. It keys on the envelope code, not on a sentence: same
+    // HTTP status, different recovery.
+    TEST(RestErrorTranslationTest, PendingMfaGetsItsOwnEnvelopeCode) {
+      const grpc::Status pending{grpc::StatusCode::UNAUTHENTICATED,
+                                 std::string(rpc::k_mfa_required_marker) +
+                                     "second factor required"};
+      const auto err = to_http_error(pending);
+
+      EXPECT_EQ(err.status_code, 401) << "the HTTP status stays what it was";
+      const auto body = nlohmann::json::parse(err.body);
+      EXPECT_EQ(body.at("code"), rpc::k_mfa_required_code);
+      EXPECT_EQ(body.at("code"), "MFA_REQUIRED");
+
+      // The message keeps the detail a human reads; the code is what a client
+      // branches on.
+      EXPECT_NE(body.at("message").get<std::string>().find("second factor required"),
+                std::string::npos);
+    }
+
+    // The control for the test above: every other unauthenticated failure stays
+    // plain UNAUTHENTICATED, and the marker only counts as a **prefix**. Without
+    // this, a mapper that answered MFA_REQUIRED for any unauthenticated failure
+    // would pass — and would send a signed-out user to a TOTP prompt.
+    TEST(RestErrorTranslationTest, OtherUnauthenticatedFailuresKeepThePlainCode) {
+      for (const std::string& message :
+           {std::string("invalid or expired session token"), std::string("session was revoked"),
+            // Same text, not at the start.
+            std::string("rejected: ") + std::string(rpc::k_mfa_required_marker)}) {
+        const auto err = to_http_error({grpc::StatusCode::UNAUTHENTICATED, message});
+        EXPECT_EQ(err.status_code, 401) << message;
+        EXPECT_EQ(nlohmann::json::parse(err.body).at("code"), "UNAUTHENTICATED") << message;
+      }
+      // And the marker never changes a code that was not UNAUTHENTICATED.
+      const auto denied = to_http_error(
+          {grpc::StatusCode::PERMISSION_DENIED, std::string(rpc::k_mfa_required_marker) + "x"});
+      EXPECT_EQ(denied.status_code, 403);
+      EXPECT_EQ(nlohmann::json::parse(denied.body).at("code"), "PERMISSION_DENIED");
+    }
+
     // ---- Break-it: cover all remaining gRPC status codes ----
 
     TEST(RestErrorTranslationTest, AllStandardGrpcCodesHaveHttpMapping) {
