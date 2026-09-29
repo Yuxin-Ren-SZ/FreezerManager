@@ -108,6 +108,10 @@ unset NODE_ENV; npm run check       # exit 0 — 44 files, 700 tests passed
 ctest --preset dev                  # 100% tests passed out of 1534, 117 s
                                     # 222 skipped: the Postgres-gated ones
                                     # (FMGR_TEST_POSTGRES_URL unset locally)
+
+# lint, one TU at a time (AGENTS.md §4: never above -j 2)
+clang-tidy -p out/build/dev src/server/SampleServiceImpl.cc
+clang-tidy -p out/build/dev tests/integration/sample_service_integration_test.cpp
 ```
 
 **One failure on the way, named rather than waved away:** a first full run on a
@@ -142,7 +146,26 @@ re-run (load avg 3.1) and was 1534/1534 on the pre-rebase run too.
   neither, so there is no live bug, and after this PR such a call is refused
   instead of silently dropped. If a Qt volume input is ever added, it inherits
   this rule from the server for free.
-- **No local clang-tidy.** The machine has no clang-tidy 17, so the CI
-  `clang-tidy` job is the only lint coverage for `SampleServiceImpl.cc` and the
-  integration test. `clang-format --dry-run --Werror` (17.0.6, CI's version) is
-  clean on both, and the `lint (SPDX, clang-format)` job is green.
+- **clang-tidy: runnable locally, and the local build over-reports.** The ASSIGN
+  said it could not be run here; it can —
+  `$FMGR_MAIN_CHECKOUT/.venv/bin/clang-tidy` is LLVM 17.0.1 and reads the same
+  `.clang-tidy` (`WarningsAsErrors: '*'`). Run on both changed TUs (one process
+  at a time, `-p out/build/dev`): **6** warnings-as-errors in
+  `SampleServiceImpl.cc` (the only one in that file is pre-existing,
+  `emit_new_samples` line 348) and **18** in the integration test — **none on a
+  line this branch adds**. Two of the 18 are on functions added here
+  (`checkout_sample`, `stored_checkout_events`,
+  `readability-convert-member-functions-to-static`), which is the local-superset
+  artefact the board records: the same check fires on **seven pre-existing
+  fixture methods**, including `login`, which reads `auth_stub_` and therefore
+  cannot be static. If CI reported it for this file, `main` would be red; it is
+  green. The one CI-relevant shape was pre-empted:
+  `checkout_sample(token, sample_id, …)` is
+  `bugprone-easily-swappable-parameters`, and it carries the same
+  `// NOLINTNEXTLINE(...)` as its neighbours `login` and `get_sample`.
+  `clang-format --dry-run --Werror` (17.0.6, CI's version) is clean on both, and
+  the `lint (SPDX, clang-format)` job is green.
+- **No local sanitizer run.** Per AGENTS.md §4 this diff is not memory,
+  concurrency, storage or parser code, and CI runs asan/ubsan/tsan on it. If a
+  local `asan -R 'SampleService'` is wanted before merge, the preset needs
+  building first (`scripts/agent/conan-install.sh asan`).
