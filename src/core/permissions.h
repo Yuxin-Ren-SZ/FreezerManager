@@ -183,11 +183,20 @@ namespace fmgr::core {
     return result;
   }
 
+  // Permissions that only ever make sense deployment-wide. A lab-owned role must
+  // never carry one: the grant would be meaningless at lab scope and, wherever
+  // the permission is evaluated without a lab, an escalation path
+  // (doc/CODE_REVIEW_2026-06-12.md F-1). RoleServiceImpl::GrantPermission
+  // refuses them for lab roles, and LocalAuthProvider promotes them to
+  // global_permissions through a SystemAdmin-kind role alone. `session.revoke`
+  // belongs here because RevokeSession has no lab to scope it to: its contract
+  // is "the caller's own session, or a SystemAdmin" (#77).
   [[nodiscard]] inline bool is_global_only_permission(Permission permission) {
     switch (permission) {
     case Permission::SampleDeleteHard:
     case Permission::BackupRun:
     case Permission::KeyRotate:
+    case Permission::SessionRevoke:
     case Permission::LabProvision:
       return true;
     case Permission::SampleRead:
@@ -207,7 +216,6 @@ namespace fmgr::core {
     case Permission::PhiRead:
     case Permission::LabConfigure:
     case Permission::LabEnablePhi:
-    case Permission::SessionRevoke:
       return false;
     }
     throw std::invalid_argument("unknown permission");
