@@ -347,6 +347,12 @@ export interface TightenViolation {
  * child's definition must not accept anything the parent refuses. An empty list
  * means the replacement is a tightening (or identical).
  *
+ * **The server enforces this too, and it is the authoritative half**
+ * (`core/custom_field_tightening.h`, called from both custom-field write RPCs,
+ * #103): a loosening write from `freezerctl`, the Qt client or anything on
+ * REST/gRPC is refused with `INVALID_ARGUMENT`. This copy stays because a form
+ * that says *why* before sending beats one that translates a failed request.
+ *
  * The rule the issue names explicitly is `required-dropped`: making a required
  * ancestor field optional would drop the requirement for the whole subtree.
  * The permissive direction matters just as much and is the one a careless

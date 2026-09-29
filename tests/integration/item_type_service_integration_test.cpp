@@ -28,6 +28,7 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -143,6 +144,113 @@ namespace fmgr::test {
         fmgr::v1::CreateCfdResponse resp;
         EXPECT_TRUE(item_type_stub_->CreateCustomFieldDefinition(&ctx, req, &resp).ok());
         return resp.cfd().id();
+      }
+
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      std::string create_child_item_type(const std::string& token, const std::string& lab,
+                                         const std::string& parent_id, const std::string& name) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateItemTypeRequest req;
+        req.set_lab_id(lab);
+        req.set_parent_id(parent_id);
+        req.set_name(name);
+        fmgr::v1::CreateItemTypeResponse resp;
+        EXPECT_TRUE(item_type_stub_->CreateItemType(&ctx, req, &resp).ok());
+        return resp.item_type().id();
+      }
+
+      // A CFD write as the tightening tests vary it. `item_type_id` empty means
+      // lab-global; the update helper sets it explicitly because the proto
+      // replaces the whole definition, attachment included.
+      struct CfdWriteSpec {
+        std::string item_type_id;
+        std::string key{"field"};
+        bool required{false};
+        std::string validation_json{"{}"};
+      };
+
+      // Returns the status rather than asserting it, so a test can pin the
+      // refusal. `out_id` receives the created id on success.
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      grpc::Status create_cfd_spec(const std::string& token, const std::string& lab,
+                                   const CfdWriteSpec& spec, std::string* out_id = nullptr) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateCfdRequest req;
+        auto* const cfd = req.mutable_cfd();
+        cfd->set_lab_id(lab);
+        cfd->set_scope_kind(fmgr::v1::SCOPE_KIND_SAMPLE);
+        if (!spec.item_type_id.empty()) {
+          cfd->set_item_type_id(spec.item_type_id);
+        }
+        cfd->set_key(spec.key);
+        cfd->set_label(spec.key + " label");
+        cfd->set_data_type(fmgr::v1::FIELD_DATA_TYPE_TEXT);
+        cfd->set_required(spec.required);
+        cfd->set_validation_json(spec.validation_json);
+        fmgr::v1::CreateCfdResponse resp;
+        const auto status = item_type_stub_->CreateCustomFieldDefinition(&ctx, req, &resp);
+        if (status.ok() && out_id != nullptr) {
+          *out_id = resp.cfd().id();
+        }
+        return status;
+      }
+
+      // Setup counterpart of `create_cfd_spec`: expects success and returns the id.
+      std::string make_cfd(const std::string& token, const std::string& lab,
+                           const CfdWriteSpec& spec) {
+        std::string id;
+        EXPECT_TRUE(create_cfd_spec(token, lab, spec, &id).ok());
+        return id;
+      }
+
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      grpc::Status update_cfd_spec(const std::string& token, const std::string& lab,
+                                   const std::string& id, const CfdWriteSpec& spec) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::UpdateCfdRequest req;
+        auto* const cfd = req.mutable_cfd();
+        cfd->set_id(id);
+        cfd->set_lab_id(lab);
+        cfd->set_scope_kind(fmgr::v1::SCOPE_KIND_SAMPLE);
+        if (!spec.item_type_id.empty()) {
+          cfd->set_item_type_id(spec.item_type_id);
+        }
+        cfd->set_key(spec.key);
+        cfd->set_label(spec.key + " label");
+        cfd->set_data_type(fmgr::v1::FIELD_DATA_TYPE_TEXT);
+        cfd->set_required(spec.required);
+        cfd->set_validation_json(spec.validation_json);
+        fmgr::v1::UpdateCfdResponse resp;
+        return item_type_stub_->UpdateCustomFieldDefinition(&ctx, req, &resp);
+      }
+
+      // The stored definition of `key` attached to `item_type_id`, read back
+      // through the list RPC ("" = lab-global). Used to prove a refused write
+      // left no partial change behind.
+      [[nodiscard]] std::optional<fmgr::v1::CustomFieldDefinition>
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      stored_cfd(const std::string& token, const std::string& item_type_id,
+                 const std::string& key) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListCfdsRequest req;
+        req.set_lab_id(kLab1);
+        if (!item_type_id.empty()) {
+          req.set_item_type_id(item_type_id);
+        }
+        fmgr::v1::ListCfdsResponse resp;
+        if (!item_type_stub_->ListCustomFieldDefinitions(&ctx, req, &resp).ok()) {
+          return std::nullopt;
+        }
+        for (const auto& cfd : resp.cfds()) {
+          if (cfd.key() == key) {
+            return cfd;
+          }
+        }
+        return std::nullopt;
       }
 
       const std::string kAdminEmail{"admin@example.com"};
@@ -843,6 +951,149 @@ namespace fmgr::test {
       const auto status = item_type_stub_->ArchiveCustomFieldDefinition(&ctx, req, &resp);
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    // =====================================================================
+    // Tightening an inherited definition (#103)
+    // =====================================================================
+    //
+    // N5: "a child may tighten a parent's field but must not drop a required
+    // parent field". G3.9's form enforces it in the browser; these tests hold
+    // the *server* to the same rule with no web client in the picture, on both
+    // write RPCs, and in both directions — a check that only refuses things is
+    // as wrong as one that only allows them.
+
+    TEST_F(ItemTypeServiceTest, CreateCfdRejectsLooseningInheritedDefinition) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto parent_type = create_item_type(token, kLab1, "liquid");
+      const auto child_type = create_child_item_type(token, kLab1, parent_type, "blood");
+      make_cfd(
+          token, kLab1,
+          {.item_type_id = parent_type, .key = "notes", .validation_json = R"({"max_length":20})"});
+
+      // The child raises the cap it inherits: values the parent's type refuses
+      // would be accepted under the child.
+      const auto status = create_cfd_spec(
+          token, kLab1,
+          {.item_type_id = child_type, .key = "notes", .validation_json = R"({"max_length":40})"});
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("max_length"), std::string::npos);
+      EXPECT_EQ(stored_cfd(token, child_type, "notes"), std::nullopt);
+    }
+
+    // The rule's name, and the case a hurried implementation folds into
+    // "narrower": dropping `required` is not a constraint change, it is the
+    // whole requirement disappearing for the subtree.
+    TEST_F(ItemTypeServiceTest, UpdateCfdRejectsDroppingRequiredInheritedField) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto parent_type = create_item_type(token, kLab1, "liquid");
+      const auto child_type = create_child_item_type(token, kLab1, parent_type, "blood");
+      make_cfd(token, kLab1, {.item_type_id = parent_type, .key = "patient_id", .required = true});
+      // The child override keeps the requirement, which is a legitimate tightening.
+      const auto child_cfd = make_cfd(
+          token, kLab1, {.item_type_id = child_type, .key = "patient_id", .required = true});
+
+      const auto status =
+          update_cfd_spec(token, kLab1, child_cfd,
+                          {.item_type_id = child_type, .key = "patient_id", .required = false});
+      ASSERT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("required"), std::string::npos);
+
+      // And the refusal wrote nothing: the requirement is still in place.
+      const auto stored = stored_cfd(token, child_type, "patient_id");
+      ASSERT_TRUE(stored.has_value());
+      EXPECT_TRUE(stored->required());
+    }
+
+    TEST_F(ItemTypeServiceTest, UpdateCfdRejectsWideningInheritedConstraint) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto parent_type = create_item_type(token, kLab1, "liquid");
+      const auto child_type = create_child_item_type(token, kLab1, parent_type, "blood");
+      make_cfd(
+          token, kLab1,
+          {.item_type_id = parent_type, .key = "notes", .validation_json = R"({"max_length":20})"});
+      const auto child_cfd = make_cfd(
+          token, kLab1,
+          {.item_type_id = child_type, .key = "notes", .validation_json = R"({"max_length":5})"});
+
+      // Raising the child's cap back to the parent's 20 would be allowed —
+      // equal is a tightening; only going *beyond* the inherited limit is not.
+      const auto status = update_cfd_spec(
+          token, kLab1, child_cfd,
+          {.item_type_id = child_type, .key = "notes", .validation_json = R"({"max_length":40})"});
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("max_length"), std::string::npos);
+    }
+
+    TEST_F(ItemTypeServiceTest, UpdateCfdAllowsTighteningInheritedConstraint) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto parent_type = create_item_type(token, kLab1, "liquid");
+      const auto child_type = create_child_item_type(token, kLab1, parent_type, "blood");
+      make_cfd(
+          token, kLab1,
+          {.item_type_id = parent_type, .key = "notes", .validation_json = R"({"max_length":20})"});
+      const auto child_cfd = make_cfd(
+          token, kLab1,
+          {.item_type_id = child_type, .key = "notes", .validation_json = R"({"max_length":5})"});
+
+      const auto status = update_cfd_spec(
+          token, kLab1, child_cfd,
+          {.item_type_id = child_type, .key = "notes", .validation_json = R"({"max_length":3})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      const auto stored = stored_cfd(token, child_type, "notes");
+      ASSERT_TRUE(stored.has_value());
+      EXPECT_EQ(stored->validation_json(), R"({"max_length":3})");
+    }
+
+    // The permissive direction: an optional inherited field *may* be made
+    // required, and a brand-new field with no inherited counterpart may be
+    // anything at all. A rule that refused these would be tighter than the one
+    // the SPA implements.
+    TEST_F(ItemTypeServiceTest, UpdateCfdAllowsRequiringAnOptionalInheritedField) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto parent_type = create_item_type(token, kLab1, "liquid");
+      const auto child_type = create_child_item_type(token, kLab1, parent_type, "blood");
+      make_cfd(token, kLab1, {.item_type_id = parent_type, .key = "notes"});
+      const auto child_cfd = make_cfd(token, kLab1, {.item_type_id = child_type, .key = "notes"});
+
+      const auto status = update_cfd_spec(
+          token, kLab1, child_cfd, {.item_type_id = child_type, .key = "notes", .required = true});
+      EXPECT_TRUE(status.ok()) << status.error_message();
+      const auto stored = stored_cfd(token, child_type, "notes");
+      ASSERT_TRUE(stored.has_value());
+      EXPECT_TRUE(stored->required());
+    }
+
+    // A lab-global definition is inherited by every node, so an override of it
+    // is bound by the same rule — including at a root, which has no ancestors.
+    TEST_F(ItemTypeServiceTest, CreateCfdRejectsDroppingARequiredLabGlobalField) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      make_cfd(token, kLab1, {.key = "patient_id", .required = true});
+
+      const auto status = create_cfd_spec(
+          token, kLab1, {.item_type_id = root_type, .key = "patient_id", .required = false});
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("required"), std::string::npos);
+    }
+
+    TEST_F(ItemTypeServiceTest, UpdateCfdWithoutAnInheritedCounterpartIsUnconstrained) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto parent_type = create_item_type(token, kLab1, "liquid");
+      const auto child_type = create_child_item_type(token, kLab1, parent_type, "blood");
+      const auto child_cfd = make_cfd(token, kLab1, {.item_type_id = child_type, .key = "own_key"});
+
+      // Nothing above the child defines `own_key`, so a wide constraint is not a
+      // loosening of anything.
+      const auto status = update_cfd_spec(token, kLab1, child_cfd,
+                                          {.item_type_id = child_type,
+                                           .key = "own_key",
+                                           .validation_json = R"({"max_length":400})"});
+      EXPECT_TRUE(status.ok()) << status.error_message();
     }
 
     // =====================================================================
