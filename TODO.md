@@ -984,7 +984,7 @@ inline.
       update and tombstone, SSE reconnect and the error paths, and a
       100k-row fake never renders more than about 100 rows at once.
 
-- [ ] **G3.3. Sample detail, create and edit** (`features/sample-detail/`).
+- [x] **G3.3. Sample detail, create and edit** (`features/sample-detail/`).
   - The detail view shows every field. Custom fields render according to
     their definition type (string, int, float, bool, date, datetime, enum,
     reference). PHI fields appear only when the response includes them (the
