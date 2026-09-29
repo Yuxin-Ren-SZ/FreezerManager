@@ -687,6 +687,7 @@ describe('fakeApi browser session (G2.1)', () => {
       (caught: unknown) => caught,
     )) as ApiError;
     expect(refused.code).toBe('UNAUTHENTICATED');
+    expect(refused.mfaRequired).toBe(true);
     expect(refused.message).toContain('mfa_required:');
 
     // ...but it can give the credential up (#62), which is what makes an

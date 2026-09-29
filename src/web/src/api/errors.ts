@@ -39,6 +39,8 @@ export interface ApiErrorOptions {
   httpStatus?: number | null;
   /** Correlation id: the gateway's `X-Request-Id`, else the one we sent. */
   requestId?: string | null;
+  /** True when the refusal means "a session, but its second factor is outstanding". */
+  mfaRequired?: boolean;
   cause?: unknown;
 }
 
@@ -53,6 +55,17 @@ export class ApiError extends Error {
   readonly code: GrpcCode;
   readonly httpStatus: number | null;
   readonly requestId: string | null;
+  /**
+   * `auth::MfaRequired` on the wire: a session exists but its TOTP code is
+   * still outstanding, so the SPA resumes the code prompt instead of signing
+   * the user out.
+   *
+   * A flag rather than a `code`, because the *gRPC* code deliberately stays
+   * `UNAUTHENTICATED` — no RPC's authentication semantics change — and what
+   * identifies the state is the gateway's envelope, not the status. See
+   * `isMfaRequired()`.
+   */
+  readonly mfaRequired: boolean;
 
   constructor(code: GrpcCode, message: string, options: ApiErrorOptions = {}) {
     super(message, { cause: options.cause });
@@ -60,6 +73,7 @@ export class ApiError extends Error {
     this.code = code;
     this.httpStatus = options.httpStatus ?? null;
     this.requestId = options.requestId ?? null;
+    this.mfaRequired = options.mfaRequired ?? false;
   }
 
   /** True for the codes the UI must treat as "sign in again". */
@@ -73,30 +87,38 @@ export function isApiError(value: unknown): value is ApiError {
 }
 
 /**
- * The prefix `GrpcErrorTranslation.h` puts on a refusal whose cause is a session
- * that exists but has not finished its second factor:
- *
- * ```cpp
- * to_grpc_status(const auth::MfaRequired& error) {
- *   return {grpc::StatusCode::UNAUTHENTICATED, std::string("mfa_required: ") + error.what()};
- * }
- * ```
- *
- * It is the **only** thing that separates "enter your code" from "sign in
- * again": both arrive as `UNAUTHENTICATED`, and a wrong TOTP code
- * (`InvalidCredentials`) is that same status with no prefix. The SPA therefore
- * never guesses from the status alone.
+ * The marker `GrpcErrorTranslation.h` prefixes the gRPC status message with for
+ * an `auth::MfaRequired` refusal (`rpc::k_mfa_required_marker`).
  */
 export const MFA_REQUIRED_PREFIX = 'mfa_required:';
 
 /**
- * Whether a failure is `auth::MfaRequired` on the wire — a session whose second
- * factor is still outstanding, which is a resumable state, not a sign-out.
+ * The envelope code `RestErrorTranslation.h` puts in the `{"code","message"}`
+ * body of that same refusal, next to HTTP 401 (`rpc::k_mfa_required_code`,
+ * #140).
+ *
+ * It exists because a sentence is not an interface: `UNAUTHENTICATED` is what an
+ * expired or revoked session gets too, and the SPA has to *resume* the TOTP step
+ * for one of those while it re-authenticates for the others.
+ */
+export const MFA_REQUIRED_ENVELOPE_CODE = 'MFA_REQUIRED';
+
+/**
+ * Whether a failure is `auth::MfaRequired` — a session whose second factor is
+ * still outstanding, which is a resumable state, not a sign-out.
+ *
+ * Both shapes are accepted on purpose. The envelope code is what the gateway
+ * sends once #140 lands; the message prefix is what it sends before that, and
+ * what a gRPC-level client or a log still sees afterwards. Tolerating both means
+ * that whichever of the two merges first, "enter your code" cannot silently
+ * become "sign in again" — the state a demo would dead-end on.
  */
 export function isMfaRequired(cause: unknown): boolean {
-  return (
-    cause instanceof ApiError &&
-    cause.code === 'UNAUTHENTICATED' &&
-    cause.message.startsWith(MFA_REQUIRED_PREFIX)
-  );
+  if (!(cause instanceof ApiError)) {
+    return false;
+  }
+  if (cause.mfaRequired) {
+    return true;
+  }
+  return cause.code === 'UNAUTHENTICATED' && cause.message.startsWith(MFA_REQUIRED_PREFIX);
 }

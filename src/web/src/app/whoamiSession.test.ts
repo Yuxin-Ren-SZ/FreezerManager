@@ -123,6 +123,21 @@ describe('createWhoAmISessionLoader', () => {
     await expect(load()).rejects.toBeInstanceOf(MfaPendingError);
   });
 
+  it('rejects with MfaPendingError for the gateway envelope code too', async () => {
+    const load = createWhoAmISessionLoader(() =>
+      Promise.reject(
+        new ApiError('UNAUTHENTICATED', 'MFA required before this operation', {
+          httpStatus: 401,
+          mfaRequired: true,
+        }),
+      ),
+    );
+
+    // #140 makes the state machine-readable, which is what the SPA should
+    // branch on; the message marker above is the shape that predates it.
+    await expect(load()).rejects.toBeInstanceOf(MfaPendingError);
+  });
+
   it('propagates anything else, so a dropped connection is not a sign-out', async () => {
     const load = createWhoAmISessionLoader(() =>
       Promise.reject(new ApiError('UNAVAILABLE', 'the server could not be reached')),

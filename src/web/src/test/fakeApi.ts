@@ -9,7 +9,12 @@ import {
   type MessageInitShape,
 } from '@bufbuild/protobuf';
 import { HttpResponse, http, type HttpHandler } from 'msw';
-import { isGrpcCode, type GrpcCode } from '../api/errors';
+import {
+  isGrpcCode,
+  MFA_REQUIRED_ENVELOPE_CODE,
+  MFA_REQUIRED_PREFIX,
+  type GrpcCode,
+} from '../api/errors';
 import { apiRoutes, type RpcName } from '../api/routes';
 import { AuditEventSchema, type AuditEvent } from '../gen/fmgr/v1/audit_pb';
 import {
@@ -1930,6 +1935,21 @@ function errorResponse(code: GrpcCode, message: string) {
 }
 
 /**
+ * The gateway's pending-MFA refusal (#140): still HTTP 401, but with the
+ * envelope code `MFA_REQUIRED` instead of `UNAUTHENTICATED`, because that one
+ * state cannot be told apart from an expired session by the gRPC code.
+ */
+function mfaRequiredResponse() {
+  return HttpResponse.json(
+    {
+      code: MFA_REQUIRED_ENVELOPE_CODE,
+      message: `${MFA_REQUIRED_PREFIX} MFA required before this operation`,
+    },
+    { status: HTTP_STATUS_FOR.UNAUTHENTICATED },
+  );
+}
+
+/**
  * Handlers for every route in `routes.ts`. Spread them into the MSW server:
  *
  * ```ts
@@ -1982,10 +2002,7 @@ export function fakeApi(options: FakeApiOptions = {}): HttpHandler[] {
         // call. Without this, a test could log in with an MFA account, never
         // submit a code, and still read lab data that production refuses.
         if (lab.auth.pendingMfaUserId !== null && !PENDING_MFA_EXEMPT_ROUTES.has(rpc as RpcName)) {
-          return errorResponse(
-            'UNAUTHENTICATED',
-            'mfa_required: MFA required before this operation',
-          );
+          return mfaRequiredResponse();
         }
 
         const resolved = resolvers[rpc as RpcName]?.(lab, parsed);
