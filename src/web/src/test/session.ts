@@ -19,6 +19,11 @@ export interface CurrentUserOptions {
   readonly globalPermissions?: readonly PermissionKey[];
   /** Labs the user is a member of; defaults to one membership in `labId`. */
   readonly labs?: readonly string[];
+  /**
+   * The lab's PHI mode (`LabMembership.isPhiEnabled`, from `WhoAmI`). Defaults
+   * to `true`; a screen that gates a PHI affordance needs both values.
+   */
+  readonly isPhiEnabled?: boolean;
 }
 
 export function currentUserWith(
@@ -33,7 +38,7 @@ export function currentUserWith(
     roleId: 'role-test',
     roleName: 'Test',
     permissions,
-    isPhiEnabled: true,
+    isPhiEnabled: options.isPhiEnabled ?? true,
   });
 
   return {

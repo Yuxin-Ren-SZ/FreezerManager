@@ -65,7 +65,10 @@ const EXPECTED_SCREEN: Record<string, { title: string; task: string | null }> = 
   'csv-import': { title: csvImportCopy.title, task: 'G3.7' },
   shares: { title: sharesCopy.title, task: 'G3.13' },
   'admin-layout': { title: layoutCopy.title, task: 'G3.8' },
-  'item-types': { title: itemTypesCopy.title, task: 'G3.9' },
+  // G3.9 replaced the item-types placeholder. Its heading is the namespace's
+  // title, and for `lab-1` there are no item types in the fake, so the screen
+  // renders the tree's empty state and still names itself.
+  'item-types': { title: itemTypesCopy.title, task: null },
   members: { title: membersCopy.title, task: 'G3.10' },
   audit: { title: auditCopy.title, task: 'G3.12' },
   account: { title: accountCopy.title, task: 'G3.11' },

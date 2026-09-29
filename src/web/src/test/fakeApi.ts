@@ -1046,6 +1046,133 @@ function requireAcceptedSizeClass(
 }
 
 /**
+ * The server's item-type write rules (G3.9), so a write route is not more
+ * generous than `freezerd`.
+ *
+ * `ItemTypeRepositories::check_no_cycle`, verbatim: walk the proposed parent
+ * chain and refuse a repeat — the *entity's own id* appearing in it, or any
+ * node visited twice because the stored data already contains a cycle. The
+ * visited set is what makes the walk terminate on the data it is guarding
+ * against; a depth limit would not.
+ */
+const ITEM_TYPE_CYCLE = 'item type parent chain forms a cycle';
+
+function requireNoItemTypeCycle(lab: DemoLab, id: string, parentId: string | undefined): void {
+  if (parentId === undefined) {
+    return;
+  }
+  const visited = new Set<string>();
+  let cursor: string | undefined = parentId;
+  while (cursor !== undefined) {
+    if (cursor === id || visited.has(cursor)) {
+      throw new FakeRpcError('INVALID_ARGUMENT', ITEM_TYPE_CYCLE);
+    }
+    visited.add(cursor);
+    cursor = lab.itemTypes.find((candidate) => candidate.id === cursor)?.parentId;
+  }
+}
+
+/** `item_types.parent_id REFERENCES item_types(id)`: a dangling parent is a FK error. */
+function requireItemTypeParent(lab: DemoLab, parentId: string | undefined): void {
+  if (parentId === undefined || lab.itemTypes.some((candidate) => candidate.id === parentId)) {
+    return;
+  }
+  throw new FakeRpcError(
+    'FAILED_PRECONDITION',
+    'execute sqlite item_type statement: FOREIGN KEY constraint failed',
+  );
+}
+
+/**
+ * `validate_item_type` plus `item_types_lab_name_unique`: the name is required,
+ * and two live item types in one lab cannot share it.
+ */
+function requireItemTypeName(lab: DemoLab, labId: string, name: string, exceptId = ''): void {
+  if (name === '') {
+    throw new FakeRpcError('INVALID_ARGUMENT', 'item type name is required');
+  }
+  const duplicate = lab.itemTypes.some(
+    (candidate) =>
+      candidate.labId === labId &&
+      candidate.id !== exceptId &&
+      candidate.name === name &&
+      candidate.archivedAt === undefined,
+  );
+  if (duplicate) {
+    throw new FakeRpcError(
+      'ALREADY_EXISTS',
+      'execute sqlite item_type statement: UNIQUE constraint failed: item_types.lab_id, item_types.name',
+    );
+  }
+}
+
+/**
+ * `validate_cfd_shape` + `reject_indexed_phi` + the
+ * `cfd_lab_scope_type_key_unique` index.
+ *
+ * The PHI refusal carries the *service's* wording, not the storage layer's:
+ * `ItemTypeServiceImpl::reject_indexed_phi` runs first, so
+ * `detail::validate_cfd_shape`'s "PHI fields may not be indexed (see L10.3)" is
+ * unreachable through this route. A client that classified on the storage
+ * wording alone would miss every real refusal.
+ */
+function requireCfdShape(lab: DemoLab, wire: Partial<CustomFieldDefinition>, exceptId = ''): void {
+  if (wire.scopeKind === undefined || wire.scopeKind === ScopeKind.UNSPECIFIED) {
+    throw new FakeRpcError('INVALID_ARGUMENT', 'scope_kind is required');
+  }
+  if (wire.dataType === undefined || wire.dataType === FieldDataType.UNSPECIFIED) {
+    throw new FakeRpcError('INVALID_ARGUMENT', 'data_type is required');
+  }
+  if ((wire.key ?? '') === '') {
+    throw new FakeRpcError('INVALID_ARGUMENT', 'custom field key is required');
+  }
+  if ((wire.label ?? '') === '') {
+    throw new FakeRpcError('INVALID_ARGUMENT', 'custom field label is required');
+  }
+  if (wire.isPhi === true && wire.indexed === true) {
+    throw new FakeRpcError(
+      'INVALID_ARGUMENT',
+      'a PHI custom field may not be indexed (is_phi and indexed are mutually exclusive)',
+    );
+  }
+  if (
+    wire.itemTypeId !== undefined &&
+    !lab.itemTypes.some((candidate) => candidate.id === wire.itemTypeId)
+  ) {
+    throw new FakeRpcError(
+      'FAILED_PRECONDITION',
+      'execute sqlite custom_field_definition statement: FOREIGN KEY constraint failed',
+    );
+  }
+  const duplicate = lab.customFieldDefs.some(
+    (candidate) =>
+      candidate.id !== exceptId &&
+      candidate.labId === wire.labId &&
+      candidate.scopeKind === wire.scopeKind &&
+      (candidate.itemTypeId ?? '') === (wire.itemTypeId ?? '') &&
+      candidate.key === wire.key &&
+      candidate.archivedAt === undefined,
+  );
+  if (duplicate) {
+    throw new FakeRpcError(
+      'ALREADY_EXISTS',
+      'execute sqlite custom_field_definition statement: UNIQUE constraint failed: ' +
+        'custom_field_definitions.lab_id, custom_field_definitions.scope_kind, custom_field_definitions.key',
+    );
+  }
+}
+
+/** A fresh id for a created row: the server mints a UUID, the fake a stable one. */
+function nextFakeId(prefix: string, taken: readonly { id: string }[]): string {
+  const ids = new Set(taken.map((row) => row.id));
+  let index = ids.size + 1;
+  while (ids.has(`${prefix}${String(index)}`)) {
+    index += 1;
+  }
+  return `${prefix}${String(index)}`;
+}
+
+/**
  * The routes that answer with real demo data. Every other route in `routes.ts`
  * still gets a handler and can still be made to fail, but replies with the
  * response message's default values. A feature task that needs real data for
@@ -1149,6 +1276,118 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
       throw new FakeRpcError('NOT_FOUND', 'item type not found');
     }
     return { itemType: found };
+  },
+
+  // ---- ItemTypeService writes (G3.9) ----
+  //
+  // Until G3.9 these six routes had no resolver, so a write answered with the
+  // response message's *default* values: a test that posted a parent cycle
+  // "succeeded". That is the worst kind of fake — the test that depends on it
+  // passes — and it would have made the acceptance criterion "a cycle rejected
+  // by the server" untestable while looking tested. The rules `freezerd`
+  // enforces are mirrored here, message for message:
+  //
+  //  - `ItemTypeRepositories::check_no_cycle` on insert and update;
+  //  - the `item_types_lab_name_unique` partial index on `(lab_id, name)`;
+  //  - `ItemTypeServiceImpl::reject_indexed_phi`, ahead of the storage-layer
+  //    `validate_cfd_shape` (which carries a second, differently worded
+  //    refusal the service's own check makes unreachable);
+  //  - `cfd_lab_scope_type_key_unique` on `(lab_id, scope_kind, item_type, key)`.
+  //
+  // What is deliberately *not* mirrored: lab PHI mode. `CreateCustomFieldDefinition`
+  // does not consult `Lab.is_phi_enabled`; it is `SampleServiceImpl` that
+  // refuses PHI *values* in a lab whose mode is off. The screen refuses the
+  // definition earlier, and the fake must not pretend the server does.
+  'item-type/create': (lab, message) => {
+    const { labId, parentId, name } = fields(message) as {
+      labId: string;
+      parentId?: string;
+      name: string;
+    };
+    requireId(labId, 'lab');
+    requireItemTypeName(lab, labId, name);
+    const created = create(ItemTypeSchema, {
+      id: nextFakeId('it-created-', lab.itemTypes),
+      labId,
+      parentId,
+      name,
+      createdAt: seedTimestamp(),
+    });
+    requireItemTypeParent(lab, created.parentId);
+    requireNoItemTypeCycle(lab, created.id, created.parentId);
+    lab.itemTypes.push(created);
+    return { itemType: created };
+  },
+
+  'item-type/update': (lab, message) => {
+    const wire = (fields(message).itemType ?? {}) as Partial<ItemType>;
+    const labId = wire.labId ?? '';
+    const itemTypeId = wire.id ?? '';
+    requireId(labId, 'lab');
+    requireId(itemTypeId, 'item type');
+    const found = lab.itemTypes.find((candidate) => candidate.id === itemTypeId);
+    // The service answers NOT_FOUND when the id is unknown *or* belongs to
+    // another lab, so the two cannot be told apart from outside.
+    if (found?.labId !== labId) {
+      throw new FakeRpcError('NOT_FOUND', 'item type not found');
+    }
+    requireItemTypeName(lab, labId, wire.name ?? '', itemTypeId);
+    requireItemTypeParent(lab, wire.parentId);
+    requireNoItemTypeCycle(lab, itemTypeId, wire.parentId);
+    found.name = wire.name ?? '';
+    found.parentId = wire.parentId;
+    return { itemType: found };
+  },
+
+  'custom-field-def/create': (lab, message) => {
+    const wire = (fields(message).cfd ?? {}) as Partial<CustomFieldDefinition>;
+    requireId(wire.labId ?? '', 'lab');
+    requireCfdShape(lab, wire);
+    const created = create(CustomFieldDefinitionSchema, {
+      id: nextFakeId('cfd-created-', lab.customFieldDefs),
+      labId: wire.labId ?? '',
+      scopeKind: wire.scopeKind ?? ScopeKind.UNSPECIFIED,
+      itemTypeId: wire.itemTypeId,
+      key: wire.key ?? '',
+      label: wire.label ?? '',
+      dataType: wire.dataType ?? FieldDataType.UNSPECIFIED,
+      required: wire.required ?? false,
+      validationJson:
+        wire.validationJson === undefined || wire.validationJson === ''
+          ? '{}'
+          : wire.validationJson,
+      indexed: wire.indexed ?? false,
+      isPhi: wire.isPhi ?? false,
+      createdAt: seedTimestamp(),
+    });
+    lab.customFieldDefs.push(created);
+    return { cfd: created };
+  },
+
+  'custom-field-def/update': (lab, message) => {
+    const wire = (fields(message).cfd ?? {}) as Partial<CustomFieldDefinition>;
+    const labId = wire.labId ?? '';
+    const cfdId = wire.id ?? '';
+    requireId(labId, 'lab');
+    requireId(cfdId, 'custom field');
+    const found = lab.customFieldDefs.find((candidate) => candidate.id === cfdId);
+    if (found?.labId !== labId) {
+      throw new FakeRpcError('NOT_FOUND', 'custom field definition not found');
+    }
+    requireCfdShape(lab, wire, cfdId);
+    // Mutable fields only, as in `UpdateCustomFieldDefinition`: `lab_id` and the
+    // timestamps are not caller-editable.
+    found.scopeKind = wire.scopeKind ?? found.scopeKind;
+    found.itemTypeId = wire.itemTypeId;
+    found.key = wire.key ?? '';
+    found.label = wire.label ?? '';
+    found.dataType = wire.dataType ?? found.dataType;
+    found.required = wire.required ?? false;
+    found.validationJson =
+      wire.validationJson === undefined || wire.validationJson === '' ? '{}' : wire.validationJson;
+    found.indexed = wire.indexed ?? false;
+    found.isPhi = wire.isPhi ?? false;
+    return { cfd: found };
   },
 
   // `BoxServiceImpl::ListContainerTypes` ignores `page` too.

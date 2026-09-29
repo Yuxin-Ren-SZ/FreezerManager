@@ -1,4 +1,127 @@
 {
   "title": "Item types and custom fields",
-  "placeholder": "This screen is a placeholder. {{task}} fills it in."
+  "subtitle": "The lab's sample taxonomy, and the custom fields each node inherits.",
+  "tree": {
+    "label": "Item types",
+    "new": "New item type",
+    "dropToRoot": "Drop here to move to the top level",
+    "expand": "Expand {{name}}",
+    "collapse": "Collapse {{name}}",
+    "move": "Move {{name}}…",
+    "moveLabel": "Move",
+    "rename": "Rename {{name}}",
+    "renameLabel": "Rename",
+    "cyclic": "{{count}} item type is part of a parent cycle and is shown at the top level. The data has to be fixed outside this screen.",
+    "cyclic_other": "{{count}} item types are part of a parent cycle and are shown at the top level. The data has to be fixed outside this screen.",
+    "orphaned": "{{count}} item type is attached to a parent that is not in this lab and is shown at the top level.",
+    "empty": "This lab has no item types yet."
+  },
+  "detail": {
+    "select": "Select an item type to see the fields it defines and inherits.",
+    "path": "Path: {{path}}",
+    "fieldCount": "{{count}} field",
+    "fieldCount_other": "{{count}} fields"
+  },
+  "fields": {
+    "inheritedTitle": "Inherited from ancestors",
+    "ownTitle": "Defined here",
+    "noneInherited": "Nothing is inherited yet: this is a root item type.",
+    "noneOwn": "This item type defines no fields of its own yet.",
+    "add": "Add field",
+    "edit": "Edit {{label}}",
+    "editLabel": "Edit",
+    "override": "Override {{label}}",
+    "overrideLabel": "Override",
+    "originAncestor": "from {{name}}",
+    "originLab": "lab-wide",
+    "tightens": "tightens {{parent}} ({{origin}})",
+    "required": "Required",
+    "phi": "PHI",
+    "indexed": "Indexed",
+    "unreadable": "Could not load the field definitions for this lab, so the fields are not shown.",
+    "constraint": {
+      "maxLength": "max length {{value}}",
+      "min": "minimum {{value}}",
+      "max": "maximum {{value}}",
+      "values": "one of {{values}}"
+    }
+  },
+  "dataTypes": {
+    "text": "Text",
+    "int": "Integer",
+    "float": "Number",
+    "bool": "Yes/no",
+    "date": "Date",
+    "datetime": "Date and time",
+    "enum": "Choice list",
+    "reference": "Reference"
+  },
+  "form": {
+    "createTitle": "Add field",
+    "editTitle": "Edit {{label}}",
+    "tightenTitle": "Tighten {{label}}",
+    "key": "Key",
+    "keyHint": "Lowercase letters, digits and underscores, e.g. patient_id.",
+    "label": "Label",
+    "dataType": "Data type",
+    "required": "Required",
+    "phi": "PHI field",
+    "phiHint": "Values are encrypted, and only callers with phi.read ever see them.",
+    "indexed": "Indexed",
+    "indexedHint": "Adds a JSON-path index for filtering. A PHI field can never be indexed.",
+    "maxLength": "Maximum length",
+    "min": "Minimum",
+    "max": "Maximum",
+    "values": "Allowed values",
+    "valuesHint": "Separate values with commas.",
+    "save": "Save",
+    "cancel": "Cancel",
+    "tightenHint": "{{key}} is inherited from {{origin}}. A child may narrow it, but not drop its rules.",
+    "saved": "{{label}} saved.",
+    "duplicateKey": "A field with this key already exists on this item type. To narrow the inherited one, use Override.",
+    "serverPhiIndexed": "The server refused the definition: a PHI field may not be indexed.",
+    "problems": {
+      "keyRequired": "A key is required.",
+      "labelRequired": "A label is required.",
+      "phiIndexed": "A PHI field cannot be indexed: the index would store the value in plaintext, outside the encryption layer (L10).",
+      "phiNotEnabled": "This lab does not have PHI mode on, so a PHI field cannot be defined here.",
+      "enumValuesRequired": "A choice list needs at least one allowed value.",
+      "enumValuesDuplicated": "Two allowed values are the same.",
+      "rangeInverted": "The minimum is above the maximum.",
+      "requiredDropped": "{{label}} ({{origin}}) is required; a child field cannot drop that rule.",
+      "constraintDropped": "{{label}} ({{origin}}) sets {{constraint}}; a child field cannot drop it.",
+      "constraintWidened": "{{label}} ({{origin}}) limits this field to {{constraint}}; a child field cannot go beyond it.",
+      "dataTypeChanged": "The data type of {{label}} ({{origin}}) is fixed; a child field cannot change it.",
+      "scopeChanged": "The scope of {{label}} ({{origin}}) is fixed; a child field cannot change it.",
+      "phiDropped": "{{label}} ({{origin}}) is marked as PHI; a child field cannot unmark it."
+    }
+  },
+  "itemTypeForm": {
+    "createTitle": "New item type",
+    "renameTitle": "Rename {{name}}",
+    "name": "Name",
+    "parent": "Parent item type",
+    "root": "No parent (root)",
+    "create": "Create",
+    "rename": "Rename",
+    "cancel": "Cancel",
+    "created": "{{name}} created.",
+    "renamed": "{{name}} renamed.",
+    "duplicateName": "An item type with that name already exists in this lab."
+  },
+  "move": {
+    "title": "Move {{name}}",
+    "parent": "Parent item type",
+    "root": "No parent (root)",
+    "submit": "Move",
+    "cancel": "Cancel",
+    "moved": "{{name}} moved.",
+    "refusedSelf": "An item type cannot be moved under itself.",
+    "refusedDescendant": "An item type cannot be moved into its own subtree.",
+    "refusedCycle": "That move would create a cycle in the item type tree, so the server refused it. The tree has been reloaded.",
+    "failed": "The move was refused."
+  },
+  "errors": {
+    "loadFailed": "The item types could not be loaded."
+  }
 }
