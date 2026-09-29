@@ -22,6 +22,7 @@
 
 #include <fmgr/v1/auth.grpc.pb.h>
 #include <fmgr/v1/item_type.grpc.pb.h>
+#include <fmgr/v1/sample.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
 
@@ -82,6 +83,7 @@ namespace fmgr::test {
         channel_ = grpc::CreateChannel(addr, grpc::InsecureChannelCredentials());
         auth_stub_ = fmgr::v1::AuthService::NewStub(channel_);
         item_type_stub_ = fmgr::v1::ItemTypeService::NewStub(channel_);
+        sample_stub_ = fmgr::v1::SampleService::NewStub(channel_);
       }
 
       void TearDown() override {
@@ -253,6 +255,49 @@ namespace fmgr::test {
         return std::nullopt;
       }
 
+      // The row of `key` whatever it is attached to. `stored_cfd` filters by
+      // item type, and an empty `item_type_id` on the request means *no filter*
+      // rather than "lab-global", so it cannot tell a global that stayed global
+      // from one that was narrowed onto a type — the thing #115's global tests
+      // assert. Ask for the row, then look at its attachment.
+      [[nodiscard]] std::optional<fmgr::v1::CustomFieldDefinition>
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      stored_cfd_anywhere(const std::string& token, const std::string& key) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListCfdsRequest req;
+        req.set_lab_id(kLab1);
+        fmgr::v1::ListCfdsResponse resp;
+        if (!item_type_stub_->ListCustomFieldDefinitions(&ctx, req, &resp).ok()) {
+          return std::nullopt;
+        }
+        for (const auto& cfd : resp.cfds()) {
+          if (cfd.key() == key) {
+            return cfd;
+          }
+        }
+        return std::nullopt;
+      }
+
+      // What a type's subtree *resolves*, observed through the one RPC that runs
+      // the server's own resolver: `CreateSample` validates the incoming custom
+      // fields against `resolve_custom_field_defs`. Deliberately not a second
+      // copy of the ranking inside the test — the assertion is about the
+      // server's resolution, so it has to ask the server (#115).
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      grpc::Status create_sample_of_type(const std::string& token, const std::string& item_type_id,
+                                         const std::string& custom_fields_json) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateSampleRequest req;
+        req.set_lab_id(kLab1);
+        req.set_item_type_id(item_type_id);
+        req.set_name("sample of " + item_type_id);
+        req.set_custom_fields_json(custom_fields_json);
+        fmgr::v1::CreateSampleResponse resp;
+        return sample_stub_->CreateSample(&ctx, req, &resp);
+      }
+
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kMemberEmail{"member@example.com"};
       const std::string kReadOnlyEmail{"readonly@example.com"};
@@ -270,6 +315,7 @@ namespace fmgr::test {
       std::shared_ptr<grpc::Channel> channel_;
       std::unique_ptr<fmgr::v1::AuthService::Stub> auth_stub_;
       std::unique_ptr<fmgr::v1::ItemTypeService::Stub> item_type_stub_;
+      std::unique_ptr<fmgr::v1::SampleService::Stub> sample_stub_;
 
     private:
       static void remove_sqlite_files(const std::filesystem::path& path) {
@@ -1094,6 +1140,148 @@ namespace fmgr::test {
                                            .key = "own_key",
                                            .validation_json = R"({"max_length":400})"});
       EXPECT_TRUE(status.ok()) << status.error_message();
+    }
+
+    // =====================================================================
+    // Moving a definition between item types (#115)
+    // =====================================================================
+    //
+    // An attachment decides *which* subtree a definition constrains, so an
+    // update that changes `item_type_id` writes to two subtrees at once: the
+    // destination inherits something new, and the source falls back to whatever
+    // the moved row was shadowing. Checking only the destination is a complete
+    // bypass — the move is a no-op there whenever the two subtrees share their
+    // inherited definition — and it is one no client in this repo exercises,
+    // because the SPA cannot express a move. That is why every test below pins
+    // the *source* subtree's resolution, not merely the refusal: a fix that only
+    // looks at the destination passes the refusal-free half of each test.
+
+    TEST_F(ItemTypeServiceTest, UpdateCfdRejectsMovingAnOverrideOutOfTheSubtreeItConstrains) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
+      const auto csf_type = create_child_item_type(token, kLab1, root_type, "csf");
+      // The lab-global is the weaker definition the old subtree would fall back
+      // to; `blood` tightens it by requiring the field.
+      make_cfd(token, kLab1, {.key = "patient_id"});
+      const auto blood_cfd = make_cfd(
+          token, kLab1, {.item_type_id = blood_type, .key = "patient_id", .required = true});
+
+      // Preconditions, so nothing below is vacuous: `blood` resolves the
+      // requirement today, its sibling does not.
+      EXPECT_FALSE(create_sample_of_type(token, blood_type, "{}").ok());
+      EXPECT_TRUE(create_sample_of_type(token, csf_type, "{}").ok());
+
+      // `csf` inherits the same optional global, so the destination end sees a
+      // tightening and nothing else. `blood` is what loses.
+      const auto status =
+          update_cfd_spec(token, kLab1, blood_cfd,
+                          {.item_type_id = csf_type, .key = "patient_id", .required = true});
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("required"), std::string::npos);
+
+      // The old subtree's resolution, asked of the server's own resolver: a
+      // sample of `blood` with no `patient_id` is still refused, and the row is
+      // still attached to `blood`.
+      EXPECT_FALSE(create_sample_of_type(token, blood_type, "{}").ok());
+      const auto stored = stored_cfd(token, blood_type, "patient_id");
+      ASSERT_TRUE(stored.has_value());
+      EXPECT_TRUE(stored->required());
+      // And nothing landed on the destination.
+      EXPECT_EQ(stored_cfd(token, csf_type, "patient_id"), std::nullopt);
+      EXPECT_TRUE(create_sample_of_type(token, csf_type, "{}").ok());
+    }
+
+    // The same write where the old subtree has nothing at all to fall back to:
+    // the definition does not get weaker, it disappears, which is the largest
+    // loosening the rule has a name for.
+    TEST_F(ItemTypeServiceTest, UpdateCfdRejectsMovingTheOnlyDefinitionOutOfASubtree) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
+      const auto csf_type = create_child_item_type(token, kLab1, root_type, "csf");
+      const auto blood_cfd = make_cfd(
+          token, kLab1, {.item_type_id = blood_type, .key = "patient_id", .required = true});
+
+      const auto status =
+          update_cfd_spec(token, kLab1, blood_cfd,
+                          {.item_type_id = csf_type, .key = "patient_id", .required = true});
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("required"), std::string::npos);
+
+      EXPECT_FALSE(create_sample_of_type(token, blood_type, "{}").ok());
+      const auto stored = stored_cfd(token, blood_type, "patient_id");
+      ASSERT_TRUE(stored.has_value());
+      EXPECT_TRUE(stored->required());
+    }
+
+    // The permissive direction: a move that leaves the old subtree exactly as
+    // constrained as it was is a legitimate reorganization, and the rule must
+    // allow it. A check that refused every re-parent would be tighter than N5.
+    TEST_F(ItemTypeServiceTest, UpdateCfdAllowsMovingAnOverrideWhenTheOldSubtreeInheritsTheSame) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
+      const auto csf_type = create_child_item_type(token, kLab1, root_type, "csf");
+      make_cfd(token, kLab1, {.key = "patient_id", .required = true});
+      const auto blood_cfd = make_cfd(
+          token, kLab1, {.item_type_id = blood_type, .key = "patient_id", .required = true});
+
+      const auto status =
+          update_cfd_spec(token, kLab1, blood_cfd,
+                          {.item_type_id = csf_type, .key = "patient_id", .required = true});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      // Moved, and the requirement is still resolved on both sides — `blood`
+      // through the global it now inherits, `csf` through the row it received.
+      EXPECT_EQ(stored_cfd(token, blood_type, "patient_id"), std::nullopt);
+      ASSERT_TRUE(stored_cfd(token, csf_type, "patient_id").has_value());
+      EXPECT_FALSE(create_sample_of_type(token, blood_type, "{}").ok());
+      EXPECT_FALSE(create_sample_of_type(token, csf_type, "{}").ok());
+    }
+
+    // A lab-global's source subtree is every item type in the lab, so narrowing
+    // one onto a single type drops it for all the others. Its destination end is
+    // a no-op — the type inherits the very row being attached to it — so this is
+    // the same bypass from the other side.
+    TEST_F(ItemTypeServiceTest, UpdateCfdRejectsNarrowingAConstrainedLabGlobalOntoOneItemType) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
+      const auto global_cfd = make_cfd(token, kLab1, {.key = "patient_id", .required = true});
+
+      const auto status =
+          update_cfd_spec(token, kLab1, global_cfd,
+                          {.item_type_id = blood_type, .key = "patient_id", .required = true});
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("required"), std::string::npos);
+
+      // Still lab-global, and the requirement still reaches a type that has no
+      // definition of its own.
+      const auto stored = stored_cfd_anywhere(token, "patient_id");
+      ASSERT_TRUE(stored.has_value());
+      EXPECT_FALSE(stored->has_item_type_id());
+      EXPECT_FALSE(create_sample_of_type(token, blood_type, "{}").ok());
+    }
+
+    // The boundary, stated as a test: the rule is about what a definition
+    // *refuses*, not about which nodes may carry a field. A definition that
+    // constrains nothing can still be moved, narrowed included — the same line
+    // `tighten_violations` draws for `indexed`.
+    TEST_F(ItemTypeServiceTest, UpdateCfdAllowsNarrowingALabGlobalThatConstrainsNothing) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto global_cfd = make_cfd(token, kLab1, {.key = "free_text"});
+
+      const auto status = update_cfd_spec(token, kLab1, global_cfd,
+                                          {.item_type_id = root_type, .key = "free_text"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      const auto stored = stored_cfd_anywhere(token, "free_text");
+      ASSERT_TRUE(stored.has_value());
+      EXPECT_EQ(stored->item_type_id(), root_type);
     }
 
     // =====================================================================
