@@ -46,7 +46,10 @@ const LayoutTreeScreen = lazyScreen(
   'LayoutTreeScreen',
 );
 const LookupScreen = lazyScreen(() => import('../features/lookup/LookupScreen'), 'LookupScreen');
-const MembersScreen = lazyScreen(() => import('../features/members/MembersScreen'), 'MembersScreen');
+const MembersScreen = lazyScreen(
+  () => import('../features/members/MembersScreen'),
+  'MembersScreen',
+);
 const SampleBrowserScreen = lazyScreen(
   () => import('../features/samples/SampleBrowserScreen'),
   'SampleBrowserScreen',

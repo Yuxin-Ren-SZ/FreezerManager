@@ -19,10 +19,13 @@ import {
   ErrorState,
   Select,
   Spinner,
-  Table,
   TextField,
   type SelectOption,
 } from '../../ui';
+// `Table` comes from its own module rather than the `../../ui` barrel: it is
+// the one heavy piece in the kit, and the barrel is in the entry chunk — see
+// the note in `src/ui/index.ts` (issue #64).
+import { Table } from '../../ui/Table';
 import { useLabLayout } from '../layout/useLabLayout';
 import { downloadTextFile, exportFileName } from './exportSamples';
 import { placementPath } from './placement';

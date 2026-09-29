@@ -171,3 +171,56 @@ if (problems.length > 0) {
   );
   process.exit(1);
 }
+
+// --- 3. the heavy-kit guard ------------------------------------------------
+//
+// `src/ui/index.ts` is imported by the shell, so it is in the entry chunk, and
+// a re-export from it is *not* tree-shakeable when the component imports CSS.
+// `Table.tsx` does, so re-exporting `Table` from the barrel put TanStack Table
+// and TanStack Virtual in the entry chunk even while every screen using them
+// was lazy: 33.5 KiB gzipped on the G3.2 tree (issue #64). The barrel no longer
+// exports it, and screens import `../../ui/Table` directly.
+//
+// The markers below are string literals inside the two packages (`fnName`
+// values and virtualizer option names), not minified identifiers, so they
+// survive minification. A marker that is in no chunk at all means nothing
+// imports the table on this tree yet — that is reported rather than silently
+// counting as a pass, and it is only ever true before the first table screen
+// lands.
+
+const HEAVY_MARKERS = new Map([
+  ['TanStack Table', 'getCoreRowModel'],
+  ['TanStack Virtual', 'getVirtualItems'],
+]);
+
+const initialFiles = new Set(assets);
+const chunkText = new Map();
+for (const name of jsChunks) {
+  chunkText.set(`assets/${name}`, await readFile(join(distDir, 'assets', name), 'utf8'));
+}
+
+const heavyProblems = [];
+for (const [name, marker] of HEAVY_MARKERS) {
+  const carriers = [...chunkText].filter(([, text]) => text.includes(marker)).map(([file]) => file);
+  if (carriers.length === 0) {
+    console.log(`check-bundle-size: ${name} is not in this build — no screen imports it yet`);
+    continue;
+  }
+  const eager = carriers.filter((file) => initialFiles.has(file));
+  if (eager.length > 0) {
+    heavyProblems.push(`${name} is in the initial JS: ${eager.join(', ')}`);
+  } else {
+    console.log(`check-bundle-size: ${name} is behind import() only: ${carriers.join(', ')}`);
+  }
+}
+
+if (heavyProblems.length > 0) {
+  console.error(
+    'check-bundle-size: the entry chunk is carrying a heavy kit dependency (issue #64):\n' +
+      heavyProblems.map((problem) => `  - ${problem}`).join('\n') +
+      '\n  Import it from its own module (`../../ui/Table`), not from the `../../ui` barrel: ' +
+      'the barrel is in the entry chunk, and a re-export of a component that imports CSS ' +
+      'cannot be tree-shaken away.',
+  );
+  process.exit(1);
+}
