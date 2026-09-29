@@ -73,7 +73,7 @@ namespace fmgr::server {
     // match a large share of the lab and is almost always a typo or an
     // over-eager keystroke, so the RPC rejects it instead of scanning. Measured
     // in bytes: a lone multi-byte character is already selective enough.
-    constexpr std::size_t kMinQueryLength = 2;
+    constexpr std::size_t k_min_query_length = 2;
 
     [[nodiscard]] std::string now_iso8601_utc() {
       const auto secs = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -476,9 +476,9 @@ namespace fmgr::server {
         // PRD §9 lookup: one box accepts either a name fragment or a barcode
         // fragment. Validated after authentication so an unauthenticated caller
         // never learns whether a payload would have been acceptable.
-        if (req->query().size() < kMinQueryLength) {
+        if (req->query().size() < k_min_query_length) {
           return {grpc::StatusCode::INVALID_ARGUMENT,
-                  "query must be at least " + std::to_string(kMinQueryLength) + " characters"};
+                  "query must be at least " + std::to_string(k_min_query_length) + " characters"};
         }
         // Only name and barcode are searched: custom fields and PHI are
         // deliberately out of scope.

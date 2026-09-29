@@ -177,6 +177,28 @@ namespace fmgr::storage::detail {
     int ordinal_{0};
   };
 
+  // Render one substring match per listed field, OR-combined: a row matches when
+  // any of the named columns contains the needle. Parenthesized when there is
+  // more than one alternative, so the OR cannot swallow a neighbouring AND.
+  template <typename Entity, typename ColumnName>
+  [[nodiscard]] std::string contains_ci_clause(const Predicate<Entity>& predicate,
+                                               ColumnName column_name, SqlDialect& dialect,
+                                               std::vector<nlohmann::json>& params) {
+    const auto needle = predicate.value.template get<std::string>();
+    std::string clause;
+    for (std::size_t index = 0; index < predicate.fields.size(); ++index) {
+      if (index != 0) {
+        clause += " OR ";
+      }
+      clause += dialect.contains_ci(column_name(predicate.fields.at(index)), needle, params);
+    }
+    if (predicate.fields.size() > 1) {
+      clause.insert(0, 1, '(');
+      clause.push_back(')');
+    }
+    return clause;
+  }
+
   // Append a " WHERE ..." clause built from the soft-delete default predicates
   // (already rendered SQL fragments) plus the typed DSL predicates. `column_name`
   // maps an Entity::Field to its column string (shared by both backends).
@@ -229,23 +251,9 @@ namespace fmgr::storage::detail {
         clauses.push_back(
             dialect.json_path_equal(column, predicate.json_path, predicate.value, params));
         break;
-      case PredicateOperator::ContainsCi: {
-        // One substring match per listed field, OR-combined: a row matches when
-        // any of them contains the needle.
-        const auto needle = predicate.value.template get<std::string>();
-        std::string clause;
-        for (std::size_t index = 0; index < predicate.fields.size(); ++index) {
-          if (index != 0) {
-            clause += " OR ";
-          }
-          clause += dialect.contains_ci(column_name(predicate.fields.at(index)), needle, params);
-        }
-        if (predicate.fields.size() > 1) {
-          clause = "(" + clause + ")";
-        }
-        clauses.push_back(std::move(clause));
+      case PredicateOperator::ContainsCi:
+        clauses.push_back(contains_ci_clause(predicate, column_name, dialect, params));
         break;
-      }
       }
     }
     if (!clauses.empty()) {

@@ -243,8 +243,9 @@ namespace fmgr::storage {
         return std::ranges::any_of(predicate.values, [&](const nlohmann::json& candidate) {
           return value.value() == candidate;
         });
+      // Both are answered above, before the single-field lookup; listing them
+      // here keeps the switch exhaustive.
       case PredicateOperator::JsonPathEqual:
-        return false;
       case PredicateOperator::ContainsCi:
         return false;
       }
