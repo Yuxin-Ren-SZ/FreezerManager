@@ -15,16 +15,6 @@
 namespace fmgr::server {
   namespace {
 
-    [[nodiscard]] auth::SessionContext validate_authed(auth::IAuthProvider& auth,
-                                                       const grpc::ServerContext& ctx) {
-      const auto bearer = extract_bearer(ctx);
-      auto sctx = auth.validate_token(bearer);
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
-      return sctx;
-    }
-
     [[nodiscard]] storage::MutationContext make_ctx(const grpc::ServerContext& ctx,
                                                     const auth::SessionContext& sctx,
                                                     std::string_view reason) {
@@ -79,22 +69,25 @@ namespace fmgr::server {
   SessionServiceImpl::SessionServiceImpl(auth::IAuthProvider& auth,
                                          storage::IStorageBackend& backend)
       : auth_(auth), backend_(backend), middleware_(auth) {
-    // #78: neither RPC is permission-gated. ListSessions filters strictly to the
-    // caller's own rows and ignores the request's user_id; RevokeSession lets a
-    // caller revoke its own session and checks session.revoke by hand only for
-    // someone else's. Registering session.revoke named a permission the gate
-    // never enforced for either of them.
+    // #78/#119: neither RPC is permission-gated. ListSessions filters strictly to
+    // the caller's own rows and ignores the request's user_id; RevokeSession lets
+    // a caller revoke its own session and checks session.revoke by hand only for
+    // someone else's. Registering session.revoke named a permission the gate never
+    // enforced for either of them. Both need a token whose second factor is
+    // complete, which is the rule the gate now applies for them — the handler no
+    // longer carries the MFA check itself.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SessionService/ListSessions",
-                                      rpc::RpcGate::no_permission_required());
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SessionService/RevokeSession",
-                                      rpc::RpcGate::no_permission_required());
+                                      rpc::RpcGate::token_and_mfa());
   }
 
   grpc::Status SessionServiceImpl::ListSessions(grpc::ServerContext* ctx,
                                                 const fmgr::v1::ListSessionsRequest* req,
                                                 fmgr::v1::ListSessionsResponse* resp) {
     try {
-      const auto sctx = validate_authed(auth_, *ctx);
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto query = storage::Query<core::Session>::where(
           storage::field<core::Session, std::string>(core::Session::Field::UserId) ==
@@ -121,7 +114,8 @@ namespace fmgr::server {
                                                  const fmgr::v1::RevokeSessionRequest* req,
                                                  fmgr::v1::RevokeSessionResponse* /*resp*/) {
     try {
-      const auto sctx = validate_authed(auth_, *ctx);
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
       const auto session_id = core::SessionId::parse(req->session_id());
 
       // #77: a caller may always revoke its own sessions -- that logout path is

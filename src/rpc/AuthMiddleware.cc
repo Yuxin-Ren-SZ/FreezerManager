@@ -40,19 +40,49 @@ namespace fmgr::rpc {
 
   } // namespace
 
+  std::string_view to_key(CredentialRule rule) {
+    switch (rule) {
+    case CredentialRule::None:
+      return "no_credential";
+    case CredentialRule::TokenOnly:
+      return "token_only";
+    case CredentialRule::TokenAndMfa:
+      return "token_and_mfa";
+    }
+    throw std::logic_error("unknown credential rule (#119)");
+  }
+
   core::Permission RpcGate::permission() const {
     if (!permission_.has_value()) {
-      throw std::logic_error("this RPC is registered as no_permission_required(); it has no "
-                             "permission to read (see rpc::RpcGate, #78)");
+      // Deliberately not describe()'s wording: describe() asks this accessor for
+      // the value, so a message that called back into it would recurse if a gate
+      // were ever reached in the empty state this guard exists to refuse.
+      throw std::logic_error(
+          "this RpcGate declares a credential rule, not a permission (see rpc::RpcGate, #78)");
     }
     return *permission_;
   }
 
-  std::string RpcGate::describe() const {
-    if (!permission_.has_value()) {
-      return "no permission required";
+  CredentialRule RpcGate::credential_rule() const {
+    if (!credential_.has_value()) {
+      // Same reason as permission() above: no call back into describe().
+      throw std::logic_error("this RpcGate declares a permission, not a credential rule (see "
+                             "rpc::RpcGate, #119)");
     }
-    return "permission '" + permission_key(*permission_) + "'";
+    return *credential_;
+  }
+
+  std::string RpcGate::describe() const {
+    // Exactly one of the two optionals is engaged, because the private
+    // constructors each set one — but that is an invariant, not a check, and
+    // dereferencing *the other* optional is something neither a reader nor
+    // clang-tidy's bugprone-unchecked-optional-access can verify. Ask the accessor
+    // instead: it reads the optional it is about and refuses an empty one
+    // (#127 review).
+    if (permission_.has_value()) {
+      return "permission '" + permission_key(permission()) + "'";
+    }
+    return "credential rule '" + std::string(to_key(credential_rule())) + "'";
   }
 
   // #60: the registry is a contract, not documentation. A handler that asks the
@@ -83,6 +113,41 @@ namespace fmgr::rpc {
       throw RpcRegistryMismatch("RPC " + call.method + " is registered as " + gate.describe() +
                                 " but its handler enforces '" + permission_key(enforced) +
                                 "'; the registration and the authorize() call must agree (#60)");
+    }
+  }
+
+  // #119: the same contract for the nine RPCs that never reach authorize(). Their
+  // credential rule used to be a claim in the registry that no code path observed
+  // — a handler could start demanding MFA and every test stayed green — so the
+  // gate now compares the rule a handler applies against the one its RPC
+  // declares, and refuses the call when they disagree. The mirror of #60, one
+  // kind over: a handler that asks for a *different* credential rule from the one
+  // it registered is a code defect, not a caller who presented the wrong
+  // credential.
+  void AuthMiddleware::require_credential_agreement(const RpcCall& call, CredentialRule required) {
+    if (call.method.empty()) {
+      // Not inside a served RPC (unit tests, tooling): there is no registration
+      // this call could contradict.
+      return;
+    }
+    auto& reg = get_registry();
+    std::scoped_lock lock(reg.mutex);
+    const auto registered = reg.map.find(call.method);
+    if (registered == reg.map.end()) {
+      throw RpcRegistryMismatch("RPC " + call.method +
+                                " calls the credential gate but is not in the permission registry; "
+                                "register it in its service constructor (#119)");
+    }
+    const RpcGate& gate = registered->second;
+    // Short-circuits on the kind, so credential_rule() is only read when there is
+    // one to read. A Permission entry is a disagreement too: the RPC declares a
+    // permission this handler never asks authorize() for, so that entry would go
+    // unenforced — #78's hole with the sign flipped.
+    if (gate.kind() != RpcGate::Kind::Credential || gate.credential_rule() != required) {
+      throw RpcRegistryMismatch("RPC " + call.method + " is registered as " + gate.describe() +
+                                " but its handler requires '" + std::string(to_key(required)) +
+                                "'; the registration and the credential the handler applies must "
+                                "agree (#119)");
     }
   }
 
@@ -130,6 +195,47 @@ namespace fmgr::rpc {
     }
 
     return ctx;
+  }
+
+  auth::SessionContext AuthMiddleware::authenticate(const RpcCall& call,
+                                                    CredentialRule rule) const {
+    if (rule == CredentialRule::None) {
+      // A rule that requires no credential has no session to hand back, so it is
+      // declared with admit_no_credential() instead. Refusing here rather than
+      // inventing an empty SessionContext keeps "no credential" from looking like
+      // "a credential that resolved to nobody".
+      throw std::logic_error("CredentialRule::None has no session context; declare it with "
+                             "AuthMiddleware::admit_no_credential() (#119)");
+    }
+
+    // Step 0: the RPC's registration must declare the rule this handler applies
+    // (#119). Same position as authorize()'s step 0, and for the same reason: a
+    // disagreement is a code defect, not something the caller can fix by
+    // presenting different credentials.
+    require_credential_agreement(call, rule);
+
+    // Step 1: validate token (may throw InvalidCredentials, TokenExpired, etc.)
+    auth::SessionContext ctx = auth_.validate_token(call.bearer_token);
+
+    // Step 2: the MFA half of the rule. TokenOnly skips it deliberately — that is
+    // the whole of the #62 exception, and the reason the rule is named rather
+    // than assumed. The message is the one these handlers used before #119 moved
+    // the check here, so the wire text a client sees is unchanged.
+    if (rule == CredentialRule::TokenAndMfa && !ctx.mfa_complete) {
+      throw auth::MfaRequired("MFA required before this operation");
+    }
+
+    return ctx;
+  }
+
+  void AuthMiddleware::admit_no_credential(const RpcCall& call) {
+    // The declaration is the whole of the enforcement here: there is no credential
+    // to validate, so what the gate can refuse is a registration that claims one.
+    // call.bearer_token is deliberately unread — a caller of Login need not have a
+    // credential, and must not be refused for the Authorization header it did or
+    // did not send. Static for that same reason: nothing here needs the instance
+    // (#127 review).
+    require_credential_agreement(call, CredentialRule::None);
   }
 
   void AuthMiddleware::inject_rls_vars(storage::ITransaction& txn,

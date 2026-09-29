@@ -270,16 +270,22 @@ same `npm ci && npm run check` in the `web` job, independently of the C++ matrix
   is the planted-disagreement test that keeps the check honest.
 - **An RPC that does not gate through `authorize()`** — one whose handler checks
   a permission itself (`has_for_lab`/`has_global`, a helper such as
-  `gate_role_read`/`is_system_admin`), or that needs only a token and MFA — is
-  outside that check: the gate never runs, so nothing verifies its registry entry
-  at runtime. Register it as `RpcGate::no_permission_required()`, **never** as a
-  permission its handler does not check — the gate refuses such an RPC the moment
-  a handler calls `authorize()`, and
-  `ServerIntegrationTest.RpcRegistryStatesTheGateEachNonPermissionRpcHas` pins the
-  entries that state it. Say in review which credential rule the handler applies
-  (token and MFA, token only, or neither — the registry deliberately does not
-  claim one) and comment it at the registration. A registration claiming a
-  permission no code path enforces is a finding, not a formality (#78).
+  `gate_role_read`/`is_system_admin`) — is outside that check: the gate never
+  runs, so nothing verifies its registry entry at runtime. If it needs no
+  permission at all, register the credential rule its callers must satisfy —
+  `RpcGate::token_and_mfa()`, `RpcGate::token_only()` or
+  `RpcGate::no_credential()` — and have the handler ask the gate for that same
+  rule (`AuthMiddleware::authenticate()`, or `admit_no_credential()` for the
+  `None` rule); comment the rule at the registration. The gate applies the rule
+  and refuses the call with `INTERNAL` when the two disagree, so the entry is
+  enforced rather than documented (#119). **Never** register a permission such a
+  handler does not check: the gate refuses it the moment a handler calls
+  `authorize()`, and it equally refuses a `Permission` entry whose handler asks
+  the credential gate, which would leave that entry enforced by nothing (#78).
+  `ServerIntegrationTest.RpcRegistryStatesTheCredentialRuleEachNonPermissionRpcHas`
+  pins those entries and `CredentialRuleDisagreeingWithEnforcedRuleIsRefused`
+  plants the disagreements against a live server. A registration claiming a
+  permission no code path enforces is a finding, not a formality.
 - **PHI never appears** in logs, error messages, fixtures, screenshots, PR text
   or unencrypted backups.
 - **SQLite is single-writer:** return `Unavailable` on contention and let

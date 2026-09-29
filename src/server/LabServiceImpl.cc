@@ -76,12 +76,13 @@ namespace fmgr::server {
       : auth_(auth), backend_(backend), middleware_(auth) {
     using P = core::Permission;
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/GetLab", P::LabConfigure);
-    // #78: ListLabs is visibility-scoped, not permission-gated — a caller lists
-    // the labs they can see. Registering lab.configure named a permission the
-    // handler never checks; lab.provision narrows the result, it does not admit
-    // the call.
+    // #78/#119: ListLabs is visibility-scoped, not permission-gated — a caller
+    // lists the labs they can see. Registering lab.configure named a permission
+    // the handler never checks; lab.provision narrows the result, it does not
+    // admit the call. It does require a token whose second factor is complete,
+    // which is the rule its handler asks the gate for.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/ListLabs",
-                                      rpc::RpcGate::no_permission_required());
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/CreateLab", P::LabProvision);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/UpdateLab", P::LabConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.LabService/EnablePhi", P::LabEnablePhi);
@@ -118,12 +119,11 @@ namespace fmgr::server {
     try {
       // Visibility-scoped, not permission-gated: a caller lists the labs they can
       // see. A deployment admin (global lab.provision) sees every lab; everyone
-      // else sees the labs they hold a membership in. Token + MFA still required.
-      const auto bearer = extract_bearer(*ctx);
-      auto sctx = auth_.validate_token(bearer);
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      // else sees the labs they hold a membership in. Token + MFA still required —
+      // the gate applies and checks that rule (#119), so the MFA branch that used
+      // to live here is gone.
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);

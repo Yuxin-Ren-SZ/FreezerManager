@@ -19,29 +19,6 @@
 namespace fmgr::server {
   namespace {
 
-    // Validate token and enforce MFA gate without a RBAC check.
-    // Used for "self-management" RPCs (CreateApiToken, ListApiTokens, …) that any
-    // authenticated user may call for their own data. Logout is the one
-    // deliberate exception — see validate_token_any_mfa().
-    [[nodiscard]] auth::SessionContext validate_authed(auth::IAuthProvider& auth,
-                                                       const grpc::ServerContext& ctx) {
-      const auto bearer = extract_bearer(ctx);
-      auto sctx = auth.validate_token(bearer);
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
-      return sctx;
-    }
-
-    // Validate a token *without* the MFA gate. Exactly two RPCs use this, and the
-    // pair is the whole of the exception: a session whose second factor is still
-    // pending may complete that factor (SubmitMfa) and may give the credential up
-    // (Logout). Everything else goes through validate_authed().
-    [[nodiscard]] auth::SessionContext validate_token_any_mfa(auth::IAuthProvider& auth,
-                                                              const grpc::ServerContext& ctx) {
-      return auth.validate_token(extract_bearer(ctx));
-    }
-
     // Derive a per-source-IP rate-limit key from the gRPC peer string, dropping
     // the ephemeral port so all connections from one host share a bucket.
     // Peer looks like "ipv4:1.2.3.4:54321" or "ipv6:[::1]:54321".
@@ -89,30 +66,35 @@ namespace fmgr::server {
       : auth_(auth), backend_(backend), middleware_(auth),
         login_limiter_(rpc::RateLimiterConfig{.capacity = k_login_rate_capacity,
                                               .refill_per_sec = k_login_rate_refill_per_sec}) {
-    // #78: none of the auth/* RPCs is permission-gated, and session.revoke — the
-    // permission all six used to name — is checked by no code path here. Login
-    // needs no credential at all; SubmitMfa needs a session token but
-    // deliberately not MFA; Logout needs a token and deliberately not MFA either
-    // (#62 — see validate_token_any_mfa()); the rest need a token and MFA
-    // (validate_authed). Registering them as no_permission_required() is the
-    // accurate statement, and the gate refuses them if a handler ever starts
-    // calling authorize().
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Login",
-                                      rpc::RpcGate::no_permission_required());
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/SubmitMfa",
-                                      rpc::RpcGate::no_permission_required());
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Logout",
-                                      rpc::RpcGate::no_permission_required());
+    // #78/#119: none of the auth/* RPCs is permission-gated, and session.revoke —
+    // the permission all six used to name — is checked by no code path here. Each
+    // now registers the credential rule its handler applies, and the handler asks
+    // the gate for that same rule, so the gate applies it and refuses the call if
+    // the two ever diverge. Login needs no credential at all; SubmitMfa needs a
+    // session token but deliberately not MFA; Logout likewise (#62 — a pending-MFA
+    // session must be able to give the credential up); the rest need a token whose
+    // second factor is complete.
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Login", rpc::RpcGate::no_credential());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/SubmitMfa", rpc::RpcGate::token_only());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/Logout", rpc::RpcGate::token_only());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/CreateApiToken",
-                                      rpc::RpcGate::no_permission_required());
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/ListApiTokens",
-                                      rpc::RpcGate::no_permission_required());
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/RevokeApiToken",
-                                      rpc::RpcGate::no_permission_required());
+                                      rpc::RpcGate::token_and_mfa());
   }
 
   grpc::Status AuthServiceImpl::Login(grpc::ServerContext* ctx, const fmgr::v1::LoginRequest* req,
                                       fmgr::v1::LoginResponse* resp) {
+    // Declared anonymous: a caller logging in has no credential yet. The RPC
+    // identity is read rather than the Authorization header because this handler
+    // must not start refusing callers for a header it never reads; the gate call
+    // is what ties the handler to its registration, so a registration that ever
+    // claimed a credential rule would refuse every login rather than widen
+    // silently (#119).
+    rpc::AuthMiddleware::admit_no_credential(
+        rpc::RpcCall{.bearer_token = {}, .method = rpc_method_name(*ctx)});
     // Throttle by source IP before doing any work (notably the expensive
     // Argon2id verify). Caps credential-spray / account-enumeration volume that
     // the per-email lockout cannot (audit H-1).
@@ -139,7 +121,10 @@ namespace fmgr::server {
                                           const fmgr::v1::SubmitMfaRequest* req,
                                           fmgr::v1::SubmitMfaResponse* /*resp*/) {
     try {
-      const auto sctx = validate_token_any_mfa(auth_, *ctx);
+      // A token, deliberately without MFA: completing the second factor is what
+      // this RPC does, so requiring it here would deadlock every login (#62).
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenOnly);
       auth_.verify_totp(sctx.session_id, req->totp_code());
       return grpc::Status::OK;
     } catch (...) {
@@ -151,14 +136,15 @@ namespace fmgr::server {
                                        const fmgr::v1::LogoutRequest* /*req*/,
                                        fmgr::v1::LogoutResponse* /*resp*/) {
     try {
-      // Deliberately not validate_authed(): the browser login route sets the
-      // session cookie before the second factor is entered, so a pending-MFA
+      // Deliberately token-only, not token-and-MFA: the browser login route sets
+      // the session cookie before the second factor is entered, so a pending-MFA
       // session is a credential the UI holds. Logout only removes authority, so
       // refusing it would leave an abandoned login with a cookie nothing can
       // revoke (`SameSite=Strict` keeps every other page from clearing it).
-      // This is the de-escalation half of the exception documented on
-      // validate_token_any_mfa(); SubmitMfa is the other.
-      const auto sctx = validate_token_any_mfa(auth_, *ctx);
+      // SubmitMfa is the other half of that exception; together they are the two
+      // RPCs that declare CredentialRule::TokenOnly.
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenOnly);
       auth_.revoke_session(sctx.session_id, make_ctx(*ctx, sctx, "logout"));
       return grpc::Status::OK;
     } catch (...) {
@@ -170,7 +156,8 @@ namespace fmgr::server {
                                                const fmgr::v1::CreateApiTokenRequest* req,
                                                fmgr::v1::CreateApiTokenResponse* resp) {
     try {
-      const auto sctx = validate_authed(auth_, *ctx);
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       std::optional<core::LabId> lab_id;
       if (req->has_lab_id()) {
@@ -203,7 +190,8 @@ namespace fmgr::server {
                                               const fmgr::v1::ListApiTokensRequest* req,
                                               fmgr::v1::ListApiTokensResponse* resp) {
     try {
-      const auto sctx = validate_authed(auth_, *ctx);
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -231,7 +219,8 @@ namespace fmgr::server {
                                                const fmgr::v1::RevokeApiTokenRequest* req,
                                                fmgr::v1::RevokeApiTokenResponse* /*resp*/) {
     try {
-      const auto sctx = validate_authed(auth_, *ctx);
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
       const auto api_token_id = core::ApiTokenId::parse(req->api_token_id());
       auth_.revoke_api_token(api_token_id, make_ctx(*ctx, sctx, "revoke_api_token"));
       return grpc::Status::OK;

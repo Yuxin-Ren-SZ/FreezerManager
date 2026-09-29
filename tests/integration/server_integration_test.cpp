@@ -38,7 +38,9 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fmgr::test {
@@ -628,29 +630,38 @@ namespace fmgr::test {
       rpc::AuthMiddleware::register_rpc(sample_read_rpc, core::Permission::SampleRead);
     }
 
-    // #78: the ten registrations that used to name a permission no code path
-    // enforced. Nine of them now state that they require no permission at all;
-    // the tenth, VerifyAuditChain, is genuinely gated — on the deployment-admin
-    // predicate this repo spells has_global(lab.provision) — and its handler asks
-    // authorize() for exactly that, so the gate verifies the entry on every call.
-    // This is the test that goes red when one of them claims a permission its
-    // handler does not enforce again.
-    TEST_F(ServerIntegrationTest, RpcRegistryStatesTheGateEachNonPermissionRpcHas) {
+    // #78/#119: the nine registrations that used to name a permission no code
+    // path enforced. Each now states the credential rule its handler applies, and
+    // that rule is what the gate applies on every call (#119). This test pins the
+    // declaration; CredentialRuleDisagreeingWithEnforcedRuleIsRefused proves the
+    // declaration is not the only thing standing between a caller and the RPC, and
+    // EveryRpcDeclaringTokenAndMfaRefusesAPendingMfaSession checks the third rule
+    // at the boundary it names. The tenth of #78's ten, VerifyAuditChain, is
+    // genuinely gated — on the deployment-admin predicate this repo spells
+    // has_global(lab.provision) — and its handler asks authorize() for exactly
+    // that, so the #60 check verifies it on every call.
+    TEST_F(ServerIntegrationTest, RpcRegistryStatesTheCredentialRuleEachNonPermissionRpcHas) {
       const auto registry = rpc::AuthMiddleware::registered_rpcs();
 
-      const std::array<std::string, 9> requires_no_permission{
-          "/fmgr.v1.AuthService/Login",           "/fmgr.v1.AuthService/SubmitMfa",
-          "/fmgr.v1.AuthService/Logout",          "/fmgr.v1.AuthService/CreateApiToken",
-          "/fmgr.v1.AuthService/ListApiTokens",   "/fmgr.v1.AuthService/RevokeApiToken",
-          "/fmgr.v1.SessionService/ListSessions", "/fmgr.v1.SessionService/RevokeSession",
-          "/fmgr.v1.LabService/ListLabs",
-      };
-      for (const auto& rpc : requires_no_permission) {
+      const std::array<std::pair<std::string, rpc::CredentialRule>, 9> expected{{
+          {"/fmgr.v1.AuthService/Login", rpc::CredentialRule::None},
+          {"/fmgr.v1.AuthService/SubmitMfa", rpc::CredentialRule::TokenOnly},
+          {"/fmgr.v1.AuthService/Logout", rpc::CredentialRule::TokenOnly},
+          {"/fmgr.v1.AuthService/CreateApiToken", rpc::CredentialRule::TokenAndMfa},
+          {"/fmgr.v1.AuthService/ListApiTokens", rpc::CredentialRule::TokenAndMfa},
+          {"/fmgr.v1.AuthService/RevokeApiToken", rpc::CredentialRule::TokenAndMfa},
+          {"/fmgr.v1.SessionService/ListSessions", rpc::CredentialRule::TokenAndMfa},
+          {"/fmgr.v1.SessionService/RevokeSession", rpc::CredentialRule::TokenAndMfa},
+          {"/fmgr.v1.LabService/ListLabs", rpc::CredentialRule::TokenAndMfa},
+      }};
+      for (const auto& [rpc, rule] : expected) {
         const auto entry = registry.find(rpc);
         ASSERT_NE(entry, registry.end()) << rpc << " is missing from the RPC registry";
-        EXPECT_TRUE(entry->second.kind() == rpc::RpcGate::Kind::NoPermissionRequired)
+        ASSERT_EQ(entry->second.kind(), rpc::RpcGate::Kind::Credential)
             << rpc << " is registered as " << entry->second.describe()
             << ", i.e. it still claims a permission its handler never enforces";
+        EXPECT_EQ(entry->second.credential_rule(), rule)
+            << rpc << " is registered as " << entry->second.describe();
       }
 
       const auto chain = registry.find("/fmgr.v1.AuditService/VerifyAuditChain");
@@ -660,7 +671,207 @@ namespace fmgr::test {
           << "chain verification is deployment-wide, i.e. system-admin only";
     }
 
-    // #78 criterion 3: every one of the ten has a test pinning its actual gate.
+    // #119 acceptance test, the mirror of #60's
+    // RegisteredPermissionDisagreeingWithEnforcedPermissionIsRefused for the nine
+    // RPCs that never call authorize(). Their registry entry is no longer a
+    // declaration: the gate compares it with the credential rule the handler
+    // applies on every call, and refuses the call with INTERNAL when they
+    // disagree. This test plants the disagreement in-process — the same
+    // register_rpc call the service constructor makes, with a different rule — and
+    // asserts the call is refused. Before #119 it passed and the suite stayed
+    // green, which is exactly how a handler could start demanding a credential its
+    // registration did not claim.
+    TEST_F(ServerIntegrationTest, CredentialRuleDisagreeingWithEnforcedRuleIsRefused) {
+      const std::string submit_mfa_rpc = "/fmgr.v1.AuthService/SubmitMfa";
+      const std::string create_api_token_rpc = "/fmgr.v1.AuthService/CreateApiToken";
+      const std::string list_samples_rpc = "/fmgr.v1.SampleService/ListSamples";
+
+      // SubmitMfa declares token_only, so a session whose TOTP is outstanding
+      // reaches its body. A wrong code then fails as a TOTP check and never as
+      // "MFA required", which is what makes it a usable control here.
+      const auto pending = login(kMfaEmail, kPassword);
+      ASSERT_FALSE(pending.empty());
+      const auto submit_mfa = [this](const std::string& bearer) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, bearer);
+        fmgr::v1::SubmitMfaRequest req;
+        req.set_totp_code("000000");
+        fmgr::v1::SubmitMfaResponse resp;
+        return auth_stub_->SubmitMfa(&ctx, req, &resp);
+      };
+      {
+        const auto status = submit_mfa(pending);
+        ASSERT_FALSE(status.ok()) << "a wrong TOTP code must not verify";
+        ASSERT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED) << status.error_message();
+        ASSERT_EQ(status.error_message().find("mfa_required"), std::string::npos)
+            << "the control must reach the TOTP check, not the MFA gate: "
+            << status.error_message();
+      }
+
+      // Planted disagreement: the handler applies token_only; register the RPC as
+      // token_and_mfa, the rule the pre-#62 handler would have had.
+      rpc::AuthMiddleware::register_rpc(submit_mfa_rpc, rpc::RpcGate::token_and_mfa());
+      {
+        const auto status = submit_mfa(pending);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL)
+            << "a handler whose credential rule disagrees with its registration must be refused; "
+               "got: "
+            << status.error_message();
+        EXPECT_NE(status.error_message().find("credential rule 'token_and_mfa'"), std::string::npos)
+            << "the refusal must name the registered rule; got: " << status.error_message();
+        EXPECT_NE(status.error_message().find("'token_only'"), std::string::npos)
+            << "the refusal must name the rule the handler applies; got: "
+            << status.error_message();
+      }
+      rpc::AuthMiddleware::register_rpc(submit_mfa_rpc, rpc::RpcGate::token_only());
+      {
+        const auto status = submit_mfa(pending);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED)
+            << "restoring the registration must restore the behaviour, so the refusal above came "
+               "from the planted disagreement and nothing else: "
+            << status.error_message();
+        EXPECT_EQ(status.error_message().find("mfa_required"), std::string::npos)
+            << status.error_message();
+      }
+
+      const auto token = login(kEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      const auto create_api_token = [this, &token]() {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateApiTokenRequest req;
+        req.set_name("planted-disagreement");
+        req.set_scope_json(R"(["*"])");
+        fmgr::v1::CreateApiTokenResponse resp;
+        return auth_stub_->CreateApiToken(&ctx, req, &resp);
+      };
+      ASSERT_TRUE(create_api_token().ok()) << "control: the registration and the handler agree";
+
+      // The other direction of the same disagreement: a registration claiming a
+      // weaker rule than the handler applies. Refused, so the state that says
+      // "Login is the only anonymous RPC" cannot be used to make one of the
+      // token-gated ones anonymous.
+      rpc::AuthMiddleware::register_rpc(create_api_token_rpc, rpc::RpcGate::no_credential());
+      {
+        const auto status = create_api_token();
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL) << status.error_message();
+        EXPECT_NE(status.error_message().find("credential rule 'no_credential'"), std::string::npos)
+            << status.error_message();
+        EXPECT_NE(status.error_message().find("'token_and_mfa'"), std::string::npos)
+            << status.error_message();
+      }
+
+      // And a permission entry for a handler that never calls authorize(): the
+      // entry would be enforced by nothing at all, which is #78's failure mode.
+      rpc::AuthMiddleware::register_rpc(create_api_token_rpc, core::Permission::SampleRead);
+      {
+        const auto status = create_api_token();
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL) << status.error_message();
+        EXPECT_NE(status.error_message().find("permission 'sample.read'"), std::string::npos)
+            << status.error_message();
+        EXPECT_NE(status.error_message().find("'token_and_mfa'"), std::string::npos)
+            << status.error_message();
+      }
+      rpc::AuthMiddleware::register_rpc(create_api_token_rpc, rpc::RpcGate::token_and_mfa());
+      EXPECT_TRUE(create_api_token().ok())
+          << "restored, the same call succeeds, so only the registry disagreement refused it";
+
+      // #78's anti-bypass, end to end: a permission-gated handler that calls
+      // authorize() is refused when its RPC is registered with a credential rule,
+      // so the new state cannot be used to take an RPC out of the #60 check.
+      rpc::AuthMiddleware::register_rpc(list_samples_rpc, rpc::RpcGate::token_only());
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSamplesRequest req;
+        req.set_lab_id(kLabId);
+        fmgr::v1::ListSamplesResponse resp;
+        const auto status = sample_stub_->ListSamples(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL) << status.error_message();
+        EXPECT_NE(status.error_message().find("credential rule 'token_only'"), std::string::npos)
+            << status.error_message();
+        EXPECT_NE(status.error_message().find("'sample.read'"), std::string::npos)
+            << status.error_message();
+      }
+      rpc::AuthMiddleware::register_rpc(list_samples_rpc, core::Permission::SampleRead);
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSamplesRequest req;
+        req.set_lab_id(kLabId);
+        fmgr::v1::ListSamplesResponse resp;
+        EXPECT_TRUE(sample_stub_->ListSamples(&ctx, req, &resp).ok())
+            << "restoring the permission restores the call";
+      }
+    }
+
+    // The third rule, on every RPC that declares it: a session whose second factor
+    // is outstanding is refused at the gate, before the handler runs. The ids in
+    // the mutating requests are deliberately not real ones — the credential gate is
+    // step 0, so a NOT_FOUND or a parse error here would mean the gate never ran.
+    // Logout and SubmitMfa are the two exceptions, and they are tested above.
+    TEST_F(ServerIntegrationTest, EveryRpcDeclaringTokenAndMfaRefusesAPendingMfaSession) {
+      const auto token = login(kMfaEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      const std::string absent_id = "00000000-0000-0000-0000-0000000000ff";
+
+      const auto expect_mfa_refusal = [](const grpc::Status& status, std::string_view rpc) {
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED)
+            << rpc << ": " << status.error_message();
+        EXPECT_NE(status.error_message().find("mfa_required"), std::string::npos)
+            << rpc << ": " << status.error_message();
+      };
+
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateApiTokenRequest req;
+        req.set_name("must-not-exist");
+        req.set_scope_json(R"(["*"])");
+        fmgr::v1::CreateApiTokenResponse resp;
+        expect_mfa_refusal(auth_stub_->CreateApiToken(&ctx, req, &resp), "CreateApiToken");
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListApiTokensRequest req;
+        fmgr::v1::ListApiTokensResponse resp;
+        expect_mfa_refusal(auth_stub_->ListApiTokens(&ctx, req, &resp), "ListApiTokens");
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::RevokeApiTokenRequest req;
+        req.set_api_token_id(absent_id);
+        fmgr::v1::RevokeApiTokenResponse resp;
+        expect_mfa_refusal(auth_stub_->RevokeApiToken(&ctx, req, &resp), "RevokeApiToken");
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSessionsRequest req;
+        fmgr::v1::ListSessionsResponse resp;
+        expect_mfa_refusal(session_stub_->ListSessions(&ctx, req, &resp), "ListSessions");
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::RevokeSessionRequest req;
+        req.set_session_id(absent_id);
+        fmgr::v1::RevokeSessionResponse resp;
+        expect_mfa_refusal(session_stub_->RevokeSession(&ctx, req, &resp), "RevokeSession");
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListLabsRequest req;
+        fmgr::v1::ListLabsResponse resp;
+        expect_mfa_refusal(lab_stub_->ListLabs(&ctx, req, &resp), "ListLabs");
+      }
+    }
+
+    // #78 criterion 3, still standing after #119 turned the entries into enforced
+    // rules: every one of the ten has a test pinning its actual gate.
     // The caller below holds no permission whatsoever — it has no lab membership,
     // so resolve_permissions() grants it nothing — and the control at the end
     // proves that is real by showing a permission-gated RPC refuses it.
