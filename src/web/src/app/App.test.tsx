@@ -46,7 +46,7 @@ const EXPECTED_SCREEN: Record<string, { title: string; task: string | null }> = 
   login: { title: authCopy.title, task: 'G2.1' },
   'login-mfa': { title: authCopy.title, task: 'G2.1' },
   home: { title: homeCopy.title, task: 'G4.2' },
-  lookup: { title: lookupCopy.title, task: 'G3.5' },
+  lookup: { title: lookupCopy.title, task: null },
   samples: { title: samplesCopy.title, task: null },
   // G3.3 replaced both of its placeholders. The create screen's heading is its
   // own namespace's form title; the detail screen's heading is the sample's
