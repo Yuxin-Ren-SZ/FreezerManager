@@ -2,10 +2,10 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { axe } from '../test/setup';
 import { Button } from './Button';
 import { EmptyState } from './EmptyState';
 import { ErrorState } from './ErrorState';
-import { expectNoA11yViolations } from './a11y';
 
 describe('EmptyState', () => {
   it('renders its title and description as a level-2 heading', () => {
@@ -32,7 +32,7 @@ describe('EmptyState', () => {
       </main>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
 
@@ -91,6 +91,6 @@ describe('ErrorState', () => {
       </main>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });

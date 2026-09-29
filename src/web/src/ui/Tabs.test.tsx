@@ -2,8 +2,8 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { axe } from '../test/setup';
 import { Tabs } from './Tabs';
-import { expectNoA11yViolations } from './a11y';
 
 const items = [
   { id: 'details', label: 'Details', content: <p>Details panel</p> },
@@ -100,6 +100,6 @@ describe('Tabs', () => {
       </main>,
     );
 
-    await expectNoA11yViolations(container);
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
