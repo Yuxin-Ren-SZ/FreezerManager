@@ -1285,6 +1285,177 @@ namespace fmgr::test {
     }
 
     // =====================================================================
+    // Renaming a key (#121)
+    // =====================================================================
+    //
+    // `UpdateCfdRequest` replaces `key` as well as the attachment, so a row can be
+    // renamed where it stands. Neither #115 check runs for that — the node does
+    // not change — and the destination check only asks whether the row suits the
+    // *new* key's inheritance, which a rename onto a fresh key satisfies
+    // trivially. What can weaken is the old key: the row stops shadowing what it
+    // shadowed, and the subtree falls back to it.
+    //
+    // The line these tests hold: **a rename may shed a name and must not shed a
+    // tightening.** A row that tightened an inherited definition cannot be
+    // renamed away from it, because the subtree then accepts values it refused
+    // before. A row that was only a relabel — equal to what it inherited, or with
+    // nothing above it at all — renames freely, which is what fixing a typo in a
+    // key is.
+
+    TEST_F(ItemTypeServiceTest, UpdateCfdRejectsRenamingAnOverrideThatWouldShedItsTightening) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
+      make_cfd(token, kLab1,
+               {.key = "notes", .required = true, .validation_json = R"({"max_length":100})"});
+      const auto override_cfd =
+          make_cfd(token, kLab1,
+                   {.item_type_id = blood_type,
+                    .key = "notes",
+                    .required = true,
+                    .validation_json = R"({"max_length":5})"});
+      const std::string too_long(50, 'a');
+      // The probe carries `notes_v2` as well, and the *same* payload is used
+      // before and after the attempt. A rename that succeeded leaves `notes_v2`
+      // required, so a probe carrying only `notes` would be refused in both runs
+      // for a different reason and the assertion would pass without proving
+      // anything; with the second key supplied, the only thing that can refuse
+      // the payload is the `notes` cap under test. (Keys with no definition are
+      // carried in the blob rather than rejected — `validate_custom_fields` walks
+      // the definitions, not the payload.)
+      const std::string value_json =
+          std::string(R"({"notes":")") + too_long + R"(","notes_v2":"x"})";
+
+      // Precondition, so the assertion below is about the rename rather than
+      // about a sample that never worked: `blood` caps `notes` at 5 today.
+      EXPECT_FALSE(create_sample_of_type(token, blood_type, value_json).ok());
+
+      // Renaming to a fresh key releases the cap: `notes` would fall back to the
+      // inherited 100, and the tightened row would constrain nothing.
+      const auto status = update_cfd_spec(token, kLab1, override_cfd,
+                                          {.item_type_id = blood_type,
+                                           .key = "notes_v2",
+                                           .required = true,
+                                           .validation_json = R"({"max_length":5})"});
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("max_length"), std::string::npos);
+
+      // The effective resolution is the assertion, not the status code: the value
+      // refused before the rename is still refused after it, and the row is still
+      // the `notes` definition it was.
+      EXPECT_FALSE(create_sample_of_type(token, blood_type, value_json).ok());
+      const auto stored = stored_cfd(token, blood_type, "notes");
+      EXPECT_TRUE(stored.has_value());
+      EXPECT_EQ(stored_cfd(token, blood_type, "notes_v2"), std::nullopt);
+      if (stored.has_value()) {
+        EXPECT_EQ(stored->validation_json(), R"({"max_length":5})");
+      }
+
+      // The refusal did not leave `notes` unusable: a value the tightened
+      // definition accepts still stores.
+      EXPECT_TRUE(create_sample_of_type(token, blood_type, R"({"notes":"short"})").ok());
+    }
+
+    // The use case the refusal must not break: fixing a typo in a key. Nothing
+    // above the row defines `patinet_id`, so the rename sheds no inherited
+    // constraint — and the row's own constraints travel with the new name.
+    TEST_F(ItemTypeServiceTest, UpdateCfdAllowsRenamingAKeyThatInheritsNothingAndKeepsConstraints) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
+      const auto typo_cfd = make_cfd(token, kLab1,
+                                     {.item_type_id = blood_type,
+                                      .key = "patinet_id",
+                                      .required = true,
+                                      .validation_json = R"({"max_length":5})"});
+      const std::string too_long(50, 'a');
+      EXPECT_FALSE(create_sample_of_type(token, blood_type,
+                                         std::string(R"({"patinet_id":")") + too_long + R"("})")
+                       .ok());
+
+      const auto status = update_cfd_spec(token, kLab1, typo_cfd,
+                                          {.item_type_id = blood_type,
+                                           .key = "patient_id",
+                                           .required = true,
+                                           .validation_json = R"({"max_length":5})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      // The resolution after the rename: the cap travelled with the row (50
+      // characters is still refused, under the corrected key), the requirement
+      // travelled with it (an empty sample is still refused), and the typo'd key
+      // is gone rather than left behind as a second definition.
+      EXPECT_EQ(stored_cfd(token, blood_type, "patinet_id"), std::nullopt);
+      ASSERT_TRUE(stored_cfd(token, blood_type, "patient_id").has_value());
+      EXPECT_FALSE(create_sample_of_type(token, blood_type,
+                                         std::string(R"({"patient_id":")") + too_long + R"("})")
+                       .ok());
+      EXPECT_FALSE(create_sample_of_type(token, blood_type, "{}").ok());
+      EXPECT_TRUE(create_sample_of_type(token, blood_type, R"({"patient_id":"short"})").ok());
+    }
+
+    // A rename is also a write of the new key, so the destination half of the
+    // rule holds for it too: `notes` is inherited with a cap of 5, and a row
+    // arriving under that name may not raise it.
+    TEST_F(ItemTypeServiceTest, UpdateCfdRejectsRenamingAKeyOntoADefinitionItWouldLoosen) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
+      make_cfd(token, kLab1, {.key = "notes", .validation_json = R"({"max_length":5})"});
+      const auto loose_cfd = make_cfd(token, kLab1,
+                                      {.item_type_id = blood_type,
+                                       .key = "notes_v2",
+                                       .validation_json = R"({"max_length":50})"});
+
+      const auto status = update_cfd_spec(token, kLab1, loose_cfd,
+                                          {.item_type_id = blood_type,
+                                           .key = "notes",
+                                           .validation_json = R"({"max_length":50})"});
+      EXPECT_FALSE(status.ok());
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      EXPECT_NE(status.error_message().find("max_length"), std::string::npos);
+
+      // Nothing was written: the inherited cap still holds and the wide row is
+      // still where the rename found it.
+      const std::string too_long(30, 'a');
+      EXPECT_FALSE(create_sample_of_type(token, blood_type,
+                                         std::string(R"({"notes":")") + too_long + R"("})")
+                       .ok());
+      ASSERT_TRUE(stored_cfd(token, blood_type, "notes_v2").has_value());
+      EXPECT_EQ(stored_cfd(token, blood_type, "notes"), std::nullopt);
+    }
+
+    // The boundary of the refusal, as a test: renaming a row that was *equal* to
+    // what it shadowed sheds no tightening, so it stays a relabel. The rule is
+    // about the constraint that disappears, not about a key having a parent.
+    TEST_F(ItemTypeServiceTest, UpdateCfdAllowsRenamingAKeyItWasNotTightening) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
+      make_cfd(token, kLab1, {.key = "notes", .validation_json = R"({"max_length":100})"});
+      const auto equal_cfd = make_cfd(token, kLab1,
+                                      {.item_type_id = blood_type,
+                                       .key = "notes",
+                                       .validation_json = R"({"max_length":100})"});
+
+      const auto status = update_cfd_spec(token, kLab1, equal_cfd,
+                                          {.item_type_id = blood_type,
+                                           .key = "notes_v2",
+                                           .validation_json = R"({"max_length":100})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      // `notes` resolves to the inherited definition before and after, so what
+      // the subtree accepts did not change; the relabelled row is where the
+      // rename put it.
+      const std::string fifty(50, 'a');
+      EXPECT_TRUE(create_sample_of_type(token, blood_type,
+                                        std::string(R"({"notes":")") + fifty + R"("})")
+                      .ok());
+      ASSERT_TRUE(stored_cfd(token, blood_type, "notes_v2").has_value());
+      EXPECT_EQ(stored_cfd(token, blood_type, "notes"), std::nullopt);
+    }
+
+    // =====================================================================
     // Permission boundaries (#69)
     // =====================================================================
 
