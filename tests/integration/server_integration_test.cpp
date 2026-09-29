@@ -130,7 +130,11 @@ namespace fmgr::test {
       }
 
       const std::string kEmail{"admin@example.com"};
+      const std::string kMfaEmail{"mfa@example.com"};
       const std::string kPassword{"hunter22"};
+      // RFC 6238's test secret; the value only has to match what the seed writes
+      // into `totp_secret_enc` for the account to count as MFA-enrolled.
+      static constexpr std::string_view kTotpSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
       // The lab seed_test_user() creates; its id is what the layout/sample RPCs
       // are called with (#60).
       const std::string kLabId{"20000000-0000-0000-0000-000000000001"};
@@ -187,6 +191,20 @@ namespace fmgr::test {
                 nlohmann::json::object({{"provider", "local"}, {"hash", password_hash}}),
             }),
         };
+        // A second account with TOTP enrolled: its sessions start with
+        // mfa_complete=false, which is what a browser holds after the login route
+        // has already set the cookie (#62).
+        const core::User mfa_user{
+            .id = core::UserId::parse("10000000-0000-0000-0000-000000000002"),
+            .primary_email = kMfaEmail,
+            .display_name = "Test MFA User",
+            .status = core::UserStatus::Active,
+            .created_at = core::Timestamp::from_unix_micros(1),
+            .auth_bindings = nlohmann::json::array({
+                nlohmann::json::object({{"provider", "local"}, {"hash", password_hash}}),
+            }),
+            .totp_secret_enc = std::string(kTotpSecret),
+        };
         const core::Lab lab{
             .id = lab_id,
             .name = "Test Lab",
@@ -201,6 +219,13 @@ namespace fmgr::test {
             .scope_filters_json = nlohmann::json::object(),
             .joined_at = core::Timestamp::from_unix_micros(1),
         };
+        const core::LabMembership mfa_membership{
+            .user_id = mfa_user.id,
+            .lab_id = lab_id,
+            .role_id = core::builtin_role_id(core::RoleKind::SystemAdmin),
+            .scope_filters_json = nlohmann::json::object(),
+            .joined_at = core::Timestamp::from_unix_micros(1),
+        };
         const storage::MutationContext ctx{
             .actor_user_id = core::UserId::parse("00000000-0000-0000-0000-000000000000"),
             .actor_session_id = "seed",
@@ -210,7 +235,9 @@ namespace fmgr::test {
         auto txn = backend_->begin(storage::IsolationLevel::Serializable);
         txn->repo<core::Lab>().insert(lab, ctx);
         txn->repo<core::User>().insert(user, ctx);
+        txn->repo<core::User>().insert(mfa_user, ctx);
         txn->repo<core::LabMembership>().insert(membership, ctx);
+        txn->repo<core::LabMembership>().insert(mfa_membership, ctx);
 
         // #78: the permissionless account. A user with no membership resolves to
         // an empty grant set — no lab permissions, no global ones — which is the
@@ -298,6 +325,87 @@ namespace fmgr::test {
       const auto status = auth_stub_->Logout(&ctx, req, &resp);
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    // A session whose second factor is still outstanding is still a credential:
+    // the browser login route has already set the cookie by the time `Login`
+    // answers `mfa_required`. Logout only removes authority, so it is allowed
+    // for a pending session — otherwise abandoning the TOTP prompt leaves the
+    // browser holding a cookie nothing can revoke (`SameSite=Strict`).
+    TEST_F(ServerIntegrationTest, LogoutRevokesAPendingMfaSession) {
+      grpc::ClientContext login_ctx;
+      fmgr::v1::LoginRequest login_req;
+      login_req.set_email(kMfaEmail);
+      login_req.set_password(kPassword);
+      fmgr::v1::LoginResponse login_resp;
+      const auto login_status = auth_stub_->Login(&login_ctx, login_req, &login_resp);
+      ASSERT_TRUE(login_status.ok()) << login_status.error_message();
+      ASSERT_TRUE(login_resp.mfa_required());
+      const auto token = login_resp.session_token();
+      ASSERT_FALSE(token.empty());
+
+      grpc::ClientContext logout_ctx;
+      set_bearer(logout_ctx, token);
+      fmgr::v1::LogoutRequest logout_req;
+      fmgr::v1::LogoutResponse logout_resp;
+      const auto logout_status = auth_stub_->Logout(&logout_ctx, logout_req, &logout_resp);
+      EXPECT_TRUE(logout_status.ok()) << logout_status.error_message();
+
+      // Revoked server-side, not merely answered OK: the credential is gone, and
+      // it is gone as an invalid token rather than as a still-pending session.
+      grpc::ClientContext after_ctx;
+      set_bearer(after_ctx, token);
+      fmgr::v1::ListApiTokensRequest list_req;
+      fmgr::v1::ListApiTokensResponse list_resp;
+      const auto after_status = auth_stub_->ListApiTokens(&after_ctx, list_req, &list_resp);
+      ASSERT_FALSE(after_status.ok());
+      EXPECT_EQ(after_status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+      EXPECT_EQ(after_status.error_message().find("mfa_required"), std::string::npos)
+          << "the session must be revoked, not still pending MFA: "
+          << after_status.error_message();
+    }
+
+    // Logout is the de-escalation, not a general widening: every other
+    // self-management RPC still refuses a session whose TOTP is outstanding, and
+    // SubmitMfa is the only other RPC that reaches its handler without the gate.
+    TEST_F(ServerIntegrationTest, PendingMfaSessionIsStillRefusedByTheOtherSelfManagementRpcs) {
+      const auto token = login(kMfaEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      grpc::ClientContext create_ctx;
+      set_bearer(create_ctx, token);
+      fmgr::v1::CreateApiTokenRequest create_req;
+      create_req.set_name("must-not-exist");
+      create_req.set_scope_json(R"(["*"])");
+      fmgr::v1::CreateApiTokenResponse create_resp;
+      const auto create_status = auth_stub_->CreateApiToken(&create_ctx, create_req, &create_resp);
+      ASSERT_FALSE(create_status.ok());
+      EXPECT_EQ(create_status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+      EXPECT_NE(create_status.error_message().find("mfa_required"), std::string::npos)
+          << create_status.error_message();
+
+      grpc::ClientContext list_ctx;
+      set_bearer(list_ctx, token);
+      fmgr::v1::ListApiTokensRequest list_req;
+      fmgr::v1::ListApiTokensResponse list_resp;
+      const auto list_status = auth_stub_->ListApiTokens(&list_ctx, list_req, &list_resp);
+      ASSERT_FALSE(list_status.ok());
+      EXPECT_EQ(list_status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+      EXPECT_NE(list_status.error_message().find("mfa_required"), std::string::npos)
+          << list_status.error_message();
+
+      // SubmitMfa itself is still reachable: a wrong code fails as a TOTP
+      // failure, not as "MFA required before this operation".
+      grpc::ClientContext mfa_ctx;
+      set_bearer(mfa_ctx, token);
+      fmgr::v1::SubmitMfaRequest mfa_req;
+      mfa_req.set_totp_code("000000");
+      fmgr::v1::SubmitMfaResponse mfa_resp;
+      const auto mfa_status = auth_stub_->SubmitMfa(&mfa_ctx, mfa_req, &mfa_resp);
+      ASSERT_FALSE(mfa_status.ok());
+      EXPECT_EQ(mfa_status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+      EXPECT_EQ(mfa_status.error_message().find("mfa_required"), std::string::npos)
+          << mfa_status.error_message();
     }
 
     TEST_F(ServerIntegrationTest, CreateAndListApiToken) {
