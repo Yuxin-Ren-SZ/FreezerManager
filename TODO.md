@@ -1004,7 +1004,7 @@ inline.
     including `ALREADY_EXISTS` (position taken) and a size-mismatch
     rejection.
 
-- [ ] **G3.4. Box view** (`features/box/`; F6.3). The grid is drawn from the
+- [x] **G3.4. Box view** (`features/box/`; F6.3). The grid is drawn from the
       box type's positions (row and column, including mixed formats such as
       the Eppendorf 3×3 + 2×2 box). Occupied cells show name and status
       colour, and clicking one opens its detail. Samples move by drag and
@@ -1017,7 +1017,7 @@ inline.
       templates (D4.2 seeds), as are a successful and a rejected move, a live
       update, and the print stylesheet.
 
-- [ ] **G3.5. Single-handed lookup** (`features/lookup/`; PRD §9, the most
+- [x] **G3.5. Single-handed lookup** (`features/lookup/`; PRD §9, the most
       common daily flow). One large autofocused field ("scan or type a
       barcode or name"). Enter tries an exact barcode match first, then the
       G0.4 `query` search. One hit shows a large location-path card
