@@ -1,4 +1,43 @@
 {
   "title": "Lookup",
-  "placeholder": "This screen is a placeholder. {{task}} fills it in."
+  "field": {
+    "label": "Scan or type a barcode or name",
+    "placeholder": "Scan or type a barcode or name",
+    "submit": "Look up",
+    "hint": "A scan lands here. Press Enter to look it up, and the field is ready for the next one.",
+    "noLab": "You are not a member of a lab yet, so there is nothing to look up."
+  },
+  "idle": {
+    "title": "Ready for the next scan",
+    "hint": "Scan a barcode or type a sample name, then press Enter."
+  },
+  "results": {
+    "one": "One match",
+    "many_one": "{{count}} match",
+    "many_other": "{{count}} matches",
+    "listLabel": "Matches",
+    "more": "Showing the first {{count}} matches. Type more of the name to narrow it down.",
+    "searching": "Looking up {{term}}…",
+    "location": "Location",
+    "resolving": "Resolving the location…",
+    "unplacedTitle": "Not in a box",
+    "unplacedHint": "This sample exists but has not been placed in a box yet.",
+    "unknownTitle": "Location unavailable",
+    "unknownHint": "The box, or one of the containers above it, is missing from the layout.",
+    "noBarcode": "No barcode"
+  },
+  "empty": {
+    "title": "No match",
+    "hint": "Nothing in this lab matches “{{term}}”, by barcode or by name."
+  },
+  "tooShort": {
+    "title": "Keep typing",
+    "hint": "Type at least two characters to search by name, or scan the whole barcode."
+  },
+  "errorTitle": "The lookup failed",
+  "checkout": {
+    "action": "Check out",
+    "notActive": "Only an active sample can be checked out.",
+    "errorTitle": "The check-out failed"
+  }
 }

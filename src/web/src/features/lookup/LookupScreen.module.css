@@ -1,0 +1,215 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.screen {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-4);
+  max-width: var(--fmgr-content-max-width);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fmgr-font-size-xl);
+  line-height: var(--fmgr-line-height-tight);
+}
+
+/* The scan field and its button, side by side and wrapping on a narrow window
+   rather than scrolling: the field must never be pushed off-screen. */
+.scan {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--fmgr-space-2);
+}
+
+/* Deliberately oversized and monospaced: it is read at arm's length, through
+   gloves, and a mistyped character has to be visible at a glance. */
+.input {
+  flex: 1 1 22rem;
+  min-height: var(--fmgr-control-height-lg);
+  padding: 0 var(--fmgr-space-3);
+  color: var(--fmgr-color-text);
+  font-family: var(--fmgr-font-mono);
+  font-size: var(--fmgr-font-size-lg);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border);
+  border-radius: var(--fmgr-radius-md);
+}
+
+.input:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+.hint {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-3);
+}
+
+.pending {
+  display: flex;
+  align-items: center;
+  gap: var(--fmgr-space-2);
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+}
+
+/* One match: the answer is the point of the screen, so it gets the space. */
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-2);
+  padding: var(--fmgr-space-5);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-lg);
+  box-shadow: var(--fmgr-shadow-sm);
+}
+
+.kicker {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sampleName {
+  margin: 0;
+  font-size: var(--fmgr-font-size-2xl);
+  line-height: var(--fmgr-line-height-tight);
+}
+
+.barcode {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-family: var(--fmgr-font-mono);
+  font-size: var(--fmgr-font-size-lg);
+}
+
+.status {
+  margin: 0;
+}
+
+.location {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-2);
+  padding-top: var(--fmgr-space-2);
+  border-top: 1px solid var(--fmgr-color-border-subtle);
+}
+
+.locationHeading {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+  font-weight: var(--fmgr-font-weight-medium);
+}
+
+/* Freezer → … → position, each rung its own chip. `list-style: none` because
+   the separator is drawn by the rule below, not by a marker. */
+.path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--fmgr-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pathStep {
+  display: flex;
+  align-items: center;
+  gap: var(--fmgr-space-2);
+  font-size: var(--fmgr-font-size-lg);
+  font-weight: var(--fmgr-font-weight-medium);
+}
+
+.pathStep:not(:last-child)::after {
+  color: var(--fmgr-color-text-muted);
+  font-weight: var(--fmgr-font-weight-normal);
+  content: '›';
+}
+
+.locationTitle {
+  margin: 0;
+  font-size: var(--fmgr-font-size-lg);
+  font-weight: var(--fmgr-font-weight-medium);
+}
+
+.locationHint {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--fmgr-space-3);
+  padding-top: var(--fmgr-space-2);
+}
+
+.error {
+  margin: 0;
+  color: var(--fmgr-color-danger);
+}
+
+.count {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--fmgr-space-3);
+  padding: var(--fmgr-space-3);
+  cursor: pointer;
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-md);
+}
+
+/* The keyboard highlight. Colour alone is never the signal — `aria-selected`
+   carries it for assistive technology, and the border makes it visible. */
+.optionActive {
+  background-color: var(--fmgr-color-accent-subtle);
+  border-color: var(--fmgr-color-accent);
+}
+
+.optionName {
+  font-size: var(--fmgr-font-size-lg);
+  font-weight: var(--fmgr-font-weight-medium);
+}
+
+.optionMeta {
+  color: var(--fmgr-color-text-muted);
+  font-family: var(--fmgr-font-mono);
+}
+
+.optionLocation {
+  flex: 1 1 100%;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
