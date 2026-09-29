@@ -288,7 +288,7 @@ describe('cellInDirection — stepping over the declared positions', () => {
     // The next declared position after A5 is B1 — the first cell of the *next*
     // row, which is what a roving tabindex built on `positions[index + 1]` would
     // focus on ArrowRight. The cell to the right of A5 does not exist.
-    const after = grid.positions[grid.positions.indexOf(a5.position) + 1];
+    const after = grid.positions.at(grid.positions.indexOf(a5.position) + 1);
     expect(after?.label).toBe('B1');
     expect(cellInDirection(grid, a5, 'right')).toBeNull();
   });

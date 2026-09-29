@@ -49,9 +49,18 @@
   font-size: var(--fmgr-font-size-sm);
 }
 
-/* The columns come from the box type and are set inline, because a cryobox has
-   9, 10 or 12 of them and a media query cannot know which. */
+/* The grid is a stack of rows, and each row is the grid of columns: `role="row"`
+   has to be a real element for the roving tabindex's grid pattern (issue #92),
+   and rows still line up because every one of them declares the same equal
+   columns. The column count comes from the box type and is set inline, because
+   a cryobox has 9, 10 or 12 of them and a media query cannot know which. */
 .grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-1);
+}
+
+.row {
   display: grid;
   gap: var(--fmgr-space-1);
 }
