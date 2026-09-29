@@ -75,15 +75,27 @@ G1.3. Branch `feat/41-web-shell-ui-kit`, PR **#45**.
 - **`src/ui/a11y.ts` uses `vitest-axe`'s exported `axe` runner, not its
   `toHaveNoViolations` matcher.** It was written while `src/test/setup.ts`
   belonged to #42, so registering a matcher there was not available; the runner
-  is the same axe-core and only the failure formatting differs. Now that #42 has
-  merged, moving the matcher into `setup.ts` and deleting `a11y.ts` is a
-  tidy-up, not a fix — nothing is wrong with it as it stands.
+  is the same axe-core and only the failure formatting differs. Folding the
+  matcher into `setup.ts` and deleting the file is **#46** — a tidy-up, not a
+  fix, and the marker in the file points there rather than at a task that has
+  already merged.
 - **`src/app/testing.tsx` (`renderApp`) and `src/test/render.tsx`
   (`renderWithProviders`, G1.2) are deliberately both here.** The second mounts
   one component in the provider stack; the first boots the whole application
   with the real route table and a real history, which is what "a user at this
   URL sees this screen" needs. Merging them would make every component test pay
   for the router.
+- **The per-route test asserts *which* screen rendered, not just that one did.**
+  Each route's heading has to match the title declared by the namespace the test
+  says it owns, and the body has to name that route's TODO id — plus a test that
+  every route id has an entry, so adding a route forces the decision. Asserting
+  only "a level-1 heading exists" would have passed a copy-paste that pointed
+  `/labs/:labId/audit` at the samples screen; proven by making exactly that
+  edit, which fails with `Unable to find role="heading" and name "Audit log"`.
+- **`RouteGuard` checks the lab scope before the "no permission required"
+  shortcut.** No route is both `permissions: null` and `scoped: true`, so the
+  order is currently inert — which is why it has a test with a synthetic route
+  rather than relying on the map. Restoring the old order fails it.
 
 **Resolved during the task:**
 
@@ -98,6 +110,14 @@ G1.3. Branch `feat/41-web-shell-ui-kit`, PR **#45**.
 **Open / for the lead:**
 
 - **`TODO.md` G1.3 is done.** The lead owns the tick.
+- **Two caveats on how far the verification goes.** The 360 px criterion is
+  asserted as CSS rules read out of the stylesheets, because jsdom has no layout
+  engine and applies no stylesheet — that is honest technique, not verified
+  layout, and the real check is the Playwright pass in **G5.1**. And `npx eslint
+  .` exits 0 with **one warning**, not zero: React Compiler flags
+  `useVirtualizer` at `src/ui/Table.tsx:99` as "an incompatible library", which
+  is informational — the hook's return value cannot be memoized, and the
+  component is written so it does not need to be.
 - **`doc/dev/web.md` is not updated by this PR.** It describes the G1.1 layout;
   the shell adds `src/app/shell/`, `src/app/pages/` and `src/features/<name>/`,
   and the `test.css` change is worth a line. Deliberately left to avoid touching
