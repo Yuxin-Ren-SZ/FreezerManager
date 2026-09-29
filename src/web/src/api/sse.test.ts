@@ -62,6 +62,33 @@ describe('subscribeSse', () => {
     ).toThrow(/unknown parameter/i);
   });
 
+  // G0.1 removed the gateway's `?access_token=` fallback, because a token in a
+  // URL ends up in proxy and access logs. The credential is now the HttpOnly
+  // session cookie the browser attaches to a same-origin `EventSource`, so no
+  // URL this module builds may carry one — on the first connect or on any
+  // reconnect, which rebuilds the URL from the cursor.
+  it('never puts a credential in the stream URL', () => {
+    subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      params: { lab_id: 'lab-1' },
+      onFrame: vi.fn(),
+      onError: vi.fn(),
+      eventSourceFactory: factory,
+    });
+    current().message(JSON.stringify({ id: 's-1', lab_id: 'lab-1' }), '1758931200000000');
+    current().transportError();
+    vi.advanceTimersByTime(1_000);
+
+    expect(FakeEventSource.all()).toHaveLength(2);
+    for (const source of FakeEventSource.all()) {
+      expect(source.url).not.toContain('access_token');
+      expect(source.url).not.toContain('token');
+      expect(source.url).not.toContain('Bearer');
+      expect(source.url).not.toContain('authorization');
+    }
+    expect(current().url).toBe('/api/v1/sample/watch?lab_id=lab-1&since=1758931200000000');
+  });
+
   it('parses a frame into the generated message type and reports its cursor', () => {
     const frames: SseFrame<unknown>[] = [];
     subscribeSse('sample/watch', {

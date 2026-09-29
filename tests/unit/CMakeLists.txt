@@ -210,6 +210,7 @@ target_include_directories(
 )
 
 add_executable(freezermanager_rest_unit_tests
+  browser_session_test.cpp
   json_proto_mapping_test.cpp
   rest_error_translation_test.cpp
 )

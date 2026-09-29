@@ -21,6 +21,7 @@
 #ifndef FMGR_REST_SSEBRIDGE_H
 #define FMGR_REST_SSEBRIDGE_H
 
+#include "rest/BrowserSession.h"
 #include "rest/RestErrorTranslation.h"
 
 #include <drogon/HttpAppFramework.h>
@@ -158,20 +159,16 @@ namespace fmgr::rest {
   // Bridge one gRPC server-streaming call to an SSE response.
   //   open_reader: (grpc::ClientContext&) -> std::unique_ptr<grpc::ClientReader<RespT>>
   //   frame_fn:    (const RespT&) -> std::string, a complete SSE frame ("data: ...\n\n")
-  // The Authorization header (or an `access_token` query param, for browser
-  // EventSource which cannot set headers) is forwarded as gRPC metadata so the
-  // streaming handler runs through the same RBAC gate as every other RPC.
+  // The credential is resolved exactly as it is on every unary route: the
+  // Authorization header wins, else the fmgr_session cookie is forwarded as
+  // `Bearer …` metadata (G0.1), so the streaming handler runs through the same
+  // RBAC gate as every other RPC. There is deliberately no query-parameter
+  // fallback: a token in a URL leaks into proxy and access logs.
   template <typename RespT, typename OpenReader, typename FrameFn>
   void stream_sse(const drogon::HttpRequestPtr& req,
                   std::function<void(const drogon::HttpResponsePtr&)>&& callback,
                   OpenReader open_reader, FrameFn frame_fn) {
-    std::string authz = req->getHeader("authorization");
-    if (authz.empty()) {
-      const std::string token = req->getParameter("access_token");
-      if (!token.empty()) {
-        authz = "Bearer " + token;
-      }
-    }
+    const std::string authz = authorization_metadata(browser_request_from(*req));
 
     auto resp = drogon::HttpResponse::newAsyncStreamResponse(
         [authz, open_reader, frame_fn](drogon::ResponseStreamPtr raw_stream) mutable {

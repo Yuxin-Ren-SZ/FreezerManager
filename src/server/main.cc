@@ -7,6 +7,7 @@
 #include "kms/KmsFactory.h"
 #include "obs/Health.h"
 #include "obs/Log.h"
+#include "rest/BrowserSession.h"
 #include "rest/GatewayStubs.h"
 #include "rest/RestGateway.h"
 #include "server/FreezerServer.h"
@@ -184,6 +185,16 @@ int main(int /*argc*/, char* /*argv*/[]) {
     opts.listen_address = listen;
 
     if (!apply_tls_env(opts)) {
+      return 1;
+    }
+
+    // Browser session cookies (G0.1): FMGR_DEV_INSECURE_COOKIES=1 drops the
+    // Secure flag, which is a localhost-only convenience. Refuse it outright in
+    // production rather than starting with a weaker cookie than the operator
+    // thinks they configured. Reads the same environment the gateway does.
+    if (const std::string reason = fmgr::rest::validate_browser_session_env(); !reason.empty()) {
+      fmgr::obs::log_lifecycle(fmgr::obs::Level::Error, "freezerd: " + reason,
+                               "rest.insecure_cookie_guard");
       return 1;
     }
 

@@ -64,6 +64,10 @@ namespace fmgr::auth {
   //   gains full access; RPC middleware rejects non-MFA RPCs until then.
   struct AuthToken {
     core::SessionId session_id;
+    // Who just authenticated. `LoginResponse.user_id` was declared in the proto
+    // but never filled, and a browser client cannot ask for it any other way
+    // (WhoAmI is G0.2), so the provider reports it here.
+    core::UserId user_id;
     std::string plaintext_token; // shown once; must NOT be logged or stored
     bool mfa_complete{true};
   };

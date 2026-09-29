@@ -26,6 +26,7 @@
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
+#include <drogon/Cookie.h>
 #include <drogon/HttpClient.h>
 #include <drogon/HttpRequest.h>
 #include <drogon/drogon.h>
@@ -42,12 +43,16 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 namespace fmgr::test {
   namespace {
@@ -95,6 +100,13 @@ namespace fmgr::test {
 
       void SetUp() override {
         instance = this;
+        // The gateway reads the browser-session configuration when it registers
+        // its routes, so the environment is set here rather than per test. Two
+        // origins are acceptable to the CSRF gate: the request's own host (which
+        // is what the dev proxy and a same-origin production deploy present) and
+        // FMGR_WEB_ORIGIN.
+        ::setenv("FMGR_WEB_ORIGIN", "https://spa.example.test", 1);
+
         db_path_ = std::filesystem::temp_directory_path() / "fmgr-rest-it.db";
         remove_db();
 
@@ -145,6 +157,7 @@ namespace fmgr::test {
 
       void TearDown() override {
         drogon::app().quit();
+        ::unsetenv("FMGR_WEB_ORIGIN");
         if (app_thread_.joinable()) {
           app_thread_.join();
         }
@@ -251,11 +264,16 @@ namespace fmgr::test {
       int status;
       nlohmann::json body; // null if the body was not valid JSON
       std::string raw;
+      // Set-Cookie values the gateway sent, keyed by cookie name. Drogon parses
+      // each Set-Cookie header into a Cookie, so the tests assert on attributes
+      // rather than on the header text.
+      std::map<std::string, drogon::Cookie> cookies;
     };
 
-    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    [[nodiscard]] HttpResult post(const std::string& path, const std::string& json_body,
-                                  const std::string& bearer = {}) {
+    using Headers = std::vector<std::pair<std::string, std::string>>;
+
+    [[nodiscard]] HttpResult post_with(const std::string& path, const std::string& json_body,
+                                       const Headers& headers) {
       auto* env = RestGatewayEnv::instance;
       auto client = drogon::HttpClient::newHttpClient(env->base_url());
       auto req = drogon::HttpRequest::newHttpRequest();
@@ -263,8 +281,8 @@ namespace fmgr::test {
       req->setPath(path);
       req->setContentTypeCode(drogon::CT_APPLICATION_JSON);
       req->setBody(json_body);
-      if (!bearer.empty()) {
-        req->addHeader("Authorization", "Bearer " + bearer);
+      for (const auto& [name, value] : headers) {
+        req->addHeader(name, value);
       }
       auto [result, resp] = client->sendRequest(req, 10.0);
       EXPECT_EQ(result, drogon::ReqResult::Ok);
@@ -272,7 +290,22 @@ namespace fmgr::test {
       out.status = resp ? resp->getStatusCode() : 0;
       out.raw = resp ? std::string(resp->getBody()) : std::string{};
       out.body = nlohmann::json::parse(out.raw, nullptr, /*allow_exceptions=*/false);
+      if (resp != nullptr) {
+        for (const auto& [name, cookie] : resp->getCookies()) {
+          out.cookies.emplace(name, cookie);
+        }
+      }
       return out;
+    }
+
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    [[nodiscard]] HttpResult post(const std::string& path, const std::string& json_body,
+                                  const std::string& bearer = {}) {
+      Headers headers;
+      if (!bearer.empty()) {
+        headers.emplace_back("Authorization", "Bearer " + bearer);
+      }
+      return post_with(path, json_body, headers);
     }
 
     [[nodiscard]] HttpResult get(const std::string& path) {
@@ -288,6 +321,64 @@ namespace fmgr::test {
       out.raw = resp ? std::string(resp->getBody()) : std::string{};
       out.body = nlohmann::json::parse(out.raw, nullptr, /*allow_exceptions=*/false);
       return out;
+    }
+
+    // ---- Browser session helper (G0.1) ----
+    //
+    // A browser has a cookie jar; drogon's HttpClient does not, so the tests
+    // carry the two cookies themselves and put them on each request by hand.
+    struct BrowserSession {
+      std::string session; // fmgr_session value = the bearer token
+      std::string csrf;    // fmgr_csrf value
+      HttpResult login;
+
+      [[nodiscard]] std::string cookie_header() const {
+        return "fmgr_session=" + session + "; fmgr_csrf=" + csrf;
+      }
+
+      // The headers a browser sends for a same-origin call: both cookies, plus
+      // the CSRF header that echoes fmgr_csrf.
+      [[nodiscard]] Headers headers(bool with_csrf = true) const {
+        Headers out{{"Cookie", cookie_header()}};
+        if (with_csrf) {
+          out.emplace_back("X-CSRF-Token", csrf);
+        }
+        return out;
+      }
+
+      [[nodiscard]] Headers cookie_only() const {
+        return Headers{{"Cookie", cookie_header()}};
+      }
+    };
+
+    [[nodiscard]] BrowserSession browser_login(const std::string& email,
+                                               const std::string& password) {
+      const nlohmann::json req{{"email", email}, {"password", password}};
+      BrowserSession session;
+      session.login = post_with("/api/v1/auth/browser/login", req.dump(), {});
+      const auto session_cookie = session.login.cookies.find("fmgr_session");
+      if (session_cookie != session.login.cookies.end()) {
+        session.session = session_cookie->second.value();
+      }
+      const auto csrf_cookie = session.login.cookies.find("fmgr_csrf");
+      if (csrf_cookie != session.login.cookies.end()) {
+        session.csrf = csrf_cookie->second.value();
+      }
+      return session;
+    }
+
+    // AuthService.Login is rate limited per source IP (30 attempts, 5/s refill)
+    // and this file logs in for most of its tests. A browser session is
+    // reusable, so the browser tests share one per account; only the tests that
+    // are *about* logging in or out mint their own.
+    [[nodiscard]] const BrowserSession& cached_browser_session(const std::string& email,
+                                                               const std::string& password) {
+      static std::map<std::string, BrowserSession> cache;
+      const auto it = cache.find(email);
+      if (it != cache.end()) {
+        return it->second;
+      }
+      return cache.emplace(email, browser_login(email, password)).first->second;
     }
 
     [[nodiscard]] std::string login(const std::string& email, const std::string& password) {
@@ -308,6 +399,10 @@ namespace fmgr::test {
       EXPECT_EQ(res.status, 200) << res.raw;
       ASSERT_TRUE(res.body.is_object());
       EXPECT_FALSE(res.body.value("session_token", std::string{}).empty());
+      // G0.1's browser login answers with the user id and no token. The field is
+      // filled at the source (AuthServiceImpl::Login), so both login routes
+      // carry it — a bearer client gets the same additive field.
+      EXPECT_FALSE(res.body.value("user_id", std::string{}).empty());
     }
 
     TEST(RestGatewayTest, LoginWrongPasswordReturns401) {
@@ -619,6 +714,284 @@ namespace fmgr::test {
       EXPECT_EQ(res.status, 401) << res.raw;
     }
 
+    // ---- Browser session cookie + CSRF (G0.1) ----
+    //
+    // The SPA cannot hold a bearer token in JavaScript, so these routes put the
+    // session in an HttpOnly cookie and guard cookie-authenticated mutations with
+    // a double-submit CSRF token plus an Origin check.
+
+    TEST(RestGatewayBrowserSession, LoginSetsBothCookiesAndReturnsNoToken) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      ASSERT_EQ(session.login.cookies.count("fmgr_session"), 1U);
+      const auto& session_cookie = session.login.cookies.at("fmgr_session");
+      EXPECT_FALSE(session_cookie.value().empty());
+      EXPECT_EQ(session_cookie.value(), session.session);
+      EXPECT_TRUE(session_cookie.isHttpOnly());
+      EXPECT_TRUE(session_cookie.isSecure());
+      EXPECT_EQ(session_cookie.sameSite(), drogon::Cookie::SameSite::kStrict);
+      EXPECT_EQ(session_cookie.path(), "/api");
+      // Server-side idle/absolute expiry are the real limits.
+      EXPECT_FALSE(session_cookie.maxAge().has_value());
+
+      ASSERT_EQ(session.login.cookies.count("fmgr_csrf"), 1U);
+      const auto& csrf_cookie = session.login.cookies.at("fmgr_csrf");
+      EXPECT_FALSE(csrf_cookie.value().empty());
+      EXPECT_NE(csrf_cookie.value(), session_cookie.value());
+      EXPECT_FALSE(csrf_cookie.isHttpOnly()); // JavaScript must be able to echo it
+      EXPECT_TRUE(csrf_cookie.isSecure());
+      EXPECT_EQ(csrf_cookie.sameSite(), drogon::Cookie::SameSite::kStrict);
+      EXPECT_EQ(csrf_cookie.path(), "/");
+      EXPECT_FALSE(csrf_cookie.maxAge().has_value());
+
+      ASSERT_TRUE(session.login.body.is_object()) << session.login.raw;
+      EXPECT_FALSE(session.login.body.value("session_id", std::string{}).empty());
+      EXPECT_FALSE(session.login.body.value("user_id", std::string{}).empty());
+      EXPECT_FALSE(session.login.body.value("mfa_required", false));
+      // The whole point of the cookie: the token never reaches the body.
+      EXPECT_FALSE(session.login.body.contains("session_token")) << session.login.raw;
+    }
+
+    TEST(RestGatewayBrowserSession, LoginWithWrongPasswordReturns401AndSetsNoCookies) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = browser_login(env->kAdminEmail, "definitely-wrong");
+      EXPECT_EQ(session.login.status, 401) << session.login.raw;
+      EXPECT_EQ(session.login.body.value("code", std::string{}), "UNAUTHENTICATED");
+      EXPECT_TRUE(session.login.cookies.empty());
+    }
+
+    // A re-login while a stale session cookie is still in the jar: the SPA sends
+    // both cookies, so the gate lets it through and the response rotates both.
+    TEST(RestGatewayBrowserSession, LoginRotatesBothCookiesWhenAStaleSessionIsPresent) {
+      auto* env = RestGatewayEnv::instance;
+      const auto first = browser_login(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(first.login.status, 200) << first.login.raw;
+      ASSERT_FALSE(first.session.empty());
+
+      const nlohmann::json req{{"email", env->kAdminEmail}, {"password", env->kPassword}};
+      const auto second = post_with("/api/v1/auth/browser/login", req.dump(), first.headers());
+      ASSERT_EQ(second.status, 200) << second.raw;
+      ASSERT_EQ(second.cookies.count("fmgr_session"), 1U);
+      ASSERT_EQ(second.cookies.count("fmgr_csrf"), 1U);
+      EXPECT_NE(second.cookies.at("fmgr_session").value(), first.session);
+      EXPECT_NE(second.cookies.at("fmgr_csrf").value(), first.csrf);
+    }
+
+    TEST(RestGatewayBrowserSession, SessionCookieAuthenticatesAUnaryRoute) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      // No Authorization header: the credential is the cookie alone.
+      const auto res = post_with("/api/v1/lab/get", req.dump(), session.headers());
+      EXPECT_EQ(res.status, 200) << res.raw;
+      EXPECT_EQ(res.body["lab"].value("id", std::string{}), env->kLabId);
+    }
+
+    // The cookie is a credential, not a privilege: the same RBAC gate answers.
+    TEST(RestGatewayBrowserSession, SessionCookieRunsThroughTheSameRbacGate) {
+      auto* env = RestGatewayEnv::instance;
+      const auto member = cached_browser_session(env->kMemberEmail, env->kPassword);
+      ASSERT_EQ(member.login.status, 200) << member.login.raw;
+
+      const nlohmann::json list{{"lab_id", env->kLabId}};
+      const auto allowed = post_with("/api/v1/sample/list", list.dump(), member.headers());
+      EXPECT_EQ(allowed.status, 200) << allowed.raw;
+
+      const nlohmann::json create{{"name", "Cookie Member Lab"}, {"contact", "c@c"}};
+      const auto denied = post_with("/api/v1/lab/create", create.dump(), member.headers());
+      EXPECT_EQ(denied.status, 403) << denied.raw;
+      EXPECT_EQ(denied.body.value("code", std::string{}), "PERMISSION_DENIED");
+    }
+
+    TEST(RestGatewayBrowserSession, AuthorizationHeaderWinsOverTheSessionCookie) {
+      auto* env = RestGatewayEnv::instance;
+      const auto& admin = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(admin.login.status, 200) << admin.login.raw;
+      const auto& member = cached_browser_session(env->kMemberEmail, env->kPassword);
+      ASSERT_FALSE(member.session.empty());
+
+      // The member's session token doubles as a bearer token.
+      auto headers = admin.headers();
+      headers.emplace_back("Authorization", "Bearer " + member.session);
+
+      // The admin cookie would allow this; the member bearer must not.
+      const nlohmann::json create{{"name", "Header Wins Lab"}, {"contact", "h@h"}};
+      const auto res = post_with("/api/v1/lab/create", create.dump(), headers);
+      EXPECT_EQ(res.status, 403) << res.raw;
+    }
+
+    TEST(RestGatewayBrowserSession, CookiePostWithoutCsrfHeaderIsForbidden) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      const nlohmann::json req{{"name", "No Csrf Lab"}, {"contact", "n@n"}};
+      const auto res = post_with("/api/v1/lab/create", req.dump(), session.cookie_only());
+      EXPECT_EQ(res.status, 403) << res.raw;
+      EXPECT_EQ(res.body.value("code", std::string{}), "PERMISSION_DENIED");
+    }
+
+    TEST(RestGatewayBrowserSession, CookiePostWithMismatchedCsrfHeaderIsForbidden) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      auto headers = session.cookie_only();
+      headers.emplace_back("X-CSRF-Token", "not-the-cookie-value");
+
+      const nlohmann::json req{{"name", "Bad Csrf Lab"}, {"contact", "b@b"}};
+      const auto res = post_with("/api/v1/lab/create", req.dump(), headers);
+      EXPECT_EQ(res.status, 403) << res.raw;
+      EXPECT_EQ(res.body.value("code", std::string{}), "PERMISSION_DENIED");
+    }
+
+    // "Without calling gRPC" is only observable as "the mutation did not happen",
+    // so this asks the server afterwards whether the lab exists.
+    TEST(RestGatewayBrowserSession, CsrfRejectionNeverReachesGrpc) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      const std::string marker = "Csrf-Guard-Lab-Must-Not-Exist";
+      const nlohmann::json create{{"name", marker}, {"contact", "guard@example.test"}};
+      const auto denied = post_with("/api/v1/lab/create", create.dump(), session.cookie_only());
+      ASSERT_EQ(denied.status, 403) << denied.raw;
+
+      const auto labs = post_with("/api/v1/lab/list", "{}", session.headers());
+      ASSERT_EQ(labs.status, 200) << labs.raw;
+      EXPECT_EQ(labs.raw.find(marker), std::string::npos) << labs.raw;
+    }
+
+    TEST(RestGatewayBrowserSession, CookiePostWithForeignOriginIsForbidden) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      auto headers = session.headers();
+      headers.emplace_back("Origin", "https://evil.example");
+
+      const nlohmann::json req{{"name", "Foreign Origin Lab"}, {"contact", "f@f"}};
+      const auto res = post_with("/api/v1/lab/create", req.dump(), headers);
+      EXPECT_EQ(res.status, 403) << res.raw;
+      EXPECT_EQ(res.body.value("code", std::string{}), "PERMISSION_DENIED");
+    }
+
+    // What a same-origin SPA presents: Origin == Host, including the dev port.
+    TEST(RestGatewayBrowserSession, CookiePostWithTheRequestHostAsOriginSucceeds) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      auto headers = session.headers();
+      headers.emplace_back("Origin", env->base_url());
+
+      const nlohmann::json req{{"name", "Host Origin Lab"}, {"contact", "o@o"}};
+      const auto res = post_with("/api/v1/lab/create", req.dump(), headers);
+      EXPECT_EQ(res.status, 200) << res.raw;
+    }
+
+    // FMGR_WEB_ORIGIN (set in the test environment) is the escape hatch for a
+    // deployment whose SPA lives on a different origin than the gateway.
+    TEST(RestGatewayBrowserSession, CookiePostWithTheConfiguredWebOriginSucceeds) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      auto headers = session.headers();
+      headers.emplace_back("Origin", "https://spa.example.test");
+
+      const nlohmann::json req{{"name", "Web Origin Lab"}, {"contact", "w@w"}};
+      const auto res = post_with("/api/v1/lab/create", req.dump(), headers);
+      EXPECT_EQ(res.status, 200) << res.raw;
+    }
+
+    // Bearer calls carry no ambient credential: a script is unaffected by a
+    // stale cookie or a foreign Origin.
+    TEST(RestGatewayBrowserSession, BearerCallSkipsTheCsrfAndOriginGate) {
+      auto* env = RestGatewayEnv::instance;
+      const auto& session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      Headers headers{{"Authorization", "Bearer " + session.session},
+                      {"Cookie", session.cookie_header()},
+                      {"Origin", "https://evil.example"}};
+
+      const nlohmann::json req{{"name", "Bearer Gate Lab"}, {"contact", "g@g"}};
+      const auto res = post_with("/api/v1/lab/create", req.dump(), headers);
+      EXPECT_EQ(res.status, 200) << res.raw;
+    }
+
+    TEST(RestGatewayBrowserSession, UnknownSessionCookieIsUnauthenticated) {
+      auto* env = RestGatewayEnv::instance;
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const Headers headers{{"Cookie", "fmgr_session=not-a-real-token; fmgr_csrf=c"},
+                            {"X-CSRF-Token", "c"}};
+      const auto res = post_with("/api/v1/lab/get", req.dump(), headers);
+      EXPECT_EQ(res.status, 401) << res.raw;
+      EXPECT_EQ(res.body.value("code", std::string{}), "UNAUTHENTICATED");
+    }
+
+    TEST(RestGatewayBrowserSession, LogoutRevokesTheSessionAndExpiresBothCookies) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = browser_login(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      ASSERT_EQ(post_with("/api/v1/lab/get", req.dump(), session.headers()).status, 200);
+
+      const auto logout = post_with("/api/v1/auth/browser/logout", "{}", session.headers());
+      ASSERT_EQ(logout.status, 200) << logout.raw;
+
+      ASSERT_EQ(logout.cookies.count("fmgr_session"), 1U);
+      const auto& session_cookie = logout.cookies.at("fmgr_session");
+      EXPECT_TRUE(session_cookie.value().empty());
+      EXPECT_EQ(session_cookie.maxAge(), std::optional<int>{0});
+      EXPECT_EQ(session_cookie.path(), "/api");
+      EXPECT_TRUE(session_cookie.isHttpOnly());
+      EXPECT_TRUE(session_cookie.isSecure());
+
+      ASSERT_EQ(logout.cookies.count("fmgr_csrf"), 1U);
+      const auto& csrf_cookie = logout.cookies.at("fmgr_csrf");
+      EXPECT_TRUE(csrf_cookie.value().empty());
+      EXPECT_EQ(csrf_cookie.maxAge(), std::optional<int>{0});
+      EXPECT_EQ(csrf_cookie.path(), "/");
+      EXPECT_FALSE(csrf_cookie.isHttpOnly());
+
+      // Revoked server-side, not merely dropped client-side.
+      const auto after = post_with("/api/v1/lab/get", req.dump(), session.headers());
+      EXPECT_EQ(after.status, 401) << after.raw;
+      EXPECT_EQ(after.body.value("code", std::string{}), "UNAUTHENTICATED");
+    }
+
+    TEST(RestGatewayBrowserSession, SubmitMfaIsCookieAuthenticatedAndCsrfGuarded) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = cached_browser_session(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      const nlohmann::json req{{"totp_code", "123456"}};
+
+      const auto guarded =
+          post_with("/api/v1/auth/browser/submit-mfa", req.dump(), session.cookie_only());
+      EXPECT_EQ(guarded.status, 403) << guarded.raw;
+
+      // With the CSRF header the RPC runs; the seeded admin has no TOTP secret,
+      // so the answer is the handler's InvalidCredentials, not a missing route.
+      const auto reached =
+          post_with("/api/v1/auth/browser/submit-mfa", req.dump(), session.headers());
+      EXPECT_EQ(reached.status, 401) << reached.raw;
+      EXPECT_EQ(reached.body.value("code", std::string{}), "UNAUTHENTICATED");
+    }
+
+    TEST(RestGatewayBrowserSession, SubmitMfaWithoutACookieIsUnauthenticated) {
+      const nlohmann::json req{{"totp_code", "123456"}};
+      const auto res = post_with("/api/v1/auth/browser/submit-mfa", req.dump(), {});
+      EXPECT_EQ(res.status, 401) << res.raw;
+    }
+
     // ---- SSE helper ----
     //
     // drogon::HttpClient waits for a complete response, which never arrives on an
@@ -626,10 +999,11 @@ namespace fmgr::test {
     // trigger (a mutation that appends an audit row) once the stream is up, and
     // accumulate bytes until `needle` appears or the deadline passes.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    [[nodiscard]] std::string sse_read_until(const std::string& path, const std::string& bearer,
-                                             const std::string& needle,
-                                             const std::function<void()>& trigger,
-                                             double timeout_s) {
+    [[nodiscard]] std::string sse_read_until_headers(const std::string& path,
+                                                     const Headers& headers,
+                                                     const std::string& needle,
+                                                     const std::function<void()>& trigger,
+                                                     double timeout_s) {
       auto* env = RestGatewayEnv::instance;
       const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
       if (fd < 0) {
@@ -644,8 +1018,8 @@ namespace fmgr::test {
         return {};
       }
       std::string request = "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
-      if (!bearer.empty()) {
-        request += "Authorization: Bearer " + bearer + "\r\n";
+      for (const auto& [name, value] : headers) {
+        request += name + ": " + value + "\r\n";
       }
       request += "Accept: text/event-stream\r\nConnection: keep-alive\r\n\r\n";
       (void)::send(fd, request.data(), request.size(), 0);
@@ -679,6 +1053,18 @@ namespace fmgr::test {
       trig.join();
       ::close(fd);
       return acc;
+    }
+
+    // Bearer variant kept for the tests that predate the browser session.
+    [[nodiscard]] std::string sse_read_until(const std::string& path, const std::string& bearer,
+                                             const std::string& needle,
+                                             const std::function<void()>& trigger,
+                                             double timeout_s) {
+      Headers headers;
+      if (!bearer.empty()) {
+        headers.emplace_back("Authorization", "Bearer " + bearer);
+      }
+      return sse_read_until_headers(path, headers, needle, trigger, timeout_s);
     }
 
     // Positive: an unscoped feed (SystemAdmin) streams a freshly-appended audit
@@ -749,6 +1135,52 @@ namespace fmgr::test {
                                              "event: error", nullptr, 8.0);
       EXPECT_NE(out.find("event: error"), std::string::npos) << out.substr(0, 400);
       EXPECT_NE(out.find("UNAUTHENTICATED"), std::string::npos);
+    }
+
+    // Positive: the same feed authenticates from the fmgr_session cookie, which
+    // is the only credential a browser EventSource can carry — it cannot set an
+    // Authorization header, and G0.1 removed the `?access_token=` workaround that
+    // used to put the token in the URL (and therefore in every access log).
+    TEST(RestGatewaySse, SampleWatchStreamsUsingTheSessionCookie) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const auto session = browser_login(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+
+      const nlohmann::json it_req{{"lab_id", env->kLabId}, {"name", "sse-cookie-itemtype"}};
+      const auto it_res = post("/api/v1/item-type/create", it_req.dump(), token);
+      ASSERT_EQ(it_res.status, 200) << it_res.raw;
+      const auto item_type_id = it_res.body["item_type"].value("id", std::string{});
+      ASSERT_FALSE(item_type_id.empty());
+
+      const std::string sample_name = "SSE Cookie Sample Alpha";
+      const auto trigger = [&] {
+        const nlohmann::json req{
+            {"lab_id", env->kLabId}, {"item_type_id", item_type_id}, {"name", sample_name}};
+        (void)post("/api/v1/sample/create", req.dump(), token);
+      };
+
+      const std::string out =
+          sse_read_until_headers("/api/v1/sample/watch?lab_id=" + env->kLabId,
+                                 session.cookie_only(), sample_name, trigger, 12.0);
+      EXPECT_NE(out.find("text/event-stream"), std::string::npos) << out.substr(0, 200);
+      EXPECT_NE(out.find("data:"), std::string::npos) << out.substr(0, 400);
+      EXPECT_NE(out.find(sample_name), std::string::npos) << out.substr(0, 400);
+    }
+
+    // The removed fallback: a valid token in the query string no longer
+    // authenticates, so the gRPC gate rejects at stream-open and the failure
+    // arrives as an `event: error` frame (the status is already committed).
+    TEST(RestGatewaySse, AuditWatchRejectsTheAccessTokenQueryParameter) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+
+      const std::string out = sse_read_until_headers("/api/v1/audit/watch?access_token=" + token,
+                                                     {}, "event: error", nullptr, 8.0);
+      EXPECT_NE(out.find("event: error"), std::string::npos) << out.substr(0, 400);
+      EXPECT_NE(out.find("UNAUTHENTICATED"), std::string::npos) << out.substr(0, 400);
     }
 
     // ---- /health (PRD §17) ----

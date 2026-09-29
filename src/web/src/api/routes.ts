@@ -176,6 +176,14 @@ import type { UnaryRoute } from './route-types';
  *
  * `input`/`output` are the schemas from `src/gen/` (`npm run gen`); they are
  * what make `call()` in `client.ts` typed end to end.
+ *
+ * The `auth/browser/*` entries (G0.1) are the same three AuthService RPCs as
+ * `auth/*` but for a client that cannot hold a bearer token. The gateway keeps
+ * the token in an `HttpOnly` cookie and answers `auth/browser/login` with
+ * `{session_id, user_id, mfa_required}` — never `session_token` — so a caller
+ * that reads `session_token` from that route gets the empty default.
+ * Cookie-authenticated mutations are CSRF-checked and `client.ts` already
+ * echoes the `fmgr_csrf` cookie in `X-CSRF-Token` for every call.
  */
 export const apiRoutes = {
   // ---- AuthService ----
@@ -214,6 +222,29 @@ export const apiRoutes = {
     rpc: 'fmgr.v1.AuthService/RevokeApiToken',
     input: RevokeApiTokenRequestSchema,
     output: RevokeApiTokenResponseSchema,
+  },
+
+  // ---- AuthService browser session (G0.1) ----
+  //
+  // Same three RPCs as the auth/* entries above but for a client that cannot
+  // hold a bearer token. See the table comment at the top of this file.
+  'auth/browser/login': {
+    path: '/api/v1/auth/browser/login',
+    rpc: 'fmgr.v1.AuthService/Login',
+    input: LoginRequestSchema,
+    output: LoginResponseSchema,
+  },
+  'auth/browser/submit-mfa': {
+    path: '/api/v1/auth/browser/submit-mfa',
+    rpc: 'fmgr.v1.AuthService/SubmitMfa',
+    input: SubmitMfaRequestSchema,
+    output: SubmitMfaResponseSchema,
+  },
+  'auth/browser/logout': {
+    path: '/api/v1/auth/browser/logout',
+    rpc: 'fmgr.v1.AuthService/Logout',
+    input: LogoutRequestSchema,
+    output: LogoutResponseSchema,
   },
 
   // ---- SessionService ----

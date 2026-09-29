@@ -394,6 +394,7 @@ namespace fmgr::auth {
 
     return AuthToken{
         .session_id = session.id,
+        .user_id = user.id,
         .plaintext_token = plaintext_token,
         .mfa_complete = mfa_complete,
     };
@@ -428,6 +429,7 @@ namespace fmgr::auth {
       }
       return AuthToken{
           .session_id = core::SessionId(api_token.id.value()),
+          .user_id = api_token.user_id,
           .plaintext_token = std::string(full),
           .mfa_complete = true,
       };
