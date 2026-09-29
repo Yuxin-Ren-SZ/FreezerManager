@@ -23,13 +23,27 @@ import { resolveLocationPath, type LabLayoutData, type LocationPath } from '../l
  * request per resource, and the two screens share with G3.1's layout tree.
  *
  * `definitionsReadable` is a permission, not a failure: the server's
- * `ListCustomFieldDefinitions` authorizes on `custom_field.define`, which a
- * Member does not hold (only LabAdmin and SystemAdmin do). G3.2's
- * `useCustomFieldDefinitions` in `src/api/hooks/labs.ts` takes that gate as an
- * option, so the SPA never fires a request it knows will 403 — and the form can
- * say *why* it is not showing custom fields instead of rendering a form that
- * silently omits them. The lab-wide call is deliberate: an `item_type_id` would
- * get that node's definitions alone, with no ancestor merge.
+ * `ListCustomFieldDefinitions` authorizes on **`sample.read`** since #69, the
+ * same permission that opens this screen — a Member holds it, and
+ * `custom_field.define` they do not. The enforcement point is
+ * `ItemTypeServiceImpl::ListCustomFieldDefinitions` in
+ * `src/server/ItemTypeServiceImpl.cc` (the `middleware_.authorize(...,
+ * core::Permission::SampleRead, lab_id)` call), and the `AuthMiddleware`
+ * registry entry for that RPC names the same permission. Only the *read* moved:
+ * Create/Update/Archive of a definition still requires `custom_field.define`.
+ *
+ * This matters because the gate has to follow the enforcement point, not the
+ * other way round. This comment previously stated as a fact about the server
+ * that the RPC authorized on `custom_field.define`, and this hook gated on it;
+ * that was true before #69 and is false now, and a reader who trusts it would
+ * "fix" the gate back to matching. Do not restore `custom_field.define` here.
+ *
+ * G3.2's `useCustomFieldDefinitions` in `src/api/hooks/labs.ts` takes the gate
+ * as an option, so the SPA never fires a request it knows will 403 — and the
+ * form can say *why* it is not showing custom fields instead of rendering a
+ * form that silently omits them. The lab-wide call is deliberate: an
+ * `item_type_id` would get that node's definitions alone, with no ancestor
+ * merge.
  */
 
 export interface SampleReferenceData {
@@ -49,7 +63,9 @@ export interface SampleReferenceData {
 }
 
 export function useSampleReferenceData(labId: string): SampleReferenceData {
-  const definitionsReadable = useCan('custom_field.define', labId);
+  // `sample.read`, not `custom_field.define`: it is what the server enforces on
+  // `ListCustomFieldDefinitions` since #69. See the module comment.
+  const definitionsReadable = useCan('sample.read', labId);
 
   const itemTypesQuery = useItemTypes(labId);
   const cfdsQuery = useCustomFieldDefinitions(labId, { enabled: definitionsReadable });

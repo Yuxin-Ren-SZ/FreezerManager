@@ -10,10 +10,10 @@ import { useCustomFieldDefinitions } from './labs';
 /**
  * The custom-field definitions behind the G3.2 column chooser.
  *
- * `custom-field-def/list` needs `custom_field.define`, which a read-only member
- * does not hold — so this hook has to be *switchable* and its failure has to
- * arrive as an ordinary `ApiError` the screen can degrade on, not as an
- * exception or a retry loop.
+ * `custom-field-def/list` is gated on `sample.read` since #69, so a caller
+ * without it cannot read the definitions at all — this hook has to be
+ * *switchable* and its failure has to arrive as an ordinary `ApiError` the
+ * screen can degrade on, not as an exception or a retry loop.
  */
 
 let lab: DemoLab;

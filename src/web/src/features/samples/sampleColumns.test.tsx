@@ -42,8 +42,9 @@ describe('sampleColumnIds', () => {
   });
 
   it('is only the built-in columns without definitions', () => {
-    // The read-only member's case: `custom-field-def/list` needs
-    // `custom_field.define`, so their chooser simply has no custom columns.
+    // No definitions came back: the lab has none, or the caller cannot read
+    // them. Since #69 that read is gated on `sample.read`, so this is *not* the
+    // read-only member's case — see `SampleBrowserScreen.test.tsx`.
     expect(sampleColumnIds({ cfds: [] })).toHaveLength(7);
   });
 });

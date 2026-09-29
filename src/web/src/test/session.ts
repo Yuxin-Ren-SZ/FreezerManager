@@ -6,8 +6,9 @@ import { ALL_PERMISSIONS, type PermissionKey } from '../app/permissions';
  * A `WhoAmI`-shaped user for screen tests (TODO.md G3.3).
  *
  * Screens gate their affordances on the session's permissions (G-arch 8), so a
- * test that wants "a ReadOnly member" or "a member without `custom_field.define`"
- * needs a real `CurrentUser`, not a mock: `can()` reads `permissions` and `labs`.
+ * test that wants "a ReadOnly member" or "a caller who cannot read the field
+ * definitions" — `sample.read` since #69, not `custom_field.define` — needs a
+ * real `CurrentUser`, not a mock: `can()` reads `permissions` and `labs`.
  */
 
 export const DEMO_LAB_ID = 'lab-demo';

@@ -44,10 +44,11 @@ export interface UseCustomFieldDefinitionsOptions {
   /** Ask for one item type's definitions (lab-scoped ones are not included). */
   readonly itemTypeId?: string;
   /**
-   * `custom-field-def/list` requires `custom_field.define`, which a read-only
-   * member does not hold. Pass the permission check here (G-arch 8) so the
-   * request is never made on their behalf; the failure branch still exists for
-   * a server that refuses anyway.
+   * `custom-field-def/list` is gated on `sample.read` since #69 — the same
+   * permission that opens the sample screens — so the caller passes its
+   * permission check here (G-arch 8) and the request is never made on behalf of
+   * a caller the server would refuse. The failure branch still exists for a
+   * server that refuses anyway.
    */
   readonly enabled?: boolean;
 }
@@ -56,10 +57,10 @@ export interface UseCustomFieldDefinitionsOptions {
  * The lab's custom-field definitions (TODO.md G3.2 uses them as columns).
  *
  * Definitions are *metadata*, and the route that serves them is gated on
- * `custom_field.define` — a narrower permission than the `sample.read` that
- * opens the sample browser. That is why the caller can switch this off: without
- * the definitions the screen shows its base columns, which is a complete
- * screen, not a broken one.
+ * `sample.read` since #69 — the permission that already opens the sample
+ * browser and the sample detail view that render them. The caller can still
+ * switch this off: without the definitions the screen shows its base columns,
+ * which is a complete screen, not a broken one.
  */
 export function useCustomFieldDefinitions(
   labId: string,
