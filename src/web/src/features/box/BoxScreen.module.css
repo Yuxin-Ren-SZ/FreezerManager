@@ -100,12 +100,13 @@
 }
 
 /* A free position is a target only while a sample is in hand; until then it is
-   disabled, so the tab order is the samples and not the empty box. */
+   announced disabled. It is not `disabled` any more — the roving tabindex needs
+   it focusable (issue #92) — so the cursor keys off the ARIA state instead. */
 .free {
   color: var(--fmgr-color-text-muted);
 }
 
-.free:disabled {
+.free[aria-disabled='true'] {
   cursor: default;
 }
 
