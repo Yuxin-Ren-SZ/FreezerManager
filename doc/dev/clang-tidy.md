@@ -79,6 +79,12 @@ SHA-256 in the workflow. For each translation unit, ctcache hashes:
   invalidates it too;
 - the clang-tidy arguments.
 
+Conan names every package build folder uniquely (`~/.conan2/p/b/grpc<hash>/p`),
+and that path appears in the `-isystem` flags and the preprocessor's line
+markers. `CTCACHE_STRIP` and `CTCACHE_STRIP_SRC` remove that one segment, so
+rebuilding identical dependencies leaves the hashes unchanged, while a header
+whose content changed still invalidates every TU that includes it.
+
 It skips clang-tidy only when that hash is already stored, and it stores a hash
 only when clang-tidy exited 0 with no output. A file with findings is therefore
 re-checked on every run and can never be replayed as clean.

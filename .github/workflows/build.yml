@@ -243,6 +243,14 @@ jobs:
       # Hash comments too. Otherwise deleting a NOLINT from a clean file would
       # leave its preprocessed text unchanged and replay a stale "clean".
       CTCACHE_KEEP_COMMENTS: "1"
+      # Conan gives every package build a fresh folder name
+      # (~/.conan2/p/b/grpc<16 hex>/p), and that path appears in the -isystem
+      # flags and in the preprocessor's line markers. Strip that segment (a
+      # regex, applied to flags and, with STRIP_SRC, to the preprocessed text), so
+      # a rebuilt but identical dependency does not invalidate every result.
+      # Header content still counts: a changed header changes the hash.
+      CTCACHE_STRIP: '/\.conan2/p/(b/)?[^/\s"]+/p/'
+      CTCACHE_STRIP_SRC: "1"
     steps:
       - uses: actions/checkout@v4
 
