@@ -208,32 +208,48 @@ namespace fmgr::server {
       }
     }
 
-    // The other end of the same rule (#115). An attachment decides *which*
-    // subtree a definition constrains, so an update that changes `item_type_id`
-    // writes to two subtrees: the destination inherits something new — checked by
-    // `reject_loosening_inherited_definition` above — and the source falls back
-    // to whatever the moved row was shadowing. Checking only the destination
-    // leaves the source silently weaker, and it is a bypass no client in this
-    // repo exercises: the SPA cannot express a move, so the writers that can are
-    // the ones nothing tests.
+    // The other end of the same rule (#115, #121). A definition is identified by
+    // *where* it is attached and *which* key it defines, and the update replaces
+    // both, so a write that changes either one takes the stored row out of the
+    // resolution it was part of: the destination inherits something new — checked
+    // by `reject_loosening_inherited_definition` above — and what the row leaves
+    // behind is checked here. Checking only the destination leaves the rest
+    // silently weaker, and both routes are bypasses no client in this repo
+    // exercises: the SPA cannot express a move, and its edit mode never renames a
+    // key, so the writers that can are the ones nothing tests.
     //
-    // The source subtree is the node the row is attached to and everything under
-    // it, and after the move they all resolve what that node inherits once its own
-    // row is gone — the same resolution the destination check uses, so the two
-    // ends cannot disagree about the ranking. Deciding *whether* that is weaker is
-    // again the pure `core::tighten_violations`, with "nothing left behind"
-    // expressed as `core::removal_violations`.
+    // What is left behind is whatever the old (node, key) resolves once the stored
+    // row is gone — the same `storage::resolve_inherited_custom_field_defs` the
+    // destination check uses, so the two ends cannot disagree about the ranking.
+    // Deciding *whether* that is weaker is again the pure
+    // `core::tighten_violations`, with "nothing left behind" expressed as
+    // `core::removal_violations`.
+    //
+    // Where a move and a rename differ is what "nothing left behind" means. A move
+    // takes the row off its node, so a key with nothing behind it loses the field:
+    // that is the removal `removal_violations` measures. A rename keeps the row at
+    // its node under a new name, so a key with nothing behind it loses only the
+    // author's own spelling — and refusing that would block fixing a typo in a
+    // key, which is what a rename is usually for. The rename branch therefore
+    // compares against an inherited definition only, and lets a key go when there
+    // is none; a row that was *equal* to what it shadowed renames freely too,
+    // because no tightening disappears.
     //
     // Both parameters are definitions of one key; which is the stored row and
     // which is the write replacing it is carried by the names, not the type.
     // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-    void reject_loosening_abandoned_subtree(storage::ITransaction& txn,
-                                            const core::CustomFieldDefinition& stored,
-                                            const core::CustomFieldDefinition& proposed) {
-      if (stored.item_type_id == proposed.item_type_id) {
-        return; // not a move: the row still constrains what it constrained
+    void reject_loosening_abandoned_definition(storage::ITransaction& txn,
+                                               const core::CustomFieldDefinition& stored,
+                                               const core::CustomFieldDefinition& proposed) {
+      const bool moved = stored.item_type_id != proposed.item_type_id;
+      const bool renamed = stored.key != proposed.key;
+      if (!moved && !renamed) {
+        return; // the row keeps its node and its key: it abandons nothing
       }
       if (!stored.item_type_id.has_value()) {
+        if (!moved) {
+          return; // a lab-global renamed in place: nothing is inherited above it
+        }
         // A lab-global is inherited by every item type, so its source subtree is
         // the whole lab: narrowing one onto a single node takes it away from
         // every type outside that node's subtree, and establishing that none of
@@ -258,13 +274,17 @@ namespace fmgr::server {
           break;
         }
       }
+      if (!moved && !left_behind.has_value()) {
+        return; // a rename with nothing behind the old key: only the name changes
+      }
       const auto violations = left_behind.has_value()
                                   ? core::tighten_violations(stored, *left_behind)
                                   : core::removal_violations(stored);
       if (!violations.empty()) {
         throw storage::ConstraintViolation(
             "custom field '" + stored.key +
-            "' would loosen what the item type it is moved from is left with: " +
+            (moved ? "' would loosen what the item type it is moved from is left with: "
+                   : "' would loosen what its item type is left with after the rename: ") +
             violations.front().message);
       }
     }
@@ -584,7 +604,7 @@ namespace fmgr::server {
       existing->is_phi = wire.is_phi();
       reject_indexed_phi(*existing);
       reject_loosening_inherited_definition(*txn, *existing);
-      reject_loosening_abandoned_subtree(*txn, stored, *existing);
+      reject_loosening_abandoned_definition(*txn, stored, *existing);
       txn->repo<core::CustomFieldDefinition>().update(*existing,
                                                       make_ctx(*ctx, sctx, "update_cfd"));
       txn->commit();
