@@ -111,10 +111,11 @@ namespace fmgr::rpc {
       return mw.authorize(RpcCall{.bearer_token = std::string(bearer), .method = ""}, perm, lab);
     }
 
-    // Same, for a call that carries the RPC it is being served for. Takes the
-    // RpcCall by value so the method cannot be dropped by an implicit conversion
-    // to the token string.
-    auth::SessionContext do_authorize_on(AuthMiddleware& mw, RpcCall call, core::Permission perm,
+    // Same, for a call that carries the RPC it is being served for. The
+    // parameter is an RpcCall, not a token string, so a caller cannot drop the
+    // RPC identity by letting it convert to the bearer token first.
+    auth::SessionContext do_authorize_on(AuthMiddleware& mw, const RpcCall& call,
+                                         core::Permission perm,
                                          std::optional<core::LabId> lab = std::nullopt) {
       return mw.authorize(call, perm, lab);
     }
