@@ -145,6 +145,7 @@ namespace fmgr::test {
         std::string container_type{}; // empty = none
         std::string custom_fields{};  // empty = {}
         std::int64_t volume_ul{0};    // >0 sets volume_value (µL)
+        std::int64_t volume_ml{0};    // >0 sets volume_value in mL instead (#111)
         std::string barcode{};        // empty = none
       };
       grpc::Status create_sample(const CreateArgs& args, std::string* out_id) {
@@ -170,6 +171,10 @@ namespace fmgr::test {
         if (args.volume_ul > 0) {
           req.set_volume_value(static_cast<double>(args.volume_ul));
           req.set_volume_unit("µL");
+        }
+        if (args.volume_ml > 0) {
+          req.set_volume_value(static_cast<double>(args.volume_ml));
+          req.set_volume_unit("mL");
         }
         fmgr::v1::CreateSampleResponse resp;
         const auto status = sample_stub_->CreateSample(&ctx, req, &resp);
@@ -1959,6 +1964,141 @@ namespace fmgr::test {
       EXPECT_EQ(events[1].action, core::CheckoutAction::CheckedIn);
       ASSERT_TRUE(events[1].volume_delta.has_value());
       EXPECT_EQ(events[1].volume_delta, 0);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleRefusesAMicrolitreVolumeAgainstAMillilitreSample) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "stock", .volume_ml = 50}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      // The ordinary face of #111: no exotic fraction, just a unit mismatch.
+      // 500 µL converts to whole mL by integer division, and 500 / 1000 is 0 —
+      // so the check-in used to answer OK, record `volume_delta: 0` and leave
+      // the vial at 50 mL. The assertion is on what is stored, because "OK"
+      // cannot tell "subtracted" from "subtracted nothing".
+      const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                          /*volume_used=*/500.0, std::string("µL"));
+
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      fmgr::v1::Sample stored;
+      ASSERT_TRUE(get_sample(token, id, &stored).ok());
+      EXPECT_DOUBLE_EQ(stored.volume_value(), 50);
+      EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+      EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleRefusesAVolumeThatWouldTruncateToZero) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "stock", .volume_ml = 50}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      // The case the issue was filed for: 0.04 mL is 40 µL, which the
+      // millilitre-tracked sample cannot record, and truncating the raw count
+      // turns it into no consumption at all.
+      const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                          /*volume_used=*/0.04, std::string("mL"));
+
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      fmgr::v1::Sample stored;
+      ASSERT_TRUE(get_sample(token, id, &stored).ok());
+      EXPECT_DOUBLE_EQ(stored.volume_value(), 50);
+      EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+      EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleRefusesAVolumeThatWouldTruncatePartially) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "stock", .volume_ml = 50}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      // Truncation is not only "becomes zero": 2500 µL would subtract 2 mL and
+      // silently lose 500 µL, which is the same defect one step up. The rule is
+      // the same one, so the refusal is too.
+      const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                          /*volume_used=*/2500.0, std::string("µL"));
+
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+      fmgr::v1::Sample stored;
+      ASSERT_TRUE(get_sample(token, id, &stored).ok());
+      EXPECT_DOUBLE_EQ(stored.volume_value(), 50);
+      EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleSubtractsAnExactVolumeExpressedInACoarserUnit) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "vial", .volume_ul = 1000}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+
+      // The refusal above must not become "cross-unit volumes are rejected":
+      // 1 mL is exactly 1000 µL, so it is representable and is subtracted. This
+      // is the guard against over-refusing a perfectly ordinary request.
+      fmgr::v1::Sample resp;
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                  /*volume_used=*/1.0, std::string("mL"), &resp)
+                      .ok());
+      EXPECT_DOUBLE_EQ(resp.volume_value(), 0);
+      EXPECT_EQ(resp.status(), fmgr::v1::SAMPLE_STATUS_DEPLETED);
+      const auto events = stored_checkout_events(id);
+      ASSERT_EQ(events.size(), 2U);
+      EXPECT_EQ(events[1].volume_delta, -1000);
+      EXPECT_EQ(events[1].volume_unit, core::VolumeUnit::Microliter);
+    }
+
+    // The conversion boundary #111 asks to pin: one whole µL is the smallest
+    // volume the domain can represent, one step below it is refused rather than
+    // rounded, and an explicit zero stays a recorded no-op (#112).
+    TEST_F(SampleServiceTest, CheckoutSamplePinsTheVolumeGranularityBoundary) {
+      const auto token = login(kAdminEmail, kPassword);
+
+      // Smallest representable: 1 µL is subtracted.
+      {
+        std::string id;
+        ASSERT_TRUE(create_sample({.token = token, .name = "one-ul", .volume_ul = 100}, &id).ok());
+        ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+        fmgr::v1::Sample resp;
+        ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                    /*volume_used=*/1.0, std::string("µL"), &resp)
+                        .ok());
+        EXPECT_DOUBLE_EQ(resp.volume_value(), 99);
+        const auto events = stored_checkout_events(id);
+        ASSERT_EQ(events.size(), 2U);
+        EXPECT_EQ(events[1].volume_delta, -1);
+      }
+
+      // One step below it: refused, and nothing about the sample changes.
+      {
+        std::string id;
+        ASSERT_TRUE(create_sample({.token = token, .name = "sub-ul", .volume_ul = 100}, &id).ok());
+        ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+        const auto status = checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                            /*volume_used=*/0.9, std::string("µL"));
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+        fmgr::v1::Sample stored;
+        ASSERT_TRUE(get_sample(token, id, &stored).ok());
+        EXPECT_DOUBLE_EQ(stored.volume_value(), 100);
+        EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
+        EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+      }
+
+      // Explicit zero: accepted, and distinguishable from "no volume supplied".
+      {
+        std::string id;
+        ASSERT_TRUE(create_sample({.token = token, .name = "zero", .volume_ul = 100}, &id).ok());
+        ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+        fmgr::v1::Sample resp;
+        ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN,
+                                    /*volume_used=*/0.0, std::string("µL"), &resp)
+                        .ok());
+        EXPECT_DOUBLE_EQ(resp.volume_value(), 100);
+        const auto events = stored_checkout_events(id);
+        ASSERT_EQ(events.size(), 2U);
+        ASSERT_TRUE(events[1].volume_delta.has_value());
+        EXPECT_EQ(events[1].volume_delta, 0);
+      }
     }
 
     TEST_F(SampleServiceTest, CheckoutDiscardDestroysSample) {
