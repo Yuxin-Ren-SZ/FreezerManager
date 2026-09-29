@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+#
+# buf codegen template (TODO.md G1.2, G-arch 4).
+#
+# `npm run gen` runs `buf generate ../../proto --template buf.gen.yaml` with the
+# input directory resolved to an absolute path, so the command behaves the same
+# whatever the current working directory is.
+#
+# The input is deliberately NOT declared here: buf resolves `inputs:` relative
+# to the process working directory, which would silently generate from the wrong
+# tree when the script is invoked from the repo root.
+#
+# protoc-gen-es comes from `node_modules/.bin` (already on PATH under `npm run`
+# and in CI), so there is no system protoc and no system plugin to install.
+version: v2
+
+plugins:
+  # `target=ts` emits TypeScript sources, so `tsc --noEmit` type-checks the
+  # generated messages alongside our own code, and Vite compiles them like any
+  # other module. The directory is gitignored (src/web/.gitignore).
+  - local: protoc-gen-es
+    out: src/gen
+    opt:
+      - target=ts
