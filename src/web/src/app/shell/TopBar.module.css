@@ -1,0 +1,138 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.topBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--fmgr-space-3);
+  align-items: center;
+  min-height: var(--fmgr-topbar-height);
+  padding: var(--fmgr-space-2) var(--fmgr-space-4);
+  background-color: var(--fmgr-color-surface-raised);
+  border-bottom: 1px solid var(--fmgr-color-border-subtle);
+}
+
+.brand {
+  font-size: var(--fmgr-font-size-lg);
+  font-weight: var(--fmgr-font-weight-semibold);
+  color: var(--fmgr-color-text);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.brand:hover {
+  color: var(--fmgr-color-accent);
+}
+
+.lookup {
+  display: flex;
+  flex: 1 1 12rem;
+  gap: var(--fmgr-space-2);
+  align-items: center;
+  min-width: 0;
+}
+
+.lookupInput {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--fmgr-control-height-md);
+  padding: 0 var(--fmgr-space-3);
+  font-family: inherit;
+  font-size: var(--fmgr-font-size-base);
+  color: var(--fmgr-color-text);
+  background-color: var(--fmgr-color-bg);
+  border: 1px solid var(--fmgr-color-border);
+  border-radius: var(--fmgr-radius-md);
+}
+
+.lookupInput::placeholder {
+  color: var(--fmgr-color-text-muted);
+}
+
+.lookupInput:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+.shortcut {
+  flex: none;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--fmgr-space-2);
+  align-items: center;
+  margin-left: auto;
+}
+
+.connection {
+  display: inline-flex;
+  align-items: center;
+}
+
+.labPicker {
+  width: auto;
+  min-width: 9rem;
+}
+
+.noLab {
+  font-size: var(--fmgr-font-size-sm);
+  color: var(--fmgr-color-text-muted);
+  white-space: nowrap;
+}
+
+.menu {
+  z-index: var(--fmgr-z-overlay);
+  min-width: 12rem;
+  padding: var(--fmgr-space-1);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-md);
+  box-shadow: var(--fmgr-shadow-md);
+}
+
+.menuLabel {
+  padding: var(--fmgr-space-2);
+  font-size: var(--fmgr-font-size-xs);
+  color: var(--fmgr-color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.menuSeparator {
+  height: 1px;
+  margin: var(--fmgr-space-1) 0;
+  background-color: var(--fmgr-color-border-subtle);
+}
+
+.menuItem {
+  display: block;
+  padding: var(--fmgr-space-2);
+  font-size: var(--fmgr-font-size-sm);
+  color: var(--fmgr-color-text);
+  text-decoration: none;
+  border-radius: var(--fmgr-radius-sm);
+  cursor: pointer;
+}
+
+.menuItem:hover,
+.menuItem:focus-visible {
+  background-color: var(--fmgr-color-surface);
+  outline: none;
+}
+
+.menuItem:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: calc(-1 * var(--fmgr-focus-ring-offset));
+}
+
+/* The brand and the shortcut hint are the first things to go when space runs
+   out; the lookup box and the account controls are what a phone still needs. */
+@media (max-width: 30rem) {
+  .brand {
+    font-size: var(--fmgr-font-size-base);
+  }
+
+  .shortcut {
+    display: none;
+  }
+}

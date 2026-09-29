@@ -1,0 +1,56 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.shell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 100%;
+}
+
+.skipLink {
+  position: absolute;
+  top: var(--fmgr-space-2);
+  left: var(--fmgr-space-2);
+  z-index: var(--fmgr-z-toast);
+  padding: var(--fmgr-space-2) var(--fmgr-space-3);
+  color: var(--fmgr-color-accent-text);
+  text-decoration: none;
+  background-color: var(--fmgr-color-accent);
+  border-radius: var(--fmgr-radius-md);
+  /* Off-screen until focused, then a real, visible target. */
+  transform: translateY(-200%);
+}
+
+.skipLink:focus-visible {
+  transform: translateY(0);
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+.body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-height: 0;
+}
+
+.main {
+  min-width: 0;
+  padding: var(--fmgr-space-4);
+}
+
+/* `tabIndex={-1}` on <main> is what the skip link needs; the focus ring for a
+   programmatic landing would just be noise. */
+.main:focus {
+  outline: none;
+}
+
+@media (max-width: 48rem) {
+  .body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  /* 360 px: the page gutter drops to 0.75 rem so the grid keeps its columns. */
+  .main {
+    padding: var(--fmgr-space-3);
+  }
+}

@@ -1,0 +1,69 @@
+{
+  "app": {
+    "name": "FreezerManager"
+  },
+  "skipToContent": "Skip to main content",
+  "lookup": {
+    "label": "Search samples by name or barcode",
+    "placeholder": "Search samples\u2026",
+    "shortcut": "Press / to search"
+  },
+  "labPicker": {
+    "label": "Current lab"
+  },
+  "userMenu": {
+    "account": "Account settings",
+    "signOut": "Sign out",
+    "signedInAs": "Signed in as {{email}}"
+  },
+  "connection": {
+    "label": "Live updates: {{state}}",
+    "live": "Live",
+    "connecting": "Connecting",
+    "offline": "Offline"
+  },
+  "nav": {
+    "label": "Main navigation",
+    "primary": "Workspace",
+    "admin": "Administration",
+    "account": "Account"
+  },
+  "navLabels": {
+    "home": "Home",
+    "lookup": "Lookup",
+    "samples": "Samples",
+    "layout": "Layout",
+    "scan": "Scan",
+    "import": "Import",
+    "shares": "Shares",
+    "adminLayout": "Layout setup",
+    "itemTypes": "Item types",
+    "members": "Members",
+    "audit": "Audit",
+    "account": "Account"
+  },
+  "error": {
+    "title": "Something went wrong",
+    "body": "The page hit an unexpected error. Trying again usually clears it, and the request id below helps if it does not.",
+    "reset": "Try again"
+  },
+  "notFound": {
+    "title": "Page not found",
+    "body": "There is nothing at this address. It may have moved, or the link may be out of date.",
+    "home": "Go to the dashboard"
+  },
+  "noAccess": {
+    "title": "You do not have access to this screen",
+    "body": "Your role here does not include {{permission}}. A lab administrator can grant it.",
+    "noLab": "You are not a member of any lab yet, so there is nothing to show at this address.",
+    "notAMember": "You are not a member of this lab, so there is nothing to show at this address."
+  },
+  "placeholder": {
+    "body": "This screen is a placeholder. {{task}} fills it in."
+  },
+  "session": {
+    "loading": "Checking your session\u2026",
+    "errorTitle": "Could not check your session",
+    "errorBody": "The server could not be reached, so the app cannot tell whether you are signed in. Nothing has been lost."
+  }
+}

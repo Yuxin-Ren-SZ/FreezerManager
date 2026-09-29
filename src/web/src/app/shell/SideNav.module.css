@@ -1,0 +1,97 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-4);
+  width: var(--fmgr-sidenav-width);
+  padding: var(--fmgr-space-4) var(--fmgr-space-3);
+  background-color: var(--fmgr-color-surface);
+  border-right: 1px solid var(--fmgr-color-border-subtle);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-1);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--fmgr-font-size-xs);
+  font-weight: var(--fmgr-font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fmgr-color-text-muted);
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.link {
+  display: block;
+  padding: var(--fmgr-space-2) var(--fmgr-space-3);
+  font-size: var(--fmgr-font-size-sm);
+  color: var(--fmgr-color-text);
+  text-decoration: none;
+  border-radius: var(--fmgr-radius-md);
+}
+
+.link:hover {
+  background-color: var(--fmgr-color-surface-raised);
+}
+
+.link:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+.active {
+  color: var(--fmgr-color-accent);
+  font-weight: var(--fmgr-font-weight-semibold);
+  background-color: var(--fmgr-color-surface-raised);
+}
+
+/*
+ * Below 48 rem — and so all the way down to the 360 px in PRD §1.3 — the nav
+ * becomes a horizontal strip above the content. A fixed 15 rem rail on a 360 px
+ * screen would leave 135 px for the grid it is there to navigate.
+ */
+@media (max-width: 48rem) {
+  .nav {
+    flex-direction: row;
+    gap: var(--fmgr-space-4);
+    width: 100%;
+    padding: var(--fmgr-space-2) var(--fmgr-space-3);
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--fmgr-color-border-subtle);
+  }
+
+  .section {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--fmgr-space-2);
+  }
+
+  /* Section headings are noise in a single scrolling row; each link still
+     carries its own label, and the nav as a whole keeps its name. */
+  .sectionTitle {
+    display: none;
+  }
+
+  .list {
+    flex-direction: row;
+    gap: var(--fmgr-space-1);
+  }
+
+  .link {
+    white-space: nowrap;
+  }
+}

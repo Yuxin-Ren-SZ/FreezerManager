@@ -2,6 +2,7 @@
 import { useId } from 'react';
 import type { SelectHTMLAttributes } from 'react';
 import { FieldLabel, FieldMessages, describedBy } from './Field';
+import { VisuallyHidden } from './VisuallyHidden';
 import styles from './Select.module.css';
 import { classNames } from './classNames';
 
@@ -25,6 +26,12 @@ export interface SelectProps extends Omit<
   hint?: string;
   error?: string;
   id?: string;
+  /**
+   * Renders the label for assistive technology only. For dense toolbars (the
+   * app shell's lab picker) where the control's meaning is obvious visually but
+   * an unlabelled `<select>` would be announced as "combobox".
+   */
+  labelHidden?: boolean;
 }
 
 /**
@@ -43,6 +50,7 @@ export function Select({
   hint,
   error,
   id,
+  labelHidden = false,
   className,
   ...rest
 }: SelectProps) {
@@ -51,9 +59,17 @@ export function Select({
 
   return (
     <div className={classNames(styles.root, className)}>
-      <FieldLabel htmlFor={fieldId} required={rest.required}>
-        {label}
-      </FieldLabel>
+      {labelHidden ? (
+        <VisuallyHidden>
+          <FieldLabel htmlFor={fieldId} required={rest.required}>
+            {label}
+          </FieldLabel>
+        </VisuallyHidden>
+      ) : (
+        <FieldLabel htmlFor={fieldId} required={rest.required}>
+          {label}
+        </FieldLabel>
+      )}
       <select
         {...rest}
         id={fieldId}

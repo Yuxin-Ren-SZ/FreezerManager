@@ -1,22 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { useTranslation } from 'react-i18next';
-import styles from './App.module.css';
+import { useState } from 'react';
+import { RouterProvider } from 'react-router-dom';
+import { AppErrorBoundary } from './ErrorBoundary';
+import { AppProviders } from './providers';
+import { createAppRouter } from './router';
+import { stubSessionLoader } from './stubSession';
 
 /**
- * The one page G1.1 ships, so that `npm run check` proves the whole toolchain
- * works end to end (i18n resources, CSS Modules, design tokens, React).
+ * The application root: providers outside the router, so a route error still has
+ * the toast host and the session it needs to explain itself.
  *
- * G1.3 replaces it with the real app shell, the router and the placeholder
- * routes from the route map in TODO.md §Section G; feature screens then live in
- * `src/features/<name>/`.
+ * TODO(G1.2/G2.1): two stubs are wired here and nowhere else.
+ *   - `stubSessionLoader` becomes the `auth/whoami` call.
+ *   - `connectionStatus` becomes the state of the SSE wrapper in
+ *     `src/api/sse.ts`. It is `'offline'` rather than `'live'` today because
+ *     there is no live connection yet, and an indicator that always says "Live"
+ *     is worse than no indicator at all.
  */
 export function App() {
-  const { t } = useTranslation();
+  const [router] = useState(createAppRouter);
 
   return (
-    <main className={styles.page}>
-      <h1 className={styles.title}>{t('app.scaffold.title')}</h1>
-      <p className={styles.body}>{t('app.scaffold.body')}</p>
-    </main>
+    <AppErrorBoundary>
+      <AppProviders loadSession={stubSessionLoader} connectionStatus="offline">
+        <RouterProvider router={router} />
+      </AppProviders>
+    </AppErrorBoundary>
   );
 }

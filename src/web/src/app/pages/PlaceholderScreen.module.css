@@ -1,18 +1,17 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
-.page {
+.root {
   display: flex;
   flex-direction: column;
-  gap: var(--fmgr-space-3);
+  gap: var(--fmgr-space-2);
   max-width: 48rem;
-  margin: 0 auto;
-  padding: var(--fmgr-space-6) var(--fmgr-space-4);
 }
 
 .title {
   margin: 0;
-  font-size: 1.5rem;
-  line-height: 1.25;
+  font-size: var(--fmgr-font-size-xl);
+  font-weight: var(--fmgr-font-weight-semibold);
+  line-height: var(--fmgr-line-height-tight);
 }
 
 .body {
