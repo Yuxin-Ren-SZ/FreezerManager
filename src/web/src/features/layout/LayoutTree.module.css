@@ -1,0 +1,75 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.tree {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A nested list is the tree's structure; the indentation is what shows it. */
+.children {
+  margin: 0;
+  padding-left: var(--fmgr-space-5);
+  list-style: none;
+}
+
+/* Load-bearing: the author `display` rules below would otherwise beat the user
+   agent's `[hidden] { display: none }`, and a collapsed branch would stay
+   visible — and readable by a screen reader. */
+.children[hidden] {
+  display: none;
+}
+
+.item {
+  margin: 0;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--fmgr-space-2);
+  align-items: center;
+  width: 100%;
+  padding: var(--fmgr-space-2) var(--fmgr-space-3);
+  font: inherit;
+  font-size: var(--fmgr-font-size-sm);
+  color: var(--fmgr-color-text);
+  text-align: left;
+  text-decoration: none;
+  background: none;
+  border: 0;
+  border-radius: var(--fmgr-radius-sm);
+}
+
+button.row {
+  cursor: pointer;
+}
+
+.row:hover {
+  background-color: var(--fmgr-color-surface);
+}
+
+.row:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-accent);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+/* The disclosure glyph is decoration: the button's own `aria-expanded` is what
+   a screen reader reads, so the arrow is hidden from it. */
+.glyph {
+  width: 1rem;
+  color: var(--fmgr-color-text-muted);
+}
+
+.label {
+  font-weight: var(--fmgr-font-weight-medium);
+}
+
+.detail {
+  font-size: var(--fmgr-font-size-xs);
+  color: var(--fmgr-color-text-muted);
+}
+
+.count {
+  margin-left: auto;
+}

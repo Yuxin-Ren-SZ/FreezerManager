@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { create } from '@bufbuild/protobuf';
+import type { MessageInitShape } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 import {
   BoxSchema,
@@ -12,6 +13,7 @@ import {
   type Freezer,
   type StorageContainer,
 } from '../../gen/fmgr/v1/box_pb';
+import { TimestampSchema } from '../../gen/fmgr/v1/common/types_pb';
 import { createDemoLab, type DemoLab } from '../../test/fakeApi';
 import {
   buildLayoutTree,
@@ -50,14 +52,36 @@ function flatten(nodes: readonly LayoutNode[]): LayoutNode[] {
   return nodes.flatMap((node) => [node, ...flatten(node.children)]);
 }
 
-function freezer(id: string, layoutRootId: string, overrides: Partial<Freezer> = {}): Freezer {
+/**
+ * The node reached by following child indices, so a test reads
+ * `nodeAt(tree, 0, 0, 0)` rather than a chain of `?.`. `noUncheckedIndexedAccess`
+ * is off, so indexing types as non-optional anyway; this at least puts the
+ * failure in the assertion that follows instead of mid-expression.
+ */
+function nodeAt(
+  nodes: readonly LayoutNode[],
+  first: number,
+  ...rest: readonly number[]
+): LayoutNode {
+  let node = nodes[first];
+  for (const index of rest) {
+    node = node.children[index];
+  }
+  return node;
+}
+
+function freezer(
+  id: string,
+  layoutRootId: string,
+  overrides: MessageInitShape<typeof FreezerSchema> = {},
+): Freezer {
   return create(FreezerSchema, { id, labId: 'lab-demo', name: id, layoutRootId, ...overrides });
 }
 
 function container(
   id: string,
   parentId?: string,
-  overrides: Partial<StorageContainer> = {},
+  overrides: MessageInitShape<typeof StorageContainerSchema> = {},
 ): StorageContainer {
   return create(StorageContainerSchema, {
     id,
@@ -70,7 +94,11 @@ function container(
   });
 }
 
-function box(id: string, storageContainerId: string, overrides: Partial<Box> = {}): Box {
+function box(
+  id: string,
+  storageContainerId: string,
+  overrides: MessageInitShape<typeof BoxSchema> = {},
+): Box {
   return create(BoxSchema, {
     id,
     labId: 'lab-demo',
@@ -82,7 +110,7 @@ function box(id: string, storageContainerId: string, overrides: Partial<Box> = {
 }
 
 /** One archived_at value, so "is archived" is the same instant everywhere. */
-const ARCHIVED = { unixMicros: 1n };
+const ARCHIVED = create(TimestampSchema, { unixMicros: 1n });
 
 function boxType(id: string, positions = 4): BoxType {
   return create(BoxTypeSchema, {
@@ -107,48 +135,40 @@ describe('buildLayoutTree', () => {
     ]);
 
     const [freezerA, freezerB] = tree;
-    expect(freezerA?.children.map((node) => node.id)).toEqual(['ct-rack-1']);
-    expect(freezerA?.children[0]?.children.map((node) => node.id)).toEqual([
+    expect(freezerA.children.map((node) => node.id)).toEqual(['ct-rack-1']);
+    expect(freezerA.children[0].children.map((node) => node.id)).toEqual([
       'ct-drawer-1',
       'ct-drawer-2',
     ]);
-    expect(freezerA?.children[0]?.children[0]?.children.map((node) => node.label)).toEqual([
+    expect(freezerA.children[0].children[0].children.map((node) => node.label)).toEqual([
       'Box A',
       'Box B',
     ]);
-    expect(freezerB?.children[0]?.children[0]?.children.map((node) => node.label)).toEqual([
-      'Box C',
-    ]);
+    expect(freezerB.children[0].children[0].children.map((node) => node.label)).toEqual(['Box C']);
   });
 
   it('prefers a container’s human label over its name, as the Qt resolver does', () => {
     const tree = buildLayoutTree(labData(createDemoLab()));
-    const drawer = tree[0]?.children[0]?.children[0];
 
     // ct-drawer-1 is seeded with both: label 'Top drawer', name 'Drawer 1'.
-    expect(drawer?.label).toBe('Top drawer');
+    expect(nodeAt(tree, 0, 0, 0).label).toBe('Top drawer');
   });
 
   it('counts the boxes of the whole subtree, not just the direct children', () => {
     const tree = buildLayoutTree(labData(createDemoLab()));
-    const [freezerA, freezerB] = tree;
-    const rack = freezerA?.children[0];
-    const [drawerOne, drawerTwo] = rack?.children ?? [];
 
-    expect(freezerA?.boxCount).toBe(2); // Box A + Box B; 'Old box' is archived
-    expect(rack?.boxCount).toBe(2);
-    expect(drawerOne?.boxCount).toBe(2);
-    expect(drawerTwo?.boxCount).toBe(0);
-    expect(freezerB?.boxCount).toBe(1);
+    expect(nodeAt(tree, 0).boxCount).toBe(2); // Box A + Box B; 'Old box' is archived
+    expect(nodeAt(tree, 0, 0).boxCount).toBe(2);
+    expect(nodeAt(tree, 0, 0, 0).boxCount).toBe(2);
+    expect(nodeAt(tree, 0, 0, 1).boxCount).toBe(0);
+    expect(nodeAt(tree, 1).boxCount).toBe(1);
   });
 
   it('reports the positions a box declares through its box type', () => {
     const tree = buildLayoutTree(labData(createDemoLab()));
-    const boxA = tree[0]?.children[0]?.children[0]?.children[0];
-    const boxC = tree[1]?.children[0]?.children[0]?.children[0];
 
-    expect(boxA?.positionCount).toBe(96);
-    expect(boxC?.positionCount).toBe(9);
+    expect(nodeAt(tree, 0, 0, 0, 0).positionCount).toBe(96);
+    expect(nodeAt(tree, 1, 0, 0, 0).positionCount).toBe(9);
   });
 
   it('leaves the position count unknown when the box type is not in the loaded set', () => {
@@ -156,15 +176,18 @@ describe('buildLayoutTree', () => {
     // archived box: the box is still listed, its size just cannot be named.
     const data = labData(createDemoLab());
     const tree = buildLayoutTree({ ...data, boxTypes: [] });
-    const boxA = tree[0]?.children[0]?.children[0]?.children[0];
+    const boxA = nodeAt(tree, 0, 0, 0, 0);
 
-    expect(boxA?.positionCount).toBeNull();
-    expect(boxA?.label).toBe('Box A');
+    expect(boxA.positionCount).toBeNull();
+    expect(boxA.label).toBe('Box A');
   });
 
   it('hides an archived freezer, container and box, and their subtrees', () => {
     const data: LabLayoutData = {
-      freezers: [freezer('fz-live', 'ct-root'), freezer('fz-gone', 'ct-root', { archivedAt: ARCHIVED })],
+      freezers: [
+        freezer('fz-live', 'ct-root'),
+        freezer('fz-gone', 'ct-root', { archivedAt: ARCHIVED }),
+      ],
       storageContainers: [
         container('ct-root'),
         container('ct-dead', 'ct-root', { archivedAt: ARCHIVED }),
@@ -277,16 +300,16 @@ describe('buildLayoutTree', () => {
       ],
     };
 
-    const root = buildLayoutTree(data)[0]?.children[0];
+    const root = nodeAt(buildLayoutTree(data), 0, 0);
 
     // Sub-containers first, in ordering_index order, then the boxes by label.
-    expect(root?.children.map((node) => node.id)).toEqual([
+    expect(root.children.map((node) => node.id)).toEqual([
       'ct-first',
       'ct-second',
       'box-a',
       'box-b',
     ]);
-    expect(root?.children[2]?.label).toBe('a');
+    expect(root.children[2].label).toBe('a');
   });
 });
 

@@ -87,12 +87,7 @@ export function useLabLayout(labId: string): UseLabLayoutResult {
   const { refetch: refetchBoxes } = boxesQuery;
 
   const refetch = useCallback(async () => {
-    await Promise.all([
-      refetchFreezers(),
-      refetchContainers(),
-      refetchBoxTypes(),
-      refetchBoxes(),
-    ]);
+    await Promise.all([refetchFreezers(), refetchContainers(), refetchBoxTypes(), refetchBoxes()]);
   }, [refetchFreezers, refetchContainers, refetchBoxTypes, refetchBoxes]);
 
   return {

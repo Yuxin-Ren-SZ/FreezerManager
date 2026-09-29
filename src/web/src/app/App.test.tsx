@@ -2,7 +2,7 @@
 import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppErrorBoundary, ErrorBoundary } from './ErrorBoundary';
 import { AppProviders } from './providers';
 import { RouteGuard } from './guards';
@@ -10,6 +10,8 @@ import { ALL_PERMISSIONS, type PermissionKey } from './permissions';
 import { ROUTES, type AppRoute } from './route-map';
 import type { CurrentUser, LabMembership } from './session';
 import { renderApp } from './testing';
+import { fakeApi } from '../test/fakeApi';
+import { server } from '../test/server';
 import appShellCss from './shell/AppShell.module.css?raw';
 import sideNavCss from './shell/SideNav.module.css?raw';
 import accountCopy from '../../locales/en/account.json';
@@ -37,8 +39,13 @@ import sharesCopy from '../../locales/en/shares.json';
  * both G3.3 under `samples`) are indistinguishable by design at this stage:
  * they are the same placeholder until G3.3 splits them, and there is nothing
  * for a test to tell apart.
+ *
+ * `task: null` means the real screen has replaced the placeholder (G3.1 is the
+ * first): it no longer renders its TODO id, so the assertion below flips to
+ * "the placeholder sentence is gone", which is what catches a route quietly
+ * reverted to `PlaceholderScreen`.
  */
-const EXPECTED_SCREEN: Record<string, { title: string; task: string }> = {
+const EXPECTED_SCREEN: Record<string, { title: string; task: string | null }> = {
   login: { title: authCopy.title, task: 'G2.1' },
   'login-mfa': { title: authCopy.title, task: 'G2.1' },
   home: { title: homeCopy.title, task: 'G4.2' },
@@ -46,7 +53,7 @@ const EXPECTED_SCREEN: Record<string, { title: string; task: string }> = {
   samples: { title: samplesCopy.title, task: 'G3.2' },
   'sample-new': { title: samplesCopy.title, task: 'G3.3' },
   'sample-detail': { title: samplesCopy.title, task: 'G3.3' },
-  layout: { title: layoutCopy.title, task: 'G3.1' },
+  layout: { title: layoutCopy.title, task: null },
   box: { title: layoutCopy.title, task: 'G3.4' },
   scan: { title: scanCopy.title, task: 'G3.6' },
   'csv-import': { title: csvImportCopy.title, task: 'G3.7' },
@@ -59,6 +66,15 @@ const EXPECTED_SCREEN: Record<string, { title: string; task: string }> = {
 };
 
 const LAB_ID = 'lab-1';
+
+// Every route in the map is rendered below, and a real screen fetches: G3.1's
+// layout tree is the first one that does. `fakeApi()` answers every route in
+// `routes.ts`, so the app test does not need to know which screens fetch what —
+// and an unimplemented route answering with protobuf defaults is exactly what
+// the real server does for an empty lab.
+beforeEach(() => {
+  server.use(...fakeApi());
+});
 
 function lab(permissions: readonly PermissionKey[], labId = LAB_ID): LabMembership {
   return {
@@ -132,9 +148,16 @@ describe('app shell', () => {
       expect(
         await screen.findByRole('heading', { level: 1, name: expected.title }),
       ).toBeInTheDocument();
-      // The id is interpolated into the placeholder sentence, so match on
-      // containment rather than on a text node that is exactly the id.
-      expect(screen.getByText(expected.task, { exact: false })).toBeInTheDocument();
+      if (expected.task === null) {
+        // An implemented screen no longer names the TODO id that replaced it;
+        // the title above still proves the namespace, and this proves the
+        // placeholder is gone.
+        expect(screen.queryByText(/This screen is a placeholder/)).not.toBeInTheDocument();
+      } else {
+        // The id is interpolated into the placeholder sentence, so match on
+        // containment rather than on a text node that is exactly the id.
+        expect(screen.getByText(expected.task, { exact: false })).toBeInTheDocument();
+      }
       expect(screen.queryByRole('heading', { name: 'Page not found' })).not.toBeInTheDocument();
     },
   );

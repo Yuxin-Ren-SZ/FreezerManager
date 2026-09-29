@@ -73,7 +73,7 @@ function seedPositions(rows: number, cols: number): BoxPosition[] {
     const row = Math.floor(index / cols) + 1;
     const col = (index % cols) + 1;
     return create(BoxPositionSchema, {
-      label: `${String.fromCharCode(64 + row)}${col}`,
+      label: `${String.fromCharCode(64 + row)}${String(col)}`,
       row,
       col,
     });
@@ -446,7 +446,11 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
   },
 
   'storage-container/list': (lab, message) => {
-    const { labId, parentId, page: pageRequest } = fields(message) as {
+    const {
+      labId,
+      parentId,
+      page: pageRequest,
+    } = fields(message) as {
       labId: string;
       parentId?: string;
       page?: JsonValue;
@@ -470,7 +474,11 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
   },
 
   'box/list': (lab, message) => {
-    const { labId, storageContainerId, page: pageRequest } = fields(message) as {
+    const {
+      labId,
+      storageContainerId,
+      page: pageRequest,
+    } = fields(message) as {
       labId: string;
       storageContainerId?: string;
       page?: JsonValue;

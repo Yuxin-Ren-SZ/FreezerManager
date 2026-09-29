@@ -24,6 +24,14 @@
       "SAMPLE_STATUS_DEPLETED": "Depleted",
       "SAMPLE_STATUS_DESTROYED": "Destroyed",
       "SAMPLE_STATUS_TOMBSTONED": "Deleted"
+    },
+    "ContainerKind": {
+      "CONTAINER_KIND_UNSPECIFIED": "Container",
+      "CONTAINER_KIND_RACK": "Rack",
+      "CONTAINER_KIND_SHELF": "Shelf",
+      "CONTAINER_KIND_DRAWER": "Drawer",
+      "CONTAINER_KIND_TOWER": "Tower",
+      "CONTAINER_KIND_GENERIC": "Container"
     }
   }
 }
