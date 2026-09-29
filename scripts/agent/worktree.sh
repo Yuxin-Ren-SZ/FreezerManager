@@ -46,10 +46,11 @@ cd "$wt"
 source "$script_dir/env.sh"
 
 # --build=never: never compile dependencies here. If a package is missing, the
-# lock:deps holder (or the lead) builds it once in the shared cache.
-conan install . --lockfile=conan.lock --output-folder=out/conan/dev \
-  --build=never -s build_type=Debug -s compiler.cppstd=20 >out/conan-install.log 2>&1 ||
-  die "conan install failed (see $wt/out/conan-install.log). Missing packages must be built by the lock:deps holder."
+# lock:deps holder (or the lead) builds it once in the shared cache. The helper
+# also keeps Conan from writing a repository-root CMakeUserPresets.json, which
+# is what made `cmake --preset asan` fail after a second install (#36).
+"$script_dir/conan-install.sh" dev ||
+  die "conan install for dev failed (see $wt/out/conan-install-dev.log)"
 cmake --preset dev >out/cmake-configure.log 2>&1 ||
   die "cmake configure failed (see $wt/out/cmake-configure.log)"
 
