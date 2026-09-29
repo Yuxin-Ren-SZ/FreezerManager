@@ -55,11 +55,11 @@ const SampleBrowserScreen = lazyScreen(
   'SampleBrowserScreen',
 );
 const SampleCreateScreen = lazyScreen(
-  () => import('../features/samples/SampleCreateScreen'),
+  () => import('../features/sample-detail/SampleCreateScreen'),
   'SampleCreateScreen',
 );
 const SampleDetailScreen = lazyScreen(
-  () => import('../features/samples/SampleDetailScreen'),
+  () => import('../features/sample-detail/SampleDetailScreen'),
   'SampleDetailScreen',
 );
 const ScanScreen = lazyScreen(() => import('../features/scan/ScanScreen'), 'ScanScreen');

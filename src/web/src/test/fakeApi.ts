@@ -37,12 +37,7 @@ import {
   type ItemType,
 } from '../gen/fmgr/v1/item_type_pb';
 import { LabSchema, type Lab } from '../gen/fmgr/v1/lab_pb';
-import {
-  CheckoutAction,
-  SampleSchema,
-  SampleStatus,
-  type Sample,
-} from '../gen/fmgr/v1/sample_pb';
+import { CheckoutAction, SampleSchema, SampleStatus, type Sample } from '../gen/fmgr/v1/sample_pb';
 
 /**
  * The MSW fake for the whole REST surface (TODO.md G1.2, G-arch 10).
@@ -554,9 +549,7 @@ export function seedSamples(lab: DemoLab, count: number): DemoLab {
  * | `ploidy` | DNA (lab-second) | TEXT | another lab's field must not leak |
  */
 function seedCustomFieldDefinitions(createdAt: ReturnType<typeof seedTimestamp>) {
-  const cfd = (
-    init: MessageInitShape<typeof CustomFieldDefinitionSchema>,
-  ): CustomFieldDefinition =>
+  const cfd = (init: MessageInitShape<typeof CustomFieldDefinitionSchema>): CustomFieldDefinition =>
     create(CustomFieldDefinitionSchema, {
       labId: 'lab-demo',
       scopeKind: ScopeKind.SAMPLE,
@@ -652,9 +645,7 @@ function seedCustomFieldDefinitions(createdAt: ReturnType<typeof seedTimestamp>)
 
 /** Chain of custody for `sample-1`, plus rows that must be filtered out. */
 function seedAuditEvents(createdAt: ReturnType<typeof seedTimestamp>) {
-  const event = (
-    init: MessageInitShape<typeof AuditEventSchema>,
-  ): AuditEvent =>
+  const event = (init: MessageInitShape<typeof AuditEventSchema>): AuditEvent =>
     create(AuditEventSchema, {
       actorUserId: 'user-1',
       entityKind: 'sample',
@@ -935,54 +926,54 @@ function fakeFieldErrors(
 
     const constraints = JSON.parse(def.validationJson || '{}') as Record<string, unknown>;
     switch (def.dataType) {
-    case FieldDataType.TEXT:
-      if (typeof value !== 'string') {
-        errors.push(`${def.key}: expected string value`);
-      } else if (
-        typeof constraints.max_length === 'number' &&
-        value.length > constraints.max_length
-      ) {
-        errors.push(
-          `${def.key}: string length ${String(value.length)} exceeds max_length ${String(constraints.max_length)}`,
-        );
+      case FieldDataType.TEXT:
+        if (typeof value !== 'string') {
+          errors.push(`${def.key}: expected string value`);
+        } else if (
+          typeof constraints.max_length === 'number' &&
+          value.length > constraints.max_length
+        ) {
+          errors.push(
+            `${def.key}: string length ${String(value.length)} exceeds max_length ${String(constraints.max_length)}`,
+          );
+        }
+        break;
+      case FieldDataType.INT:
+        if (typeof value !== 'number' || !Number.isInteger(value)) {
+          errors.push(`${def.key}: expected integer value`);
+        } else if (typeof constraints.min === 'number' && value < constraints.min) {
+          errors.push(`${def.key}: value is below minimum`);
+        } else if (typeof constraints.max === 'number' && value > constraints.max) {
+          errors.push(`${def.key}: value exceeds maximum`);
+        }
+        break;
+      case FieldDataType.FLOAT:
+        if (typeof value !== 'number') {
+          errors.push(`${def.key}: expected numeric value`);
+        } else if (typeof constraints.min === 'number' && value < constraints.min) {
+          errors.push(`${def.key}: value is below minimum`);
+        } else if (typeof constraints.max === 'number' && value > constraints.max) {
+          errors.push(`${def.key}: value exceeds maximum`);
+        }
+        break;
+      case FieldDataType.BOOL:
+        if (typeof value !== 'boolean') errors.push(`${def.key}: expected boolean value`);
+        break;
+      case FieldDataType.ENUM: {
+        const allowed = Array.isArray(constraints.values) ? constraints.values : undefined;
+        if (typeof value !== 'string') {
+          errors.push(`${def.key}: expected string value for enum`);
+        } else if (allowed !== undefined && !allowed.includes(value)) {
+          errors.push(`${def.key}: value '${value}' is not in the allowed enum set`);
+        }
+        break;
       }
-      break;
-    case FieldDataType.INT:
-      if (typeof value !== 'number' || !Number.isInteger(value)) {
-        errors.push(`${def.key}: expected integer value`);
-      } else if (typeof constraints.min === 'number' && value < constraints.min) {
-        errors.push(`${def.key}: value is below minimum`);
-      } else if (typeof constraints.max === 'number' && value > constraints.max) {
-        errors.push(`${def.key}: value exceeds maximum`);
-      }
-      break;
-    case FieldDataType.FLOAT:
-      if (typeof value !== 'number') {
-        errors.push(`${def.key}: expected numeric value`);
-      } else if (typeof constraints.min === 'number' && value < constraints.min) {
-        errors.push(`${def.key}: value is below minimum`);
-      } else if (typeof constraints.max === 'number' && value > constraints.max) {
-        errors.push(`${def.key}: value exceeds maximum`);
-      }
-      break;
-    case FieldDataType.BOOL:
-      if (typeof value !== 'boolean') errors.push(`${def.key}: expected boolean value`);
-      break;
-    case FieldDataType.ENUM: {
-      const allowed = Array.isArray(constraints.values) ? constraints.values : undefined;
-      if (typeof value !== 'string') {
-        errors.push(`${def.key}: expected string value for enum`);
-      } else if (allowed !== undefined && !allowed.includes(value)) {
-        errors.push(`${def.key}: value '${value}' is not in the allowed enum set`);
-      }
-      break;
-    }
-    case FieldDataType.DATE:
-    case FieldDataType.DATETIME:
-    case FieldDataType.REFERENCE:
-    case FieldDataType.UNSPECIFIED:
-      // Not exercised by the seeded definitions; the injection hook covers it.
-      break;
+      case FieldDataType.DATE:
+      case FieldDataType.DATETIME:
+      case FieldDataType.REFERENCE:
+      case FieldDataType.UNSPECIFIED:
+        // Not exercised by the seeded definitions; the injection hook covers it.
+        break;
     }
   }
   return errors;
@@ -993,10 +984,21 @@ function requireValidCustomFields(lab: DemoLab, itemTypeId: string, json: string
   const values = (json === '' ? {} : JSON.parse(json)) as Record<string, unknown>;
   const errors = fakeFieldErrors(fakeResolveCfds(lab, itemTypeId), values);
   if (errors.length > 0) {
-    const message = errors.reduce((acc, error) => `${acc} [${error}]`, 'custom field validation failed:');
+    const message = errors.reduce(
+      (acc, error) => `${acc} [${error}]`,
+      'custom field validation failed:',
+    );
     throw new FakeRpcError('INVALID_ARGUMENT', message);
   }
 }
+
+/** The audit action name per checkout action, as the server records it. */
+const CHECKOUT_AUDIT_ACTION: Readonly<Partial<Record<CheckoutAction, string>>> = {
+  [CheckoutAction.UNSPECIFIED]: 'checkout',
+  [CheckoutAction.CHECKOUT]: 'checkout',
+  [CheckoutAction.CHECKIN]: 'checkin',
+  [CheckoutAction.DISCARD]: 'discard',
+};
 
 /** The active sample already holding `(boxId, positionLabel)`, if any. */
 function positionHolder(
@@ -1242,7 +1244,10 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
         // `samples_position_unique` (box_id, position_label): the SQLite backend
         // reports it as `execute sqlite sample statement: UNIQUE constraint
         // failed: …`, Postgres with its own wording — the code is the stable part.
-        throw new FakeRpcError('ALREADY_EXISTS', 'execute sqlite sample statement: UNIQUE constraint failed: samples.box_id, samples.position_label');
+        throw new FakeRpcError(
+          'ALREADY_EXISTS',
+          'execute sqlite sample statement: UNIQUE constraint failed: samples.box_id, samples.position_label',
+        );
       }
       if (init.containerTypeId !== undefined) {
         requireAcceptedSizeClass(lab, init.boxId, init.positionLabel, init.containerTypeId);
@@ -1268,7 +1273,10 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     requireValidCustomFields(lab, incoming.itemTypeId, incoming.customFieldsJson);
     if (incoming.boxId !== undefined && incoming.positionLabel !== undefined) {
       if (positionHolder(lab, incoming.boxId, incoming.positionLabel, incoming.id) !== undefined) {
-        throw new FakeRpcError('ALREADY_EXISTS', 'execute sqlite sample statement: UNIQUE constraint failed: samples.box_id, samples.position_label');
+        throw new FakeRpcError(
+          'ALREADY_EXISTS',
+          'execute sqlite sample statement: UNIQUE constraint failed: samples.box_id, samples.position_label',
+        );
       }
       if (incoming.containerTypeId !== undefined) {
         requireAcceptedSizeClass(
@@ -1301,7 +1309,10 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     if (found === undefined) throw new FakeRpcError('NOT_FOUND', 'no such sample');
     if (destBoxId !== undefined && destPosition !== undefined) {
       if (positionHolder(lab, destBoxId, destPosition, sampleId) !== undefined) {
-        throw new FakeRpcError('ALREADY_EXISTS', 'execute sqlite sample statement: UNIQUE constraint failed: samples.box_id, samples.position_label');
+        throw new FakeRpcError(
+          'ALREADY_EXISTS',
+          'execute sqlite sample statement: UNIQUE constraint failed: samples.box_id, samples.position_label',
+        );
       }
       if (found.containerTypeId !== undefined) {
         requireAcceptedSizeClass(lab, destBoxId, destPosition, found.containerTypeId);
@@ -1336,37 +1347,52 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     }
 
     switch (action) {
-    // Before G3.3 the fake ignored `action` entirely and only ever checked the
-    // sample out, so an omitted action must keep meaning "check out" — the
-    // G1.2 tests that call `sample/checkout` with no action pin that.
-    case CheckoutAction.UNSPECIFIED:
-    case CheckoutAction.CHECKOUT:
-      if (found.status !== SampleStatus.ACTIVE) {
-        throw new FakeRpcError('FAILED_PRECONDITION', 'only an active sample can be checked out');
+      // Before G3.3 the fake ignored `action` entirely and only ever checked the
+      // sample out, so an omitted action must keep meaning "check out" — the
+      // G1.2 tests that call `sample/checkout` with no action pin that.
+      case CheckoutAction.UNSPECIFIED:
+      case CheckoutAction.CHECKOUT:
+        if (found.status !== SampleStatus.ACTIVE) {
+          throw new FakeRpcError('FAILED_PRECONDITION', 'only an active sample can be checked out');
+        }
+        found.status = SampleStatus.CHECKED_OUT;
+        break;
+      case CheckoutAction.CHECKIN: {
+        if (found.status !== SampleStatus.CHECKED_OUT) {
+          throw new FakeRpcError(
+            'FAILED_PRECONDITION',
+            'only a checked-out sample can be checked in',
+          );
+        }
+        found.status = SampleStatus.ACTIVE;
+        if (volumeUsed !== undefined && found.volumeValue !== undefined) {
+          const remaining = Math.max(0, found.volumeValue - volumeUsed);
+          found.volumeValue = remaining;
+          if (remaining === 0) found.status = SampleStatus.DEPLETED;
+        }
+        break;
       }
-      found.status = SampleStatus.CHECKED_OUT;
-      break;
-    case CheckoutAction.CHECKIN: {
-      if (found.status !== SampleStatus.CHECKED_OUT) {
-        throw new FakeRpcError('FAILED_PRECONDITION', 'only a checked-out sample can be checked in');
-      }
-      found.status = SampleStatus.ACTIVE;
-      if (volumeUsed !== undefined && found.volumeValue !== undefined) {
-        const remaining = Math.max(0, found.volumeValue - volumeUsed);
-        found.volumeValue = remaining;
-        if (remaining === 0) found.status = SampleStatus.DEPLETED;
-      }
-      break;
-    }
-    case CheckoutAction.DISCARD:
-      if (found.volumeValue !== undefined) found.volumeValue = 0;
-      found.status = SampleStatus.DESTROYED;
-      break;
+      case CheckoutAction.DISCARD:
+        if (found.volumeValue !== undefined) found.volumeValue = 0;
+        found.status = SampleStatus.DESTROYED;
+        break;
     }
     found.lastModifiedAt = seedTimestamp();
-    // `reason` is recorded on the chain-of-custody event, which the REST surface
-    // does not expose; keeping it out of the sample row is what the server does.
-    void reason;
+    // `reason` belongs to the chain-of-custody event, not the sample row
+    // (`storage::apply_checkout`), so it is appended the same way the server
+    // appends it — which also gives the history section something to render.
+    lab.auditEvents.push(
+      create(AuditEventSchema, {
+        id: `audit-${sampleId}-${String(lab.auditEvents.length + 1)}`,
+        labId: found.labId,
+        at: seedTimestamp(),
+        actorUserId: 'user-1',
+        entityKind: 'sample',
+        entityId: sampleId,
+        action: `sample.${CHECKOUT_AUDIT_ACTION[action] ?? 'checkout'}`,
+        requestId: reason ?? '',
+      }),
+    );
     return { sample: found };
   },
 

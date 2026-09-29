@@ -23,6 +23,7 @@ import itemTypesCopy from '../../locales/en/itemTypes.json';
 import layoutCopy from '../../locales/en/layout.json';
 import lookupCopy from '../../locales/en/lookup.json';
 import membersCopy from '../../locales/en/members.json';
+import sampleDetailCopy from '../../locales/en/sample-detail.json';
 import samplesCopy from '../../locales/en/samples.json';
 import scanCopy from '../../locales/en/scan.json';
 import sharesCopy from '../../locales/en/shares.json';
@@ -35,15 +36,11 @@ import sharesCopy from '../../locales/en/shares.json';
  * is the whole point. A route wired to the wrong namespace, or to a namespace
  * belonging to another feature task, disagrees with this table.
  *
- * Screens that share a namespace *and* a task (`sample-new` / `sample-detail`,
- * both G3.3 under `samples`) are indistinguishable by design at this stage:
- * they are the same placeholder until G3.3 splits them, and there is nothing
- * for a test to tell apart.
- *
  * `task: null` means the real screen has replaced the placeholder (G3.1's
- * layout tree and G3.2's sample browser so far): it no longer renders its TODO
- * id, so the assertion below flips to "the placeholder sentence is gone", which
- * is what catches a route quietly reverted to `PlaceholderScreen`.
+ * layout tree, G3.2's sample browser and G3.3's two sample screens so far): it
+ * no longer renders its TODO id, so the assertion below flips to "the
+ * placeholder sentence is gone", which is what catches a route quietly reverted
+ * to `PlaceholderScreen`.
  */
 const EXPECTED_SCREEN: Record<string, { title: string; task: string | null }> = {
   login: { title: authCopy.title, task: 'G2.1' },
@@ -51,8 +48,12 @@ const EXPECTED_SCREEN: Record<string, { title: string; task: string | null }> = 
   home: { title: homeCopy.title, task: 'G4.2' },
   lookup: { title: lookupCopy.title, task: 'G3.5' },
   samples: { title: samplesCopy.title, task: null },
-  'sample-new': { title: samplesCopy.title, task: 'G3.3' },
-  'sample-detail': { title: samplesCopy.title, task: 'G3.3' },
+  // G3.3 replaced both of its placeholders. The create screen's heading is its
+  // own namespace's form title; the detail screen's heading is the sample's
+  // *name*, which for the route map's `:sampleId` is the fake's seeded
+  // `sample-1`.
+  'sample-new': { title: sampleDetailCopy.form.createTitle, task: null },
+  'sample-detail': { title: 'Serum A', task: null },
   layout: { title: layoutCopy.title, task: null },
   box: { title: layoutCopy.title, task: 'G3.4' },
   scan: { title: scanCopy.title, task: 'G3.6' },

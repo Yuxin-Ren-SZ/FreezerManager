@@ -5,7 +5,7 @@ import { Route, Routes } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import sampleDetailCopy from '../../../locales/en/sample-detail.json';
 import { SessionProvider } from '../../app/session';
-import { SampleStatus } from '../../gen/fmgr/v1/sample_pb';
+import { SampleStatus, type Sample } from '../../gen/fmgr/v1/sample_pb';
 import { createDemoLab, fakeApi, type DemoLab } from '../../test/fakeApi';
 import { renderWithProviders } from '../../test/render';
 import { server } from '../../test/server';
@@ -55,11 +55,29 @@ function renderDetail(options: RenderOptions = {}) {
   };
 }
 
+/**
+ * A seeded sample by id. A missing id is a broken fixture, so this throws
+ * rather than handing the test an `undefined` it would then assert against.
+ */
+function sampleById(demo: DemoLab, id: string): Sample {
+  const found = demo.samples.find((candidate) => candidate.id === id);
+  if (found === undefined) {
+    throw new Error(`fixture has no sample ${id}`);
+  }
+  return found;
+}
+
 /** The `<dd>` of one `<dt>` in a definition list, matched by its label. */
 function termValue(label: string): string {
   const term = screen.getByText(label);
   return term.nextElementSibling?.textContent ?? '';
 }
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** `findByLabelText`, tolerant of the required marker the kit appends. */
+const findByLabel = (label: string): Promise<HTMLElement> =>
+  screen.findByLabelText(new RegExp(`^${escapeRegExp(label)}\\*?$`));
 
 const click = (name: string) => userEvent.click(screen.getByRole('button', { name }));
 
@@ -81,8 +99,8 @@ describe('SampleDetailScreen', () => {
 
   it('renders a sample that is not in a box without inventing a location', async () => {
     const demo = createDemoLab();
-    demo.samples[0]!.boxId = undefined;
-    demo.samples[0]!.positionLabel = undefined;
+    sampleById(demo, SAMPLE_ID).boxId = undefined;
+    sampleById(demo, SAMPLE_ID).positionLabel = undefined;
     renderDetail({ demo });
 
     await screen.findByRole('heading', { level: 1, name: 'Serum A' });
@@ -93,7 +111,8 @@ describe('SampleDetailScreen', () => {
   it('renders a custom field per its definition type', async () => {
     renderDetail();
 
-    await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+    // The definitions are their own request; the rows appear once it answers.
+    await screen.findByText('Concentration');
 
     // float, string, int, bool and date, all seeded on sample-1.
     expect(termValue('Concentration')).toBe('12.5');
@@ -105,7 +124,7 @@ describe('SampleDetailScreen', () => {
 
   it('shows a custom field the response did not label, rather than dropping it', async () => {
     const demo = createDemoLab();
-    demo.samples[0]!.customFieldsJson = JSON.stringify({ mystery: 'x' });
+    sampleById(demo, SAMPLE_ID).customFieldsJson = JSON.stringify({ mystery: 'x' });
     renderDetail({ demo });
 
     await screen.findByRole('heading', { level: 1, name: 'Serum A' });
@@ -129,21 +148,24 @@ describe('SampleDetailScreen', () => {
 
     it('renders a PHI field the response contains, marked as PHI', async () => {
       const demo = createDemoLab();
-      demo.samples[0]!.customFieldsJson = JSON.stringify({
+      sampleById(demo, SAMPLE_ID).customFieldsJson = JSON.stringify({
         concentration: 12.5,
         donor_name: 'not-a-real-person',
       });
       renderDetail({ demo });
 
-      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+      await screen.findByText('Donor name');
 
       expect(termValue('Donor name')).toBe('not-a-real-person');
       const row = screen.getByText('Donor name').closest('div');
-      expect(row === null ? null : within(row).getByText(sampleDetailCopy.phi.badge)).not.toBeNull();
+      expect(
+        row === null ? null : within(row).getByText(sampleDetailCopy.phi.badge),
+      ).not.toBeNull();
     });
 
     it('marks PHI on the form too, when the definitions are readable', async () => {
       renderDetail();
+      await screen.findByRole('heading', { level: 1, name: 'Serum A' });
 
       await click(sampleDetailCopy.actions.edit);
 
@@ -154,18 +176,16 @@ describe('SampleDetailScreen', () => {
   describe('the parent link', () => {
     it('names the parent and its status', async () => {
       const demo = createDemoLab();
-      demo.samples[0]!.status = SampleStatus.DEPLETED;
+      sampleById(demo, SAMPLE_ID).status = SampleStatus.DEPLETED;
       renderDetail({ demo, sampleId: 'sample-2' });
 
-      await screen.findByRole('heading', { level: 1, name: 'Serum B' });
-
-      // "parent: X (depleted)" — the status is why the link matters.
-      expect(screen.getByText('Parent: Serum A (Depleted)')).toBeInTheDocument();
+      // The parent is fetched by id, so this is its own round trip.
+      expect(await screen.findByText('Parent: Serum A (Depleted)')).toBeInTheDocument();
     });
 
     it('falls back to the id when the parent is not in the loaded list', async () => {
       const demo = createDemoLab();
-      demo.samples[1]!.parentSampleId = 'sample-gone';
+      sampleById(demo, 'sample-2').parentSampleId = 'sample-gone';
       renderDetail({ demo, sampleId: 'sample-2' });
 
       await screen.findByRole('heading', { level: 1, name: 'Serum B' });
@@ -181,7 +201,7 @@ describe('SampleDetailScreen', () => {
       await screen.findByRole('heading', { level: 1, name: 'Serum A' });
 
       const history = screen.getByRole('region', { name: sampleDetailCopy.detail.history });
-      expect(within(history).getByText('sample.create')).toBeInTheDocument();
+      expect(await within(history).findByText('sample.create')).toBeInTheDocument();
       expect(within(history).getByText('sample.checkout')).toBeInTheDocument();
       // sample-2's events are in the fake, in this lab: filtering is the point.
       expect(within(history).getAllByRole('listitem')).toHaveLength(3);
@@ -228,8 +248,8 @@ describe('SampleDetailScreen', () => {
 
     it('checks a checked-out sample back in, recording the volume used and the reason', async () => {
       const demo = createDemoLab();
-      demo.samples[2]!.volumeValue = 100;
-      demo.samples[2]!.volumeUnit = 'uL';
+      sampleById(demo, 'sample-3').volumeValue = 100;
+      sampleById(demo, 'sample-3').volumeUnit = 'µL';
       renderDetail({ demo, sampleId: 'sample-3' });
 
       await screen.findByRole('heading', { level: 1, name: 'Plasma A' });
@@ -240,7 +260,10 @@ describe('SampleDetailScreen', () => {
         within(dialog).getByLabelText(sampleDetailCopy.actions.volumeUsed),
         '40',
       );
-      await userEvent.type(within(dialog).getByLabelText(sampleDetailCopy.actions.reason), 'aliquot');
+      await userEvent.type(
+        within(dialog).getByLabelText(sampleDetailCopy.actions.reason),
+        'aliquot',
+      );
       await userEvent.click(
         within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmCheckin }),
       );
@@ -257,7 +280,10 @@ describe('SampleDetailScreen', () => {
       const dialog = await screen.findByRole('dialog');
       // The reason is what the chain of custody keeps; the volume is not an
       // input here because the server consumes all of it (`apply_checkout`).
-      await userEvent.type(within(dialog).getByLabelText(sampleDetailCopy.actions.reason), 'spilled');
+      await userEvent.type(
+        within(dialog).getByLabelText(sampleDetailCopy.actions.reason),
+        'spilled',
+      );
       await userEvent.click(
         within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmDiscard }),
       );
@@ -286,7 +312,9 @@ describe('SampleDetailScreen', () => {
         within(dialog).getByRole('button', { name: sampleDetailCopy.actions.confirmMove }),
       );
 
-      expect(await screen.findByText('Freezer A / Rack 1 / Top drawer / Box B / A1')).toBeInTheDocument();
+      expect(
+        await screen.findByText('Freezer A / Rack 1 / Top drawer / Box B / A1'),
+      ).toBeInTheDocument();
       const moved = demo.samples.find((sample) => sample.id === SAMPLE_ID);
       expect(moved?.boxId).toBe('box-2');
       expect(moved?.positionLabel).toBe('A1');
@@ -382,7 +410,9 @@ describe('SampleDetailScreen', () => {
       await screen.findByRole('heading', { level: 1, name: 'Serum A' });
 
       expect(screen.queryByRole('button', { name: sampleDetailCopy.actions.checkin })).toBeNull();
-      expect(screen.getByRole('button', { name: sampleDetailCopy.actions.checkout })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: sampleDetailCopy.actions.checkout }),
+      ).toBeInTheDocument();
     });
   });
 
@@ -393,7 +423,7 @@ describe('SampleDetailScreen', () => {
 
       await click(sampleDetailCopy.actions.edit);
 
-      const name = await screen.findByLabelText(sampleDetailCopy.form.name);
+      const name = await findByLabel(sampleDetailCopy.form.name);
       expect(name).toHaveValue('Serum A');
       // The form is generated from the item type's inherited definitions, so an
       // inherited field is editable here too.
@@ -405,7 +435,9 @@ describe('SampleDetailScreen', () => {
         screen.getByRole('button', { name: sampleDetailCopy.form.submitUpdate }),
       );
 
-      expect(await screen.findByRole('heading', { level: 1, name: 'Serum A2' })).toBeInTheDocument();
+      expect(
+        await screen.findByRole('heading', { level: 1, name: 'Serum A2' }),
+      ).toBeInTheDocument();
       expect(screen.getByText(sampleDetailCopy.form.saved)).toBeInTheDocument();
       expect(demo.samples.find((sample) => sample.id === SAMPLE_ID)?.name).toBe('Serum A2');
     });
@@ -415,7 +447,7 @@ describe('SampleDetailScreen', () => {
       await screen.findByRole('heading', { level: 1, name: 'Serum A' });
       await click(sampleDetailCopy.actions.edit);
 
-      const name = await screen.findByLabelText(sampleDetailCopy.form.name);
+      const name = await findByLabel(sampleDetailCopy.form.name);
       await userEvent.clear(name);
       await userEvent.type(name, 'Serum A2');
 
@@ -441,11 +473,11 @@ describe('SampleDetailScreen', () => {
       await screen.findByRole('heading', { level: 1, name: 'Serum A' });
       await click(sampleDetailCopy.actions.edit);
 
-      await screen.findByLabelText(sampleDetailCopy.form.name);
+      await findByLabel(sampleDetailCopy.form.name);
       await click(sampleDetailCopy.form.cancel);
 
       expect(await screen.findByRole('heading', { level: 1, name: 'Serum A' })).toBeInTheDocument();
-      expect(screen.queryByLabelText(sampleDetailCopy.form.name)).toBeNull();
+      expect(screen.queryByLabelText(/^Name/)).toBeNull();
     });
   });
 
@@ -492,7 +524,7 @@ describe('SampleDetailScreen', () => {
     const { container } = renderDetail();
     await screen.findByRole('heading', { level: 1, name: 'Serum A' });
     await click(sampleDetailCopy.actions.edit);
-    await screen.findByLabelText(sampleDetailCopy.form.name);
+    await findByLabel(sampleDetailCopy.form.name);
 
     expect(await axe(container)).toHaveNoViolations();
   });

@@ -46,7 +46,7 @@ describe('mapServerFailure', () => {
         failure(
           'INVALID_ARGUMENT',
           'custom field validation failed: [notes: string length 12 exceeds max_length 5] ' +
-            '[tube_type: value \'citrate\' is not in the allowed enum set]',
+            "[tube_type: value 'citrate' is not in the allowed enum set]",
         ),
         'update',
       );
@@ -74,10 +74,10 @@ describe('mapServerFailure', () => {
         ['reference value is not a valid UUID', 'validation.reference.invalid'],
         ['value is below minimum', 'validation.belowMin'],
         ['value exceeds maximum', 'validation.aboveMax'],
-        ['Date must be in ISO-8601 format', 'validation.date.format'],
-        ['Datetime must be in ISO-8601 format', 'validation.datetime.format'],
-        ['Date is before minimum', 'validation.beforeMin'],
-        ['Datetime is after maximum', 'validation.afterMax'],
+        ['date must be in ISO-8601 format', 'validation.date.format'],
+        ['datetime must be in ISO-8601 format', 'validation.datetime.format'],
+        ['date is before minimum', 'validation.beforeMin'],
+        ['datetime is after maximum', 'validation.afterMax'],
       ];
 
       for (const [message, key] of cases) {
@@ -85,7 +85,7 @@ describe('mapServerFailure', () => {
           failure('INVALID_ARGUMENT', `custom field validation failed: [k: ${message}]`),
           'create',
         );
-        expect(mapped.fields.k?.key, message).toBe(key);
+        expect(mapped.fields.k, message).toEqual({ ns: 'sample-detail', key });
       }
     });
 
@@ -104,7 +104,7 @@ describe('mapServerFailure', () => {
       const mapped = mapServerFailure(
         failure(
           'INVALID_ARGUMENT',
-          'custom field validation failed: [too many custom fields: 201 exceeds the limit of 200]',
+          'custom field validation failed: [: too many custom fields: 201 exceeds the limit of 200]',
         ),
         'create',
       );

@@ -52,6 +52,7 @@ const cfd = (init: {
   archived?: boolean;
 }): CustomFieldDefinition =>
   create(CustomFieldDefinitionSchema, {
+    id: init.id,
     labId: init.labId ?? 'lab-1',
     scopeKind: init.scopeKind ?? ScopeKind.SAMPLE,
     itemTypeId: init.itemTypeId,
@@ -77,7 +78,9 @@ const ITEM_TYPES: ItemType[] = [
 
 describe('resolveInheritedDefinitions', () => {
   it('keeps the fields defined on the item type itself', () => {
-    const cfds = [cfd({ id: 'c1', key: 'leaf_only', dataType: FieldDataType.TEXT, itemTypeId: 'it-serum' })];
+    const cfds = [
+      cfd({ id: 'c1', key: 'leaf_only', dataType: FieldDataType.TEXT, itemTypeId: 'it-serum' }),
+    ];
 
     const resolved = resolveInheritedDefinitions(ITEM_TYPES, cfds, 'it-serum');
 
@@ -152,7 +155,9 @@ describe('resolveInheritedDefinitions', () => {
   });
 
   it('leaves out a definition attached to a sibling item type', () => {
-    const cfds = [cfd({ id: 'c1', key: 'plasma_only', dataType: FieldDataType.TEXT, itemTypeId: 'it-plasma' })];
+    const cfds = [
+      cfd({ id: 'c1', key: 'plasma_only', dataType: FieldDataType.TEXT, itemTypeId: 'it-plasma' }),
+    ];
 
     expect(resolveInheritedDefinitions(ITEM_TYPES, cfds, 'it-serum')).toEqual([]);
   });
@@ -160,20 +165,30 @@ describe('resolveInheritedDefinitions', () => {
   it('leaves out a definition attached to the parent of the item type', () => {
     // A field on Serum must not appear when the subject is Blood: inheritance
     // only travels down the chain.
-    const cfds = [cfd({ id: 'c1', key: 'serum_only', dataType: FieldDataType.TEXT, itemTypeId: 'it-serum' })];
+    const cfds = [
+      cfd({ id: 'c1', key: 'serum_only', dataType: FieldDataType.TEXT, itemTypeId: 'it-serum' }),
+    ];
 
     expect(resolveInheritedDefinitions(ITEM_TYPES, cfds, 'it-blood')).toEqual([]);
   });
 
   it('leaves out another lab\u2019s definitions', () => {
-    const cfds = [cfd({ id: 'c1', key: 'other_lab', dataType: FieldDataType.TEXT, labId: 'lab-2' })];
+    const cfds = [
+      cfd({ id: 'c1', key: 'other_lab', dataType: FieldDataType.TEXT, labId: 'lab-2' }),
+    ];
 
     expect(resolveInheritedDefinitions(ITEM_TYPES, cfds, 'it-serum')).toEqual([]);
   });
 
   it('leaves out an archived definition even though the server already filters them', () => {
     const cfds = [
-      cfd({ id: 'c1', key: 'gone', dataType: FieldDataType.TEXT, itemTypeId: 'it-blood', archived: true }),
+      cfd({
+        id: 'c1',
+        key: 'gone',
+        dataType: FieldDataType.TEXT,
+        itemTypeId: 'it-blood',
+        archived: true,
+      }),
     ];
 
     expect(resolveInheritedDefinitions(ITEM_TYPES, cfds, 'it-serum')).toEqual([]);
@@ -205,7 +220,9 @@ describe('resolveInheritedDefinitions', () => {
   });
 
   it('returns nothing for an item type the caller does not have', () => {
-    const cfds = [cfd({ id: 'c1', key: 'k', dataType: FieldDataType.TEXT, itemTypeId: 'it-blood' })];
+    const cfds = [
+      cfd({ id: 'c1', key: 'k', dataType: FieldDataType.TEXT, itemTypeId: 'it-blood' }),
+    ];
 
     expect(resolveInheritedDefinitions(ITEM_TYPES, cfds, 'it-missing')).toEqual([]);
   });
@@ -329,12 +346,8 @@ describe('validateCustomFieldValues', () => {
     it('enforces min and max inclusively', () => {
       expect(validateCustomFieldValues(defs, { k: 1 })).toEqual([]);
       expect(validateCustomFieldValues(defs, { k: 10 })).toEqual([]);
-      expect(validateCustomFieldValues(defs, { k: 0 })[0]?.messageKey).toBe(
-        'validation.belowMin',
-      );
-      expect(validateCustomFieldValues(defs, { k: 11 })[0]?.messageKey).toBe(
-        'validation.aboveMax',
-      );
+      expect(validateCustomFieldValues(defs, { k: 0 })[0]?.messageKey).toBe('validation.belowMin');
+      expect(validateCustomFieldValues(defs, { k: 11 })[0]?.messageKey).toBe('validation.aboveMax');
     });
   });
 

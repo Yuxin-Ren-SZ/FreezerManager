@@ -54,13 +54,26 @@ function renderCreate(options: RenderOptions = {}) {
   };
 }
 
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * `getByLabelText`, tolerant of the required marker the kit appends inside the
+ * label. The marker is `aria-hidden`, so a screen reader reads "Name" — but the
+ * label's text content is "Name*", which an exact query would miss.
+ */
+const byLabel = (label: string): HTMLElement =>
+  screen.getByLabelText(new RegExp(`^${escapeRegExp(label)}\\*?$`));
+
+const findByLabel = (label: string): Promise<HTMLElement> =>
+  screen.findByLabelText(new RegExp(`^${escapeRegExp(label)}\\*?$`));
+
 /** Pick the item type the form should generate itself from. */
 async function chooseItemType(id: string) {
-  await userEvent.selectOptions(await screen.findByLabelText(sampleDetailCopy.form.itemType), id);
+  await userEvent.selectOptions(await findByLabel(sampleDetailCopy.form.itemType), id);
 }
 
 const setDate = (label: string, value: string) => {
-  fireEvent.change(screen.getByLabelText(label), { target: { value } });
+  fireEvent.change(byLabel(label), { target: { value } });
 };
 
 const submit = async () => {
@@ -87,14 +100,14 @@ describe('SampleCreateScreen', () => {
       sampleDetailCopy.form.massUnit,
       sampleDetailCopy.form.parentSample,
     ]) {
-      expect(screen.getByLabelText(label), label).toBeInTheDocument();
+      expect(byLabel(label), label).toBeInTheDocument();
     }
   });
 
   it('lists the lab item types and nothing from another lab', async () => {
     renderCreate();
 
-    const select = await screen.findByLabelText(sampleDetailCopy.form.itemType);
+    const select = await findByLabel(sampleDetailCopy.form.itemType);
     const values = within(select)
       .getAllByRole('option')
       .map((option) => option.getAttribute('value'));
@@ -109,29 +122,28 @@ describe('SampleCreateScreen', () => {
     renderCreate();
     await chooseItemType('it-serum');
 
-    expect(screen.getByLabelText('Serum notes')).toHaveAttribute('type', 'text');
+    expect(byLabel('Serum notes')).toHaveAttribute('type', 'text');
 
-    const count = screen.getByLabelText('Aliquot count');
+    const count = byLabel('Aliquot count');
     expect(count).toHaveAttribute('type', 'number');
     expect(count).toHaveAttribute('step', '1');
 
-    expect(screen.getByLabelText('Concentration')).toHaveAttribute('type', 'number');
-    expect(screen.getByLabelText('Hemolyzed')).toHaveAttribute('type', 'checkbox');
-    expect(screen.getByLabelText('Collection date')).toHaveAttribute('type', 'date');
-    expect(screen.getByLabelText('Received at')).toHaveAttribute('type', 'datetime-local');
+    expect(byLabel('Concentration')).toHaveAttribute('type', 'number');
+    expect(byLabel('Hemolyzed')).toHaveAttribute('type', 'checkbox');
+    expect(byLabel('Collection date')).toHaveAttribute('type', 'date');
+    expect(byLabel('Received at')).toHaveAttribute('type', 'datetime-local');
 
-    const tube = screen.getByLabelText('Tube type');
+    const tube = byLabel('Tube type');
     expect(tube.tagName).toBe('SELECT');
     // The enum's options are the definition's `validation_json.values`, so a
     // value outside the set cannot be typed at all.
-    expect(within(tube).getAllByRole('option').map((option) => option.textContent)).toEqual([
-      '',
-      'EDTA',
-      'heparin',
-      'plain',
-    ]);
+    expect(
+      within(tube)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual([sampleDetailCopy.form.noChoice, 'EDTA', 'heparin', 'plain']);
 
-    expect(screen.getByLabelText('Parent aliquot')).toHaveAttribute('type', 'text');
+    expect(byLabel('Parent aliquot')).toHaveAttribute('type', 'text');
   });
 
   it('generates the fields inherited from the parent item type, not just the leaf', async () => {
@@ -141,11 +153,11 @@ describe('SampleCreateScreen', () => {
     // `aliquot_count`, `collection_date`, `received_at`, `tube_type` and
     // `notes` are defined on Blood; `hemolyzed` and `parent_aliquot` on Serum.
     // An item type with no parent would hide this bug completely.
-    expect(screen.getByLabelText('Aliquot count')).toBeInTheDocument();
-    expect(screen.getByLabelText('Collection date')).toBeInTheDocument();
-    expect(screen.getByLabelText('Received at')).toBeInTheDocument();
-    expect(screen.getByLabelText('Tube type')).toBeInTheDocument();
-    expect(screen.getByLabelText('Hemolyzed')).toBeInTheDocument();
+    expect(byLabel('Aliquot count')).toBeInTheDocument();
+    expect(byLabel('Collection date')).toBeInTheDocument();
+    expect(byLabel('Received at')).toBeInTheDocument();
+    expect(byLabel('Tube type')).toBeInTheDocument();
+    expect(byLabel('Hemolyzed')).toBeInTheDocument();
   });
 
   it('lets the leaf item type override a key its parent also defines', async () => {
@@ -154,7 +166,7 @@ describe('SampleCreateScreen', () => {
 
     // Both Blood and Serum define `notes`; the label names the definition that
     // won, and the max length came with it (asserted below).
-    expect(screen.getByLabelText('Serum notes')).toBeInTheDocument();
+    expect(byLabel('Serum notes')).toBeInTheDocument();
     expect(screen.queryByLabelText('Notes')).not.toBeInTheDocument();
   });
 
@@ -171,8 +183,12 @@ describe('SampleCreateScreen', () => {
     renderCreate();
     await chooseItemType('it-serum');
 
-    expect(screen.getByLabelText(/Donor name/)).toBeInTheDocument();
-    expect(screen.getByText(sampleDetailCopy.phi.badge)).toBeInTheDocument();
+    // The kit's `TextField` takes a string label, so the marker is part of the
+    // accessible name rather than a separate badge (the detail *view*, which
+    // owns its own markup, renders the badge).
+    expect(
+      screen.getByLabelText(new RegExp(`Donor name.*${sampleDetailCopy.phi.badge}`)),
+    ).toBeInTheDocument();
   });
 
   it('marks a required custom field as required', async () => {
@@ -186,13 +202,13 @@ describe('SampleCreateScreen', () => {
     const { demo } = renderCreate();
     await chooseItemType('it-serum');
 
-    await userEvent.type(screen.getByLabelText('Serum notes'), 'ok');
-    await userEvent.type(screen.getByLabelText('Aliquot count'), '3');
-    await userEvent.click(screen.getByLabelText('Hemolyzed'));
+    await userEvent.type(byLabel('Serum notes'), 'ok');
+    await userEvent.type(byLabel('Aliquot count'), '3');
+    await userEvent.click(byLabel('Hemolyzed'));
     setDate('Collection date', '2026-01-05');
     setDate('Received at', '2026-01-05T10:30');
-    await userEvent.selectOptions(screen.getByLabelText('Tube type'), 'EDTA');
-    await userEvent.type(screen.getByLabelText(sampleDetailCopy.form.name), 'Serum C');
+    await userEvent.selectOptions(byLabel('Tube type'), 'EDTA');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Serum C');
     await submit();
 
     await screen.findByText('detail screen');
@@ -215,12 +231,18 @@ describe('SampleCreateScreen', () => {
     const { demo } = renderCreate();
     await chooseItemType('it-serum');
 
-    await userEvent.type(screen.getByLabelText(sampleDetailCopy.form.name), 'Serum C');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Serum C');
     await submit();
 
     await screen.findByText('detail screen');
 
-    expect(JSON.parse(demo.samples.at(-1)?.customFieldsJson ?? '{}')).toEqual({});
+    // The text, number, date, datetime, enum and reference controls are all
+    // blank and none of them is submitted. The checkbox is the exception and
+    // deliberately so: an unchecked box is `false`, which is a value, not an
+    // absent one.
+    expect(JSON.parse(demo.samples.at(-1)?.customFieldsJson ?? '{}')).toEqual({
+      is_hemolyzed: false,
+    });
   });
 
   it('writes the custom fields into the item type\u2019s own constraints, not the parent\u2019s', async () => {
@@ -229,8 +251,8 @@ describe('SampleCreateScreen', () => {
     renderCreate();
     await chooseItemType('it-serum');
 
-    await userEvent.type(screen.getByLabelText('Serum notes'), 'abcdef');
-    await userEvent.type(screen.getByLabelText(sampleDetailCopy.form.name), 'Serum C');
+    await userEvent.type(byLabel('Serum notes'), 'abcdef');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Serum C');
     await submit();
 
     expect(await screen.findByText(sampleDetailCopy.validation.text.tooLong)).toBeInTheDocument();
@@ -241,8 +263,8 @@ describe('SampleCreateScreen', () => {
     renderCreate();
     await chooseItemType('it-serum');
 
-    await userEvent.type(screen.getByLabelText('Aliquot count'), '99');
-    await userEvent.type(screen.getByLabelText(sampleDetailCopy.form.name), 'Serum C');
+    await userEvent.type(byLabel('Aliquot count'), '99');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Serum C');
     await submit();
 
     expect(await screen.findByText(sampleDetailCopy.validation.aboveMax)).toBeInTheDocument();
@@ -257,10 +279,12 @@ describe('SampleCreateScreen', () => {
     const demo = createDemoLab();
     renderCreate({ demo, user: currentUserWith(['sample.read', 'sample.write']) });
 
-    expect(await screen.findByText(sampleDetailCopy.form.customFieldsUnavailable)).toBeInTheDocument();
+    expect(
+      await screen.findByText(sampleDetailCopy.form.customFieldsUnavailable),
+    ).toBeInTheDocument();
 
     await chooseItemType('it-tissue');
-    await userEvent.type(screen.getByLabelText(sampleDetailCopy.form.name), 'Tissue A');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Tissue A');
     await submit();
 
     const reported = await screen.findByTestId('server-field-errors');
@@ -270,49 +294,57 @@ describe('SampleCreateScreen', () => {
   });
 
   it('shows an ALREADY_EXISTS position conflict on the position field', async () => {
-    renderCreate();
+    // The picker only offers free positions, so the conflict has to be the one
+    // it cannot prevent: the slot is taken between the picker being drawn and
+    // the save. Draw it with A1 free...
+    const demo = createDemoLab();
+    const index = demo.samples.findIndex((sample) => sample.id === 'sample-1');
+    const [heldElsewhere] = demo.samples.splice(index, 1);
+    renderCreate({ demo });
+    await chooseItemType('it-plasma');
 
-    // box-1 / A1 is held by sample-1.
-    await userEvent.selectOptions(await screen.findByLabelText(sampleDetailCopy.form.box), 'box-1');
-    await userEvent.selectOptions(screen.getByLabelText(sampleDetailCopy.form.position), 'A1');
-    await userEvent.type(screen.getByLabelText(sampleDetailCopy.form.name), 'Serum C');
+    await userEvent.selectOptions(await findByLabel(sampleDetailCopy.form.box), 'box-1');
+    await userEvent.selectOptions(byLabel(sampleDetailCopy.form.position), 'A1');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Plasma B');
+
+    // ...and put the holder back before submitting.
+    server.use(...fakeApi({ lab: createDemoLab() }));
+
     await submit();
 
     expect(await screen.findByText(sampleDetailCopy.server.positionTaken)).toBeInTheDocument();
-    expect(screen.getByLabelText(sampleDetailCopy.form.position)).toHaveAttribute(
-      'aria-invalid',
-      'true',
-    );
+    expect(byLabel(sampleDetailCopy.form.position)).toHaveAttribute('aria-invalid', 'true');
     expect(screen.queryByText('detail screen')).not.toBeInTheDocument();
+    expect(heldElsewhere.id).toBe('sample-1');
   });
 
   it('shows a size-class mismatch on the container type field', async () => {
     renderCreate();
+    await chooseItemType('it-plasma');
 
     // bt-9 (box-3) accepts only size class tube-15; ct-50ml is tube-50.
     await userEvent.selectOptions(
-      await screen.findByLabelText(sampleDetailCopy.form.containerType),
+      await findByLabel(sampleDetailCopy.form.containerType),
       'ct-50ml',
     );
-    await userEvent.selectOptions(screen.getByLabelText(sampleDetailCopy.form.box), 'box-3');
-    await userEvent.selectOptions(screen.getByLabelText(sampleDetailCopy.form.position), 'A1');
-    await userEvent.type(screen.getByLabelText(sampleDetailCopy.form.name), 'Plasma B');
+    await userEvent.selectOptions(byLabel(sampleDetailCopy.form.box), 'box-3');
+    await userEvent.selectOptions(byLabel(sampleDetailCopy.form.position), 'A1');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Plasma B');
     await submit();
 
-    expect(await screen.findByText(sampleDetailCopy.server.sizeClassNotAccepted)).toBeInTheDocument();
-    expect(screen.getByLabelText(sampleDetailCopy.form.containerType)).toHaveAttribute(
-      'aria-invalid',
-      'true',
-    );
+    expect(
+      await screen.findByText(sampleDetailCopy.server.sizeClassNotAccepted),
+    ).toBeInTheDocument();
+    expect(byLabel(sampleDetailCopy.form.containerType)).toHaveAttribute('aria-invalid', 'true');
   });
 
   it('offers only the free positions of the chosen box', async () => {
     renderCreate();
 
-    await userEvent.selectOptions(await screen.findByLabelText(sampleDetailCopy.form.box), 'box-1');
+    await userEvent.selectOptions(await findByLabel(sampleDetailCopy.form.box), 'box-1');
 
     // A1 and A2 are taken by sample-1 and sample-2; A3 is free.
-    const labels = within(screen.getByLabelText(sampleDetailCopy.form.position))
+    const labels = within(byLabel(sampleDetailCopy.form.position))
       .getAllByRole('option')
       .map((option) => option.textContent);
     expect(labels).not.toContain('A1');
@@ -324,7 +356,7 @@ describe('SampleCreateScreen', () => {
     const { demo } = renderCreate();
     await chooseItemType('it-plasma');
 
-    await userEvent.type(screen.getByLabelText(sampleDetailCopy.form.name), 'Plasma B');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Plasma B');
     await submit();
 
     await screen.findByText('detail screen');
