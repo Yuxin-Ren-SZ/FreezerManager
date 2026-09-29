@@ -1308,12 +1308,11 @@ namespace fmgr::test {
       const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
       make_cfd(token, kLab1,
                {.key = "notes", .required = true, .validation_json = R"({"max_length":100})"});
-      const auto override_cfd =
-          make_cfd(token, kLab1,
-                   {.item_type_id = blood_type,
-                    .key = "notes",
-                    .required = true,
-                    .validation_json = R"({"max_length":5})"});
+      const auto override_cfd = make_cfd(token, kLab1,
+                                         {.item_type_id = blood_type,
+                                          .key = "notes",
+                                          .required = true,
+                                          .validation_json = R"({"max_length":5})"});
       const std::string too_long(50, 'a');
       // The probe carries `notes_v2` as well, and the *same* payload is used
       // before and after the attempt. A rename that succeeded leaves `notes_v2`
@@ -1407,10 +1406,9 @@ namespace fmgr::test {
                                        .key = "notes_v2",
                                        .validation_json = R"({"max_length":50})"});
 
-      const auto status = update_cfd_spec(token, kLab1, loose_cfd,
-                                          {.item_type_id = blood_type,
-                                           .key = "notes",
-                                           .validation_json = R"({"max_length":50})"});
+      const auto status = update_cfd_spec(
+          token, kLab1, loose_cfd,
+          {.item_type_id = blood_type, .key = "notes", .validation_json = R"({"max_length":50})"});
       EXPECT_FALSE(status.ok());
       EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
       EXPECT_NE(status.error_message().find("max_length"), std::string::npos);
@@ -1433,10 +1431,9 @@ namespace fmgr::test {
       const auto root_type = create_item_type(token, kLab1, "liquid");
       const auto blood_type = create_child_item_type(token, kLab1, root_type, "blood");
       make_cfd(token, kLab1, {.key = "notes", .validation_json = R"({"max_length":100})"});
-      const auto equal_cfd = make_cfd(token, kLab1,
-                                      {.item_type_id = blood_type,
-                                       .key = "notes",
-                                       .validation_json = R"({"max_length":100})"});
+      const auto equal_cfd = make_cfd(
+          token, kLab1,
+          {.item_type_id = blood_type, .key = "notes", .validation_json = R"({"max_length":100})"});
 
       const auto status = update_cfd_spec(token, kLab1, equal_cfd,
                                           {.item_type_id = blood_type,
@@ -1448,11 +1445,43 @@ namespace fmgr::test {
       // the subtree accepts did not change; the relabelled row is where the
       // rename put it.
       const std::string fifty(50, 'a');
-      EXPECT_TRUE(create_sample_of_type(token, blood_type,
-                                        std::string(R"({"notes":")") + fifty + R"("})")
-                      .ok());
+      EXPECT_TRUE(
+          create_sample_of_type(token, blood_type, std::string(R"({"notes":")") + fifty + R"("})")
+              .ok());
       ASSERT_TRUE(stored_cfd(token, blood_type, "notes_v2").has_value());
       EXPECT_EQ(stored_cfd(token, blood_type, "notes"), std::nullopt);
+    }
+
+    // A lab-global has nothing above it either, so renaming one is a relabel of
+    // the whole lab rather than a shed constraint — and it is the path where the
+    // check has no node to resolve, so it is also the one that would dereference
+    // an empty attachment if the rename branch assumed there was one.
+    TEST_F(ItemTypeServiceTest, UpdateCfdAllowsRenamingALabGlobalAndTheNewKeyCarriesIt) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto root_type = create_item_type(token, kLab1, "liquid");
+      const auto global_cfd = make_cfd(
+          token, kLab1,
+          {.key = "patinet_id", .required = true, .validation_json = R"({"max_length":5})"});
+      const std::string too_long(50, 'a');
+      EXPECT_FALSE(create_sample_of_type(token, root_type,
+                                         std::string(R"({"patinet_id":")") + too_long + R"("})")
+                       .ok());
+
+      const auto status = update_cfd_spec(
+          token, kLab1, global_cfd,
+          {.key = "patient_id", .required = true, .validation_json = R"({"max_length":5})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      // Still global, still capped, still required — under the corrected key.
+      const auto stored = stored_cfd_anywhere(token, "patient_id");
+      ASSERT_TRUE(stored.has_value());
+      EXPECT_FALSE(stored->has_item_type_id());
+      EXPECT_FALSE(create_sample_of_type(token, root_type,
+                                         std::string(R"({"patient_id":")") + too_long + R"("})")
+                       .ok());
+      EXPECT_FALSE(create_sample_of_type(token, root_type, "{}").ok());
+      EXPECT_TRUE(create_sample_of_type(token, root_type, R"({"patient_id":"short"})").ok());
+      EXPECT_EQ(stored_cfd_anywhere(token, "patinet_id"), std::nullopt);
     }
 
     // =====================================================================
