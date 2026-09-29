@@ -383,16 +383,29 @@ describe('SampleBrowserScreen', () => {
         FakeEventSource.current().open();
       });
 
+      // Three demo samples. A row *count*, not just a name: a tombstone that
+      // replaced the row with a tombstoned copy would leave the grid the same
+      // size and still hide the edited name — which is exactly how the weaker
+      // version of this assertion passed under a planted violation.
+      expect(dataRowCount()).toBe(3);
+
       pushFrame({ id: 'sample-9', name: 'Serum Z', status: 'SAMPLE_STATUS_ACTIVE' });
       expect(within(table()).getByRole('cell', { name: 'Serum Z' })).toBeInTheDocument();
+      expect(dataRowCount()).toBe(4);
 
       pushFrame({ id: 'sample-1', name: 'Serum A (edited)', status: 'SAMPLE_STATUS_ACTIVE' });
       expect(within(table()).getByRole('cell', { name: 'Serum A (edited)' })).toBeInTheDocument();
 
-      pushFrame({ id: 'sample-1', name: 'Serum A', status: 'SAMPLE_STATUS_TOMBSTONED' });
+      pushFrame({ id: 'sample-1', name: 'Serum A tombstoned', status: 'SAMPLE_STATUS_TOMBSTONED' });
+      expect(
+        within(table()).queryByRole('cell', { name: 'Serum A tombstoned' }),
+      ).not.toBeInTheDocument();
       expect(
         within(table()).queryByRole('cell', { name: 'Serum A (edited)' }),
       ).not.toBeInTheDocument();
+      await waitFor(() => {
+        expect(dataRowCount()).toBe(3);
+      });
     });
 
     it('scopes the feed to the box filter, which the route understands', async () => {
