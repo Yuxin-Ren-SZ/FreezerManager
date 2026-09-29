@@ -1,0 +1,62 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.viewport {
+  position: fixed;
+  right: var(--fmgr-space-4);
+  bottom: var(--fmgr-space-4);
+  z-index: var(--fmgr-z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--fmgr-space-2);
+  /* 360 px wide screens: never wider than the viewport minus its gutters. */
+  width: min(24rem, calc(100vw - 2 * var(--fmgr-space-4)));
+  pointer-events: none;
+}
+
+.root {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--fmgr-space-2);
+  padding: var(--fmgr-space-3);
+  background-color: var(--fmgr-color-surface-raised);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-left-width: 4px;
+  border-radius: var(--fmgr-radius-md);
+  box-shadow: var(--fmgr-shadow-md);
+  pointer-events: auto;
+}
+
+.text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  font-size: var(--fmgr-font-size-sm);
+  font-weight: var(--fmgr-font-weight-semibold);
+  overflow-wrap: anywhere;
+}
+
+.description {
+  margin: var(--fmgr-space-1) 0 0;
+  font-size: var(--fmgr-font-size-sm);
+  color: var(--fmgr-color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.info {
+  border-left-color: var(--fmgr-color-info);
+}
+
+.success {
+  border-left-color: var(--fmgr-color-success);
+}
+
+.warning {
+  border-left-color: var(--fmgr-color-warning);
+}
+
+.danger {
+  border-left-color: var(--fmgr-color-danger);
+}

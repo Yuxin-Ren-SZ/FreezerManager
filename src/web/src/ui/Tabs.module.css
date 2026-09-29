@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+.root {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tablist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--fmgr-space-1);
+  border-bottom: 1px solid var(--fmgr-color-border-subtle);
+}
+
+.tab {
+  padding: var(--fmgr-space-2) var(--fmgr-space-3);
+  font-family: inherit;
+  font-size: var(--fmgr-font-size-sm);
+  font-weight: var(--fmgr-font-weight-medium);
+  color: var(--fmgr-color-text-muted);
+  background: none;
+  border: none;
+  /* Reserve the selected underline in both states so the row does not jump. */
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.tab:hover:not(:disabled) {
+  color: var(--fmgr-color-text);
+}
+
+.tab:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tab:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: calc(-1 * var(--fmgr-focus-ring-offset));
+}
+
+.selected {
+  color: var(--fmgr-color-accent);
+  border-bottom-color: var(--fmgr-color-accent);
+}
+
+.panel {
+  padding: var(--fmgr-space-4) 0;
+}
+
+.panel:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}

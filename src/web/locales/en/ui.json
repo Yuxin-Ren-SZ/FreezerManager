@@ -12,10 +12,15 @@
   "select": {
     "placeholder": "Choose an option"
   },
+  "errorState": {
+    "retry": "Try again",
+    "requestId": "Request id: {{requestId}}"
+  },
   "table": {
     "columns": "Columns",
     "toggleColumn": "Show or hide the {{column}} column",
-    "empty": "Nothing to show"
+    "empty": "Nothing to show",
+    "windowed": "Showing {{shown}} of {{total}} rows."
   },
   "tabs": {
     "label": "Sections"
