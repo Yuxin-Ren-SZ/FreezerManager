@@ -350,10 +350,11 @@ namespace fmgr::test {
     // server serves — no fewer (an RPC would be served with no registration for
     // the gate to check against) and no more (an entry for an RPC nobody serves
     // is a claim nothing can honour). The served set comes from the server's own
-    // list of services and the generated proto descriptors, not from a second
-    // hand-written copy in the test.
+    // served-service list — the same rows build() registers (#80) — read through
+    // the generated proto descriptors, not from a second hand-written copy in the
+    // test.
     TEST_F(ServerIntegrationTest, RpcRegistryHoldsExactlyTheServedRpcs) {
-      const auto served = server::FreezerServer::served_rpc_names();
+      const auto served = server_->served_rpc_names();
       const auto registry = rpc::AuthMiddleware::registered_rpcs();
 
       EXPECT_FALSE(served.empty()) << "no served RPCs enumerated; the descriptor lookup is broken";
