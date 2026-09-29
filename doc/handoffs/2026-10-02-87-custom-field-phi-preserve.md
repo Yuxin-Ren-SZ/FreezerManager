@@ -65,9 +65,35 @@ Branch `fix/87-custom-field-phi-preserve`, PR **#124** (`Closes #87`).
   archived definition is still dropped on an unrelated edit. That is recoverable
   data, not ciphertext nobody can re-derive, and the issue scopes this to PHI —
   raised as a question on #87 rather than widened into this PR.
+- **Two extractions, because CI said so, and the second one is not PHI code.** CI's
+  `clang-tidy` job was the only red check on the PR:
 
-**Tests:** red first (`cd4b702`), then green (`85260d0`). The fixture change is
-additive: `archive_phi_field()` soft_deletes a definition the way
+  ```
+  SampleServiceImpl.cc:590:35: error: function 'UpdateSample' has cognitive
+  complexity of 32 (threshold 25)   [readability-function-cognitive-complexity]
+  ```
+
+  `UpdateSample` is where five PHI fixes have landed (#71, #79, #82, #83, #87) and
+  each added a branch; this one's loop is what crossed 25. The first extraction is
+  `preserve_uncovered_phi_keys(prepared, stored_phi)`, which also makes the rule
+  readable on its own. CI then measured the function at **27** — five points down
+  and still above the threshold — so the second extraction took the block the lint
+  was *also* pointing at and that has nothing to do with PHI:
+  `apply_optional_wire_fields(wire, existing)`, the nine `has_x() ? … : nullopt`
+  mappings. That is the honest reading of the check: this function had become a
+  sequence of unrelated concerns, and the PHI block was only the newest one.
+  **Not incidental tidying**, and nothing was suppressed (`NOLINT`) — the local
+  clang-tidy does not report this check at all (the documented not-a-superset
+  direction), so the readings above are CI's, and I could not measure either
+  extraction here.
+
+**Tests:** red first, then green, then the CI-driven extraction — the three
+commits are `test(server): pin that an archived definition's PHI survives an edit`,
+`fix(server): a request cannot clear a PHI key it had no control to name` and
+`refactor(server): extract the PHI preservation merge from UpdateSample`. They are
+named rather than hashed because this branch was rebased twice while it was open,
+and a handoff note citing dead SHAs is worse than one citing none. The fixture
+change is additive: `archive_phi_field()` soft_deletes a definition the way
 `ItemTypeServiceImpl::ArchiveCustomFieldDefinition` does — a
 **genuinely archived** definition, which is what the issue's second criterion asks
 for, and `defined_phi_keys()` asserts the resolver no longer returns it so that
@@ -88,10 +114,26 @@ $ ./out/build/dev/tests/integration/freezermanager_sample_service_integration_te
       --gtest_filter='*Phi*:*UpdateSample*:*CustomField*:*Import*'
 [  PASSED  ] 38 tests.                                              # exit 0
 
-$ ctest --preset dev
-100% tests passed out of 1593
-Total Test time (real) = 134.15 sec                                 # exit 0
+$ ctest --preset dev          # rebased on origin/main 15a9f2b, after both
+                              # extractions; load average 2.3–3.3 (other agents)
+100% tests passed out of 1610
+Total Test time (real) = 142.48 sec                                 # exit 0
 ```
+
+**Two loaded runs are reported rather than hidden.** Both failed in the same
+fixture and neither is related to this change:
+
+| Run | Failure | Isolation |
+|---|---|---|
+| after the first extraction, overlapping this worktree's own build | `GrpcTlsTest.MtlsRejectsClientSignedByUnrelatedCa (SEGFAULT)`, 1 of 1593 | passes, 1.52 s |
+| after the second rebase, machine carrying other agents (load 2.7) | `GrpcTlsTest.ExpiredCertThrows (SEGFAULT)`, 1 of 1610 | passes, 1.47 s |
+
+That is the load-induced pattern the board already records (worker-1 hit
+`GrpcTlsTest`, SIGTRAP + SEGFAULT, "during a full run overlapping its clang-tidy
+sweep"). Two *different* tests in the same fixture, each green in isolation, with
+an idle full re-run at 1610/1610 — reported because an unnamed or unexplained
+full-suite failure is absence of evidence, not proof of flakiness. If it ever
+reproduces on an idle machine, that changes and it gets its own issue.
 
 **Guards proven able to fail.** Besides the red run above (a request that
 recomputes the envelope from the request), the boundary was planted on the green
