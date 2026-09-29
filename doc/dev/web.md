@@ -84,12 +84,38 @@ behaviour on an inherited `NODE_ENV` (dev React in `dist/`, and React 19 tests
 that fail on `React.act`), so pinning it in `package.json` is what makes a local
 run and CI produce the same artifact and the same results.
 
-**Bundle budget.** `npm run build` runs `scripts/check-bundle-size.mjs`, which
-sums the gzipped size of every JS file `dist/index.html` loads before first
-paint (the entry chunk plus its `modulepreload` dependencies) and fails the
-build above **250 KiB gzipped**. Chunks behind `import()` are not counted —
-table/tree screens are expected to be lazy. Override for an experiment with
-`FMGR_WEB_JS_BUDGET_KIB=400 npm run build`.
+**The bundle has three guards, all run by `npm run build`**
+(`scripts/check-bundle-size.mjs`). They exist because importing something heavy
+is easy to write down and invisible until the number crosses the ceiling:
+
+1. **The budget.** The gzipped size of everything `dist/index.html` loads before
+   the first paint — the entry chunk plus its `modulepreload` dependencies —
+   must stay under **250 KiB gzipped**. Chunks behind `import()` are not
+   counted. Override for an experiment with
+   `FMGR_WEB_JS_BUDGET_KIB=400 npm run build`.
+2. **Every screen is behind `import()`** (issue #64). Each
+   `src/features/*/*Screen.tsx` must be a dynamic entry of the Vite build
+   manifest, and none may be in the entry chunk's static imports. Screens are
+   declared with `lazyScreen(() => import(…), 'Name')` in
+   `src/app/route-map.tsx`, and `router.tsx` puts one `Suspense` boundary per
+   route **inside** the shell, so the frame paints first and only the screen
+   shows a fallback. `src/app/shell/` and the kit it uses stay eager: a spinner
+   for the app frame itself would be a regression in feel. The guard reads
+   `build.manifest` from `vite.config.ts` and fails when that file is missing
+   rather than passing by finding nothing.
+3. **No heavy kit dependency in the initial JS.** TanStack Table and TanStack
+   Virtual may only appear in chunks behind `import()`.
+
+**`src/ui/index.ts` is the barrel the shell imports, so it lives in the entry
+chunk — and a re-export from it is not tree-shakeable.** `Table.tsx` imports
+`Table.module.css`, which makes that module side-effectful, so the bundler keeps
+it *and everything it imports* in the entry chunk even when no entry-chunk
+module uses it. This is why **`Table` is not exported from the barrel**: screens
+import `Table` and `TableColumn` from `../../ui/Table`. Measured on the G3.2
+tree, restoring that one export line costs **33.5 KiB gzipped in the initial
+bundle** (189.2 vs 155.7 KiB) with every screen still lazy — so the rule is
+"heavy pieces are imported from their own module", and guard 3 is what says so
+out loud.
 
 ## Tests
 
@@ -165,7 +191,7 @@ CORS headers. There is no separate API host to point at.
 | `src/app/` | Providers, router and route map, guards, session context, i18n bootstrap, `global.css`, `ErrorBoundary` | G1.3 |
 | `src/app/shell/` | The chrome around every screen: `AppShell`, `SideNav`, `TopBar`, `UserMenu`, `LabPicker`, `GlobalLookup`, `ConnectionIndicator` | G1.3 |
 | `src/app/pages/` | Router-level screens that belong to no feature: `NoAccess`, `NotFound`, `PlaceholderScreen` | G1.3 |
-| `src/ui/` | Shared primitives (`Button`, `Table`, `Dialog`, …), `classNames.ts` and `tokens.css` (design tokens) | G1.3 |
+| `src/ui/` | Shared primitives (`Button`, `Table`, `Dialog`, …), `classNames.ts` and `tokens.css` (design tokens). `Table` is imported from `src/ui/Table` rather than the barrel — see the bundle section | G1.3 |
 | `src/features/<name>/` | One directory per screen, own i18next namespace | G1.3 route map, filled in from G3 |
 | `src/test/` | `setup.ts` (matchers + the configured axe runner), MSW `server.ts`, `fakeApi()`, `fakeEventSource()`, `renderWithProviders()` | G1.2/G1.3 |
 | `locales/en/<namespace>.json` | Translations; `common` is the default namespace, one file per feature | all |

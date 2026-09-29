@@ -31,10 +31,10 @@ function isComponent(value: unknown): value is ComponentType {
  * route. The runtime check below covers the case the type system cannot — a
  * module the caller only knows as a plain record.
  */
-export function lazyScreen<
-  TModule extends Record<string, unknown>,
-  TKey extends keyof TModule & string,
->(load: () => Promise<TModule>, name: TKey): LazyExoticComponent<ComponentType> {
+export function lazyScreen<TModule extends Record<string, unknown>>(
+  load: () => Promise<TModule>,
+  name: keyof TModule & string,
+): LazyExoticComponent<ComponentType> {
   return lazy(async () => {
     const module = await load();
     const screen = module[name];

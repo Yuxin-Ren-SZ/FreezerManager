@@ -4,7 +4,10 @@ import { Link } from 'react-router-dom';
 import { enumLabel, formatTimestamp } from '../../api/helpers';
 import type { CustomFieldDefinition, ItemType } from '../../gen/fmgr/v1/item_type_pb';
 import { SampleStatus, SampleStatusSchema, type Sample } from '../../gen/fmgr/v1/sample_pb';
-import { Badge, type BadgeTone, type TableColumn } from '../../ui';
+import { Badge, type BadgeTone } from '../../ui';
+// Same reason as `Table` itself: it is imported from its module, not the
+// barrel, so a table screen does not drag TanStack into the entry chunk.
+import type { TableColumn } from '../../ui/Table';
 import type { LocationPath } from '../layout/layoutModel';
 import { formatCustomFieldValue, parseCustomFields } from './customFields';
 import { placementKind, placementPath } from './placement';
