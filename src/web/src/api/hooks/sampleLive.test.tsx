@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { create, toJson } from '@bufbuild/protobuf';
+import { create, toJson, type MessageInitShape } from '@bufbuild/protobuf';
 import { QueryClient } from '@tanstack/react-query';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,7 +25,7 @@ import { useSampleLive } from './sampleLive';
 const LAB_ID = 'lab-demo';
 
 /** One `Sample` frame, as the gateway serialises it (proto field names). */
-function frame(seed: Partial<Sample> & { id: string }): string {
+function frame(seed: MessageInitShape<typeof SampleSchema> & { id: string }): string {
   return JSON.stringify(
     toJson(
       SampleSchema,
@@ -39,7 +39,12 @@ function frame(seed: Partial<Sample> & { id: string }): string {
 function page(ids: string[], nextPageToken = '') {
   return create(ListSamplesResponseSchema, {
     samples: ids.map((id) =>
-      create(SampleSchema, { id, labId: LAB_ID, name: `Sample ${id}`, status: SampleStatus.ACTIVE }),
+      create(SampleSchema, {
+        id,
+        labId: LAB_ID,
+        name: `Sample ${id}`,
+        status: SampleStatus.ACTIVE,
+      }),
     ),
     page: { nextPageToken },
   });
@@ -52,11 +57,7 @@ function cachedIds(client: QueryClient, filters = {}): string[] {
   return (data?.pages ?? []).flatMap((p) => p.samples.map((sample) => sample.id));
 }
 
-function cachedSample(
-  client: QueryClient,
-  id: string,
-  filters = {},
-): Sample | undefined {
+function cachedSample(client: QueryClient, id: string, filters = {}): Sample | undefined {
   const data = client.getQueryData<{ pages: { samples: Sample[] }[] }>(
     sampleKeys.list(LAB_ID, filters),
   );
@@ -100,8 +101,8 @@ function renderLive(
 }
 
 /** Push one frame through the open stream and let React commit the update. */
-async function push(payload: string, lastEventId = ''): Promise<void> {
-  await act(async () => {
+function push(payload: string, lastEventId = ''): void {
+  act(() => {
     FakeEventSource.current().message(payload, lastEventId);
   });
 }
@@ -121,27 +122,33 @@ describe('useSampleLive', () => {
     expect(FakeEventSource.all()).toHaveLength(0);
   });
 
-  it('replaces a changed row in the list cache', async () => {
-    client.setQueryData(sampleKeys.list(LAB_ID, {}), { pages: [page(['sample-1', 'sample-2'])], pageParams: [''] });
+  it('replaces a changed row in the list cache', () => {
+    client.setQueryData(sampleKeys.list(LAB_ID, {}), {
+      pages: [page(['sample-1', 'sample-2'])],
+      pageParams: [''],
+    });
     renderLive();
 
-    await push(frame({ id: 'sample-1', name: 'Serum A (edited)' }));
+    push(frame({ id: 'sample-1', name: 'Serum A (edited)' }));
 
     expect(cachedSample(client, 'sample-1')?.name).toBe('Serum A (edited)');
     // The other row and the page's token are untouched: a frame updates one row.
     expect(cachedIds(client)).toEqual(['sample-1', 'sample-2']);
   });
 
-  it('drops a tombstoned row out of the list cache', async () => {
-    client.setQueryData(sampleKeys.list(LAB_ID, {}), { pages: [page(['sample-1', 'sample-2'])], pageParams: [''] });
+  it('drops a tombstoned row out of the list cache', () => {
+    client.setQueryData(sampleKeys.list(LAB_ID, {}), {
+      pages: [page(['sample-1', 'sample-2'])],
+      pageParams: [''],
+    });
     renderLive();
 
-    await push(frame({ id: 'sample-1', status: SampleStatus.TOMBSTONED }));
+    push(frame({ id: 'sample-1', status: SampleStatus.TOMBSTONED }));
 
     expect(cachedIds(client)).toEqual(['sample-2']);
   });
 
-  it('keeps a tombstoned row in a list that asked for archived rows', async () => {
+  it('keeps a tombstoned row in a list that asked for archived rows', () => {
     const filters = { includeArchived: true };
     client.setQueryData(sampleKeys.list(LAB_ID, filters), {
       pages: [page(['sample-1', 'sample-2'])],
@@ -149,7 +156,7 @@ describe('useSampleLive', () => {
     });
     renderLive();
 
-    await push(frame({ id: 'sample-1', status: SampleStatus.TOMBSTONED }));
+    push(frame({ id: 'sample-1', status: SampleStatus.TOMBSTONED }));
 
     // `include_archived` lists *show* deleted rows, so removing one would be a
     // lie in the other direction.
@@ -157,16 +164,19 @@ describe('useSampleLive', () => {
     expect(cachedSample(client, 'sample-1', filters)?.status).toBe(SampleStatus.TOMBSTONED);
   });
 
-  it('appends a new row when the loaded window reaches the end of the list', async () => {
-    client.setQueryData(sampleKeys.list(LAB_ID, {}), { pages: [page(['sample-1'])], pageParams: [''] });
+  it('appends a new row when the loaded window reaches the end of the list', () => {
+    client.setQueryData(sampleKeys.list(LAB_ID, {}), {
+      pages: [page(['sample-1'])],
+      pageParams: [''],
+    });
     renderLive();
 
-    await push(frame({ id: 'sample-9', name: 'Serum Z' }));
+    push(frame({ id: 'sample-9', name: 'Serum Z' }));
 
     expect(cachedIds(client)).toEqual(['sample-1', 'sample-9']);
   });
 
-  it('does not append a new row while more pages remain, so offsets stay aligned', async () => {
+  it('does not append a new row while more pages remain, so offsets stay aligned', () => {
     // A non-empty token means the server has rows this client has not loaded.
     // Inserting one at the end of the loaded window would duplicate it when the
     // next page arrives (the cursor is an offset), and the row would be shown
@@ -177,12 +187,12 @@ describe('useSampleLive', () => {
     });
     renderLive();
 
-    await push(frame({ id: 'sample-9', name: 'Serum Z' }));
+    push(frame({ id: 'sample-9', name: 'Serum Z' }));
 
     expect(cachedIds(client)).toEqual(['sample-1']);
   });
 
-  it('leaves a list whose filters the frame does not satisfy alone', async () => {
+  it('leaves a list whose filters the frame does not satisfy alone', () => {
     const filters = { boxId: 'box-2', status: SampleStatus.CHECKED_OUT };
     client.setQueryData(sampleKeys.list(LAB_ID, filters), {
       pages: [page(['sample-1'])],
@@ -192,12 +202,12 @@ describe('useSampleLive', () => {
 
     // The feed cannot filter by status, so a frame for an active sample in
     // another box reaches the hook — and must not enter this cache.
-    await push(frame({ id: 'sample-1', boxId: 'box-1', status: SampleStatus.ACTIVE }));
+    push(frame({ id: 'sample-1', boxId: 'box-1', status: SampleStatus.ACTIVE }));
 
     expect(cachedSample(client, 'sample-1', filters)?.boxId).toBeUndefined();
   });
 
-  it('removes a row that a frame moved out of the list it was in', async () => {
+  it('removes a row that a frame moved out of the list it was in', () => {
     const filters = { boxId: 'box-1' };
     client.setQueryData(sampleKeys.list(LAB_ID, filters), {
       pages: [page(['sample-1', 'sample-2'])],
@@ -205,12 +215,12 @@ describe('useSampleLive', () => {
     });
     renderLive();
 
-    await push(frame({ id: 'sample-1', boxId: 'box-2' }));
+    push(frame({ id: 'sample-1', boxId: 'box-2' }));
 
     expect(cachedIds(client, filters)).toEqual(['sample-2']);
   });
 
-  it('matches a free-text filter case-insensitively, as the server search does', async () => {
+  it('matches a free-text filter case-insensitively, as the server search does', () => {
     const filters = { query: 'serum' };
     client.setQueryData(sampleKeys.list(LAB_ID, filters), {
       pages: [page(['sample-1'])],
@@ -218,14 +228,14 @@ describe('useSampleLive', () => {
     });
     renderLive();
 
-    await push(frame({ id: 'sample-1', name: 'SERUM A' }));
+    push(frame({ id: 'sample-1', name: 'SERUM A' }));
     expect(cachedSample(client, 'sample-1', filters)?.name).toBe('SERUM A');
 
-    await push(frame({ id: 'sample-1', name: 'Plasma A' }));
+    push(frame({ id: 'sample-1', name: 'Plasma A' }));
     expect(cachedIds(client, filters)).toEqual([]);
   });
 
-  it('invalidates the detail entry instead of overwriting it', async () => {
+  it('invalidates the detail entry instead of overwriting it', () => {
     const detailKey = sampleKeys.detail(LAB_ID, 'sample-1');
     const detail = create(SampleSchema, {
       id: 'sample-1',
@@ -237,7 +247,7 @@ describe('useSampleLive', () => {
     client.setQueryData(detailKey, { sample: detail });
     renderLive();
 
-    await push(frame({ id: 'sample-1', name: 'Serum A (edited)' }));
+    push(frame({ id: 'sample-1', name: 'Serum A (edited)' }));
 
     // Not overwritten: the detail cache still holds exactly what `sample/get`
     // returned. A watch frame that carried fewer fields — no PHI, ever — would
@@ -258,7 +268,7 @@ describe('useSampleLive', () => {
     });
     expect(result.current.status).toBe('live');
 
-    await act(async () => {
+    act(() => {
       FakeEventSource.current().message(frame({ id: 'sample-1' }), '1758931200000000');
       FakeEventSource.current().transportError();
     });
@@ -272,11 +282,14 @@ describe('useSampleLive', () => {
     expect(FakeEventSource.all()).toHaveLength(2);
     expect(FakeEventSource.current().url).toContain('since=1758931200000000');
 
-    client.setQueryData(sampleKeys.list(LAB_ID, {}), { pages: [page(['sample-1'])], pageParams: [''] });
+    client.setQueryData(sampleKeys.list(LAB_ID, {}), {
+      pages: [page(['sample-1'])],
+      pageParams: [''],
+    });
     act(() => {
       FakeEventSource.current().open();
     });
-    await push(frame({ id: 'sample-1', name: 'After reconnect' }));
+    push(frame({ id: 'sample-1', name: 'After reconnect' }));
 
     expect(cachedSample(client, 'sample-1')?.name).toBe('After reconnect');
     expect(result.current.status).toBe('live');
@@ -299,20 +312,23 @@ describe('useSampleLive', () => {
     expect(FakeEventSource.all()).toHaveLength(1);
   });
 
-  it('survives a malformed frame without dropping the subscription', async () => {
+  it('survives a malformed frame without dropping the subscription', () => {
     const { result } = renderLive();
     act(() => {
       FakeEventSource.current().open();
     });
 
-    await push('{not json');
+    push('{not json');
 
     expect(result.current.status).toBe('error');
     expect(FakeEventSource.current().closed).toBe(false);
   });
 
-  it('closes the stream and stops merging on unmount', async () => {
-    client.setQueryData(sampleKeys.list(LAB_ID, {}), { pages: [page(['sample-1'])], pageParams: [''] });
+  it('closes the stream and stops merging on unmount', () => {
+    client.setQueryData(sampleKeys.list(LAB_ID, {}), {
+      pages: [page(['sample-1'])],
+      pageParams: [''],
+    });
     const { unmount } = renderLive();
     act(() => {
       FakeEventSource.current().open();
@@ -321,7 +337,7 @@ describe('useSampleLive', () => {
     unmount();
 
     expect(FakeEventSource.current().closed).toBe(true);
-    await push(frame({ id: 'sample-1', name: 'Too late' }));
+    push(frame({ id: 'sample-1', name: 'Too late' }));
     expect(cachedSample(client, 'sample-1')?.name).toBe('Sample sample-1');
   });
 });

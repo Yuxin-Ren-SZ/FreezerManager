@@ -7,7 +7,20 @@ import { afterAll, afterEach, beforeAll, expect } from 'vitest';
 // Initialises i18next for every test file, the same way src/main.tsx does for
 // the app: a component under test always renders translated text, never keys.
 import '../app/i18n';
+import { FakeEventSource } from './fakeEventSource';
 import { server } from './server';
+
+/**
+ * jsdom implements no `EventSource`, and a screen subscribes with the browser's
+ * own constructor — G1.2's wrapper takes a factory only where a test wants to
+ * script frames. Install the shared fake globally so any test that renders a
+ * live screen (the app-shell route test does) can, and leave scripting to
+ * `FakeEventSource.all()`.
+ */
+const eventSourceGlobal = globalThis as { EventSource?: unknown };
+if (eventSourceGlobal.EventSource === undefined) {
+  eventSourceGlobal.EventSource = FakeEventSource;
+}
 
 // Vitest runs with `globals: false` (see vite.config.ts), so nothing is
 // registered implicitly: the matchers, the MSW lifecycle and RTL cleanup are

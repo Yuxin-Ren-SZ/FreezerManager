@@ -56,10 +56,9 @@ describe('useCustomFieldDefinitions', () => {
   });
 
   it('stays idle when disabled, so a member without the permission never asks', () => {
-    const { result } = renderHook(
-      () => useCustomFieldDefinitions('lab-demo', { enabled: false }),
-      { wrapper: createWrapper() },
-    );
+    const { result } = renderHook(() => useCustomFieldDefinitions('lab-demo', { enabled: false }), {
+      wrapper: createWrapper(),
+    });
 
     expect(result.current.fetchStatus).toBe('idle');
     expect(result.current.data).toBeUndefined();

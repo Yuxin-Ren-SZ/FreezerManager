@@ -492,8 +492,6 @@ const fields = (message: Message): Record<string, unknown> => message;
 
 type Resolver = (lab: DemoLab, message: Message) => MessageInitShape<DescMessage> | undefined;
 
-const DEFAULT_PAGE_SIZE = 100;
-
 /**
  * Paging for `sample/list` — the one route this fake serves whose service
  * actually implements `page_token`.
@@ -586,7 +584,8 @@ const SAMPLE_CSV_COLUMNS = [
 ] as const;
 
 /** `core::to_string(SampleStatus)`, which is what the CSV's status column holds. */
-const CSV_STATUS: Readonly<Record<number, string>> = {
+/** Partial on purpose: a newer server may send a status this bundle does not know. */
+const CSV_STATUS: Readonly<Partial<Record<number, string>>> = {
   [SampleStatus.UNSPECIFIED]: '',
   [SampleStatus.ACTIVE]: 'active',
   [SampleStatus.CHECKED_OUT]: 'checked_out',
@@ -596,7 +595,12 @@ const CSV_STATUS: Readonly<Record<number, string>> = {
 };
 
 /** RFC 4180 quoting: only what needs it, doubled quotes inside. */
-function csvCell(value: string): string {
+function csvCell(value: string | undefined): string {
+  // An unset optional field, or a status this bundle does not know: the column
+  // is empty, exactly as `freezerctl` writes it.
+  if (value === undefined) {
+    return '';
+  }
   return /[",\n\r]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
 }
 

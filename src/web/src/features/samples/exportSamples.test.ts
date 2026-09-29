@@ -11,16 +11,13 @@ import { downloadTextFile, exportDateStamp, exportFileName } from './exportSampl
  * module owns — the file name and the bytes handed to the browser.
  */
 
-const createObjectURL = vi.fn(() => 'blob:test');
-const revokeObjectURL = vi.fn();
+const createObjectURL = vi.fn((_blob: Blob) => 'blob:test');
+const revokeObjectURL = vi.fn((_url: string) => undefined);
 
 beforeEach(() => {
   // jsdom has no `URL.createObjectURL` at all, so this replaces a hole rather
   // than a working default.
-  vi.stubGlobal(
-    'URL',
-    Object.assign(class extends URL {}, { createObjectURL, revokeObjectURL }),
-  );
+  vi.stubGlobal('URL', Object.assign(class extends URL {}, { createObjectURL, revokeObjectURL }));
 });
 
 afterEach(() => {
@@ -57,9 +54,10 @@ describe('exportFileName', () => {
 
 describe('downloadTextFile', () => {
   it('hands the browser a CSV blob under the requested name', () => {
-    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
     const anchors: HTMLAnchorElement[] = [];
-    click.mockImplementation(function (this: HTMLAnchorElement) {
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
       anchors.push(this);
     });
 
@@ -68,7 +66,7 @@ describe('downloadTextFile', () => {
     expect(anchors).toHaveLength(1);
     expect(anchors[0]?.download).toBe('samples-lab-demo-2026-10-02.csv');
     expect(anchors[0]?.href).toBe('blob:test');
-    const blob = createObjectURL.mock.calls[0]?.[0] as unknown as Blob;
+    const blob = createObjectURL.mock.calls[0]?.[0];
     expect(blob.type).toBe('text/csv;charset=utf-8');
     // The object URL is released again, or the page leaks the whole export.
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:test');
@@ -77,12 +75,15 @@ describe('downloadTextFile', () => {
   });
 
   it('writes the CSV body into the blob unchanged', async () => {
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    // jsdom does not navigate; the click is only there to be observed.
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function () {
+      /* no navigation in jsdom */
+    });
     const csv = 'id,name\nsample-1,"Serum, A"\n';
 
     downloadTextFile('samples-lab-demo-2026-10-02.csv', csv);
 
-    const blob = createObjectURL.mock.calls[0]?.[0] as unknown as Blob;
+    const blob = createObjectURL.mock.calls[0]?.[0];
     await expect(blob.text()).resolves.toBe(csv);
   });
 });

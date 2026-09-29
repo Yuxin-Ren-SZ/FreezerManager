@@ -179,16 +179,20 @@ describe('Table', () => {
 
     // The scroll container is the table's parent; jsdom has no layout engine,
     // so the rect comes from the spies above and the offset from `scrollTop`.
-    const scroller = screen.getByRole('table').parentElement as HTMLElement;
-    scroller.scrollTop = 1000 * 40 - 200;
-    fireEvent.scroll(scroller);
+    const scrollContainer = screen.getByRole('table').parentElement;
+    if (scrollContainer === null) {
+      throw new Error('the table is not inside a scroll container');
+    }
+    scrollContainer.scrollTop = 1000 * 40 - 200;
+    fireEvent.scroll(scrollContainer);
 
     await waitFor(() => {
       expect(onEndReached).toHaveBeenCalledTimes(1);
     });
   });
 
-  it('has no accessibility violations with a long virtualized list', async () => {    const many: Sample[] = Array.from({ length: 500 }, (_, index) => ({
+  it('has no accessibility violations with a long virtualized list', async () => {
+    const many: Sample[] = Array.from({ length: 500 }, (_, index) => ({
       id: `s${String(index)}`,
       name: `Sample ${String(index)}`,
       status: 'available',

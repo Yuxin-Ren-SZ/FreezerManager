@@ -69,7 +69,13 @@ export function sampleStatusParamValue(status: SampleStatus | ''): string {
   return status === '' ? '' : (enumValueName(SampleStatusSchema, status) ?? '');
 }
 
-function parseStatus(raw: string | null): SampleStatus | '' {
+/**
+ * A status parameter back to the enum, or `''` for "any".
+ *
+ * Shared by the URL parser and the status `<select>`, so the two can never
+ * disagree about which spellings are real.
+ */
+export function sampleStatusFromParam(raw: string | null): SampleStatus | '' {
   if (raw === null || raw === '') {
     return '';
   }
@@ -87,7 +93,7 @@ function parse(params: URLSearchParams, key: string): string {
  */
 export function parseSampleFilters(params: URLSearchParams): SampleFilters {
   return {
-    status: parseStatus(params.get(SAMPLE_FILTER_PARAMS.status)),
+    status: sampleStatusFromParam(params.get(SAMPLE_FILTER_PARAMS.status)),
     boxId: parse(params, SAMPLE_FILTER_PARAMS.boxId),
     itemTypeId: parse(params, SAMPLE_FILTER_PARAMS.itemTypeId),
     barcode: parse(params, SAMPLE_FILTER_PARAMS.barcode),
