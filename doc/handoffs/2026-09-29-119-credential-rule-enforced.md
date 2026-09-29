@@ -76,7 +76,23 @@ visible behaviour changes (PRD §12's auth model is unchanged; nothing in `PRD.m
   `CredentialGateRefusesAnRpcRegisteredWithAPermission` and
   `AuthenticateRefusesAHandlerWhoseRuleDisagreesWithTheRegistration`.
 - `ctest --preset dev -R 'AuthMiddleware|ServerIntegration|Rbac|Logout|PendingMfa|E2ESmoke'` →
-  **62/62 passed**. Full `ctest --preset dev` → see the PR body for the count on the rebased head.
+  **62/62 passed**. Full `ctest --preset dev` → **100% passed out of 1617** on the rebased head.
+- **Review follow-up (lead's #127 review, commit `3ad67f2`).** CI's `clang-tidy` found two things the
+  local A/B did not: `admit_no_credential` could be static (it is now — the other two gate entry
+  points are non-static *because* they use `IAuthProvider`, and that difference is worth keeping
+  visible rather than smoothing over), and `RpcGate::describe()` dereferenced `*credential_` under a
+  check on `permission_.has_value()` (`bugprone-unchecked-optional-access`). The second was **newly
+  introduced here, not pre-existing**: on `main` both `describe()` and `permission()` guarded the
+  optional they dereferenced. Each branch now asks the accessor for its own optional, and the
+  accessors' messages no longer call `describe()` because `describe()` calls them. Re-verified after
+  the fix: build exit 0, `ctest --preset dev` → **1617/1617**.
+  **Why the local A/B could not see it:** on this machine the TU produces 17
+  `clang-diagnostic-error`s inside the macOS SDK's libc++ (`__countr_zero`/`__countl_zero` in
+  `__algorithm/sort.h`, `bitset`), so the compile aborts before the AST has a resolved
+  `std::optional` and the optional-access analysis has nothing to report on. The check *is* listed as
+  enabled locally (`clang-tidy --list-checks`), so this is an analysis difference caused by the
+  broken TU, not a missing check. Three checks this session have now been caught by CI and missed
+  locally — **treat an A/B delta as advisory, never as a clearance.**
 
 **Known limitations / follow-ups:**
 
