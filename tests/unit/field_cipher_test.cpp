@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -16,6 +17,7 @@ namespace {
   using fmgr::crypto::CipherError;
   using fmgr::crypto::decrypt;
   using fmgr::crypto::encrypt;
+  using fmgr::crypto::envelope_field_names;
   using fmgr::crypto::PhiFields;
   using fmgr::kms::EnvVarKms;
 
@@ -56,6 +58,38 @@ namespace {
     const auto kms = make_kms();
     EXPECT_TRUE(decrypt("{}", kms).empty());
     EXPECT_TRUE(decrypt("", kms).empty());
+  }
+
+  // envelope_field_names() is what lets a write treat "the stored envelope holds
+  // this key" as evidence the key is PHI (#126). It reads the envelope's cleartext
+  // key names and must never need the KMS to do it — an unrelated edit of an
+  // envelope whose KEK is gone has to keep succeeding.
+  TEST(FieldCipher, EnvelopeFieldNamesReadsKeysWithoutTheKms) {
+    const auto kms = make_kms();
+    const std::string envelope = encrypt(PhiFields{{"mrn", "MRN-555"}, {"age_years", 7}}, kms);
+
+    const std::set<std::string> names = envelope_field_names(envelope);
+    EXPECT_EQ(names, (std::set<std::string>{"age_years", "mrn"}));
+  }
+
+  TEST(FieldCipher, EnvelopeFieldNamesReadsAnEnvelopeItCannotOpen) {
+    // Sealed under a KEK this process does not hold, exactly what a rotation that
+    // skipped `freezerctl key rotate` leaves behind.
+    const EnvVarKms unknown_kek{std::vector<std::uint8_t>(32, 0xAB)};
+    const std::string orphan = encrypt(PhiFields{{"mrn", "MRN-555"}}, unknown_kek);
+    EXPECT_THROW(decrypt(orphan, make_kms()), fmgr::kms::KmsError);
+
+    EXPECT_EQ(envelope_field_names(orphan), (std::set<std::string>{"mrn"}));
+  }
+
+  TEST(FieldCipher, EnvelopeFieldNamesIsTotalForUnreadableEnvelopes) {
+    // Classification must not add a failure path the write did not already have:
+    // an envelope with no names to read yields none, rather than throwing.
+    EXPECT_TRUE(envelope_field_names("").empty());
+    EXPECT_TRUE(envelope_field_names("{}").empty());
+    EXPECT_TRUE(envelope_field_names("not json at all").empty());
+    EXPECT_TRUE(envelope_field_names(R"({"v":1,"kek_id":"k"})").empty());
+    EXPECT_TRUE(envelope_field_names(R"({"v":1,"fields":"not an object"})").empty());
   }
 
   TEST(FieldCipher, PlaintextNeverAppearsInEnvelope) {

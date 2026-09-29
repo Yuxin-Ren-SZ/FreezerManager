@@ -7,6 +7,7 @@
 #include <sodium.h>
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -142,6 +143,30 @@ namespace fmgr::crypto {
     }
     sodium_memzero(dek.data(), dek.size());
     return result;
+  }
+
+  std::set<std::string> envelope_field_names(const std::string& envelope_json) {
+    std::set<std::string> names;
+    if (envelope_json.empty()) {
+      return names;
+    }
+    nlohmann::json envelope;
+    try {
+      envelope = nlohmann::json::parse(envelope_json);
+    } catch (const nlohmann::json::exception&) {
+      return names; // Unreadable, and decrypt() refuses it too: it names no fields.
+    }
+    if (!envelope.is_object()) {
+      return names;
+    }
+    const auto fields = envelope.find("fields");
+    if (fields == envelope.end() || !fields->is_object()) {
+      return names; // "{}", or an envelope with no field map.
+    }
+    for (const auto& entry : fields->items()) {
+      names.insert(entry.key());
+    }
+    return names;
   }
 
   std::optional<std::string> rewrap(const std::string& envelope_json,

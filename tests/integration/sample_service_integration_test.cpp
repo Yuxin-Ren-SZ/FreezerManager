@@ -268,8 +268,7 @@ namespace fmgr::test {
       // nullopt if the row is gone. #126 is a claim about which column a value
       // lands in, and a response-level assertion can pass while the column holds
       // plaintext, so the column is what the tests read.
-      [[nodiscard]] std::optional<std::string>
-      stored_custom_fields(const std::string& sample_id) {
+      [[nodiscard]] std::optional<std::string> stored_custom_fields(const std::string& sample_id) {
         auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
         const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(sample_id));
         txn->commit();
@@ -1404,7 +1403,8 @@ namespace fmgr::test {
     // whatever it sent into the plaintext column. A supplied PHI value is a PHI write
     // (#71) and is merged per key (#83) — the *column* is the invariant, so the value
     // is stored encrypted and is not disclosed to this caller's own reads.
-    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderDoesNotPushStoredPhiKeyIntoThePlaintextColumn) {
+    TEST_F(SampleServiceTest,
+           UpdateSampleByNonPhiReaderDoesNotPushStoredPhiKeyIntoThePlaintextColumn) {
       const auto admin = login(kAdminEmail, kPassword);
       std::string id;
       ASSERT_TRUE(create_sample(
@@ -1431,6 +1431,45 @@ namespace fmgr::test {
       fmgr::v1::Sample as_member;
       ASSERT_TRUE(get_sample(member, id, &as_member).ok());
       EXPECT_EQ(as_member.custom_fields_json().find("age_years"), std::string::npos);
+    }
+
+    // The consequence of classifying from the envelope for the availability rule,
+    // stated so it is a decision rather than a surprise: a request that *supplies*
+    // a value for a stored-PHI key now needs the envelope open, because the union
+    // makes that a PHI write and a PHI write is merged into the stored envelope
+    // (#83). An unrelated edit still does not (the test above it) — this is the
+    // boundary between the two, and it fails whole rather than writing a plaintext
+    // copy of a key it cannot classify safely.
+    TEST_F(SampleServiceTest, UpdateSampleOfSuppliedStoredPhiKeyWithUndecryptableEnvelopeFails) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = admin,
+                                 .name = "before",
+                                 .custom_fields = R"({"mrn":"MRN-555","age_years":7})"},
+                                &id)
+                      .ok());
+      archive_phi_field("age_years"); // no definition left to classify the key by
+
+      // An envelope naming both keys that this server cannot open: the key names
+      // stay readable, which is exactly what the classification reads.
+      const kms::EnvVarKms unknown_kek{std::vector<std::uint8_t>(32, 0xAB)};
+      const std::string orphan =
+          crypto::encrypt(crypto::PhiFields{{"mrn", "MRN-555"}, {"age_years", 7}}, unknown_kek);
+      put_stored_phi_envelope(id, orphan);
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample(
+          {.token = member, .id = id, .name = "renamed", .custom_fields = R"({"age_years":9})"});
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL) << status.error_message();
+      EXPECT_EQ(status.error_message().find("MRN-555"), std::string::npos);
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_EQ(*envelope, orphan); // untouched, not emptied, not replaced
+      EXPECT_EQ(stored_name(id), "before");
+      const auto plaintext = stored_custom_fields(id);
+      ASSERT_TRUE(plaintext.has_value());
+      EXPECT_EQ(plaintext->find("age_years"), std::string::npos);
     }
 
     // The consequence the issue asks to be chosen rather than stumbled into:
