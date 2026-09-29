@@ -181,14 +181,20 @@ namespace fmgr::server {
                                            storage::IStorageBackend& backend)
       : auth_(auth), backend_(backend), middleware_(auth) {
     using P = core::Permission;
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ListItemTypes", P::ItemTypeDefine);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/GetItemType", P::ItemTypeDefine);
+    // Read/write split for the sample schema (#69): the RPCs a client needs to
+    // *render* a generated sample form are sample.read, matching the sample
+    // screens that consume them and the SampleRead-gated read paths below. A
+    // Member holds sample.read but neither *.define, so gating the catalog read
+    // on the define permission left every generated form empty. The mutating
+    // RPCs keep *.define -- that is what actually guards the catalog.
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ListItemTypes", P::SampleRead);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/GetItemType", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/CreateItemType", P::ItemTypeDefine);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/UpdateItemType", P::ItemTypeDefine);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ArchiveItemType",
                                       P::ItemTypeDefine);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ListCustomFieldDefinitions",
-                                      P::CustomFieldDefine);
+                                      P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/CreateCustomFieldDefinition",
                                       P::CustomFieldDefine);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/UpdateCustomFieldDefinition",
@@ -206,8 +212,9 @@ namespace fmgr::server {
                                                   fmgr::v1::ListItemTypesResponse* resp) {
     try {
       const auto lab_id = core::LabId::parse(req->lab_id());
+      // Reading the catalog is a read: sample.read, not item_type.define (#69).
       const auto sctx =
-          middleware_.authorize(extract_bearer(*ctx), core::Permission::ItemTypeDefine, lab_id);
+          middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
 
       auto query = storage::Query<core::ItemType>::where(
           storage::field<core::ItemType, std::string>(core::ItemType::Field::LabId) ==
@@ -248,8 +255,10 @@ namespace fmgr::server {
       if (!item_type.has_value() || item_type->archived_at.has_value()) {
         return {grpc::StatusCode::NOT_FOUND, "item type not found"};
       }
-      if (!sctx.has_for_lab(item_type->lab_id, core::Permission::ItemTypeDefine)) {
-        throw auth::PermissionDenied("item_type.define required for this lab");
+      // The owning lab is only known after the row is loaded; the read is gated
+      // on sample.read, the permission the generated sample form runs under (#69).
+      if (!sctx.has_for_lab(item_type->lab_id, core::Permission::SampleRead)) {
+        throw auth::PermissionDenied("sample.read required for this lab");
       }
       fill_item_type(resp->mutable_item_type(), *item_type);
       return grpc::Status::OK;
@@ -357,8 +366,11 @@ namespace fmgr::server {
                                                                fmgr::v1::ListCfdsResponse* resp) {
     try {
       const auto lab_id = core::LabId::parse(req->lab_id());
+      // Reading the custom-field catalog is a read: sample.read, not
+      // custom_field.define (#69). Defining fields still needs the define
+      // permission (Create/Update/Archive below).
       const auto sctx =
-          middleware_.authorize(extract_bearer(*ctx), core::Permission::CustomFieldDefine, lab_id);
+          middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
 
       auto query = storage::Query<core::CustomFieldDefinition>::where(
           storage::field<core::CustomFieldDefinition, std::string>(
