@@ -12,6 +12,7 @@ export const labKeys = {
   list: () => [...labKeys.all, 'list'] as const,
   detail: (labId: string) => [...labKeys.all, 'detail', labId] as const,
   itemTypes: (labId: string) => ['lab', labId, 'item-types'] as const,
+  customFieldDefs: (labId: string) => ['lab', labId, 'custom-field-defs'] as const,
 };
 
 /** Every lab the caller can see; the lab picker in G1.3 reads this. */
@@ -36,5 +37,38 @@ export function useItemTypes(labId: string, options: { includeArchived?: boolean
     queryKey: [...labKeys.itemTypes(labId), { includeArchived }] as const,
     queryFn: () => call('item-type/list', { labId, includeArchived }),
     enabled: labId !== '',
+  });
+}
+
+export interface UseCustomFieldDefinitionsOptions {
+  /** Ask for one item type's definitions (lab-scoped ones are not included). */
+  readonly itemTypeId?: string;
+  /**
+   * `custom-field-def/list` requires `custom_field.define`, which a read-only
+   * member does not hold. Pass the permission check here (G-arch 8) so the
+   * request is never made on their behalf; the failure branch still exists for
+   * a server that refuses anyway.
+   */
+  readonly enabled?: boolean;
+}
+
+/**
+ * The lab's custom-field definitions (TODO.md G3.2 uses them as columns).
+ *
+ * Definitions are *metadata*, and the route that serves them is gated on
+ * `custom_field.define` — a narrower permission than the `sample.read` that
+ * opens the sample browser. That is why the caller can switch this off: without
+ * the definitions the screen shows its base columns, which is a complete
+ * screen, not a broken one.
+ */
+export function useCustomFieldDefinitions(
+  labId: string,
+  options: UseCustomFieldDefinitionsOptions = {},
+) {
+  const { itemTypeId, enabled = true } = options;
+  return useQuery({
+    queryKey: [...labKeys.customFieldDefs(labId), { itemTypeId: itemTypeId ?? '' }] as const,
+    queryFn: () => call('custom-field-def/list', { labId, itemTypeId }),
+    enabled: enabled && labId !== '',
   });
 }

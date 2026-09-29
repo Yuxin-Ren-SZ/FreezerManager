@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { call } from '../client';
 import { ApiError } from '../errors';
 import { createDemoLab, fakeApi, type DemoLab } from '../../test/fakeApi';
+import { SampleStatus } from '../../gen/fmgr/v1/sample_pb';
 import { createTestQueryClient, createWrapper } from '../../test/render';
 import { server } from '../../test/server';
 import {
   sampleKeys,
   useCheckoutSample,
   useCreateSample,
+  useExportSamples,
   useSample,
   useSamples,
   useSoftDeleteSample,
@@ -83,6 +86,31 @@ describe('useSamples', () => {
     expect(result.current.hasNextPage).toBe(false);
   });
 
+  it('sends the status and the free-text query, not just the box and item type', async () => {
+    const { result } = renderHook(
+      () => useSamples({ labId: 'lab-demo', status: SampleStatus.CHECKED_OUT, query: 'plasma' }),
+      { wrapper: createWrapper() },
+    );
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+
+    // G0.4's `query` and the status filter are the two the G3.2 screen adds to
+    // the ones G1.2 already sent; the fake applies both, so a hook that dropped
+    // them would return the whole lab here.
+    expect(result.current.data?.pages[0]?.samples.map((sample) => sample.id)).toEqual(['sample-3']);
+  });
+
+  it('gives each filter combination its own cache entry', () => {
+    expect(sampleKeys.list('lab-demo', { status: SampleStatus.ACTIVE })).not.toEqual(
+      sampleKeys.list('lab-demo', {}),
+    );
+    expect(sampleKeys.list('lab-demo', { query: 'serum' })).not.toEqual(
+      sampleKeys.list('lab-demo', { query: 'plasma' }),
+    );
+  });
+
   it('exposes a permission failure as a typed ApiError for the screen to handle', async () => {
     server.use(...fakeApi({ fail: { 'sample/list': 'PERMISSION_DENIED' } }));
 
@@ -103,6 +131,39 @@ describe('useSamples', () => {
     });
 
     expect(result.current.fetchStatus).toBe('idle');
+  });
+});
+
+describe('useExportSamples', () => {
+  it('returns the CSV body the server produced', async () => {
+    const { result } = renderHook(() => useExportSamples('lab-demo'), { wrapper: createWrapper() });
+
+    const response = await act(() => result.current.mutateAsync({}));
+
+    expect(response.csvContent).toContain('Serum A');
+    expect(response.csvContent.split('\n')[0]).toContain('id,lab_id,item_type_id');
+  });
+
+  it('passes include_archived through, which is the only filter the RPC has', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+    await call('sample/delete', { sampleId: 'sample-1' });
+
+    const { result } = renderHook(() => useExportSamples('lab-demo'), { wrapper: createWrapper() });
+    const response = await act(() => result.current.mutateAsync({ includeArchived: true }));
+
+    expect(response.csvContent).toContain('Serum A');
+  });
+
+  it('surfaces a refusal as an ApiError, so the screen can report it', async () => {
+    server.use(...fakeApi({ fail: { 'sample/export': 'PERMISSION_DENIED' } }));
+
+    const { result } = renderHook(() => useExportSamples('lab-demo'), { wrapper: createWrapper() });
+    const error = (await act(() => result.current.mutateAsync({}).catch(
+      (caught: unknown) => caught,
+    ))) as ApiError;
+
+    expect(error.code).toBe('PERMISSION_DENIED');
   });
 });
 

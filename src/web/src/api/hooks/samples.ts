@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { SampleStatus } from '../../gen/fmgr/v1/sample_pb';
 import { call } from '../client';
 import type { RequestInitOf } from '../routes';
 
@@ -20,6 +21,14 @@ export interface SampleListFilters {
   readonly boxId?: string;
   readonly itemTypeId?: string;
   readonly barcode?: string;
+  /** A specific lifecycle state (`G3.2`'s status filter). */
+  readonly status?: SampleStatus;
+  /**
+   * Free text over name and barcode (G0.4, PRD §9). The server requires at
+   * least two bytes and answers `INVALID_ARGUMENT` below that, so callers
+   * filter short input out before it becomes a request (`sampleFilters.ts`).
+   */
+  readonly query?: string;
   readonly includeArchived?: boolean;
 }
 
@@ -57,6 +66,8 @@ export function useSamples({ labId, pageSize, enabled = true, ...filters }: UseS
         boxId: filters.boxId,
         itemTypeId: filters.itemTypeId,
         barcode: filters.barcode,
+        status: filters.status,
+        query: filters.query,
       }),
     initialPageParam: '',
     // `undefined` (not `''`) ends the sequence: TanStack treats any non-null
@@ -122,5 +133,23 @@ export function useCheckoutSample(labId: string) {
   return useMutation({
     mutationFn: (request: RequestInitOf<'sample/checkout'>) => call('sample/checkout', request),
     onSuccess: () => invalidate(),
+  });
+}
+
+/**
+ * The lab's CSV export (TODO.md G3.2, F6.6).
+ *
+ * A mutation rather than a query because it is a user action with a result the
+ * screen consumes once — and, deliberately, one that writes nothing to the
+ * cache: `ExportSamplesCsvRequest` has no filters, so the body is the whole lab
+ * and says nothing about the rows a filtered list is showing.
+ */
+export function useExportSamples(labId: string) {
+  return useMutation({
+    mutationFn: (request: { includeArchived?: boolean } = {}) =>
+      call('sample/export', {
+        labId,
+        includeArchived: request.includeArchived ?? false,
+      }),
   });
 }

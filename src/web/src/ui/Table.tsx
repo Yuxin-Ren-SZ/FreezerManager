@@ -9,7 +9,7 @@ import {
   type RowData,
 } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Checkbox } from './Checkbox';
 import { VisuallyHidden } from './VisuallyHidden';
@@ -39,12 +39,27 @@ export interface TableProps<TData extends RowData> {
   virtualized?: boolean;
   /** Shows the column picker. Off for tables whose shape is fixed. */
   enableColumnVisibility?: boolean;
+  /**
+   * Called when the windowed rows reach the end of `data` — the seam an
+   * infinite list uses to fetch its next page (G3.2). It fires on the
+   * *transition* into "the window covers the end", not on every render, and it
+   * is only meaningful for a virtualized table: a table with virtualization
+   * off has every row on screen by definition.
+   *
+   * It says nothing about whether more rows exist — that is the caller's
+   * `hasNextPage` — so guard the fetch with both that and "not already
+   * fetching".
+   */
+  onEndReached?: () => void;
+  /** Rows from the end at which `onEndReached` fires. */
+  endReachedThreshold?: number;
   className?: string;
 }
 
 const DEFAULT_MAX_HEIGHT = 480;
 const DEFAULT_ROW_HEIGHT = 40;
 const OVERSCAN = 8;
+const DEFAULT_END_REACHED_THRESHOLD = 5;
 
 function columnTitle<TData extends RowData>(column: Column<TableFeatures, TData>): string {
   const header: unknown = column.columnDef.header;
@@ -78,6 +93,8 @@ export function Table<TData extends RowData>({
   rowHeight = DEFAULT_ROW_HEIGHT,
   virtualized = true,
   enableColumnVisibility = true,
+  onEndReached,
+  endReachedThreshold = DEFAULT_END_REACHED_THRESHOLD,
   className,
 }: TableProps<TData>) {
   const { t } = useTranslation('ui');
@@ -118,6 +135,26 @@ export function Table<TData extends RowData>({
     virtualItems && virtualItems.length > 0
       ? Math.max(0, virtualizer.getTotalSize() - (virtualItems.at(-1)?.end ?? 0))
       : 0;
+
+  const lastWindowedIndex = virtualItems?.at(-1)?.index;
+  const atEnd =
+    lastWindowedIndex !== undefined &&
+    rows.length > 0 &&
+    lastWindowedIndex >= rows.length - 1 - endReachedThreshold;
+
+  // The callback is read through a ref updated in an effect declared *before*
+  // the trigger, so `onEndReached` fires on the transition into "at the end"
+  // and not again on every render the caller happens to re-create it on.
+  const onEndReachedRef = useRef(onEndReached);
+  useEffect(() => {
+    onEndReachedRef.current = onEndReached;
+  });
+
+  useEffect(() => {
+    if (atEnd) {
+      onEndReachedRef.current?.();
+    }
+  }, [atEnd]);
 
   return (
     <div className={classNames(styles.root, className)}>
