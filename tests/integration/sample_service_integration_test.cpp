@@ -8,6 +8,9 @@
 #include "core/item_type.h"
 #include "core/role.h"
 #include "core/sample.h"
+#include "crypto/FieldCipher.h"
+#include "kms/EnvVarKms.h"
+#include "kms/KmsFactory.h"
 #include "server/FreezerServer.h"
 #include "storage/AuditTraits.h"
 #include "storage/BoxGeometryTraits.h"
@@ -39,6 +42,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 
@@ -170,6 +174,79 @@ namespace fmgr::test {
           *out_id = resp.sample().id();
         }
         return status;
+      }
+
+      // Edit a lab-1 sample as the given principal, sending only what a client
+      // that read the record would have to send back: identity, name and the
+      // custom-field blob. `custom_fields` is what GetSample returned, verbatim,
+      // so a caller without phi.read can only ever echo non-PHI keys.
+      struct UpdateArgs {
+        std::string token;
+        std::string id;
+        std::string name{"specimen"};
+        std::string custom_fields{"{}"};
+      };
+      grpc::Status update_sample(const UpdateArgs& args,
+                                 fmgr::v1::UpdateSampleResponse* out = nullptr) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, args.token);
+        fmgr::v1::UpdateSampleRequest req;
+        auto* const sample = req.mutable_sample();
+        sample->set_id(args.id);
+        sample->set_lab_id(kLab1);
+        sample->set_item_type_id(kItemType);
+        sample->set_name(args.name);
+        sample->set_custom_fields_json(args.custom_fields);
+        fmgr::v1::UpdateSampleResponse resp;
+        const auto status = sample_stub_->UpdateSample(&ctx, req, &resp);
+        if (out != nullptr) {
+          *out = resp;
+        }
+        return status;
+      }
+
+      // The raw `phi_fields_enc_json` column as stored, or nullopt if the row is
+      // gone. Read straight from storage, so assertions cannot be fooled by the
+      // read path's disclosure rules.
+      [[nodiscard]] std::optional<std::string> stored_phi_envelope(const std::string& sample_id) {
+        auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(sample_id));
+        txn->commit();
+        if (!row.has_value()) {
+          return std::nullopt;
+        }
+        return row->phi_fields_enc_json;
+      }
+
+      // The stored PHI, decrypted with the same dev KEK the server loaded from
+      // FMGR_MASTER_KEK. Empty when the row holds no PHI.
+      [[nodiscard]] crypto::PhiFields stored_phi(const std::string& sample_id) {
+        const auto envelope = stored_phi_envelope(sample_id);
+        if (!envelope.has_value()) {
+          return {};
+        }
+        return crypto::decrypt(*envelope, kms::EnvVarKms::from_base64(kMasterKek));
+      }
+
+      // Read one sample back over gRPC as the given principal.
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      grpc::Status get_sample(const std::string& token, const std::string& sample_id,
+                              fmgr::v1::Sample* out) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::GetSampleRequest req;
+        req.set_sample_id(sample_id);
+        fmgr::v1::GetSampleResponse resp;
+        const auto status = sample_stub_->GetSample(&ctx, req, &resp);
+        if (status.ok() && out != nullptr) {
+          *out = resp.sample();
+        }
+        return status;
+      }
+
+      // The custom fields a response carries, as JSON.
+      [[nodiscard]] static nlohmann::json custom_fields(const fmgr::v1::Sample& sample) {
+        return nlohmann::json::parse(sample.custom_fields_json());
       }
 
       const std::string kAdminEmail{"admin@example.com"};
@@ -588,6 +665,167 @@ namespace fmgr::test {
       ASSERT_TRUE(row.has_value());
       EXPECT_NE(row->phi_fields_enc_json, "{}");
       EXPECT_EQ(row->phi_fields_enc_json.find("MRN-777"), std::string::npos);
+    }
+
+    // A caller without phi.read never receives the PHI fields (GetSample leaves
+    // them out of custom_fields_json), so its update request cannot mention
+    // them. "The caller sent no PHI" must not be read as "the sample has no
+    // PHI": the stored envelope survives such an edit untouched.
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderPreservesStoredPhi) {
+      const auto admin = login(kAdminEmail, kPassword); // SystemAdmin + phi.read
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .name = "before", .custom_fields = R"({"mrn":"MRN-555"})"},
+                        &id)
+              .ok());
+
+      // member holds SampleWrite but not phi.read.
+      const auto member = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(member.empty());
+      fmgr::v1::Sample seen;
+      ASSERT_TRUE(get_sample(member, id, &seen).ok());
+      ASSERT_EQ(seen.name(), "before");
+
+      // Edit an unrelated field, sending back exactly the custom fields the
+      // member was shown — nothing else is possible for this caller.
+      fmgr::v1::UpdateSampleResponse updated;
+      const auto status = update_sample({.token = member,
+                                         .id = id,
+                                         .name = "renamed",
+                                         .custom_fields = seen.custom_fields_json()},
+                                        &updated);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+      EXPECT_EQ(updated.sample().name(), "renamed");
+      EXPECT_EQ(updated.sample().custom_fields_json().find("mrn"), std::string::npos);
+
+      // The row still carries the original envelope, ciphertext intact.
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_NE(*envelope, "{}");
+      EXPECT_EQ(envelope->find("MRN-555"), std::string::npos);
+      EXPECT_EQ(stored_phi(id).at("mrn"), "MRN-555");
+
+      // And the phi.read holder still sees the value after the foreign edit.
+      fmgr::v1::Sample reread;
+      ASSERT_TRUE(get_sample(admin, id, &reread).ok());
+      EXPECT_EQ(custom_fields(reread).value("mrn", ""), "MRN-555");
+      EXPECT_EQ(reread.name(), "renamed");
+    }
+
+    // The phi.read holder's request *is* authoritative for PHI: it saw the
+    // fields, so a new value replaces the stored one.
+    TEST_F(SampleServiceTest, UpdateSampleByPhiReaderReplacesStoredPhi) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      const auto status = update_sample(
+          {.token = admin, .id = id, .name = "edited", .custom_fields = R"({"mrn":"MRN-999"})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      EXPECT_EQ(stored_phi(id).at("mrn"), "MRN-999");
+      fmgr::v1::Sample reread;
+      ASSERT_TRUE(get_sample(admin, id, &reread).ok());
+      EXPECT_EQ(custom_fields(reread).value("mrn", ""), "MRN-999");
+    }
+
+    // Deliberate clearing keeps working: a phi.read holder whose request carries
+    // no PHI key at all clears the envelope, exactly as before this fix.
+    TEST_F(SampleServiceTest, UpdateSampleByPhiReaderWithoutPhiKeysClearsStoredPhi) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+
+      const auto status =
+          update_sample({.token = admin, .id = id, .name = "cleared", .custom_fields = R"({})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_EQ(*envelope, "{}");
+      fmgr::v1::Sample reread;
+      ASSERT_TRUE(get_sample(admin, id, &reread).ok());
+      EXPECT_EQ(reread.custom_fields_json().find("mrn"), std::string::npos);
+    }
+
+    // The complement of the preservation case: a request that *does* carry PHI
+    // keys is honored whether or not the caller holds phi.read, because PHI
+    // write has never required phi.read (see PhiWriteDoesNotRequirePhiRead).
+    // Silently dropping supplied values would be the same class of data loss.
+    TEST_F(SampleServiceTest, UpdateSampleByNonPhiReaderWhoSuppliesPhiStoresIt) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = admin, .name = "no-phi"}, &id).ok());
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample(
+          {.token = member, .id = id, .name = "with-phi", .custom_fields = R"({"mrn":"MRN-777"})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_NE(*envelope, "{}");
+      EXPECT_EQ(envelope->find("MRN-777"), std::string::npos);
+      EXPECT_EQ(stored_phi(id).at("mrn"), "MRN-777");
+    }
+
+    // The same rule covers the misconfigured-server case: with no master KEK
+    // wired, reveal_phi() cannot decrypt for anyone, so even a phi.read holder
+    // has not seen the fields and their request must not clear them either.
+    TEST_F(SampleServiceTest, UpdateSampleWithoutConfiguredKmsPreservesStoredPhi) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+      const auto before = stored_phi_envelope(id);
+      ASSERT_TRUE(before.has_value());
+      ASSERT_NE(*before, "{}");
+
+      ::unsetenv("FMGR_MASTER_KEK"); // NOLINT(concurrency-mt-unsafe)
+      if (kms::make_default_kms() != nullptr) {
+        GTEST_SKIP() << "a master KEK is still discoverable in this environment";
+      }
+
+      // A second listener over the same database and identity provider, this
+      // time with no KMS: the fixture's server keeps the key it loaded at start.
+      server::FreezerServerOptions options;
+      options.listen_address = "localhost:0";
+      server::FreezerServer kmsless(*backend_, *provider_, options);
+      kmsless.build();
+      std::thread kmsless_thread([&kmsless] { kmsless.wait(); });
+      const auto stop_kmsless = [&] {
+        kmsless.shutdown();
+        if (kmsless_thread.joinable()) {
+          kmsless_thread.join();
+        }
+      };
+
+      const auto kmsless_stub = fmgr::v1::SampleService::NewStub(grpc::CreateChannel(
+          "localhost:" + std::to_string(kmsless.bound_port()), grpc::InsecureChannelCredentials()));
+      grpc::ClientContext ctx;
+      set_bearer(ctx, admin);
+      fmgr::v1::UpdateSampleRequest req;
+      auto* const wire = req.mutable_sample();
+      wire->set_id(id);
+      wire->set_lab_id(kLab1);
+      wire->set_item_type_id(kItemType);
+      wire->set_name("edited-without-kms");
+      wire->set_custom_fields_json("{}");
+      fmgr::v1::UpdateSampleResponse resp;
+      const auto status = kmsless_stub->UpdateSample(&ctx, req, &resp);
+      const auto after = stored_phi_envelope(id);
+      stop_kmsless(); // before anything below can abort the test body
+
+      EXPECT_TRUE(status.ok()) << status.error_message();
+      ASSERT_TRUE(after.has_value());
+      EXPECT_NE(*after, "{}");
+      EXPECT_EQ(stored_phi(id).at("mrn"), "MRN-555");
+
+      fmgr::v1::Sample reread;
+      ASSERT_TRUE(get_sample(admin, id, &reread).ok());
+      EXPECT_EQ(custom_fields(reread).value("mrn", ""), "MRN-555");
     }
 
     TEST_F(SampleServiceTest, PhiReadEmitsAuditEventWithKeysOnly) {
