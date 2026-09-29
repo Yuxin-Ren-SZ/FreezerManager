@@ -884,7 +884,7 @@ namespace fmgr::server {
 
       storage::CheckoutCommand command{
           .action = from_proto_action(req->action()),
-          .volume_used = std::move(volume_used),
+          .volume_used = volume_used,
           .reason = req->has_reason() ? std::optional<std::string>{req->reason()} : std::nullopt,
           .event_id = core::CheckoutEventId::parse(generate_uuid_v4()),
           .at = now_timestamp(),
