@@ -78,7 +78,8 @@ export interface LocationPath {
   readonly segments: readonly LocationPathSegment[];
 }
 
-const isArchived = (row: { readonly archivedAt?: unknown }): boolean => row.archivedAt !== undefined;
+const isArchived = (row: { readonly archivedAt?: unknown }): boolean =>
+  row.archivedAt !== undefined;
 
 /** Qt's `containerLabel`: the human label if set, else the name. */
 function containerLabel(container: StorageContainer): string {
@@ -174,8 +175,7 @@ export function buildLayoutTree(data: LabLayoutData): readonly LayoutNode[] {
     .map((freezer) => {
       const root =
         freezer.layoutRootId === '' ? undefined : containersById.get(freezer.layoutRootId);
-      const children =
-        root === undefined || rendered.has(root.id) ? [] : [containerNode(root)];
+      const children = root === undefined || rendered.has(root.id) ? [] : [containerNode(root)];
 
       return {
         id: freezer.id,

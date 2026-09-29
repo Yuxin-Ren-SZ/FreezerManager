@@ -1,4 +1,14 @@
 {
   "title": "Storage layout",
-  "placeholder": "This screen is a placeholder. {{task}} fills it in."
+  "placeholder": "This screen is a placeholder. {{task}} fills it in.",
+  "tree": {
+    "label": "Lab layout",
+    "emptyTitle": "This lab has no freezers yet",
+    "emptyHint": "Freezers, racks, drawers and boxes appear here once the lab's layout has been set up.",
+    "errorTitle": "The layout could not be loaded",
+    "boxCount_one": "{{count}} box",
+    "boxCount_other": "{{count}} boxes",
+    "positionCount_one": "{{count}} position",
+    "positionCount_other": "{{count}} positions"
+  }
 }
