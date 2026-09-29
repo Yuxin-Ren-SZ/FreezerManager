@@ -2,77 +2,25 @@
 import { create } from '@bufbuild/protobuf';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SampleSchema } from '../gen/fmgr/v1/sample_pb';
+import { FakeEventSource, fakeEventSource } from '../test/fakeEventSource';
 import { ApiError } from './errors';
-import { reconnectDelayMs, subscribeSse, type EventSourceLike, type SseFrame } from './sse';
+import { reconnectDelayMs, subscribeSse, type SseFrame } from './sse';
 
 /**
  * `src/api/sse.ts` (TODO.md G1.2). jsdom has no `EventSource` at all, so the
  * module takes a factory — which is also what makes the reconnect and cleanup
- * branches testable without a server.
+ * branches testable without a server. The double is shared with the rest of the
+ * suite (`src/test/fakeEventSource.ts`), so a component test drives the same
+ * object these unit tests do.
  */
 
-type Listener = (event: Event) => void;
-
-class FakeEventSource implements EventSourceLike {
-  static instances: FakeEventSource[] = [];
-
-  readonly url: string;
-  closed = false;
-  private readonly listeners = new Map<string, Set<Listener>>();
-
-  constructor(url: string) {
-    this.url = url;
-    FakeEventSource.instances.push(this);
-  }
-
-  addEventListener(type: string, listener: Listener): void {
-    const set = this.listeners.get(type) ?? new Set<Listener>();
-    set.add(listener);
-    this.listeners.set(type, set);
-  }
-
-  removeEventListener(type: string, listener: Listener): void {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  close(): void {
-    this.closed = true;
-  }
-
-  open(): void {
-    this.dispatch('open', new Event('open'));
-  }
-
-  message(data: string, lastEventId = ''): void {
-    this.dispatch('message', new MessageEvent('message', { data, lastEventId }));
-  }
-
-  serverError(data: string): void {
-    this.dispatch('error', new MessageEvent('error', { data }));
-  }
-
-  transportError(): void {
-    this.dispatch('error', new Event('error'));
-  }
-
-  private dispatch(type: string, event: Event): void {
-    for (const listener of [...(this.listeners.get(type) ?? [])]) {
-      listener(event);
-    }
-  }
-}
-
-const factory = (url: string): EventSourceLike => new FakeEventSource(url);
+const factory = fakeEventSource;
 
 /** The fake the module is currently talking to. */
-const current = (): FakeEventSource => {
-  const source = FakeEventSource.instances.at(-1);
-  if (source === undefined) throw new Error('no EventSource was created');
-  return source;
-};
+const current = (): FakeEventSource => FakeEventSource.current();
 
 beforeEach(() => {
-  FakeEventSource.instances = [];
+  FakeEventSource.reset();
   vi.useFakeTimers();
 });
 
@@ -167,7 +115,7 @@ describe('subscribeSse', () => {
     current().serverError(JSON.stringify({ code: 'PERMISSION_DENIED', message: 'nope' }));
     vi.advanceTimersByTime(60_000);
 
-    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.all()).toHaveLength(1);
     expect(current().closed).toBe(true);
   });
 
@@ -182,10 +130,10 @@ describe('subscribeSse', () => {
 
     current().serverError(JSON.stringify({ code: 'UNAVAILABLE', message: 'restarting' }));
     vi.advanceTimersByTime(99);
-    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.all()).toHaveLength(1);
     vi.advanceTimersByTime(1);
 
-    expect(FakeEventSource.instances).toHaveLength(2);
+    expect(FakeEventSource.all()).toHaveLength(2);
   });
 
   it('reports a malformed frame as ApiError(INTERNAL) and keeps the stream open', () => {
@@ -200,7 +148,7 @@ describe('subscribeSse', () => {
     current().message('{not json');
 
     expect((onError.mock.calls[0]?.[0] as ApiError).code).toBe('INTERNAL');
-    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.all()).toHaveLength(1);
     expect(current().closed).toBe(false);
   });
 
@@ -217,7 +165,7 @@ describe('subscribeSse', () => {
     for (let attempt = 0; attempt < 4; attempt += 1) {
       current().transportError();
       let elapsed = 0;
-      while (FakeEventSource.instances.length === attempt + 1 && elapsed < 10_000) {
+      while (FakeEventSource.all().length === attempt + 1 && elapsed < 10_000) {
         vi.advanceTimersByTime(100);
         elapsed += 100;
       }
@@ -273,7 +221,7 @@ describe('subscribeSse', () => {
     current().transportError();
     vi.advanceTimersByTime(1_000);
 
-    expect(FakeEventSource.instances).toHaveLength(3);
+    expect(FakeEventSource.all()).toHaveLength(3);
   });
 
   it('calls onOpen when the stream connects', () => {
@@ -304,7 +252,7 @@ describe('subscribeSse', () => {
     unsubscribe();
     vi.advanceTimersByTime(10_000);
 
-    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(FakeEventSource.all()).toHaveLength(1);
     expect(current().closed).toBe(true);
     expect(onFrame).not.toHaveBeenCalled();
   });

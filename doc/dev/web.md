@@ -27,7 +27,8 @@ npm ci                 # the only supported install
 ## Scripts
 
 ```sh
-npm run gen            # proto codegen into src/gen/ — a stub until G1.2
+npm run gen            # buf generate over ../../proto into src/gen/ (G1.2)
+npm run check:routes   # cross-check src/api/routes.ts against RestGateway.cc
 npm run dev            # Vite dev server with the /api proxy (see below)
 npm run build          # typecheck + vite build + the JS budget check
 npm run test           # vitest run (unit + component tests)
@@ -35,12 +36,29 @@ npm run lint           # eslint .
 npm run typecheck      # tsc --noEmit for the app and for the build config
 npm run format:check   # prettier --check .
 npm run format         # prettier --write .  (the only auto-fixer)
-npm run check          # gen + lint + typecheck + format:check + test + build
+npm run check          # gen + check:routes + lint + typecheck + format:check + test + build
 ```
 
 `npm run check` is what CI runs; it is the definition of "green" for a web
 change. `gen` runs before `dev`, `build`, `test` and `typecheck` through npm's
 `pre*` hooks, so the generated directory always exists.
+
+**`gen` is a real `buf generate`, not a stub** (G1.2). It runs
+`buf generate ../../proto --clean` with `protoc-gen-es`, both from
+`node_modules/.bin` — no system protoc. It deliberately does not trust buf's
+exit code: after a successful run every `.proto` must have produced a non-empty
+`src/gen/**/_pb.ts`, or `gen` exits 1. Without that check, `build`, `test` and
+`typecheck` all pass with no generated types at all and the mistake only
+surfaces in a feature task much later. The command is skipped when the protos,
+the template and the buf version are unchanged.
+
+**`check:routes` guards the REST surface in both directions.** `src/api/routes.ts`
+is written by hand, one entry per `FMGR_ROUTE(...)` in `src/rest/RestGateway.cc`,
+and `scripts/check-routes.mjs` fails if either side has a route the other does
+not, if a route's RPC or `<noun>/<verb>` key is wrong, or if a `…/watch` stream
+is missing from `src/api/sse.ts`. **A C++ PR that adds a route must add its
+`routes.ts` line in the same PR.** The checker also fails when it can no longer
+parse one of the two sides, so it cannot pass by finding nothing.
 
 **`NODE_ENV` is set by the scripts, not by your shell.** `build` runs
 `NODE_ENV=production vite build`, `test` runs `NODE_ENV=test vitest run` and
@@ -88,7 +106,7 @@ CORS headers. There is no separate API host to point at.
 | `src/app/` | Shell, router, providers, i18n bootstrap | G1.3 |
 | `src/ui/` | Shared primitives + `tokens.css` (design tokens) | G1.3 |
 | `src/features/<feature>/` | One directory per screen, own i18next namespace | G3+ |
-| `src/test/` | MSW server, fakes, `renderWithProviders()` | G1.2 |
+| `src/test/` | MSW server, `fakeApi()`, `fakeEventSource()`, `renderWithProviders()` | G1.2 |
 | `locales/en/<namespace>.json` | Translations; `common` is the default namespace | all |
 | `e2e/` | Playwright against a real `freezerd` | G5.1 |
 
@@ -103,7 +121,11 @@ CORS headers. There is no separate API host to point at.
    strings, enums as names, defaults omitted.
 3. **Transport** (G-arch 5): one wrapper, `src/api/client.ts`, every unary call a
    `POST /api/v1/<noun>/<verb>`; live data over `EventSource` on the `…/watch`
-   routes. Mutations send the CSRF header.
+   routes. Mutations send the CSRF header. Every failure arrives as an
+   `ApiError` — a translated gRPC status, `UNAVAILABLE` for a network failure,
+   `INTERNAL` for a body that is not the expected message — and
+   `onSessionExpired()` fires on `UNAUTHENTICATED` so the query cache can be
+   cleared (rule 5).
 4. **Auth** (G-arch 6): the session is an `HttpOnly` cookie. The token never
    reaches JavaScript — not in memory, not in `localStorage`, not in URLs.
 5. **PHI stays out of the browser** (G-arch 7): no API data in
