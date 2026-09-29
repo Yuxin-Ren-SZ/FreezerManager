@@ -121,7 +121,10 @@ load-bearing at the gate (PRD §12 authorisation, `AGENTS.md` §5).
   All of them are listed with evidence in the `[worker-2] QUESTION` on #60, and
   `AGENTS.md` §5 now says plain that they are review-time obligations. Owning the
   follow-up (aligning the registry, or splitting permission from scope) is the
-  lead's call.
+  lead's call. Re-measured after rebasing onto `f95779d` (which brings #69's
+  item-type read split in): still 39 of 72 through `authorize()` and 33 not;
+  `GetItemType` stays in the hand-checked group and now checks `sample.read`,
+  matching its registration.
 - **`SessionService/RevokeSession` may be a live authorization hole**, not just a
   stale row: `validate_authed` + `LocalAuthProvider::revoke_session` has no
   ownership check, so any authenticated caller can revoke any session id while the
