@@ -6,7 +6,8 @@ import { Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import samplesCopy from '../../../locales/en/samples.json';
 import type { CurrentUser } from '../../app/session';
-import { STUB_CURRENT_USER, STUB_CURRENT_USER_ALL_PERMISSIONS } from '../../app/stubSession';
+import { ALL_PERMISSIONS } from '../../app/permissions';
+import { currentUserWith } from '../../test/session';
 import type { GrpcCode } from '../../api/errors';
 import type { RpcName } from '../../api/routes';
 import { SampleSchema, SampleStatus } from '../../gen/fmgr/v1/sample_pb';
@@ -32,8 +33,8 @@ import { SampleBrowserScreen } from './SampleBrowserScreen';
 const LAB_ID = 'lab-demo';
 const SAMPLES_PATH = `/labs/${LAB_ID}/samples`;
 
-/** The stub session, whose global permission list covers the whole catalog. */
-const ADMIN: CurrentUser = STUB_CURRENT_USER_ALL_PERMISSIONS;
+/** Every permission the catalog has, in the demo lab. */
+const ADMIN: CurrentUser = currentUserWith(ALL_PERMISSIONS, { labId: LAB_ID });
 
 /**
  * A ReadOnly member: `sample.read` and nothing else.
@@ -42,15 +43,7 @@ const ADMIN: CurrentUser = STUB_CURRENT_USER_ALL_PERMISSIONS;
  * `custom_field.define`, so this is the user whose column chooser *does* have
  * the custom columns. It is the case the screen was silently breaking for.
  */
-const READ_ONLY: CurrentUser = {
-  ...STUB_CURRENT_USER,
-  permissions: ['sample.read'],
-  labs: STUB_CURRENT_USER.labs.map((lab) => ({
-    ...lab,
-    labId: LAB_ID,
-    permissions: ['sample.read'],
-  })),
-};
+const READ_ONLY: CurrentUser = currentUserWith(['sample.read'], { labId: LAB_ID });
 
 /**
  * Holds the define permission but not `sample.read`.
@@ -60,15 +53,9 @@ const READ_ONLY: CurrentUser = {
  * open the definitions. No built-in role produces this pair — the point is that
  * the screen must not open the catalog for a caller the server would refuse.
  */
-const WITHOUT_SAMPLE_READ: CurrentUser = {
-  ...STUB_CURRENT_USER,
-  permissions: ['custom_field.define'],
-  labs: STUB_CURRENT_USER.labs.map((lab) => ({
-    ...lab,
-    labId: LAB_ID,
-    permissions: ['custom_field.define'],
-  })),
-};
+const WITHOUT_SAMPLE_READ: CurrentUser = currentUserWith(['custom_field.define'], {
+  labId: LAB_ID,
+});
 
 /**
  * The router's current URL, so a test can assert on what it would share.

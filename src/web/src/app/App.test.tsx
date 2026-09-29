@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppErrorBoundary, ErrorBoundary } from './ErrorBoundary';
 import { AppProviders } from './providers';
@@ -10,7 +11,13 @@ import { ALL_PERMISSIONS, type PermissionKey } from './permissions';
 import { ROUTES, type AppRoute } from './route-map';
 import type { CurrentUser, LabMembership } from './session';
 import { renderApp } from './testing';
-import { fakeApi } from '../test/fakeApi';
+import {
+  DEMO_MFA_EMAIL,
+  DEMO_PASSWORD,
+  DEMO_TOTP_CODE,
+  DEMO_USER_EMAIL,
+  fakeApi,
+} from '../test/fakeApi';
 import { server } from '../test/server';
 import appShellCss from './shell/AppShell.module.css?raw';
 import sideNavCss from './shell/SideNav.module.css?raw';
@@ -44,8 +51,10 @@ import sharesCopy from '../../locales/en/shares.json';
  * to `PlaceholderScreen`.
  */
 const EXPECTED_SCREEN: Record<string, { title: string; task: string | null }> = {
-  login: { title: authCopy.title, task: 'G2.1' },
-  'login-mfa': { title: authCopy.title, task: 'G2.1' },
+  // G2.1 replaced both auth placeholders: the sign-in form and the second-factor
+  // screen own their headings now, which is why their `task` is null here.
+  login: { title: authCopy.title, task: null },
+  'login-mfa': { title: authCopy.mfa.title, task: null },
   home: { title: homeCopy.title, task: 'G4.2' },
   lookup: { title: lookupCopy.title, task: null },
   samples: { title: samplesCopy.title, task: null },
@@ -104,9 +113,7 @@ function user(
     userId: 'u-1',
     email: 'ada@example.invalid',
     displayName: 'Ada Lovelace',
-    sessionId: 's-1',
-    mfaComplete: true,
-    expiresAt: '4102444800000000',
+    isSystemAdmin: false,
     permissions: [],
     labs,
   };
@@ -143,7 +150,14 @@ describe('app shell', () => {
     async (id, route) => {
       const expected = EXPECTED_SCREEN[id];
 
-      renderApp({ path: concretePath(route), user: user(ALL_PERMISSIONS) });
+      // The two `bare` routes are the signed-*out* half of the app — `/login`
+      // exists precisely for a visitor with no session, and the route loop used
+      // to render it with a signed-in user, which the real screen answers with a
+      // redirect. Every other route is visited signed in.
+      renderApp({
+        path: concretePath(route),
+        user: route.layout === 'bare' ? null : user(ALL_PERMISSIONS),
+      });
 
       // Asserting that *a* level-1 heading exists would not catch a screen
       // wired to the wrong path: a copy-paste in the route map — `/labs/:labId/
@@ -474,5 +488,124 @@ describe('placeholder screens', () => {
       await screen.findByRole('heading', { level: 1, name: sharesCopy.title }),
     ).toBeInTheDocument();
     expect(screen.getByText(/G3\.13/)).toBeInTheDocument();
+  });
+});
+
+describe('session lifecycle (G2.1)', () => {
+  it('returns to the sign-in screen when a request says the session is over', async () => {
+    // The demo-breaking state: signed in, then the session ends server-side. The
+    // audit saw the SPA answer this with twenty 500s and an error banner on a
+    // screen the user cannot load, instead of a login prompt.
+    const { router } = renderApp({ path: '/', user: user(ALL_PERMISSIONS) });
+    const nav = await screen.findByRole('navigation', { name: 'Main navigation' });
+
+    server.use(...fakeApi({ fail: { 'sample/list': 'UNAUTHENTICATED' } }));
+    await userEvent.click(within(nav).getByRole('link', { name: 'Samples' }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/login');
+    });
+    // The interrupted address travels with the redirect, so signing in again
+    // lands where the user was going rather than on the dashboard.
+    expect(router.state.location.search).toBe(
+      `?next=${encodeURIComponent(`/labs/${LAB_ID}/samples`)}`,
+    );
+    expect(
+      await screen.findByRole('heading', { level: 1, name: authCopy.title }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Something went wrong' })).not.toBeInTheDocument();
+  });
+
+  it('sends a half-finished login to the second-factor screen, not the sign-in form', async () => {
+    // `AuthService.Login` sets the session cookie *before* the TOTP code is
+    // entered (#62), so this is a real, resumable state: `auth/whoami` refuses
+    // the session and the SPA must offer the code prompt rather than log the
+    // user out.
+    const { router } = renderApp({ path: `/labs/${LAB_ID}/samples`, mfaPending: true });
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/login/mfa');
+    });
+    expect(router.state.location.search).toBe(
+      `?next=${encodeURIComponent(`/labs/${LAB_ID}/samples`)}`,
+    );
+    expect(
+      await screen.findByRole('heading', { level: 1, name: authCopy.mfa.title }),
+    ).toBeInTheDocument();
+  });
+
+  it('revokes the session on the server when signing out', async () => {
+    let logoutCalls = 0;
+    server.use(
+      http.post('/api/v1/auth/browser/logout', () => {
+        logoutCalls += 1;
+        return HttpResponse.json({});
+      }),
+    );
+    const { router } = renderApp({ path: '/', user: user(ALL_PERMISSIONS) });
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Ada Lovelace' }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: 'Sign out' }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/login');
+    });
+    // Clearing the local session is not signing out: the cookie is the session
+    // (G-arch 6), so the server has to revoke it too or the next request still
+    // carries authority the user gave up.
+    expect(logoutCalls).toBe(1);
+  });
+
+  it('signs in and continues to the interrupted screen', async () => {
+    let signedIn = false;
+    const { router } = renderApp({
+      path: `/login?next=${encodeURIComponent(`/labs/${LAB_ID}/samples`)}`,
+      loadSession: () => Promise.resolve(signedIn ? user(ALL_PERMISSIONS) : null),
+    });
+
+    await userEvent.type(
+      await screen.findByLabelText(authCopy.email, { exact: false }),
+      DEMO_USER_EMAIL,
+    );
+    await userEvent.type(screen.getByLabelText(authCopy.password, { exact: false }), DEMO_PASSWORD);
+    signedIn = true;
+    await userEvent.click(screen.getByRole('button', { name: authCopy.submit }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe(`/labs/${LAB_ID}/samples`);
+    });
+    expect(
+      await screen.findByRole('heading', { level: 1, name: samplesCopy.title }),
+    ).toBeInTheDocument();
+  });
+
+  it('walks a login with a second factor through the code prompt', async () => {
+    let mfaComplete = false;
+    const { router } = renderApp({
+      path: '/login',
+      loadSession: () => Promise.resolve(mfaComplete ? user(ALL_PERMISSIONS) : null),
+    });
+
+    await userEvent.type(
+      await screen.findByLabelText(authCopy.email, { exact: false }),
+      DEMO_MFA_EMAIL,
+    );
+    await userEvent.type(screen.getByLabelText(authCopy.password, { exact: false }), DEMO_PASSWORD);
+    await userEvent.click(screen.getByRole('button', { name: authCopy.submit }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/login/mfa');
+    });
+
+    mfaComplete = true;
+    await userEvent.type(
+      await screen.findByLabelText(authCopy.mfa.code, { exact: false }),
+      DEMO_TOTP_CODE,
+    );
+    await userEvent.click(screen.getByRole('button', { name: authCopy.mfa.submit }));
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/');
+    });
   });
 });

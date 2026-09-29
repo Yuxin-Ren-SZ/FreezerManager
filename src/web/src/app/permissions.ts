@@ -36,7 +36,7 @@ export type PermissionKey =
   | 'session.revoke'
   | 'lab.provision';
 
-/** Everything `WhoAmI` can report, for tests and for the dev stub. */
+/** Everything the permission catalog holds, for tests and for `WhoAmI` mapping. */
 export const ALL_PERMISSIONS: readonly PermissionKey[] = [
   'sample.read',
   'sample.write',
@@ -61,3 +61,18 @@ export const ALL_PERMISSIONS: readonly PermissionKey[] = [
   'session.revoke',
   'lab.provision',
 ];
+
+const PERMISSION_KEY_SET: ReadonlySet<string> = new Set<string>(ALL_PERMISSIONS);
+
+/**
+ * Whether a permission `WhoAmI` reported is one this bundle knows about.
+ *
+ * The wire carries strings, and a newer server may hold permissions this build
+ * has never heard of. Dropping them is deliberate: `PermissionKey` is what makes
+ * a typo in a route guard a compile error, so widening it to `string` to accept
+ * anything would trade that away. G-arch 8 — this list only decides what the UI
+ * offers; the server decides what is allowed.
+ */
+export function isPermissionKey(value: string): value is PermissionKey {
+  return PERMISSION_KEY_SET.has(value);
+}

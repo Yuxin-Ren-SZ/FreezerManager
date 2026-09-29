@@ -12,14 +12,16 @@ import styles from './guards.module.css';
 /**
  * Whether there is a session at all.
  *
- * The three states are kept apart on purpose:
+ * The four states are kept apart on purpose:
  *
  * - `loading` shows a spinner rather than the login page, or every reload would
  *   flash the sign-in form before `auth/whoami` answered.
  * - `error` (the request itself failed) shows a retry, *not* a redirect: a
  *   dropped connection must not look like being signed out.
  * - `unauthenticated` redirects to `/login?next=…`, and `next` is the path plus
- *   query string G2.1 will validate as same-origin before using it.
+ *   query string G2.1 validates as same-origin before using it.
+ * - `mfa-pending` redirects to `/login/mfa?next=…`, which resumes the session
+ *   the cookie already holds (#62) instead of starting the login over.
  */
 export function RequireSession({ children }: { children: ReactNode }) {
   const { t } = useTranslation('shell');
@@ -49,6 +51,11 @@ export function RequireSession({ children }: { children: ReactNode }) {
   if (status === 'unauthenticated') {
     const next = `${location.pathname}${location.search}`;
     return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />;
+  }
+
+  if (status === 'mfa-pending') {
+    const next = `${location.pathname}${location.search}`;
+    return <Navigate to={`/login/mfa?next=${encodeURIComponent(next)}`} replace />;
   }
 
   return children;

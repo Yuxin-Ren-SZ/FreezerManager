@@ -3,8 +3,8 @@ import { render } from '@testing-library/react';
 import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { AppProviders } from './providers';
 import { createAppRoutes } from './router';
+import { MfaPendingError, type CurrentUser, type SessionLoader } from './session';
 import type { ConnectionState } from './connection';
-import type { CurrentUser } from './session';
 
 export interface RenderAppOptions {
   /** Starting URL; defaults to the dashboard. */
@@ -13,6 +13,18 @@ export interface RenderAppOptions {
   user?: CurrentUser | null;
   /** Make the session loader reject instead of resolving. */
   sessionError?: Error;
+  /**
+   * Make the loader answer the way `auth/whoami` does for a session whose
+   * second factor is still outstanding: the `UNAUTHENTICATED` refusal that is a
+   * resumable state, not a sign-out.
+   */
+  mfaPending?: boolean;
+  /**
+   * The loader itself, for a test that needs it to answer differently over
+   * time — a sign-in or an MFA submission is exactly that, since the session it
+   * establishes is what the *next* `auth/whoami` reports.
+   */
+  loadSession?: SessionLoader;
   connection?: ConnectionState;
 }
 
@@ -28,15 +40,27 @@ export interface RenderAppOptions {
  * is the router's test entry point.
  */
 export function renderApp(options: RenderAppOptions = {}) {
-  const { path = '/', user = null, sessionError, connection = 'live' } = options;
+  const {
+    path = '/',
+    user = null,
+    sessionError,
+    mfaPending = false,
+    loadSession: loadSessionOverride,
+    connection = 'live',
+  } = options;
 
   const router = createMemoryRouter(createAppRoutes(), { initialEntries: [path] });
 
+  // One loader identity for the whole mount: a fresh function on every render
+  // would restart `SessionProvider`'s effect on every commit.
+  const loadSession: SessionLoader =
+    loadSessionOverride ??
+    (mfaPending
+      ? () => Promise.reject(new MfaPendingError())
+      : () => (sessionError ? Promise.reject(sessionError) : Promise.resolve(user)));
+
   const result = render(
-    <AppProviders
-      connectionStatus={connection}
-      loadSession={() => (sessionError ? Promise.reject(sessionError) : Promise.resolve(user))}
-    >
+    <AppProviders connectionStatus={connection} loadSession={loadSession}>
       <RouterProvider router={router} />
     </AppProviders>,
   );

@@ -6,6 +6,7 @@ import { ConnectionProvider, type ConnectionState } from './connection';
 import { LabProvider } from './labs';
 import { createQueryClient } from './queryClient';
 import { SessionProvider, type SessionLoader } from './session';
+import { SessionExpiryWatcher } from './sessionExpiry';
 import { ToastProvider } from '../ui';
 
 export interface AppProvidersProps {
@@ -39,6 +40,8 @@ export function AppProviders({
   return (
     <QueryClientProvider client={queryClient}>
       <SessionProvider loadSession={loadSession}>
+        {/* Inside the session, because "the session ended" is what it writes. */}
+        <SessionExpiryWatcher />
         <LabProvider>
           <ConnectionProvider status={connectionStatus}>
             <ToastProvider>{children}</ToastProvider>
