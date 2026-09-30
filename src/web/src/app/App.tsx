@@ -13,9 +13,9 @@ import type { SessionLoader } from './session';
  * `AuthService.WhoAmI` does not exist yet — not in `proto/fmgr/v1/auth.proto`,
  * not in `RestGateway.cc`, not in `src/api/routes.ts` — so the SPA has no way to
  * learn who is signed in, and the honest answer is "nobody". That keeps the app
- * on the real sign-in screen rather than making one up: the deleted
- * `stubSession.ts` invented a user called `Stub User` in a lab id of `lab-1`,
- * which is not a UUID, so every lab-scoped screen answered
+ * on the real sign-in screen rather than making one up: the hardcoded session
+ * G2.1 deleted invented a user called `Stub User` in a lab id of `lab-1`, which
+ * is not a UUID, so every lab-scoped screen answered
  * `internal server error: invalid UUID length` and the SPA could never be
  * logged into at all.
  *
