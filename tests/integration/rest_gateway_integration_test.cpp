@@ -40,6 +40,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -402,6 +403,14 @@ namespace fmgr::test {
         return {};
       }
       return res.body.value("session_token", std::string{});
+    }
+
+    // Whether a JSON array of strings contains `value`. Used for the permission
+    // key lists, whose order is not part of the contract.
+    [[nodiscard]] bool json_has_string(const nlohmann::json& array, const std::string& value) {
+      return std::ranges::any_of(array, [&value](const nlohmann::json& entry) {
+        return entry.is_string() && entry.get<std::string>() == value;
+      });
     }
 
     // ---- Tests ----
@@ -837,6 +846,121 @@ namespace fmgr::test {
       const auto res = post_with("/api/v1/lab/get", req.dump(), session.headers());
       EXPECT_EQ(res.status, 200) << res.raw;
       EXPECT_EQ(res.body["lab"].value("id", std::string{}), env->kLabId);
+    }
+
+    // ---- AuthService.WhoAmI (#140) ----
+    //
+    // The route the SPA's session loader calls after a reload, when the only
+    // credential it has is the HttpOnly cookie it cannot read. It answers with
+    // the caller's own identity and memberships — in snake_case, like every other
+    // route (JsonProtoMapping) — and with no credential material at all.
+
+    TEST(RestGatewayWhoAmI, AnswersWithTheCallersIdentityAndMemberships) {
+      auto* env = RestGatewayEnv::instance;
+      const auto member = cached_browser_session(env->kMemberEmail, env->kPassword);
+      ASSERT_EQ(member.login.status, 200) << member.login.raw;
+
+      const auto res = post_with("/api/v1/auth/whoami", "{}", member.headers());
+      ASSERT_EQ(res.status, 200) << res.raw;
+      ASSERT_TRUE(res.body.is_object()) << res.raw;
+
+      // The identity Login already reported for this session: the SPA can load a
+      // session from a cookie alone.
+      EXPECT_EQ(res.body.value("email", std::string{}), env->kMemberEmail);
+      EXPECT_EQ(res.body.value("user_id", std::string{}),
+                member.login.body.value("user_id", std::string{}));
+      EXPECT_EQ(res.body.value("display_name", std::string{}), env->kMemberEmail);
+      // protobuf's JSON mapping omits default-valued fields, so `false` arrives as
+      // an absent key rather than as `false`.
+      EXPECT_FALSE(res.body.value("is_system_admin", false));
+
+      ASSERT_TRUE(res.body.contains("labs")) << res.raw;
+      ASSERT_EQ(res.body["labs"].size(), 1U) << res.raw;
+      const auto& lab = res.body["labs"][0];
+      EXPECT_EQ(lab.value("lab_id", std::string{}), env->kLabId);
+      EXPECT_EQ(lab.value("lab_name", std::string{}), "Test Lab");
+      EXPECT_EQ(lab.value("role_name", std::string{}), "Member");
+      EXPECT_FALSE(lab.value("role_id", std::string{}).empty());
+      EXPECT_FALSE(lab.value("is_phi_enabled", false));
+      EXPECT_TRUE(json_has_string(lab["permissions"], "sample.read"))
+          << "the SPA gates navigation on these keys: " << res.raw;
+      EXPECT_FALSE(json_has_string(lab["permissions"], "user.invite"))
+          << "a Member is not a lab administrator: " << res.raw;
+    }
+
+    // #140's "no secret material" criterion at the layer the browser sees. The
+    // login response deliberately carries a session id; the WhoAmI body must not
+    // carry it back, and must never echo the cookie's token.
+    TEST(RestGatewayWhoAmI, BodyCarriesNoSessionOrTokenMaterial) {
+      auto* env = RestGatewayEnv::instance;
+      const auto member = cached_browser_session(env->kMemberEmail, env->kPassword);
+      ASSERT_EQ(member.login.status, 200) << member.login.raw;
+
+      const auto res = post_with("/api/v1/auth/whoami", "{}", member.headers());
+      ASSERT_EQ(res.status, 200) << res.raw;
+
+      EXPECT_FALSE(res.body.contains("session_id")) << res.raw;
+      EXPECT_FALSE(res.body.contains("session_token")) << res.raw;
+      EXPECT_EQ(res.raw.find(member.session), std::string::npos)
+          << "the cookie's token must not be echoed into a body JavaScript can read";
+      const auto session_id = member.login.body.value("session_id", std::string{});
+      ASSERT_FALSE(session_id.empty());
+      EXPECT_EQ(res.raw.find(session_id), std::string::npos)
+          << "the session id must not be echoed either";
+    }
+
+    TEST(RestGatewayWhoAmI, WithoutACredentialIsUnauthorized) {
+      const auto res = post("/api/v1/auth/whoami", "{}");
+      EXPECT_EQ(res.status, 401) << res.raw;
+      EXPECT_EQ(res.body.value("code", std::string{}), "UNAUTHENTICATED");
+    }
+
+    // The route is a POST, so it sits behind the same CSRF gate as every other
+    // cookie-authenticated call — it is not accidentally exempt for being a read.
+    TEST(RestGatewayWhoAmI, CookieCallWithoutTheCsrfHeaderIsForbidden) {
+      auto* env = RestGatewayEnv::instance;
+      const auto member = cached_browser_session(env->kMemberEmail, env->kPassword);
+      ASSERT_EQ(member.login.status, 200) << member.login.raw;
+
+      const auto res = post_with("/api/v1/auth/whoami", "{}", member.cookie_only());
+      EXPECT_EQ(res.status, 403) << res.raw;
+      EXPECT_EQ(res.body.value("code", std::string{}), "PERMISSION_DENIED");
+    }
+
+    // A half-finished login must not be able to enumerate an identity, and the
+    // SPA must still be able to tell that state from "signed out" — the refusal
+    // carries its own envelope code, not just a sentence (#137's requirement).
+    TEST(RestGatewayWhoAmI, PendingMfaSessionIsRefusedWithItsOwnCode) {
+      auto* env = RestGatewayEnv::instance;
+      const auto session = browser_login(env->kMfaEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200) << session.login.raw;
+      ASSERT_TRUE(session.login.body.value("mfa_required", false)) << session.login.raw;
+      ASSERT_FALSE(session.session.empty());
+
+      const auto res = post_with("/api/v1/auth/whoami", "{}", session.headers());
+      ASSERT_EQ(res.status, 401) << res.raw;
+      EXPECT_EQ(res.body.value("code", std::string{}), "MFA_REQUIRED") << res.raw;
+      // No identity, not even an id: the refusal is empty.
+      EXPECT_FALSE(res.body.contains("user_id")) << res.raw;
+      EXPECT_FALSE(res.body.contains("email")) << res.raw;
+      EXPECT_FALSE(res.body.contains("labs")) << res.raw;
+    }
+
+    // The endpoint cannot be asked to describe someone else: the request message
+    // has no such field, and the gateway rejects unknown fields (fail-closed), so
+    // the attempt is a 400 rather than a silent success. This is the REST half of
+    // the plant; the gRPC half asserts the descriptor has no fields at all.
+    TEST(RestGatewayWhoAmI, CannotBeAskedToDescribeAnotherUser) {
+      auto* env = RestGatewayEnv::instance;
+      const auto member = cached_browser_session(env->kMemberEmail, env->kPassword);
+      ASSERT_EQ(member.login.status, 200) << member.login.raw;
+
+      const nlohmann::json req{{"user_id", "10000000-0000-0000-0000-000000000001"}};
+      const auto res = post_with("/api/v1/auth/whoami", req.dump(), member.headers());
+      EXPECT_EQ(res.status, 400) << res.raw;
+      EXPECT_EQ(res.body.value("code", std::string{}), "INVALID_ARGUMENT");
+      EXPECT_EQ(res.raw.find("admin@example.com"), std::string::npos)
+          << "the refusal must not describe the user that was asked for";
     }
 
     // The cookie is a credential, not a privilege: the same RBAC gate answers.

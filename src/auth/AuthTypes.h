@@ -124,6 +124,11 @@ namespace fmgr::auth {
     using AuthError::AuthError;
   };
 
+  // The wire form of MfaRequired — the status-message marker and the REST
+  // envelope code — lives in rpc/ErrorCodes.h. It is not here because this header
+  // is on the include path of every gRPC service and would drag core/ids.h (and
+  // libsodium) into the ones that only need the error hierarchy.
+
   // Session or API token has passed its configured expiry time.
   struct TokenExpired : AuthError {
     using AuthError::AuthError;

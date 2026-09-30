@@ -31,6 +31,13 @@ service AuthService {
 
   // Revoke an API token by id (must belong to the caller, or SystemAdmin).
   rpc RevokeApiToken(RevokeApiTokenRequest) returns (RevokeApiTokenResponse);
+
+  // Describe the caller: their own identity, the labs they are a member of with
+  // the role they hold in each, and the permission keys the server enforces.
+  // Self-management, like ListApiTokens: it takes no subject argument, so it
+  // cannot be made to describe anyone else, and it returns no secret — no token,
+  // no session id, no password or TOTP state.
+  rpc WhoAmI(WhoAmIRequest) returns (WhoAmIResponse);
 }
 
 // ---- Messages ----
@@ -105,3 +112,37 @@ message RevokeApiTokenRequest {
 }
 
 message RevokeApiTokenResponse {}
+
+// Deliberately empty: the caller is named by their credential, never by the
+// request, so there is no field that could describe another user (#140).
+message WhoAmIRequest {}
+
+// One lab the caller belongs to, with the role they hold there. `permissions`
+// is the set the server enforces for that lab — derived from the role, so it is
+// what the SPA may gate its navigation on. `role_id` and `role_name` are empty,
+// and `permissions` is empty, while an invitation is pending and no role has
+// been assigned yet.
+message WhoAmIMembership {
+  string lab_id = 1;
+  string lab_name = 2;
+  string role_id = 3;
+  string role_name = 4;
+  // Permission keys from src/core/permissions.h, e.g. "sample.read".
+  repeated string permissions = 5;
+  string scope_filters_json = 6;
+  bool is_phi_enabled = 7;
+}
+
+// Carries no credential material: no session token, no session id, no token
+// prefix, no password or TOTP state (AGENTS.md §5, audit C-11).
+message WhoAmIResponse {
+  string user_id = 1;
+  string email = 2;
+  string display_name = 3;
+  // The deployment-wide administrator marker (a global lab.provision grant),
+  // the same predicate the audit and share services gate on.
+  bool is_system_admin = 4;
+  // Deployment-wide permission keys; a lab-scoped grant appears under that lab.
+  repeated string permissions = 5;
+  repeated WhoAmIMembership labs = 6;
+}

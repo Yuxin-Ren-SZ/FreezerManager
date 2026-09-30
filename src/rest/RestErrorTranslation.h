@@ -6,10 +6,13 @@
 #ifndef FMGR_REST_RESTERRORTRANSLATION_H
 #define FMGR_REST_RESTERRORTRANSLATION_H
 
+#include "rpc/ErrorCodes.h"
+
 #include <grpcpp/support/status.h>
 #include <nlohmann/json.hpp>
 
 #include <string>
+#include <string_view>
 
 namespace fmgr::rest {
 
@@ -102,6 +105,18 @@ namespace fmgr::rest {
         {"code", grpc_code_name(code)},
         {"message", status.error_message()},
     };
+    // #140: the one case where the gRPC code does not identify the state. A
+    // pending-MFA session and an expired one are both UNAUTHENTICATED — on
+    // purpose, so no RPC changes its authentication semantics — but a client that
+    // must resume the TOTP prompt rather than dead-end needs to tell them apart,
+    // and the SPA can read the envelope only. A sentence is not an interface, so
+    // the state gets its own code here, derived from the same constant the server
+    // builds the message with (rpc::k_mfa_required_marker) rather than from a
+    // second copy of the string. The HTTP status stays 401.
+    if (code == grpc::StatusCode::UNAUTHENTICATED &&
+        std::string_view(status.error_message()).starts_with(rpc::k_mfa_required_marker)) {
+      body["code"] = rpc::k_mfa_required_code;
+    }
     return HttpError{.status_code = http_status_for(code), .body = body.dump()};
   }
 

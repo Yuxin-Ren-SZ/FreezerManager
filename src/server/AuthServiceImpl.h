@@ -42,6 +42,12 @@ namespace fmgr::server {
                                 const fmgr::v1::RevokeApiTokenRequest* req,
                                 fmgr::v1::RevokeApiTokenResponse* resp) override;
 
+    // The caller's own identity, memberships, roles and effective permission
+    // keys (#140). Takes no subject: the bearer token is the only thing that
+    // decides who is described.
+    grpc::Status WhoAmI(grpc::ServerContext* ctx, const fmgr::v1::WhoAmIRequest* req,
+                        fmgr::v1::WhoAmIResponse* resp) override;
+
   private:
     auth::IAuthProvider& auth_;
     storage::IStorageBackend& backend_;
