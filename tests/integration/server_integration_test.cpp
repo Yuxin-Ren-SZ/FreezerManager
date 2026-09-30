@@ -658,13 +658,16 @@ namespace fmgr::test {
       ASSERT_TRUE(other_status.ok()) << other_status.error_message();
       EXPECT_EQ(other_resp.user_id(), kTwoLabUserId);
       EXPECT_EQ(other_resp.email(), kTwoLabEmail);
-      EXPECT_NE(lab_entry(other_resp, kSecondLabId), nullptr);
       EXPECT_NE(other_resp.user_id(), admin_resp.user_id());
       // Both accounts are members of kLabId, so it appears in both answers — with
       // each caller's own role in it, never the other's.
-      EXPECT_NE(lab_entry(other_resp, kLabId), nullptr);
-      EXPECT_EQ(lab_entry(other_resp, kLabId)->role_name(), "LabAdmin");
-      EXPECT_EQ(lab_entry(admin_resp, kLabId)->role_name(), "SystemAdmin");
+      const auto* other_first = lab_entry(other_resp, kLabId);
+      ASSERT_NE(other_first, nullptr);
+      EXPECT_EQ(other_first->role_name(), "LabAdmin");
+      EXPECT_NE(lab_entry(other_resp, kSecondLabId), nullptr);
+      const auto* admin_first = lab_entry(admin_resp, kLabId);
+      ASSERT_NE(admin_first, nullptr);
+      EXPECT_EQ(admin_first->role_name(), "SystemAdmin");
     }
 
     // The identity is the credential's, so there is nothing to ask *about*: the
