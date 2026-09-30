@@ -40,6 +40,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -407,12 +408,9 @@ namespace fmgr::test {
     // Whether a JSON array of strings contains `value`. Used for the permission
     // key lists, whose order is not part of the contract.
     [[nodiscard]] bool json_has_string(const nlohmann::json& array, const std::string& value) {
-      for (const auto& entry : array) {
-        if (entry.is_string() && entry.get<std::string>() == value) {
-          return true;
-        }
-      }
-      return false;
+      return std::ranges::any_of(array, [&value](const nlohmann::json& entry) {
+        return entry.is_string() && entry.get<std::string>() == value;
+      });
     }
 
     // ---- Tests ----

@@ -689,6 +689,7 @@ namespace fmgr::test {
     TEST_F(ServerIntegrationTest, WhoAmIResponseCarriesNoCredentialOrSessionMaterial) {
       const auto field_names = [](const google::protobuf::Descriptor& message) {
         std::vector<std::string> names;
+        names.reserve(static_cast<std::size_t>(message.field_count()));
         for (int index = 0; index < message.field_count(); ++index) {
           names.emplace_back(message.field(index)->name());
         }
