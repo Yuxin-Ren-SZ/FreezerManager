@@ -191,6 +191,25 @@ and is unaffected.
 If you granted `session.revoke` to a custom lab role, either remove the grant or
 move the role's holders to a system-administrator role, which still holds it.
 
+### A stored PHI key is classified from the envelope too (`#126`, PR #136)
+
+**A write that supplies a value for a key the sample's PHI envelope already holds
+now requires that envelope to be openable**; where it cannot be opened — the
+wrapping KEK is missing, the ciphertext fails authentication — the request fails
+with `INTERNAL` and writes nothing, instead of succeeding as it did before.
+
+Two things make that narrower than it reads. The key no longer has to be covered
+by a *current* custom-field definition: the stored envelope is evidence that it is
+PHI, so a definition archived after the value was stored can no longer route the
+value to the plaintext `custom_fields_json` column, where every `sample.read`
+holder could read it. And an **unrelated** edit of the same sample — one that
+supplies no such key — still succeeds, leaving the unopenable envelope untouched
+for `freezerctl key rotate` to recover.
+
+The same rule now applies in two corners that previously wrote plaintext: a lab
+whose PHI mode was switched off after values were stored, and a server running
+without a master key. Both refuse the request rather than disclose.
+
 ### Additive, for completeness
 
 - `POST /api/v1/auth/login` (the legacy route) now returns `user_id` in its

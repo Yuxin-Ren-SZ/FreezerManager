@@ -318,6 +318,9 @@ namespace fmgr::server {
     // is the "could have named" set — the definitions alone, deliberately not
     // widened to the keys the stored envelope holds: a key the envelope holds as
     // PHI but no definition covers is still not one this request could name.
+    // (`prepared.phi_keys_for_classification` *is* widened, because it answers the
+    // different question of which column a request key goes to — #126. Widening
+    // this loop's set instead would stop the carry-over below and bring #87 back.)
     //
     // Used only by UpdateSample. It lives here rather than inline because
     // UpdateSample is where five PHI fixes have landed and the loop below is what
@@ -736,8 +739,18 @@ namespace fmgr::server {
       existing->item_type_id = item_type_id;
       existing->name = wire.name();
       apply_optional_wire_fields(wire, *existing);
-      const auto prepared = storage::prepare_custom_fields(*txn, lab_id, item_type_id,
-                                                           wire.custom_fields_json(), kms_);
+      // The stored envelope's field *names*, read in the clear and without the KMS
+      // (FieldCipher seals values, not keys). They are the second half of the
+      // classification union in prepare_custom_fields: a key this row already holds
+      // as PHI must not become an ordinary field — and land in the plaintext column
+      // — just because its definition was archived or un-flagged (#126). Read here
+      // rather than inside prepare_custom_fields because this is where the stored
+      // row is, and read as *names* rather than by decrypting so an unrelated edit
+      // of an envelope nobody can open keeps succeeding (see
+      // UpdateSampleByNonPhiReaderWithUndecryptableEnvelopeKeepsEnvelopeOnUnrelatedEdit).
+      const auto stored_phi_keys = crypto::envelope_field_names(existing->phi_fields_enc_json);
+      const auto prepared = storage::prepare_custom_fields(
+          *txn, lab_id, item_type_id, wire.custom_fields_json(), kms_, stored_phi_keys);
       existing->custom_fields_json = prepared.custom_fields_json;
       // "The caller did not supply PHI" is not "the sample has no PHI", and "the
       // caller supplied a PHI value" is not "the caller saw the rest".

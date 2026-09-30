@@ -264,6 +264,20 @@ namespace fmgr::test {
         return row->phi_fields_enc_json;
       }
 
+      // The raw `custom_fields_json` column — the *plaintext* one — as stored, or
+      // nullopt if the row is gone. #126 is a claim about which column a value
+      // lands in, and a response-level assertion can pass while the column holds
+      // plaintext, so the column is what the tests read.
+      [[nodiscard]] std::optional<std::string> stored_custom_fields(const std::string& sample_id) {
+        auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(sample_id));
+        txn->commit();
+        if (!row.has_value()) {
+          return std::nullopt;
+        }
+        return row->custom_fields_json;
+      }
+
       // The stored PHI, decrypted with the same dev KEK the server loaded from
       // FMGR_MASTER_KEK. Empty when the row holds no PHI.
       [[nodiscard]] crypto::PhiFields stored_phi(const std::string& sample_id) {
@@ -323,6 +337,27 @@ namespace fmgr::test {
                     core::CustomFieldDefinition::Field::Key) == key));
         ASSERT_EQ(defs.size(), 1U) << key;
         txn->repo<core::CustomFieldDefinition>().soft_delete(defs.front().id, direct_write_ctx());
+        txn->commit();
+      }
+
+      // Clear or set a definition's is_phi flag. An admin editing the definition
+      // is the other way a key can stop being PHI by definition while the envelope
+      // still holds it as PHI, and — unlike archiving — it leaves the key defined,
+      // so the write path still renders a control for it. Planted straight through
+      // storage: the point is the state the server has to handle, not the route an
+      // admin would take. (ItemTypeServiceImpl refuses the is_phi *on* direction
+      // for an indexed field, which is an L10 concern this test does not touch.)
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+      void set_phi_flag(const std::string& key, bool is_phi) {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        const auto defs = txn->repo<core::CustomFieldDefinition>().query(
+            storage::Query<core::CustomFieldDefinition>::where(
+                storage::field<core::CustomFieldDefinition, std::string>(
+                    core::CustomFieldDefinition::Field::Key) == key));
+        ASSERT_EQ(defs.size(), 1U) << key;
+        auto definition = defs.front();
+        definition.is_phi = is_phi;
+        txn->repo<core::CustomFieldDefinition>().update(definition, direct_write_ctx());
         txn->commit();
       }
 
@@ -1297,6 +1332,195 @@ namespace fmgr::test {
       EXPECT_FALSE(after.contains("mrn"));
       ASSERT_TRUE(after.contains("age_years"));
       EXPECT_EQ(after.at("age_years"), 7);
+    }
+
+    // #126, the exposure direction of the key #87 protects. #87 stopped a request
+    // from *dropping* a stored PHI key whose definition was archived; the value was
+    // still classified against the current definitions alone, so the same key was an
+    // ordinary field for the column split: it landed in `custom_fields_json` — the
+    // plaintext column — and fill_sample handed it to every sample.read holder,
+    // including one without phi.read.
+    //
+    // The client that reaches this is an ordinary one. reveal_phi merges decrypted
+    // PHI into custom_fields_json *without* marking which keys are PHI, so a client
+    // cannot tell `age_years` from an ordinary field, and echoing the response back
+    // is what the edit form does (SampleForm.tsx). Once the definition is archived,
+    // its own payload reclassifies the key as plaintext.
+    //
+    // Asserted on the *stored column*: a response-level check could pass while the
+    // column holds the value in the clear.
+    TEST_F(SampleServiceTest, UpdateSampleDoesNotMoveArchivedPhiKeyIntoThePlaintextColumn) {
+      const auto admin = login(kAdminEmail, kPassword); // SystemAdmin + phi.read
+      std::string id;
+      ASSERT_TRUE(create_sample(
+                      {.token = admin, .custom_fields = R"({"mrn":"MRN-555","age_years":7})"}, &id)
+                      .ok());
+      archive_phi_field("age_years");
+      EXPECT_FALSE(defined_phi_keys().contains("age_years"));
+
+      // What the client holds: the response, with nothing marking which of these
+      // keys is PHI.
+      fmgr::v1::Sample echoed;
+      ASSERT_TRUE(get_sample(admin, id, &echoed).ok());
+      const auto echoed_fields = custom_fields(echoed);
+      ASSERT_TRUE(echoed_fields.contains("mrn"));
+      ASSERT_TRUE(echoed_fields.contains("age_years")); // indistinguishable from mrn here
+
+      const auto status = update_sample({.token = admin,
+                                         .id = id,
+                                         .name = "echoed back",
+                                         .custom_fields = echoed.custom_fields_json()});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      // The column, not the response.
+      const auto plaintext = stored_custom_fields(id);
+      ASSERT_TRUE(plaintext.has_value());
+      const auto stored_fields = nlohmann::json::parse(*plaintext);
+      EXPECT_FALSE(stored_fields.contains("age_years"));
+      EXPECT_FALSE(stored_fields.contains("mrn"));
+      EXPECT_EQ(plaintext->find("MRN-555"), std::string::npos);
+
+      // Still PHI: the envelope keeps it, a phi.read holder still sees it, and a
+      // sample.read holder without phi.read still does not.
+      const auto after = stored_phi(id);
+      EXPECT_EQ(after.at("age_years"), 7);
+      EXPECT_EQ(after.at("mrn"), "MRN-555");
+
+      fmgr::v1::Sample as_reader;
+      ASSERT_TRUE(get_sample(admin, id, &as_reader).ok());
+      EXPECT_EQ(custom_fields(as_reader).value("age_years", 0), 7);
+
+      const auto member = login(kMemberEmail, kPassword); // SampleRead, no phi.read
+      fmgr::v1::Sample as_member;
+      ASSERT_TRUE(get_sample(member, id, &as_member).ok());
+      EXPECT_EQ(as_member.custom_fields_json().find("age_years"), std::string::npos);
+      EXPECT_EQ(as_member.custom_fields_json().find("MRN-555"), std::string::npos);
+    }
+
+    // The same rule for a caller that never held phi.read, which is where the
+    // classification is easiest to get wrong: this caller cannot have seen the
+    // stored value, but it can name the key, and naming it used to be enough to put
+    // whatever it sent into the plaintext column. A supplied PHI value is a PHI write
+    // (#71) and is merged per key (#83) — the *column* is the invariant, so the value
+    // is stored encrypted and is not disclosed to this caller's own reads.
+    TEST_F(SampleServiceTest,
+           UpdateSampleByNonPhiReaderDoesNotPushStoredPhiKeyIntoThePlaintextColumn) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample(
+                      {.token = admin, .custom_fields = R"({"mrn":"MRN-555","age_years":7})"}, &id)
+                      .ok());
+      archive_phi_field("age_years");
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample({.token = member,
+                                         .id = id,
+                                         .name = "member edit",
+                                         .custom_fields = R"({"age_years":9})"});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto plaintext = stored_custom_fields(id);
+      ASSERT_TRUE(plaintext.has_value());
+      EXPECT_FALSE(nlohmann::json::parse(*plaintext).contains("age_years"));
+      EXPECT_EQ(plaintext->find("age_years"), std::string::npos);
+
+      // Encrypted, not dropped: silently discarding a supplied value is the data
+      // loss #83 fixed, and the reader still sees a value afterwards.
+      EXPECT_EQ(stored_phi(id).at("age_years"), 9);
+
+      fmgr::v1::Sample as_member;
+      ASSERT_TRUE(get_sample(member, id, &as_member).ok());
+      EXPECT_EQ(as_member.custom_fields_json().find("age_years"), std::string::npos);
+    }
+
+    // The consequence of classifying from the envelope for the availability rule,
+    // stated so it is a decision rather than a surprise: a request that *supplies*
+    // a value for a stored-PHI key now needs the envelope open, because the union
+    // makes that a PHI write and a PHI write is merged into the stored envelope
+    // (#83). An unrelated edit still does not (the test above it) — this is the
+    // boundary between the two, and it fails whole rather than writing a plaintext
+    // copy of a key it cannot classify safely.
+    TEST_F(SampleServiceTest, UpdateSampleOfSuppliedStoredPhiKeyWithUndecryptableEnvelopeFails) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = admin,
+                                 .name = "before",
+                                 .custom_fields = R"({"mrn":"MRN-555","age_years":7})"},
+                                &id)
+                      .ok());
+      archive_phi_field("age_years"); // no definition left to classify the key by
+
+      // An envelope naming both keys that this server cannot open: the key names
+      // stay readable, which is exactly what the classification reads.
+      const kms::EnvVarKms unknown_kek{std::vector<std::uint8_t>(32, 0xAB)};
+      const std::string orphan =
+          crypto::encrypt(crypto::PhiFields{{"mrn", "MRN-555"}, {"age_years", 7}}, unknown_kek);
+      put_stored_phi_envelope(id, orphan);
+
+      const auto member = login(kMemberEmail, kPassword);
+      const auto status = update_sample(
+          {.token = member, .id = id, .name = "renamed", .custom_fields = R"({"age_years":9})"});
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL) << status.error_message();
+      EXPECT_EQ(status.error_message().find("MRN-555"), std::string::npos);
+
+      const auto envelope = stored_phi_envelope(id);
+      ASSERT_TRUE(envelope.has_value());
+      EXPECT_EQ(*envelope, orphan); // untouched, not emptied, not replaced
+      EXPECT_EQ(stored_name(id), "before");
+      const auto plaintext = stored_custom_fields(id);
+      ASSERT_TRUE(plaintext.has_value());
+      EXPECT_EQ(plaintext->find("age_years"), std::string::npos);
+    }
+
+    // The consequence the issue asks to be chosen rather than stumbled into:
+    // clearing a definition's is_phi flag no longer declassifies the values already
+    // stored under that key. The stored envelope is direct evidence the key is PHI,
+    // and declassifying protected data should be an explicit, audited operation — a
+    // migration or a rotation — not a side effect of editing a definition.
+    TEST_F(SampleServiceTest, UpdateSampleDoesNotDeclassifyStoredPhiWhenDefinitionDropsIsPhi) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"mrn":"MRN-555"})"}, &id).ok());
+      set_phi_flag("mrn", false); // an admin edited the definition, not the data
+
+      // reveal_phi does not consult the definitions, so the client is still shown
+      // the value and sends it back.
+      fmgr::v1::Sample echoed;
+      ASSERT_TRUE(get_sample(admin, id, &echoed).ok());
+      ASSERT_TRUE(custom_fields(echoed).contains("mrn"));
+
+      const auto status = update_sample({.token = admin,
+                                         .id = id,
+                                         .name = "after definition edit",
+                                         .custom_fields = echoed.custom_fields_json()});
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      const auto plaintext = stored_custom_fields(id);
+      ASSERT_TRUE(plaintext.has_value());
+      EXPECT_FALSE(nlohmann::json::parse(*plaintext).contains("mrn"));
+      EXPECT_EQ(plaintext->find("MRN-555"), std::string::npos);
+      EXPECT_EQ(stored_phi(id).at("mrn"), "MRN-555"); // still stored as PHI
+
+      const auto member = login(kMemberEmail, kPassword);
+      fmgr::v1::Sample as_member;
+      ASSERT_TRUE(get_sample(member, id, &as_member).ok());
+      EXPECT_EQ(as_member.custom_fields_json().find("MRN-555"), std::string::npos);
+    }
+
+    // The other side of the union, so the fix cannot pass by calling every key PHI:
+    // a key no definition ever covered and no envelope holds is an ordinary field and
+    // still travels in the plaintext column.
+    TEST_F(SampleServiceTest, UpdateSampleKeepsUndefinedNonPhiKeyInThePlaintextColumn) {
+      const auto admin = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = admin, .custom_fields = R"({"note":"SYNTH-NOTE"})"}, &id).ok());
+
+      const auto plaintext = stored_custom_fields(id);
+      ASSERT_TRUE(plaintext.has_value());
+      EXPECT_EQ(nlohmann::json::parse(*plaintext).value("note", ""), "SYNTH-NOTE");
+      EXPECT_EQ(stored_phi_envelope(id).value_or("missing"), "{}");
     }
 
     // The complement of the preservation case: a request that *does* carry PHI

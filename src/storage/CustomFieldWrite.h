@@ -62,7 +62,28 @@ namespace fmgr::storage {
     // a key the caller could have sent back — and may therefore clear — from one
     // whose definition is archived and which the request cannot express at all
     // (#87). The keys are metadata, never values.
+    //
+    // Definitions only, deliberately, even though the set below holds more. This
+    // one answers "which stored keys could this request have named", and the stored
+    // envelope cannot answer that: a key the envelope holds as PHI but no definition
+    // covers has no control that could send it back, so it must stay outside this
+    // set — UpdateSample's preservation loop carries over exactly the stored keys
+    // this set does *not* contain. Widening this set to the union below would make
+    // such a key "a key the request could have named", the loop would stop carrying
+    // it, and #87's silent loss would return through the path meant to close #126.
     std::set<std::string> current_phi_keys;
+    // Which *column* a request key goes to: the union of the keys a current
+    // definition marks is_phi and the keys the stored envelope already holds. Two
+    // sets rather than one because the two questions have different answers (#126):
+    // the stored envelope is direct evidence that a key is PHI, and it does not stop
+    // being evidence when an admin archives the definition or clears its is_phi
+    // flag. Classifying from the definitions alone put such a key in
+    // custom_fields_json — the plaintext column — where every sample.read holder
+    // could read it, including one without phi.read, and where the client cannot
+    // even tell it apart from an ordinary field (reveal_phi merges decrypted PHI
+    // into custom_fields_json without marking which keys are PHI). Merging these two
+    // sets into one is the change that must not happen; see current_phi_keys above.
+    std::set<std::string> phi_keys_for_classification;
   };
 
   // The "no master key is wired" message, and the keys that need one. Naming the
@@ -87,10 +108,18 @@ namespace fmgr::storage {
   // mode disabled. Throws when PHI is supplied but no KMS is configured: storing
   // it unencrypted is the disclosure this function exists to prevent, so the
   // caller must fail instead.
+  //
+  // `stored_phi_keys` is the set of field *names* the row's existing envelope holds,
+  // as crypto::envelope_field_names() reads them — metadata, no values, no KMS, no
+  // decryption. It matters only when the row already has an envelope, which is why
+  // the insert-only paths (CreateSample, both CSV imports) leave it empty by
+  // default: a row that does not exist yet has no stored envelope whose keys could
+  // be evidence. UpdateSample passes it, and that is the only caller that must.
   [[nodiscard]] inline PreparedCustomFields
   prepare_custom_fields(ITransaction& txn, const core::LabId& lab_id,
                         const core::ItemTypeId& item_type_id, const std::string& incoming_json,
-                        const kms::IKmsProvider* kms) {
+                        const kms::IKmsProvider* kms,
+                        const std::set<std::string>& stored_phi_keys = {}) {
     const auto definitions = resolve_custom_field_defs(txn, lab_id, item_type_id);
     const auto incoming =
         incoming_json.empty() ? nlohmann::json::object() : nlohmann::json::parse(incoming_json);
@@ -112,11 +141,18 @@ namespace fmgr::storage {
 
     PreparedCustomFields prepared;
     prepared.current_phi_keys = phi_keys;
+    // The union the split below runs on: what the definitions say, plus what the
+    // stored envelope already holds. The two sets above carry the reasoning; the
+    // short version is that the envelope is evidence too, so a key it holds as PHI
+    // never falls through to the plaintext column (#126) — while the preservation
+    // loop keeps using current_phi_keys, definitions alone (#87).
+    prepared.phi_keys_for_classification = phi_keys;
+    prepared.phi_keys_for_classification.insert(stored_phi_keys.begin(), stored_phi_keys.end());
     nlohmann::json non_phi = nlohmann::json::object();
     crypto::PhiFields phi;
     if (incoming.is_object()) {
       for (const auto& [key, value] : incoming.items()) {
-        if (phi_keys.contains(key)) {
+        if (prepared.phi_keys_for_classification.contains(key)) {
           phi.emplace(key, value);
           if (!is_blank_phi_value(value)) {
             prepared.has_non_blank_phi_value = true;
