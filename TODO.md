@@ -765,16 +765,29 @@ real `freezerd` safely until G0.1–G0.3 land.
       SPA can't read the cookie, so after a reload it needs the server to say
       who is signed in, which labs they belong to and what they may do. No
       such RPC exists; the Qt client infers it from `ListLabs`.
-  - Returns `user_id`, `email`, `display_name`, `session_id`,
-    `mfa_complete`, the session's `expires_at`, the caller's global
-    permission keys, and one entry per lab membership: `{lab_id, lab_name,
-    role_id, role_name, permission keys, scope_filters_json,
-    is_phi_enabled}`. Permission keys are the `src/core/permissions.h`
-    strings (`sample.read`, …).
-  - It requires a session but no permission, like `ListLabs`. While MFA is
-    pending it succeeds with `mfa_complete=false` and no memberships, so the
-    SPA can resume at the TOTP step. Register it in the `AuthMiddleware`
-    registry. It is read-only, so it writes no audit row.
+  - Returns `user_id`, `email`, `display_name`, `is_system_admin`, the
+    caller's global permission keys, and one entry per lab membership:
+    `{lab_id, lab_name, role_id, role_name, permission keys,
+    scope_filters_json, is_phi_enabled}`. Permission keys are the
+    `src/core/permissions.h` strings (`sample.read`, …).
+  - It requires a session but no permission, like `ListLabs`. Register it in
+    the `AuthMiddleware` registry with the **`token_and_mfa` credential
+    rule** — it is an `auth/*` self-management RPC, not a permissionless one
+    (#119). It is read-only, so it writes no audit row.
+  - **While MFA is pending the call is refused**, not answered: HTTP 401 with
+    `{"code":"MFA_REQUIRED"}` (#140, #146). *This replaces an earlier plan for
+    it to succeed with `mfa_complete=false`.* A half-finished login should be
+    able to enumerate **nothing**, and the SPA's original goal — resuming at
+    the TOTP step — is met by the machine-readable code rather than by a
+    success response, so nothing was lost by refusing. The discriminator is
+    deliberately **not** the gRPC status: that stays `UNAUTHENTICATED` so Qt
+    and CLI clients are unaffected.
+  - **`session_id` and `expires_at` are not returned.** `session_id` has no
+    consumer, and emitting an identifier a client does not need is a needless
+    handle. `expires_at` **does not exist to return**: `core::Session` has no
+    expiry column and the auth layer enforces no TTL, so the original plan
+    assumed a lifetime the implementation has never had — that gap is filed
+    separately rather than papered over here.
   - **Files:** `proto/fmgr/v1/auth.proto`,
     `src/server/AuthServiceImpl.{h,cc}`, `src/rest/RestGateway.cc` (one
     route), `src/web/src/api/routes.ts` once G1.2 exists, integration tests.
