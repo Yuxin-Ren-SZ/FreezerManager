@@ -6,7 +6,7 @@ import {
   type JsonValue,
   type MessageInitShape,
 } from '@bufbuild/protobuf';
-import { ApiError, isGrpcCode } from './errors';
+import { ApiError, isGrpcCode, MFA_REQUIRED_ENVELOPE_CODE } from './errors';
 import {
   apiRoutes,
   type ApiRoutes,
@@ -148,9 +148,23 @@ function fail(error: ApiError): never {
 function toApiError(json: unknown, response: Response, fallbackRequestId: string): ApiError {
   const requestId = response.headers.get(REQUEST_ID_HEADER_NAME) ?? fallbackRequestId;
   const body = json as { code?: unknown; message?: unknown } | null;
+  const message = typeof body?.message === 'string' ? body.message : '';
+
+  // `MFA_REQUIRED` is not a gRPC status: the gateway substitutes the envelope
+  // code for the one state its gRPC code cannot identify (#140). The HTTP status
+  // stays 401 and the *gRPC* code stays `UNAUTHENTICATED`, so every branch below
+  // keeps working unchanged; what the SPA gains is the ability to tell "enter
+  // your TOTP code" from "your session is gone" — see `isMfaRequired()`.
+  if (body?.code === MFA_REQUIRED_ENVELOPE_CODE) {
+    return new ApiError('UNAUTHENTICATED', message, {
+      httpStatus: response.status,
+      requestId,
+      mfaRequired: true,
+    });
+  }
 
   if (isGrpcCode(body?.code)) {
-    return new ApiError(body.code, typeof body.message === 'string' ? body.message : '', {
+    return new ApiError(body.code, message, {
       httpStatus: response.status,
       requestId,
     });

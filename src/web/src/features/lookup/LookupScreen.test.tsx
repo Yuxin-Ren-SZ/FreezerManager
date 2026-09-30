@@ -9,7 +9,8 @@ import type { GrpcCode } from '../../api/errors';
 import type { RpcName } from '../../api/routes';
 import { LabProvider } from '../../app/labs';
 import type { CurrentUser } from '../../app/session';
-import { STUB_CURRENT_USER, STUB_CURRENT_USER_ALL_PERMISSIONS } from '../../app/stubSession';
+import { ALL_PERMISSIONS } from '../../app/permissions';
+import { currentUserWith } from '../../test/session';
 import { SampleSchema } from '../../gen/fmgr/v1/sample_pb';
 import { createDemoLab, fakeApi, type DemoLab } from '../../test/fakeApi';
 import { renderWithProviders } from '../../test/render';
@@ -43,28 +44,13 @@ const BARCODE_TERM = 'DEMO-0001';
 const BARCODE_NAME = 'Serum A';
 
 /** Every permission the catalog has, in the demo lab. */
-const ADMIN: CurrentUser = {
-  ...STUB_CURRENT_USER_ALL_PERMISSIONS,
-  labs: STUB_CURRENT_USER_ALL_PERMISSIONS.labs.map((lab) => ({ ...lab, labId: LAB_ID })),
-};
+const ADMIN: CurrentUser = currentUserWith(ALL_PERMISSIONS, { labId: LAB_ID });
 
 /** `sample.read` only: can look up, cannot check anything out. */
-const READ_ONLY: CurrentUser = {
-  ...STUB_CURRENT_USER,
-  permissions: [],
-  labs: STUB_CURRENT_USER.labs.map((lab) => ({
-    ...lab,
-    labId: LAB_ID,
-    permissions: ['sample.read'],
-  })),
-};
+const READ_ONLY: CurrentUser = currentUserWith(['sample.read'], { labId: LAB_ID });
 
 /** Signed in with a read grant but no lab membership: nothing to look up in. */
-const NO_LAB: CurrentUser = {
-  ...STUB_CURRENT_USER,
-  permissions: ['sample.read'],
-  labs: [],
-};
+const NO_LAB: CurrentUser = currentUserWith([], { labs: [], globalPermissions: ['sample.read'] });
 
 /** The `sample/list` requests this file caused, cloned before MSW consumed them. */
 let listRequests: Request[] = [];

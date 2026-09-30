@@ -6,7 +6,16 @@ import { apiRoutes, type RpcName } from '../api/routes';
 import { subscribeSse } from '../api/sse';
 import { SampleSchema, SampleStatus, CheckoutAction } from '../gen/fmgr/v1/sample_pb';
 import { FakeEventSource, fakeEventSource } from './fakeEventSource';
-import { createDemoLab, fakeApi, HTTP_STATUS_FOR, seedSamples } from './fakeApi';
+import {
+  createDemoLab,
+  DEMO_MFA_EMAIL,
+  DEMO_PASSWORD,
+  DEMO_TOTP_CODE,
+  DEMO_USER_EMAIL,
+  fakeApi,
+  HTTP_STATUS_FOR,
+  seedSamples,
+} from './fakeApi';
 import { server } from './server';
 
 /**
@@ -25,6 +34,20 @@ const callAny = (rpc: RpcName, body: unknown) =>
 /** Statuses an implemented handler can answer with when sent an empty body. */
 const HANDLED_STATUSES = [200, 400, 404, 412];
 
+/**
+ * The routes whose *implemented* answer to an empty body is a refusal rather
+ * than a payload: `Login` refuses an unknown email and `SubmitMfa` refuses a
+ * code with no half-finished login behind it, both `UNAUTHENTICATED` — exactly
+ * as `freezerd` does. Listed per route rather than widening the blanket list,
+ * which would let any other route start answering 401 unnoticed.
+ */
+const EMPTY_BODY_STATUS: Partial<Record<RpcName, number>> = {
+  'auth/login': 401,
+  'auth/browser/login': 401,
+  'auth/submit-mfa': 401,
+  'auth/browser/submit-mfa': 401,
+};
+
 describe('fakeApi coverage', () => {
   it('answers every route in routes.ts (an unhandled route would throw in MSW)', async () => {
     server.use(...fakeApi());
@@ -36,6 +59,11 @@ describe('fakeApi coverage', () => {
         headers: { 'Content-Type': 'application/json' },
         body: '{}',
       });
+      const pinned = EMPTY_BODY_STATUS[rpc];
+      if (pinned !== undefined) {
+        expect(response.status, `${rpc} (${apiRoutes[rpc].path})`).toBe(pinned);
+        continue;
+      }
       expect(HANDLED_STATUSES, `${rpc} (${apiRoutes[rpc].path})`).toContain(response.status);
     }
   });
@@ -572,5 +600,122 @@ describe('fakeApi SSE', () => {
     expect(HTTP_STATUS_FOR.UNIMPLEMENTED).toBe(501);
     expect(HTTP_STATUS_FOR.DEADLINE_EXCEEDED).toBe(504);
     expect(SampleStatus.ACTIVE).toBe(1);
+  });
+});
+
+describe('fakeApi browser session (G2.1)', () => {
+  it('accepts the seeded password and answers without a token for the browser route', async () => {
+    server.use(...fakeApi());
+
+    const response = await call('auth/browser/login', {
+      email: DEMO_USER_EMAIL,
+      password: DEMO_PASSWORD,
+    });
+
+    expect(response.userId).toBe('user-demo');
+    expect(response.mfaRequired).toBe(false);
+    // The gateway moves the token into an HttpOnly cookie and omits it from the
+    // body (`RestGateway.cc`'s LoginResponse overload). A fake that echoed it
+    // would let the SPA read a credential G0.1 deliberately withholds.
+    expect(response.sessionToken).toBe('');
+  });
+
+  it('refuses a wrong password and an unknown email the same way', async () => {
+    server.use(...fakeApi());
+
+    for (const credentials of [
+      { email: DEMO_USER_EMAIL, password: 'not-the-password' },
+      { email: 'nobody@example.test', password: DEMO_PASSWORD },
+    ]) {
+      const error = (await call('auth/browser/login', credentials).catch(
+        (caught: unknown) => caught,
+      )) as ApiError;
+
+      expect(error.code).toBe('UNAUTHENTICATED');
+      expect(error.httpStatus).toBe(401);
+    }
+  });
+
+  it('answers mfa_required for an account with a second factor', async () => {
+    server.use(...fakeApi());
+
+    const response = await call('auth/browser/login', {
+      email: DEMO_MFA_EMAIL,
+      password: DEMO_PASSWORD,
+    });
+
+    expect(response.mfaRequired).toBe(true);
+  });
+
+  it('completes a pending login with the seeded code and refuses a wrong one', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('auth/browser/login', { email: DEMO_MFA_EMAIL, password: DEMO_PASSWORD });
+    expect(lab.auth.pendingMfaUserId).toBe('user-mfa');
+
+    const wrong = (await call('auth/browser/submit-mfa', { totpCode: '000000' }).catch(
+      (caught: unknown) => caught,
+    )) as ApiError;
+    expect(wrong.code).toBe('UNAUTHENTICATED');
+    // Still outstanding: a refused code does not consume the login.
+    expect(lab.auth.pendingMfaUserId).toBe('user-mfa');
+
+    await call('auth/browser/submit-mfa', { totpCode: DEMO_TOTP_CODE });
+    expect(lab.auth.pendingMfaUserId).toBeNull();
+  });
+
+  it('refuses a code with no pending login behind it', async () => {
+    server.use(...fakeApi());
+
+    const error = (await call('auth/browser/submit-mfa', { totpCode: DEMO_TOTP_CODE }).catch(
+      (caught: unknown) => caught,
+    )) as ApiError;
+
+    expect(error.code).toBe('UNAUTHENTICATED');
+  });
+
+  it('refuses every other route while the second factor is outstanding, and lets logout through', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('auth/browser/login', { email: DEMO_MFA_EMAIL, password: DEMO_PASSWORD });
+
+    // `AuthMiddleware`'s TokenAndMfa rule: a half-finished login cannot read lab
+    // data, and the refusal carries the `mfa_required: ` prefix the SPA keys on.
+    const refused = (await call('sample/list', { labId: 'lab-demo' }).catch(
+      (caught: unknown) => caught,
+    )) as ApiError;
+    expect(refused.code).toBe('UNAUTHENTICATED');
+    expect(refused.mfaRequired).toBe(true);
+    expect(refused.message).toContain('mfa_required:');
+
+    // ...but it can give the credential up (#62), which is what makes an
+    // abandoned login recoverable rather than a dead end.
+    await call('auth/browser/logout', {});
+    expect(lab.auth.pendingMfaUserId).toBeNull();
+    await expect(call('sample/list', { labId: 'lab-demo' })).resolves.toBeDefined();
+  });
+
+  it('signs out a completed session without touching the other routes', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('auth/browser/login', { email: DEMO_USER_EMAIL, password: DEMO_PASSWORD });
+    await call('auth/browser/logout', {});
+
+    expect(lab.auth.pendingMfaUserId).toBeNull();
+  });
+
+  it('rejects a login body that is not the request message, as the gateway does', async () => {
+    server.use(...fakeApi());
+
+    const response = await fetch('/api/v1/auth/browser/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emailAddress: DEMO_USER_EMAIL, password: DEMO_PASSWORD }),
+    });
+
+    expect(response.status).toBe(400);
   });
 });
