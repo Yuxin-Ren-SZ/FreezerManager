@@ -70,6 +70,15 @@ esac
 DEMO_TOTP_SECRET="JBSWY3DPEHPK3PXP"
 DEMO_ADMIN_EMAIL="admin@freezer.local"
 
+# The demo ONLY PHI master key (base64 of 32 bytes). The seeded CSF `diagnosis`
+# value is encrypted under it (#143), so the seed and freezerd must use the same
+# key or the admin's detail page shows no PHI and the phi.read gate looks broken.
+# Fixed on purpose, like the TOTP secret: a demo must survive --reset, restarts
+# and a fresh shell. It encrypts synthetic data in out/demo/ only — never use it
+# for real PHI, and generate a real key (openssl rand -base64 32) outside the
+# demo. Exported before the migration/seed/server steps so all three inherit it.
+export FMGR_MASTER_KEK='RnJlZXplck1hbmFnZXJEZW1vS2V5MzJCeXRlcyEhISE='
+
 log() { printf '[demo] %s\n' "$*"; }
 fail() {
   printf '[demo] ERROR: %s\n' "$*" >&2
