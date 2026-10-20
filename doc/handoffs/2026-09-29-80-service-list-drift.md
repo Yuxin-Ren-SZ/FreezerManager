@@ -1,4 +1,4 @@
-# Handoff note — 2026-10-02, one served-service list instead of two (#80, worker-3)
+# Handoff note — 2026-09-29, one served-service list instead of two (#80, worker-3)
 
 `FreezerServer` kept the gRPC services it serves in **two** hand-maintained parallel
 lists: `k_served_service_full_names` (a `constexpr` array of full names, the set

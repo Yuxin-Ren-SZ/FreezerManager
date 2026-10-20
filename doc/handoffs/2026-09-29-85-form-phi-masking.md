@@ -1,4 +1,4 @@
-# Handoff note — 2026-10-02, the sample form stops submitting PHI it never showed (#85, worker-3)
+# Handoff note — 2026-09-29, the sample form stops submitting PHI it never showed (#85, worker-3)
 
 `SampleForm`'s `wireValue()` returns `raw === true` for `BOOL` and `defaultRaw()`
 returns `false` (`SampleForm.tsx:79-110` before this change), so **a Bool field was

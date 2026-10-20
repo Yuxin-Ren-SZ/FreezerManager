@@ -1,4 +1,4 @@
-# Handoff note — 2026-10-02, a PHI write merges per key instead of replacing the envelope (#83, worker-3)
+# Handoff note — 2026-09-29, a PHI write merges per key instead of replacing the envelope (#83, worker-3)
 
 Closes the residual boundary that #79 (`f232a94`) wrote down and left open.
 

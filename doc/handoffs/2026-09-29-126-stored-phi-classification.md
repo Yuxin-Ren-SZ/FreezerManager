@@ -1,4 +1,4 @@
-# Handoff note — 2026-10-02, a stored-PHI key is never written to the plaintext column (#126, worker-3)
+# Handoff note — 2026-09-29, a stored-PHI key is never written to the plaintext column (#126, worker-3)
 
 Issue **#126** is the exposure direction of the key #87 protects. #87 stopped a
 request from *dropping* a stored PHI key whose definition was archived; the value

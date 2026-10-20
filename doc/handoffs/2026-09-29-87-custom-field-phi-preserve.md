@@ -1,4 +1,4 @@
-# Handoff note — 2026-10-02, a request cannot clear a PHI key it had no control to name (#87, worker-3)
+# Handoff note — 2026-09-29, a request cannot clear a PHI key it had no control to name (#87, worker-3)
 
 Issue **#87** is the fourth trigger of one loss class (#71, #79, #83) and the
 reader-side half of it. In the three earlier cases the caller *could not see* the

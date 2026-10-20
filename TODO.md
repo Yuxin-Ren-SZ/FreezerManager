@@ -761,7 +761,7 @@ real `freezerd` safely until G0.1–G0.3 land.
     the session server-side and clears both cookies; `?access_token=` no
     longer authenticates.
 
-- [ ] **G0.2. `AuthService.WhoAmI` RPC** (`POST /api/v1/auth/whoami`). The
+- [x] **G0.2. `AuthService.WhoAmI` RPC** (`POST /api/v1/auth/whoami`). The
       SPA can't read the cookie, so after a reload it needs the server to say
       who is signed in, which labs they belong to and what they may do. No
       such RPC exists; the Qt client infers it from `ListLabs`.
@@ -784,10 +784,14 @@ real `freezerd` safely until G0.1–G0.3 land.
     and CLI clients are unaffected.
   - **`session_id` and `expires_at` are not returned.** `session_id` has no
     consumer, and emitting an identifier a client does not need is a needless
-    handle. `expires_at` **does not exist to return**: `core::Session` has no
-    expiry column and the auth layer enforces no TTL, so the original plan
-    assumed a lifetime the implementation has never had — that gap is filed
-    separately rather than papered over here.
+    handle. `expires_at` is **not stored**, so there was no field to copy:
+    the lifetime is *derived*. `LocalAuthProvider::check_session_expiry`
+    refuses a session on every request once it is 12 h idle or 7 d old
+    (D9.3; defaults in `LocalAuthProvider.h`). Returning the derived deadline,
+    `min(last_seen_at + idle, created_at + absolute)`, so the SPA can warn
+    before an idle timeout, is part of #148. *(This bullet said until
+    2026-10-20 that the auth layer enforces no TTL. That was wrong; see the
+    owner's comment on #148.)*
   - **Files:** `proto/fmgr/v1/auth.proto`,
     `src/server/AuthServiceImpl.{h,cc}`, `src/rest/RestGateway.cc` (one
     route), `src/web/src/api/routes.ts` once G1.2 exists, integration tests.
@@ -795,7 +799,7 @@ real `freezerd` safely until G0.1–G0.3 land.
     `RestGateway.cc`.
   - **Done when:** tests cover a Member, a LabAdmin of two labs, a
     SystemAdmin, `UNAUTHENTICATED` without a session, and the MFA-pending
-    case; `RpcRegistryCoversAllExpectedMethods` passes.
+    case; `RpcRegistryHoldsExactlyTheServedRpcs` passes.
 
 - [ ] **G0.3. Serve the SPA from `freezerd`, with browser security headers.**
   - When `FMGR_WEB_ROOT=<dir>` is set, the REST listener serves the built SPA.
@@ -824,7 +828,7 @@ real `freezerd` safely until G0.1–G0.3 land.
     404 on `/api/*`, refused `..` and percent-encoded traversal, every header
     above, and an accepted 2 MiB import body.
 
-- [ ] **G0.4. Name/barcode search on `ListSamples`.** Lookup by typing part
+- [x] **G0.4. Name/barcode search on `ListSamples`.** Lookup by typing part
       of a name is the most common daily operation (PRD §9), but
       `ListSamples` filters only by exact barcode. The Qt client therefore
       scans the whole lab on the client (see the FIXME in
@@ -1145,9 +1149,15 @@ inline.
 
   Aggregation happens in the storage layer, through new backend methods in
   both backends covered by conformance tests. Raw rows are never sent to the
-  client to aggregate there. It requires `sample.read` in the lab, counts
-  only what the caller's scope filters allow, and returns no PHI. Register
-  it in the RPC registry.
+  client to aggregate there. It requires `sample.read` in the lab and
+  returns no PHI. It counts exactly the samples `ListSamples` would return
+  to the caller: the same lab scope and RLS variables, never a stored
+  lab-wide total. Scope filters narrow nothing yet (#151); when they do, the
+  summary must narrow with them, and this rule is what makes that automatic.
+  Start with plain indexed `GROUP BY` queries in both backends. Add any
+  materialized counts only if the 100k fixture misses its budget, and then
+  in both backends, not as a SQLite-only extension. Register it in the RPC
+  registry.
   - **Files:** `proto/fmgr/v1/report.proto` (new),
     `src/server/ReportServiceImpl.{h,cc}`, `src/server/FreezerServer.cc`,
     `src/rest/GatewayStubs.h`, `src/rest/RestGateway.cc`, `src/storage/`,
@@ -1155,8 +1165,11 @@ inline.
   - **Locks:** `lock:proto`. **Depends on:** G0.2 and G0.4 (the proto lock
     and `RestGateway.cc`).
   - **Done when:** conformance tests pass on both backends, including an
-    empty lab and a scope-restricted member; positive and negative authz
-    tests pass; a 100k-sample SQLite fixture answers in under 500 ms.
+    empty lab and a database where another lab's samples must not be
+    counted; positive and negative authz tests
+    pass; a 100k-sample SQLite fixture answers in under 500 ms. The
+    scope-restricted-member test belongs to #151, because no scope filter
+    can be set today.
 
 - [ ] **G4.2. Home dashboard** (`features/dashboard/`, route `/`). Shows the
       status counts, open check-outs (oldest first, each linking to its
@@ -1210,19 +1223,24 @@ its own server item before a G task can be written:
   `parent_sample_id` filter);
 - the SQLite amber banner (PRD §20; no server signal exists).
 
-### Suggested waves (at most 3 workers; lock and file conflicts checked)
+### Order of the remaining work (revised 2026-10-20)
 
-| Wave | Tasks | Notes |
+The original nine-wave table no longer described the project: the screens
+(G3.1–G3.6, G3.9) ran ahead of G0.2, G0.3 and G2.1, and a demo-readiness
+audit on 2026-09-29 found the SPA could not be signed into. The owner replaced
+it with the order below (board #28, DECISION of 2026-09-30). At most three
+workers at a time; lock and file conflicts are checked per wave.
+
+| Wave | Tasks | Done when |
 |---|---|---|
-| 1 | G0.1, G0.4, G1.1 | Separate areas: `src/rest/`; storage + proto; `src/web/` + CI. If the SSE fix hasn't merged, run G0.3 in place of G0.1. |
-| 2 | G0.2, G1.2, G1.3 | G0.2 needs G0.1 merged (`RestGateway.cc`). G1.2 (`api/`, `test/`) and G1.3 (`app/`, `ui/`) don't overlap. |
-| 3 | G0.3, G2.1, G3.1 | After this wave a user can sign in to a real server. |
-| 4 | G3.2, G3.4, G3.5 | All build on G3.1's `useLabLayout`. |
-| 5 | G3.3, G3.6, G3.7 | **After this wave the daily flows are done (M4 "core flows").** |
-| 6 | G4.1, G3.8, G3.9 | G4.1 takes `lock:proto` again. |
-| 7 | G4.2, G3.10, G3.11 | |
-| 8 | G3.12, G3.13, G5.1 | G5.1 takes `lock:ci`. |
-| 9 | G5.2, G5.3 | |
+| **A** — a demo you can start and sign into | G2.1 (#145, plus the one-line WhoAmI wiring), then #139 → #141 (one worker, web); #138 → #143 (one worker, both touch the seed); #142 (demo entry point and runbook, re-verified after #143) | One command from #142 starts a seeded demo. A user signs in with TOTP, reloads without losing the session, and completes lookup → detail → check-out → box view. |
+| **B** — deployable, with a real landing page | G0.3 (#44); G4.1 (#133, `lock:proto`) → G4.2 (#134); #128 (MFA brute force) and #148 (open watch streams outlive logout, revocation and expiry) before any non-loopback deployment; G3.7 (CSV import wizard) | `freezerd` alone serves the SPA with its security headers, `/` is the dashboard, and the two auth gaps are closed. |
+| **C** — admin parity, then the gates | G3.8, G3.10, G3.11 → G3.12, G3.13 → G5.1 (`lock:ci`) → G5.2, G5.3 | M4 exit: every G item ticked except the blocked G2.2/G2.3. |
+
+**P2 correctness backlog:** one item per wave when a worker frees up, oldest
+first, starting with #111 (draft #135 exists; its `web` job is red on three
+ESLint errors in `fakeApi.ts`). **New findings** are filed, not fixed in the
+current wave, unless they are P0.
 
 ---
 
