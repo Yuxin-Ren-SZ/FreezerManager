@@ -164,6 +164,8 @@ export interface DemoLab {
 export interface FakeAuthAccount {
   readonly userId: string;
   readonly email: string;
+  /** What `auth/whoami` reports as `display_name` (G0.2). */
+  readonly displayName: string;
   readonly password: string;
   /** `true` when the account has a TOTP secret — login answers `mfa_required`. */
   readonly requiresMfa: boolean;
@@ -181,6 +183,14 @@ export interface FakeAuth {
    * modelled here. What matters for the tests is the *state* it implies.
    */
   pendingMfaUserId: string | null;
+  /**
+   * The account whose cookie session is **complete** — the only holder
+   * `auth/whoami` answers for. `null` when nobody is signed in *and* while a
+   * TOTP code is outstanding: the server refuses `WhoAmI` for a half-finished
+   * login (#62, registered `token_and_mfa`), which the pending gate below
+   * reproduces as the `MFA_REQUIRED` refusal.
+   */
+  currentUserId: string | null;
 }
 
 /** The password `fakeApi()` accepts for every seeded account. */
@@ -594,17 +604,20 @@ export function createDemoLab(): DemoLab {
         {
           userId: 'user-demo',
           email: DEMO_USER_EMAIL,
+          displayName: 'Demo User',
           password: DEMO_PASSWORD,
           requiresMfa: false,
         },
         {
           userId: 'user-mfa',
           email: DEMO_MFA_EMAIL,
+          displayName: 'MFA User',
           password: DEMO_PASSWORD,
           requiresMfa: true,
         },
       ],
       pendingMfaUserId: null,
+      currentUserId: null,
     },
   };
 }
@@ -850,6 +863,10 @@ function passwordLogin(lab: DemoLab, message: Message, options: { withToken: boo
 
   // The second factor is still outstanding until `submit-mfa` is accepted.
   lab.auth.pendingMfaUserId = account.requiresMfa ? account.userId : null;
+  // A completed session exists the moment the password is accepted and no TOTP
+  // is outstanding; with TOTP, `auth/whoami` stays refused by the pending gate
+  // until the code lands (#62).
+  lab.auth.currentUserId = account.requiresMfa ? null : account.userId;
 
   return {
     ...(options.withToken ? { sessionToken: `token-${account.userId}` } : {}),
@@ -875,6 +892,7 @@ function verifyTotp(lab: DemoLab, message: Message) {
     throw new FakeRpcError('UNAUTHENTICATED', 'invalid TOTP code');
   }
   lab.auth.pendingMfaUserId = null;
+  lab.auth.currentUserId = pending;
   return {};
 }
 
@@ -1375,11 +1393,48 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
   // able to give the credential up. It therefore also clears the pending state.
   'auth/logout': (lab) => {
     lab.auth.pendingMfaUserId = null;
+    lab.auth.currentUserId = null;
     return {};
   },
   'auth/browser/logout': (lab) => {
     lab.auth.pendingMfaUserId = null;
+    lab.auth.currentUserId = null;
     return {};
+  },
+
+  // `WhoAmI` (G0.2) names the holder of the completed cookie session, and
+  // nothing else — the response carries no token and no session id. A browser
+  // without a session gets the same `UNAUTHENTICATED` refusal a real expired
+  // session gets, and a pending-MFA session never reaches this resolver: the
+  // pending gate above refuses it with the `MFA_REQUIRED` envelope, exactly as
+  // the server's `token_and_mfa` registration does (#62, #140).
+  'auth/whoami': (lab) => {
+    const { currentUserId } = lab.auth;
+    if (currentUserId === null) {
+      throw new FakeRpcError('UNAUTHENTICATED', 'no valid session');
+    }
+    const account = lab.auth.accounts.find((candidate) => candidate.userId === currentUserId);
+    if (account === undefined) {
+      throw new FakeRpcError('UNAUTHENTICATED', 'no valid session');
+    }
+    return {
+      userId: account.userId,
+      email: account.email,
+      displayName: account.displayName,
+      isSystemAdmin: false,
+      permissions: [],
+      labs: [
+        {
+          labId: 'lab-demo',
+          labName: 'Demo Lab',
+          roleId: 'role-labadmin',
+          roleName: 'LabAdmin',
+          permissions: ['sample.read', 'sample.write', 'sample.checkout', 'audit.read'],
+          // `scope_filters_json` and `is_phi_enabled` are left out on purpose:
+          // proto3 omits their defaults, and the SPA fails closed on both.
+        },
+      ],
+    };
   },
 
   // ---- The un-paged lists: the server ignores `page`, so these do too ----

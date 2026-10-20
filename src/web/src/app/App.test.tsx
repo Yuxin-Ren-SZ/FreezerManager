@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppErrorBoundary, ErrorBoundary } from './ErrorBoundary';
+import { App } from './App';
 import { AppProviders } from './providers';
 import { RouteGuard } from './guards';
 import { ALL_PERMISSIONS, type PermissionKey } from './permissions';
@@ -16,6 +17,7 @@ import {
   DEMO_PASSWORD,
   DEMO_TOTP_CODE,
   DEMO_USER_EMAIL,
+  createDemoLab,
   fakeApi,
 } from '../test/fakeApi';
 import { server } from '../test/server';
@@ -607,5 +609,57 @@ describe('session lifecycle (G2.1)', () => {
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/');
     });
+  });
+});
+
+/**
+ * The real entry point. `App` mounts the loader that asks `auth/whoami`, so a
+ * fresh mount — the reload case — must restore the cookie session instead of
+ * signing the user out. The flows above inject the loader through `renderApp`;
+ * these three assert the wiring in the component production actually mounts
+ * (`main.tsx`), where no test can reach in and substitute one.
+ */
+describe('the App entry (auth/whoami wiring)', () => {
+  it('restores the cookie session on a fresh mount, instead of signing the user out', async () => {
+    // The real App uses a browser router, which reads and writes the real
+    // `window.history` — pin the URL so a redirect an earlier test made cannot
+    // decide where this mount starts.
+    window.history.pushState({}, '', '/');
+    const seeded = createDemoLab();
+    seeded.auth.currentUserId = 'user-demo';
+    server.use(...fakeApi({ lab: seeded }));
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: homeCopy.title }),
+    ).toBeInTheDocument();
+    // The identity comes from `auth/whoami` — a reload has no login-form state
+    // to read it from, which is exactly what G2.1 must survive.
+    expect(screen.getByRole('button', { name: 'Demo User' })).toBeInTheDocument();
+  });
+
+  it('shows the sign-in form when no session is behind the fresh mount', async () => {
+    window.history.pushState({}, '', '/');
+    server.use(...fakeApi());
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: authCopy.title }),
+    ).toBeInTheDocument();
+  });
+
+  it('resumes a half-finished MFA login from the whoami refusal', async () => {
+    window.history.pushState({}, '', '/');
+    const seeded = createDemoLab();
+    seeded.auth.pendingMfaUserId = 'user-mfa';
+    server.use(...fakeApi({ lab: seeded }));
+
+    render(<App />);
+
+    expect(
+      await screen.findByRole('heading', { level: 1, name: authCopy.mfa.title }),
+    ).toBeInTheDocument();
   });
 });

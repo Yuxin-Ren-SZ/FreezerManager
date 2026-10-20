@@ -36,16 +36,18 @@ const HANDLED_STATUSES = [200, 400, 404, 412];
 
 /**
  * The routes whose *implemented* answer to an empty body is a refusal rather
- * than a payload: `Login` refuses an unknown email and `SubmitMfa` refuses a
- * code with no half-finished login behind it, both `UNAUTHENTICATED` — exactly
- * as `freezerd` does. Listed per route rather than widening the blanket list,
- * which would let any other route start answering 401 unnoticed.
+ * than a payload: `Login` refuses an unknown email, `SubmitMfa` refuses a
+ * code with no half-finished login behind it, and `WhoAmI` refuses a browser
+ * without a completed session — all `UNAUTHENTICATED`, exactly as `freezerd`
+ * does. Listed per route rather than widening the blanket list, which would
+ * let any other route start answering 401 unnoticed.
  */
 const EMPTY_BODY_STATUS: Partial<Record<RpcName, number>> = {
   'auth/login': 401,
   'auth/browser/login': 401,
   'auth/submit-mfa': 401,
   'auth/browser/submit-mfa': 401,
+  'auth/whoami': 401,
 };
 
 describe('fakeApi coverage', () => {
@@ -705,6 +707,56 @@ describe('fakeApi browser session (G2.1)', () => {
     await call('auth/browser/logout', {});
 
     expect(lab.auth.pendingMfaUserId).toBeNull();
+  });
+
+  it('whoami answers UNAUTHENTICATED for a browser without a session', async () => {
+    server.use(...fakeApi());
+
+    const error = (await call('auth/whoami', {}).catch((caught: unknown) => caught)) as ApiError;
+
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.httpStatus).toBe(401);
+  });
+
+  it('whoami names the completed session holder and their memberships', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('auth/browser/login', { email: DEMO_USER_EMAIL, password: DEMO_PASSWORD });
+
+    const who = await call('auth/whoami', {});
+
+    expect(who.userId).toBe('user-demo');
+    expect(who.email).toBe(DEMO_USER_EMAIL);
+    expect(who.displayName).toBe('Demo User');
+    expect(who.labs).toHaveLength(1);
+    expect(who.labs[0]?.labId).toBe('lab-demo');
+    expect(who.labs[0]?.roleName).toBe('LabAdmin');
+  });
+
+  it('whoami refuses a pending-MFA session with the MFA_REQUIRED envelope', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('auth/browser/login', { email: DEMO_MFA_EMAIL, password: DEMO_PASSWORD });
+
+    const error = (await call('auth/whoami', {}).catch((caught: unknown) => caught)) as ApiError;
+
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.mfaRequired).toBe(true);
+  });
+
+  it('whoami names the holder after the TOTP code lands', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('auth/browser/login', { email: DEMO_MFA_EMAIL, password: DEMO_PASSWORD });
+    await call('auth/browser/submit-mfa', { totpCode: DEMO_TOTP_CODE });
+
+    const who = await call('auth/whoami', {});
+
+    expect(who.userId).toBe('user-mfa');
+    expect(who.displayName).toBe('MFA User');
   });
 
   it('rejects a login body that is not the request message, as the gateway does', async () => {

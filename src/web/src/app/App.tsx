@@ -1,30 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useState } from 'react';
 import { RouterProvider } from 'react-router-dom';
+import { call } from '../api/client';
 import { AppErrorBoundary } from './ErrorBoundary';
 import { AppProviders } from './providers';
 import { createAppRouter } from './router';
-import type { SessionLoader } from './session';
+import { createWhoAmISessionLoader } from './whoamiSession';
 
 /**
- * TODO(G0.2 / #140): this becomes
- * `createWhoAmISessionLoader(() => call('auth/whoami', {}))`.
- *
- * `AuthService.WhoAmI` does not exist yet — not in `proto/fmgr/v1/auth.proto`,
- * not in `RestGateway.cc`, not in `src/api/routes.ts` — so the SPA has no way to
- * learn who is signed in, and the honest answer is "nobody". That keeps the app
- * on the real sign-in screen rather than making one up: the hardcoded session
- * G2.1 deleted invented a user called `Stub User` in a lab id of `lab-1`, which
- * is not a UUID, so every lab-scoped screen answered
- * `internal server error: invalid UUID length` and the SPA could never be
- * logged into at all.
- *
- * Everything around this line is finished and tested — the sign-in and
- * second-factor screens, the four session states, the 401-to-login path, and
- * `createWhoAmISessionLoader` in `src/app/whoamiSession.ts`, which maps the
- * response this loader will return.
+ * The real session loader (G2.1): `AuthService.WhoAmI` (#140) names the caller
+ * from the `HttpOnly` session cookie, so a signed-in user who reloads stays
+ * signed in. `createWhoAmISessionLoader` keeps the three answers apart — a
+ * user, no session (`UNAUTHENTICATED` → `null` → the sign-in form) and a
+ * pending second factor (`MFA_REQUIRED` → `MfaPendingError` → `/login/mfa`).
  */
-const loadSession: SessionLoader = () => Promise.resolve(null);
+const loadSession = createWhoAmISessionLoader(() => call('auth/whoami', {}));
 
 /**
  * The application root: providers outside the router, so a route error still has
