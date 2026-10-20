@@ -11,13 +11,15 @@
 // tests that never build a server are unaffected.
 //
 // Two tiers, both configurable via FreezerServerOptions:
-//   - auth tier: unauthenticated Login/SubmitMfa, throttled per source IP with a
-//     higher burst. Owned per-service by AuthServiceImpl; this class only carries
-//     the config so the server can hand it over.
-//   - data tier: authenticated RPCs, throttled per bearer token with a lower
-//     burst, via the installed process gate.
+//   - auth tier: unauthenticated Login, throttled per source IP with a higher
+//     burst. Owned per-service by AuthServiceImpl; this class only carries the
+//     config so the server can hand it over. SubmitMfa is not on this tier: it
+//     has its own per-user brute-force budget (#128).
+//   - data tier: authenticated RPCs — both authorize()-gated handlers and
+//     TokenAndMfa credential-gated handlers — throttled per bearer token with a
+//     lower burst, via the installed process gate.
 //
-// Health/metrics endpoints never reach authorize(), so they are exempt by
+// Health/metrics endpoints never reach the gate, so they are exempt by
 // construction; is_exempt_method() documents that contract for reflection/health
 // gRPC methods a future direct-interceptor wiring might see.
 #ifndef FMGR_SERVER_RATELIMITINTERCEPTOR_H
