@@ -1,18 +1,111 @@
 # Clang-tidy
 
-Run clang-tidy with the parallel runner that ships with LLVM rather than a bare
-`clang-tidy` loop — it is many times faster across the tree. Cap parallelism at
-2: each clang-tidy process can consume 2–4 GB with the full check set enabled,
-and `-j $(nproc)` on an 8-core machine easily exceeds available memory.
+CI's `clang-tidy` job is the gate, and it cannot be reproduced on the owner's
+Mac; a local run is advisory. The `clang-format` gate is reproducible. Both have
+turned a PR red while every test passed, so budget a CI round-trip for
+clang-tidy rather than assuming a local run settles it.
+
+## The two CI gates
+
+### `Check formatting` — reproducible
+
+CI's `lint` job installs `clang-format-17` and runs it over every C, C++ and
+proto file. The runner's `clang-format-17` is 17.0.6, and the `.venv` wheel
+matches, so the same command reproduces the gate locally:
 
 ```sh
-run-clang-tidy-17 -p out/build/dev -j 2        # whole compile DB
-run-clang-tidy-17 -p out/build/dev -j 2 src/storage/sqlite/  # a subset
+clang-format --dry-run --Werror \
+  $(git ls-files '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' \
+    '*.hxx' '*.ipp' '*.proto')
 ```
 
-Only project sources are in `compile_commands.json` (Conan deps are prebuilt),
-so no file filter is needed for a full sweep. Fall back to
-`clang-tidy-17 -p out/build/dev <file>` only when the parallel runner is absent.
+### `clang-tidy` — the gate is CI-only
+
+CI runs `run-clang-tidy-17 -p out/build/dev -j 2` over the whole compile DB,
+with warnings as errors (`.clang-tidy` sets `WarningsAsErrors: '*'`). That
+runner is **not in the main checkout's `.venv/bin`**, which has only
+`clang-tidy`, `clang-format` and `git-clang-format`, so you cannot reproduce the
+gate. The runner ships with LLVM and is many times faster than a bare
+`clang-tidy` loop. Only project sources are in `compile_commands.json` (Conan
+deps are prebuilt), so no file filter is needed for a full sweep.
+
+Never run it above `-j 2` — see "Clang-tidy Strategy" below.
+
+## Running it locally
+
+You can and should still run the bare clang-tidy 17 binary per file on your own
+changed translation units (`.venv/bin/clang-tidy` is LLVM 17.0.1; on Ubuntu the
+package is `clang-tidy-17`):
+
+```sh
+clang-tidy -p out/build/dev <file>     # one changed TU at a time
+```
+
+Filter the output: treat a finding as yours only if it **(a)** lands on a line
+you added or changed **and (b)** does not also fire on the unmodified
+`origin/main` version of the same file. This pays — a local run has already
+found a genuine `bugprone-easily-swappable-parameters` before pushing. But the
+run is **advisory, not clearance**.
+
+### It is not a superset
+
+The compile database drives AppleClang's `/usr/bin/c++`, while the local
+clang-tidy is LLVM 17.0.1. This machine's SDK libc++ uses builtins a newer clang
+provides (`__builtin_clzg`, `__countr_zero`, `__GCC_DESTRUCTIVE_SIZE`), and the
+tool cannot parse `protobuf/arena_align.h`, so the frontend emits internal
+`clang-diagnostic-error`s and stops with **"too many errors emitted"**. With the
+AST broken, semantic checks go silent — `bugprone-unchecked-optional-access` is
+*enabled* and listed by `--list-checks`, yet reports nothing because the optional
+model never resolved — while name-lookup checks (like
+`convert-member-functions-to-static`) still fire.
+
+**That asymmetry is the thing to remember:** a local run's silence means
+*nothing* for semantic checks, and a local run's noise means *nothing* for the
+artifacts. It is not a weaker version of CI; it is a different measurement. It
+reports artifacts in untouched files that CI does not, and it misses findings CI
+catches: a local run on #106's file reported zero
+`bugprone-easily-swappable-parameters` while CI reported exactly that check on
+the same file and branch. Local clang-tidy is necessary but not sufficient.
+
+On some translation units it aborts before reaching project code: 48
+`clang-diagnostic-error`s from the macOS SDK's libc++ left the tool stuck in the
+headers. The output is then advisory only — apply the A/B filter above, and say
+in the PR that it aborted rather than implying it was clean. Whether it gets
+through depends on which headers a TU pulls in, so it varies by file, not by
+machine. With the builtins shimmed it reports only pre-existing findings in
+files `main` passes (`-to-static` fixture false positives, `src/obs/Health.h`,
+`src/rpc/RateLimiter.h`) — nothing points at new lines.
+
+### Its silence is not evidence
+
+The method has a false-negative mode: when a check **does not fire locally at
+all**, filtering cannot tell "not a finding" from "not observed", the method
+returns nothing, and the run reads as clean.
+`bugprone-easily-swappable-parameters` never fires locally;
+`performance-move-const-arg` did not either, and CI caught a `std::move` of a
+trivially-copyable `std::optional<core::Volume>` that way after a local run had
+found nothing on the author's lines.
+
+**So: never write "clang-tidy clean" in a PR based on a local run.** Say what you
+ran and what it reported, and let CI be the gate. Reporting a clean local run as
+clearance is the one thing that turns a useful tool into a false assurance.
+
+### The check to handle proactively
+
+Whenever you add a helper with **two adjacent parameters of the same type** — two
+`const std::string&`, two ids — apply the repo's existing convention
+*proactively* rather than waiting for CI:
+`// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)` with a one-line
+justification (`src/kms/KmsFactory.cc:20`, `src/auth/Totp.cc:27`, and
+`get_sample` in `tests/integration/sample_service_integration_test.cpp`), or put
+a differently-typed parameter between them (as `dispatch_key_rotate` and
+`import_csv(token, bool dry_run, csv, resp)` do). This one check has cost at
+least four separate CI round-trips.
+
+For a C++ PR, clang-tidy is therefore a CI-only gate. Most such PRs need at
+least one round-trip for it (#27, #35, #38, #53); the fix is usually small —
+cognitive complexity, an identifier under three characters, adjacent same-type
+parameters.
 
 ## Clang-tidy Strategy
 
@@ -62,11 +155,13 @@ sweep; everyone else lints only the files they changed.
 ## In CI
 
 The `clang-tidy` job in `.github/workflows/build.yml` lints the whole tree once
-per run: clang-17, the `dev` preset, `-j 2`. Before #56 it ran inside both `dev`
-jobs, after their build and tests. It needs only a CMake configure and the
-`freezermanager_proto` target (for the generated `fmgr/v1/*.pb.h`), so it runs
-alongside the build matrix. A PR that changes only `src/web/**`, `doc/**`,
-Markdown or issue templates skips it.
+per run: clang-17, the `dev` preset, `-j 2`. Since #61 it is its own job, named
+`clang-tidy`, alongside the build matrix; before that it ran twice, inside both
+`dev` jobs. It needs only a CMake configure and the `freezermanager_proto`
+target (for the generated `fmgr/v1/*.pb.h`), so it starts without waiting for a
+full build. A PR that changes only `src/web/**`, `doc/**`, `*.md`, `.nvmrc` or
+issue templates skips it; anything unrecognised, and every push to `main`, runs
+it.
 
 **Result cache.** The job wraps clang-tidy in
 [ctcache](https://github.com/matus-chochlik/ctcache), pinned by commit and
