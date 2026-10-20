@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { fromJson, type DescMessage, type JsonValue, type MessageShape } from '@bufbuild/protobuf';
 import { ApiError, isGrpcCode, type GrpcCode } from './errors';
+import { beginLiveStream, endLiveStream, setLiveStreamState } from './liveConnection';
 
 /**
  * The SSE half of the API layer (TODO.md G1.2): typed frames over
@@ -157,6 +158,10 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
   let lastEventId: string | null = null;
   let stopped = false;
 
+  // One entry in the app-wide connection store, so the shell's indicator and
+  // the screens' copy can read a real state instead of a literal (#141).
+  const stream = beginLiveStream();
+
   const closeSource = () => {
     source?.close();
     source = null;
@@ -222,6 +227,8 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
       if (TERMINAL_CODES.has(code)) {
         stopped = true;
         closeSource();
+        // Nothing will reconnect: "offline", not "reconnecting".
+        setLiveStreamState(stream, 'offline');
         return;
       }
     } else {
@@ -229,6 +236,10 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
     }
 
     closeSource();
+    // The stream is not gone, only waiting out the backoff. Reporting
+    // "offline" here would make the indicator say the feature is unavailable
+    // for the length of the retry, and "live" would be a lie.
+    setLiveStreamState(stream, 'reconnecting');
     scheduleReconnect();
   };
 
@@ -239,13 +250,23 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
     created.addEventListener('open', () => {
       if (stopped) return;
       attempt = 0;
+      // An open after a reconnect leaves `reconnecting` here — this is the
+      // line that keeps the indicator from getting stuck.
+      setLiveStreamState(stream, 'live');
       options.onOpen?.();
     });
     created.addEventListener('message', onMessage);
     created.addEventListener('error', onError);
   };
 
-  connect();
+  try {
+    connect();
+  } catch (error) {
+    // A bad parameter throws before any stream exists; do not leave the store
+    // claiming a connection is being opened.
+    endLiveStream(stream);
+    throw error;
+  }
 
   return () => {
     stopped = true;
@@ -254,5 +275,6 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
       timer = null;
     }
     closeSource();
+    endLiveStream(stream);
   };
 }

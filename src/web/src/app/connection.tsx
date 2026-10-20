@@ -1,29 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { createContext, useContext } from 'react';
-import type { ReactNode } from 'react';
+import { useLiveConnectionState, type LiveConnectionState } from '../api/liveConnection';
 
 /**
- * Health of the live-update stream (G-arch 5: `EventSource` on the `…/watch`
+ * Health of the live-update streams (G-arch 5: `EventSource` on the `…/watch`
  * SSE routes).
  *
- * The shell only needs the three states — a spinner, a green "live" dot and a
- * grey "offline" dot — so that is the whole interface. G1.2's `src/api/sse.ts`
- * knows about reconnects, `Last-Event-ID` and backoff; none of that belongs in
- * a top-bar indicator.
+ * The state is **derived from the streams themselves** — `src/api/sse.ts`
+ * reports every subscription's connection into the store behind
+ * `useLiveConnectionState()` — not passed down as a prop. The shell's
+ * indicator and the screens' "live updates" copy read the same value, so they
+ * cannot disagree; before #141 `App.tsx` passed the literal `"offline"`, and
+ * the top bar read Offline while streams were delivering frames.
+ *
+ * There are four states because "not live" is not one condition: a stream that
+ * has not opened yet is `connecting`, a dropped one the wrapper is about to
+ * retry is `reconnecting`, and only a terminal refusal or no stream at all is
+ * `offline`. The reconnect/backoff machinery stays in `src/api/sse.ts`; this
+ * module is the React-facing name for its aggregate state.
  */
-export type ConnectionState = 'connecting' | 'live' | 'offline';
+export type ConnectionState = LiveConnectionState;
 
-const ConnectionContext = createContext<ConnectionState>('offline');
-
-export interface ConnectionProviderProps {
-  status: ConnectionState;
-  children: ReactNode;
-}
-
-export function ConnectionProvider({ status, children }: ConnectionProviderProps) {
-  return <ConnectionContext.Provider value={status}>{children}</ConnectionContext.Provider>;
-}
-
+/** The aggregate live-connection state, as a React value. */
 export function useConnectionState(): ConnectionState {
-  return useContext(ConnectionContext);
+  return useLiveConnectionState();
 }

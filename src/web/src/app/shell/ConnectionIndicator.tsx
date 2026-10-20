@@ -7,6 +7,7 @@ import styles from './TopBar.module.css';
 const TONES: Record<ReturnType<typeof useConnectionState>, BadgeTone> = {
   live: 'success',
   connecting: 'warning',
+  reconnecting: 'warning',
   offline: 'neutral',
 };
 
@@ -14,10 +15,11 @@ const TONES: Record<ReturnType<typeof useConnectionState>, BadgeTone> = {
  * Whether live updates are flowing (G-arch 5: `EventSource` on the `…/watch`
  * routes).
  *
- * The wording carries the state, not just the colour: a green dot alone is
- * invisible to a screen reader and meaningless to a user with a colour-vision
- * deficiency. `role="status"` so a drop to "offline" is announced once, without
- * interrupting.
+ * The state comes from the real streams through `app/connection.tsx` (#141),
+ * never from a prop. The wording carries the state, not just the colour: a
+ * green dot alone is invisible to a screen reader and meaningless to a user
+ * with a colour-vision deficiency. `role="status"` so a drop is announced
+ * once, without interrupting.
  */
 export function ConnectionIndicator() {
   const { t } = useTranslation('shell');

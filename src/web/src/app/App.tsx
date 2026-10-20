@@ -20,17 +20,16 @@ const loadSession = createWhoAmISessionLoader(() => call('auth/whoami', {}));
  * The application root: providers outside the router, so a route error still has
  * the toast host and the session it needs to explain itself.
  *
- * TODO(G2.1): `connectionStatus` becomes the state of the SSE wrapper in
- * `src/api/sse.ts`. It is `'offline'` rather than `'live'` today because nothing
- * has opened a stream, and an indicator that always says "Live" is worse than no
- * indicator at all.
+ * The live-connection state is not passed here: it is derived from the real
+ * streams by `app/connection.tsx` (#141), so the indicator cannot be a
+ * hardcoded literal again.
  */
 export function App() {
   const [router] = useState(createAppRouter);
 
   return (
     <AppErrorBoundary>
-      <AppProviders loadSession={loadSession} connectionStatus="offline">
+      <AppProviders loadSession={loadSession}>
         <RouterProvider router={router} />
       </AppProviders>
     </AppErrorBoundary>

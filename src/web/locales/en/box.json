@@ -9,6 +9,7 @@
     "label": "Live updates",
     "live": "Live",
     "connecting": "Connecting…",
+    "reconnecting": "Reconnecting…",
     "error": "Live updates are unavailable"
   },
   "grid": {

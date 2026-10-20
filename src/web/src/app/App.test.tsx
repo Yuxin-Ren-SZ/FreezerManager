@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
@@ -20,6 +20,7 @@ import {
   createDemoLab,
   fakeApi,
 } from '../test/fakeApi';
+import { FakeEventSource } from '../test/fakeEventSource';
 import { server } from '../test/server';
 import appShellCss from './shell/AppShell.module.css?raw';
 import sideNavCss from './shell/SideNav.module.css?raw';
@@ -254,7 +255,7 @@ describe('app shell', () => {
     };
 
     render(
-      <AppProviders connectionStatus="live" loadSession={() => Promise.resolve(user([], []))}>
+      <AppProviders loadSession={() => Promise.resolve(user([], []))}>
         <MemoryRouter initialEntries={[`/labs/${LAB_ID}/open`]}>
           <Routes>
             <Route
@@ -406,14 +407,60 @@ describe('user menu', () => {
 });
 
 describe('live-connection indicator', () => {
-  it.each([
-    ['live', 'Live updates: Live'],
-    ['connecting', 'Live updates: Connecting'],
-    ['offline', 'Live updates: Offline'],
-  ] as const)('shows %s', async (connection, label) => {
-    renderApp({ path: '/', user: user(ALL_PERMISSIONS), connection });
+  beforeEach(() => {
+    FakeEventSource.reset();
+  });
 
-    expect(await screen.findByRole('status', { name: label })).toBeInTheDocument();
+  it('is offline while no screen has opened a live stream', async () => {
+    renderApp({ path: '/', user: user(ALL_PERMISSIONS) });
+
+    expect(
+      await screen.findByRole('status', { name: 'Live updates: Offline' }),
+    ).toBeInTheDocument();
+  });
+
+  it('follows the real stream through connecting, live, a drop, recovery and a terminal refusal', async () => {
+    renderApp({ path: `/labs/${LAB_ID}/samples`, user: user(ALL_PERMISSIONS) });
+
+    expect(
+      await screen.findByRole('status', { name: 'Live updates: Connecting' }),
+    ).toBeInTheDocument();
+
+    act(() => {
+      FakeEventSource.current().open();
+    });
+    expect(screen.getByRole('status', { name: 'Live updates: Live' })).toBeInTheDocument();
+
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        FakeEventSource.current().transportError();
+      });
+      expect(
+        screen.getByRole('status', { name: 'Live updates: Reconnecting' }),
+      ).toBeInTheDocument();
+
+      // The SSE wrapper's backoff is what makes the state recoverable: after
+      // the retry opens, the indicator must say Live again, not stay stuck.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(FakeEventSource.all()).toHaveLength(2);
+
+      act(() => {
+        FakeEventSource.current().open();
+      });
+      expect(screen.getByRole('status', { name: 'Live updates: Live' })).toBeInTheDocument();
+
+      // A terminal refusal is not a drop: nothing will reconnect, so the shell
+      // says Offline rather than Reconnecting for ever.
+      act(() => {
+        FakeEventSource.current().serverError({ code: 'PERMISSION_DENIED', message: 'nope' });
+      });
+      expect(screen.getByRole('status', { name: 'Live updates: Offline' })).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -3,7 +3,7 @@ import { create, toJson, type MessageInitShape } from '@bufbuild/protobuf';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Route, Routes, useLocation } from 'react-router-dom';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import boxCopy from '../../../locales/en/box.json';
 import type { GrpcCode } from '../../api/errors';
 import type { RpcName } from '../../api/routes';
@@ -753,6 +753,37 @@ describe('BoxScreen — live updates', () => {
     expect(FakeEventSource.current().url).toBe(
       `/api/v1/sample/watch?lab_id=${LAB_ID}&box_id=${MIXED_BOX_ID}`,
     );
+  });
+
+  it('follows the shared connection state instead of hardcoding the label', async () => {
+    renderScreen();
+    await screen.findByRole('button', { name: occupiedCell('A1') });
+    const live = () => screen.getByRole('status', { name: boxCopy.live.label });
+
+    act(() => {
+      FakeEventSource.current().open();
+    });
+    expect(live()).toHaveTextContent(boxCopy.live.live);
+
+    // The same four-state signal the shell's indicator reads: a dropped feed is
+    // "reconnecting", not "unavailable", because the wrapper is about to retry.
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        FakeEventSource.current().transportError();
+      });
+      expect(live()).toHaveTextContent(boxCopy.live.reconnecting);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_100);
+      });
+      act(() => {
+        FakeEventSource.current().open();
+      });
+      expect(live()).toHaveTextContent(boxCopy.live.live);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('adds a cell when the feed reports a sample that arrived in this box', async () => {

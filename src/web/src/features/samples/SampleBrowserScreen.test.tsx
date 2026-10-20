@@ -399,19 +399,30 @@ describe('SampleBrowserScreen', () => {
       // version of this assertion passed under a planted violation.
       expect(dataRowCount()).toBe(3);
 
+      // TanStack Query batches observer notifications with `setTimeout(0)` by
+      // design. `useSampleLive` used to keep a local status and set it on every
+      // frame, whose incidental re-render read the new cache synchronously;
+      // since #141 the connection state is shared, so the test waits for the
+      // DOM update the user actually sees instead of for a render side effect.
       pushFrame({ id: 'sample-9', name: 'Serum Z', status: 'SAMPLE_STATUS_ACTIVE' });
-      expect(within(table()).getByRole('cell', { name: 'Serum Z' })).toBeInTheDocument();
+      await waitFor(() => {
+        expect(within(table()).getByRole('cell', { name: 'Serum Z' })).toBeInTheDocument();
+      });
       expect(dataRowCount()).toBe(4);
 
       pushFrame({ id: 'sample-1', name: 'Serum A (edited)', status: 'SAMPLE_STATUS_ACTIVE' });
-      expect(within(table()).getByRole('cell', { name: 'Serum A (edited)' })).toBeInTheDocument();
+      await waitFor(() => {
+        expect(within(table()).getByRole('cell', { name: 'Serum A (edited)' })).toBeInTheDocument();
+      });
 
       pushFrame({ id: 'sample-1', name: 'Serum A tombstoned', status: 'SAMPLE_STATUS_TOMBSTONED' });
+      await waitFor(() => {
+        expect(
+          within(table()).queryByRole('cell', { name: 'Serum A (edited)' }),
+        ).not.toBeInTheDocument();
+      });
       expect(
         within(table()).queryByRole('cell', { name: 'Serum A tombstoned' }),
-      ).not.toBeInTheDocument();
-      expect(
-        within(table()).queryByRole('cell', { name: 'Serum A (edited)' }),
       ).not.toBeInTheDocument();
       await waitFor(() => {
         expect(dataRowCount()).toBe(3);
@@ -427,7 +438,7 @@ describe('SampleBrowserScreen', () => {
       );
     });
 
-    it('says so when the live connection is down, and recovers after a reconnect', async () => {
+    it('says reconnecting when the feed drops, recovers after a reconnect, and errors when it cannot', async () => {
       renderScreen();
       await screen.findByRole('table', { name: samplesCopy.table.caption });
       act(() => {
@@ -439,7 +450,7 @@ describe('SampleBrowserScreen', () => {
       act(() => {
         FakeEventSource.current().transportError();
       });
-      expect(screen.getByRole('status')).toHaveTextContent(samplesCopy.live.error);
+      expect(screen.getByRole('status')).toHaveTextContent(samplesCopy.live.reconnecting);
 
       // The SSE wrapper owns the backoff; the screen's job is to keep merging
       // after it, which is what makes the feed survive a flaky network.
@@ -461,6 +472,13 @@ describe('SampleBrowserScreen', () => {
       });
       expect(screen.getByRole('status')).toHaveTextContent(samplesCopy.live.live);
       expect(within(table()).getByRole('cell', { name: 'Serum B (live)' })).toBeInTheDocument();
+
+      // A terminal refusal is different from a drop: the wrapper stops, so the
+      // screen says "not available" instead of "reconnecting" for ever.
+      act(() => {
+        FakeEventSource.current().serverError({ code: 'PERMISSION_DENIED', message: 'nope' });
+      });
+      expect(screen.getByRole('status')).toHaveTextContent(samplesCopy.live.error);
     });
   });
 

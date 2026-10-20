@@ -138,12 +138,16 @@ export function BoxScreen() {
     void samplesQuery.refetch();
   }, [layout, samplesQuery]);
 
+  // The same four-state signal the shell's indicator reads (#141): a dropped
+  // feed is "reconnecting", not "unavailable", because the wrapper retries.
   const liveLabel =
     live.status === 'live'
       ? t('live.live')
       : live.status === 'connecting'
         ? t('live.connecting')
-        : t('live.error');
+        : live.status === 'reconnecting'
+          ? t('live.reconnecting')
+          : t('live.error');
 
   const gaps = gapCount(grid);
 

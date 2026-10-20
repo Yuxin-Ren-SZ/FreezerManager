@@ -3,6 +3,7 @@ import { useQueryClient, type InfiniteData, type QueryClient } from '@tanstack/r
 import { useEffect, useState } from 'react';
 import { SampleStatus, SampleSchema, type Sample } from '../../gen/fmgr/v1/sample_pb';
 import type { ApiError } from '../errors';
+import { useLiveConnectionState, type LiveConnectionState } from '../liveConnection';
 import type { ResponseOf } from '../routes';
 import { subscribeSse, type EventSourceLike, type SseParamsOf, type SseRetryPolicy } from '../sse';
 import { sampleKeys, type SampleListFilters } from './samples';
@@ -36,7 +37,7 @@ import { sampleKeys, type SampleListFilters } from './samples';
  * frames outside those filters arrive and are ignored by rule 2.
  */
 
-export type SampleLiveStatus = 'connecting' | 'live' | 'error';
+export type SampleLiveStatus = LiveConnectionState;
 
 export interface UseSampleLiveOptions {
   readonly labId: string;
@@ -52,6 +53,10 @@ export interface UseSampleLiveOptions {
 }
 
 export interface UseSampleLiveResult {
+  /**
+   * The app-wide live-connection state (issue #141): the shell's indicator and
+   * every screen's copy read the same value, derived from the open streams.
+   */
   readonly status: SampleLiveStatus;
   /** The last failure, for the indicator's message. `null` until one happens. */
   readonly error: ApiError | null;
@@ -176,7 +181,10 @@ export function useSampleLive({
   reconnect,
 }: UseSampleLiveOptions): UseSampleLiveResult {
   const queryClient = useQueryClient();
-  const [status, setStatus] = useState<SampleLiveStatus>('connecting');
+  // The stream's health is not local state: `subscribeSse` reports it into the
+  // shared store that the shell's indicator also reads (#141), so the two
+  // cannot disagree. Only the last error is kept here.
+  const status = useLiveConnectionState();
   const [error, setError] = useState<ApiError | null>(null);
 
   const active = enabled && labId !== '';
@@ -186,25 +194,17 @@ export function useSampleLive({
       return;
     }
 
-    // No synchronous `setStatus('connecting')` here: React 19's lint (rightly)
-    // treats setState in an effect body as a cascading render. The three
-    // callbacks below are the only writers, and a resubscribe keeps the last
-    // state the stream reported until the new one says something.
     return subscribeSse('sample/watch', {
       schema: SampleSchema,
       params: feedParams(labId, boxId, itemTypeId),
       onFrame: (frame) => {
         applySampleFrame(queryClient, labId, frame.data);
-        // A frame arriving proves the feed works, including after a reconnect.
-        setStatus('live');
       },
       onOpen: () => {
-        setStatus('live');
         setError(null);
       },
       onError: (caught) => {
         setError(caught);
-        setStatus('error');
       },
       ...(eventSourceFactory === undefined ? {} : { eventSourceFactory }),
       ...(reconnect === undefined ? {} : { reconnect }),
