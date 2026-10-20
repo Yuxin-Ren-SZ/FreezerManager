@@ -2010,6 +2010,64 @@ namespace fmgr::storage {
       }
     }
 
+    TEST_P(SampleRepositoryTest, ApplyCheckoutRejectsAVolumeTheSamplesUnitCannotRepresent) {
+      const auto lab_id = seed_lab(1);
+      const auto user_id = seed_user(2, lab_id);
+      const auto it_id = seed_item_type(3, lab_id);
+      auto sample = make_sample(10, lab_id, it_id, user_id);
+      sample.volume_value = 50;
+      sample.volume_unit = core::VolumeUnit::Milliliter;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Sample>().insert(sample, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        apply_checkout(*txn, sample.id,
+                       CheckoutCommand{.action = core::CheckoutAction::CheckedOut,
+                                       .event_id = id_from_low<core::CheckoutEventId>(50),
+                                       .at = ts(900)},
+                       mutation_context_as(user_id));
+        txn->commit();
+      }
+
+      // `to_unit` converts µL→mL by integer division, so 500 µL against an
+      // mL-tracked sample is `used = 0`: the check-in would answer OK and
+      // subtract nothing (#111). The guard lives in `apply_checkout` for the
+      // same reason the negative guard does — this is the subtraction that
+      // would silently consume the wrong amount, so a caller arriving any other
+      // way is refused too.
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        EXPECT_THROW(
+            apply_checkout(*txn, sample.id,
+                           CheckoutCommand{.action = core::CheckoutAction::CheckedIn,
+                                           .volume_used = core::Volume::from_raw(
+                                               500, core::VolumeUnit::Microliter),
+                                           .event_id = id_from_low<core::CheckoutEventId>(51),
+                                           .at = ts(901)},
+                           mutation_context_as(user_id)),
+            ConstraintViolation);
+      }
+
+      {
+        auto txn = backend().begin(IsolationLevel::ReadCommitted);
+        const auto stored = txn->repo<core::Sample>().find_by_id(sample.id);
+        const auto events =
+            txn->repo<core::CheckoutEvent>().query(Query<core::CheckoutEvent>::where(
+                field<core::CheckoutEvent, std::string>(core::CheckoutEvent::Field::SampleId) ==
+                sample.id.to_string()));
+        txn->commit();
+        ASSERT_TRUE(stored.has_value());
+        EXPECT_EQ(stored.value().volume_value, 50);
+        EXPECT_EQ(stored.value().status, core::SampleStatus::CheckedOut);
+        // Refused before the event: the chain of custody holds the check-out only.
+        ASSERT_EQ(events.size(), 1U);
+        EXPECT_EQ(events.front().action, core::CheckoutAction::CheckedOut);
+      }
+    }
+
     TEST_P(SampleRepositoryTest, CheckoutOfAlreadyCheckedOutSampleThrows) {
       const auto lab_id = seed_lab(1);
       const auto user_id = seed_user(2, lab_id);

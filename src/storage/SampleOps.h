@@ -68,11 +68,13 @@ namespace fmgr::storage {
   struct CheckoutCommand {
     core::CheckoutAction action;
     // Quantity consumed on this transition, expressed in any volume unit; it is
-    // converted to the sample's unit before subtraction. Must not be negative —
-    // a negative consumption is a different operation, and this one refuses it
-    // rather than performing the inverse (#112). Ignored when the sample tracks
-    // no volume. Only meaningful for CheckedIn (CheckedOut consumes nothing;
-    // Destroyed consumes whatever remains).
+    // converted to the sample's unit before subtraction, and must convert
+    // exactly — a consumption the sample's unit cannot represent is refused
+    // rather than truncated (#111). Must not be negative — a negative
+    // consumption is a different operation, and this one refuses it rather than
+    // performing the inverse (#112). Ignored when the sample tracks no volume.
+    // Only meaningful for CheckedIn (CheckedOut consumes nothing; Destroyed
+    // consumes whatever remains).
     std::optional<core::Volume> volume_used;
     std::optional<std::string> reason;
     core::CheckoutEventId event_id;
@@ -91,7 +93,9 @@ namespace fmgr::storage {
   //
   // Throws NotFound if the sample does not exist and ConstraintViolation for an
   // illegal transition (already tombstoned/destroyed, or a status that does not
-  // permit the requested action). On any throw the caller must roll back.
+  // permit the requested action), for a negative `volume_used` (#112), or for a
+  // consumption the sample's unit cannot represent exactly (#111). On any throw
+  // the caller must roll back.
   inline core::Sample apply_checkout(ITransaction& txn, const core::SampleId& sample_id,
                                      const CheckoutCommand& command,
                                      const MutationContext& context) {
@@ -114,6 +118,23 @@ namespace fmgr::storage {
     // does the arithmetic — a caller reaching it any other way is refused too.
     if (command.volume_used.has_value() && command.volume_used->raw_value() < 0) {
       throw ConstraintViolation("volume_used: must not be negative");
+    }
+
+    // The consumption must survive conversion into the sample's own unit. The
+    // CheckedIn arm converts with integer division, so `500 µL` against a vial
+    // tracked in mL becomes `used = 0`: the check-in answered OK, returned the
+    // vial to Active and subtracted nothing (#111). A consumption the sample's
+    // unit cannot hold is refused here rather than truncated, for the same
+    // reason the sign is checked here — this is the subtraction that would
+    // silently consume the wrong amount. `converts_exactly_to` keeps the
+    // legitimate direction exact: `1 mL` against a µL-tracked vial is 1000 µL
+    // and is still accepted.
+    if (command.volume_used.has_value() && sample.volume_unit.has_value() &&
+        !command.volume_used->converts_exactly_to(*sample.volume_unit)) {
+      throw ConstraintViolation(
+          "volume_used: " + std::to_string(command.volume_used->raw_value()) + " " +
+          std::string(core::to_string(command.volume_used->unit())) + " cannot be represented in " +
+          std::string(core::to_string(*sample.volume_unit)) + " without truncation");
     }
 
     // volume_delta records the signed quantity change (negative = consumed), in
