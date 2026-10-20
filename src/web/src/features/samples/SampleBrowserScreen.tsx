@@ -175,12 +175,15 @@ export function SampleBrowserScreen() {
   const isPending = samplesQuery.isPending;
   const isError = samplesQuery.isError;
   const filtered = hasActiveFilters(filters);
+  // The same four-state signal the shell's indicator reads (#141).
   const liveLabel =
     live.status === 'live'
       ? t('live.live')
       : live.status === 'connecting'
         ? t('live.connecting')
-        : t('live.error');
+        : live.status === 'reconnecting'
+          ? t('live.reconnecting')
+          : t('live.error');
 
   return (
     <section className={styles.screen}>

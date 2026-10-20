@@ -4,6 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SampleSchema } from '../gen/fmgr/v1/sample_pb';
 import { FakeEventSource, fakeEventSource } from '../test/fakeEventSource';
 import { ApiError } from './errors';
+import {
+  getLiveConnectionState,
+  resetLiveConnectionForTests,
+  subscribeLiveConnection,
+} from './liveConnection';
 import { reconnectDelayMs, subscribeSse, type SseFrame } from './sse';
 
 /**
@@ -21,6 +26,7 @@ const current = (): FakeEventSource => FakeEventSource.current();
 
 beforeEach(() => {
   FakeEventSource.reset();
+  resetLiveConnectionForTests();
   vi.useFakeTimers();
 });
 
@@ -315,5 +321,118 @@ describe('subscribeSse', () => {
     );
 
     expect(frames[0]).toMatchObject({ id: 's-1', labId: 'lab-1', name: 'Serum A' });
+  });
+});
+
+/**
+ * The app-wide connection state (issue #141): the shell's indicator and the
+ * screens' "live updates" copy both read it, so it has to be derived from the
+ * real streams rather than set by whatever component happens to be mounted.
+ */
+describe('the live-connection state', () => {
+  it('is offline with no stream, connecting once one starts, and offline after it ends', () => {
+    expect(getLiveConnectionState()).toBe('offline');
+
+    const unsubscribe = subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      onFrame: vi.fn(),
+      eventSourceFactory: factory,
+    });
+
+    expect(getLiveConnectionState()).toBe('connecting');
+
+    unsubscribe();
+    expect(getLiveConnectionState()).toBe('offline');
+  });
+
+  it('is live after open, reconnecting after a drop, and live again when the retry opens', () => {
+    const unsubscribe = subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      onFrame: vi.fn(),
+      eventSourceFactory: factory,
+      reconnect: { baseDelayMs: 100, maxDelayMs: 100 },
+    });
+
+    current().open();
+    expect(getLiveConnectionState()).toBe('live');
+
+    current().transportError();
+    expect(getLiveConnectionState()).toBe('reconnecting');
+
+    vi.advanceTimersByTime(100);
+    expect(FakeEventSource.all()).toHaveLength(2);
+
+    current().open();
+    expect(getLiveConnectionState()).toBe('live');
+
+    unsubscribe();
+  });
+
+  it('is offline after a terminal refusal and does not go back to reconnecting', () => {
+    const unsubscribe = subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      onFrame: vi.fn(),
+      eventSourceFactory: factory,
+    });
+
+    current().open();
+    current().serverError({ code: 'PERMISSION_DENIED', message: 'no sample.read' });
+
+    expect(getLiveConnectionState()).toBe('offline');
+    vi.advanceTimersByTime(60_000);
+    expect(FakeEventSource.all()).toHaveLength(1);
+
+    unsubscribe();
+  });
+
+  it('notifies subscribers on every change and stops after they unsubscribe', () => {
+    const listener = vi.fn();
+    const stop = subscribeLiveConnection(listener);
+
+    const unsubscribe = subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      onFrame: vi.fn(),
+      eventSourceFactory: factory,
+    });
+    current().open();
+    expect(listener.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    stop();
+    listener.mockClear();
+    current().transportError();
+    expect(listener).not.toHaveBeenCalled();
+
+    unsubscribe();
+  });
+
+  it('reports live while any one of several streams is up', () => {
+    const first = subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      onFrame: vi.fn(),
+      eventSourceFactory: factory,
+    });
+    const second = subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      onFrame: vi.fn(),
+      eventSourceFactory: factory,
+    });
+    const [a, b] = FakeEventSource.all();
+
+    a?.open();
+    expect(getLiveConnectionState()).toBe('live');
+
+    a?.transportError();
+    // One feed dropped but the other has not opened yet: the shell must not
+    // claim "live" while the only connected stream is reconnecting.
+    expect(getLiveConnectionState()).toBe('reconnecting');
+
+    b?.open();
+    expect(getLiveConnectionState()).toBe('live');
+
+    first();
+    expect(getLiveConnectionState()).toBe('live');
+
+    second();
+    expect(getLiveConnectionState()).toBe('offline');
   });
 });

@@ -4,7 +4,6 @@ import { createMemoryRouter, RouterProvider } from 'react-router-dom';
 import { AppProviders } from './providers';
 import { createAppRoutes } from './router';
 import { MfaPendingError, type CurrentUser, type SessionLoader } from './session';
-import type { ConnectionState } from './connection';
 
 export interface RenderAppOptions {
   /** Starting URL; defaults to the dashboard. */
@@ -25,7 +24,6 @@ export interface RenderAppOptions {
    * establishes is what the *next* `auth/whoami` reports.
    */
   loadSession?: SessionLoader;
-  connection?: ConnectionState;
 }
 
 /**
@@ -46,7 +44,6 @@ export function renderApp(options: RenderAppOptions = {}) {
     sessionError,
     mfaPending = false,
     loadSession: loadSessionOverride,
-    connection = 'live',
   } = options;
 
   const router = createMemoryRouter(createAppRoutes(), { initialEntries: [path] });
@@ -60,7 +57,7 @@ export function renderApp(options: RenderAppOptions = {}) {
       : () => (sessionError ? Promise.reject(sessionError) : Promise.resolve(user)));
 
   const result = render(
-    <AppProviders connectionStatus={connection} loadSession={loadSession}>
+    <AppProviders loadSession={loadSession}>
       <RouterProvider router={router} />
     </AppProviders>,
   );

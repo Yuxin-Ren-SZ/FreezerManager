@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ListSamplesResponseSchema, SampleSchema, SampleStatus } from '../../gen/fmgr/v1/sample_pb';
 import type { Sample } from '../../gen/fmgr/v1/sample_pb';
 import { FakeEventSource, fakeEventSource } from '../../test/fakeEventSource';
+import { resetLiveConnectionForTests } from '../liveConnection';
 import { createWrapper } from '../../test/render';
 import { sampleKeys } from './samples';
 import { useSampleLive } from './sampleLive';
@@ -78,6 +79,7 @@ let client: QueryClient;
 
 beforeEach(() => {
   FakeEventSource.reset();
+  resetLiveConnectionForTests();
   client = createSeededQueryClient();
 });
 
@@ -258,7 +260,7 @@ describe('useSampleLive', () => {
     expect(client.getQueryState(detailKey)?.isInvalidated).toBe(true);
   });
 
-  it('reports live, then error, and reconnects carrying the last event id', async () => {
+  it('reports live, then reconnecting, and reconnects carrying the last event id', async () => {
     vi.useFakeTimers();
     const { result } = renderLive();
 
@@ -272,7 +274,9 @@ describe('useSampleLive', () => {
       FakeEventSource.current().message(frame({ id: 'sample-1' }), '1758931200000000');
       FakeEventSource.current().transportError();
     });
-    expect(result.current.status).toBe('error');
+    // The wrapper is waiting out its backoff: the stream is not gone, so the
+    // shared state says "reconnecting", not "offline".
+    expect(result.current.status).toBe('reconnecting');
 
     // G1.2's SSE wrapper owns the backoff; the hook's job is to keep merging
     // after it. The cursor travels as `since`, so the gap is not lost.
@@ -307,7 +311,7 @@ describe('useSampleLive', () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
 
-    expect(result.current.status).toBe('error');
+    expect(result.current.status).toBe('offline');
     expect(result.current.error?.code).toBe('PERMISSION_DENIED');
     expect(FakeEventSource.all()).toHaveLength(1);
   });
@@ -320,7 +324,10 @@ describe('useSampleLive', () => {
 
     push('{not json');
 
-    expect(result.current.status).toBe('error');
+    // A frame the client cannot parse is an error to report, but the stream is
+    // still up — calling it "offline" would tell the user to reload for nothing.
+    expect(result.current.status).toBe('live');
+    expect(result.current.error?.code).toBe('INTERNAL');
     expect(FakeEventSource.current().closed).toBe(false);
   });
 

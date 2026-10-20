@@ -20,6 +20,7 @@
     "label": "Live updates: {{state}}",
     "live": "Live",
     "connecting": "Connecting",
+    "reconnecting": "Reconnecting",
     "offline": "Offline"
   },
   "nav": {

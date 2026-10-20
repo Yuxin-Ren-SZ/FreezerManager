@@ -46,6 +46,7 @@
   "live": {
     "live": "Live updates on",
     "connecting": "Connecting to live updates…",
+    "reconnecting": "Reconnecting to live updates…",
     "error": "Live updates are not available"
   },
   "export": {
