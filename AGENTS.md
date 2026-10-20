@@ -162,7 +162,9 @@ layout.
 
 - **One git worktree per task** under `.worktrees/<issue>-<slug>` (gitignored),
   branch `<type>/<issue>-<slug>`, cut from `origin/main`. Never work in the
-  main checkout unless you are the lead doing lead chores.
+  main checkout unless you are the lead doing lead chores. The main checkout
+  belongs to the lead alone — owner sessions work in worktrees too (board #28,
+  owner DECISION of 2026-10-20).
 - **Shared toolchain:** `env.sh` points `CONAN_HOME` at the main checkout's
   `.conan/` and puts its `.venv/bin` on `PATH`. The worktree script runs
   `conan install --build=never`, so dependencies are never compiled twice or
