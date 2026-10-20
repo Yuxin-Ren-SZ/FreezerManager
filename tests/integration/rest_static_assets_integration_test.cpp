@@ -182,6 +182,23 @@ namespace fmgr::test {
       EXPECT_EQ(result.cache_control, "no-store");
     }
 
+    TEST(RestStaticAssets, ClassifiesApiPathsCaseInsensitively) {
+      // Drogon's exact routing lowercases the lookup path, so /API/... can
+      // reach a gateway route (or miss one); the fallback and the cache advice
+      // must classify it the same way the router did.
+      const auto unknown = fetch("/API/v1/does-not-exist");
+      ASSERT_TRUE(unknown.ok());
+      EXPECT_EQ(unknown.status, 404);
+      EXPECT_NE(unknown.content_type.find("application/json"), std::string::npos)
+          << unknown.content_type;
+      EXPECT_EQ(unknown.cache_control, "no-store");
+
+      const auto known = post(base_url(), "/API/v1/sample/import", R"({"samples":[]})");
+      ASSERT_TRUE(known.ok());
+      EXPECT_EQ(known.status, 200);
+      EXPECT_EQ(known.cache_control, "no-store");
+    }
+
     TEST(RestStaticAssets, KnownApiResponsesAreNoStore) {
       const std::string body = R"({"samples":[{"external_id":"S-1"}]})";
       const auto result = post(base_url(), "/api/v1/sample/import", body);

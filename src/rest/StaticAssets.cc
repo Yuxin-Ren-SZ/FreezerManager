@@ -5,6 +5,8 @@
 #include <drogon/drogon.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -24,6 +26,19 @@ namespace fmgr::rest {
     // HTML must be revalidated on every load, or a deploy keeps serving the old
     // shell (and the old asset names) until the cache expires.
     constexpr std::string_view kRevalidateCache = "no-cache";
+
+    // Drogon routes exact handlers case-insensitively (it lowercases the lookup
+    // path), so an API caller can reach a gateway route with /API/V1/... in the
+    // URL while `req->path()` keeps the caller's case. The fallback and the
+    // header advice must classify it the same way the router did.
+    [[nodiscard]] bool starts_with_ci(std::string_view path, std::string_view prefix) {
+      if (path.size() < prefix.size()) {
+        return false;
+      }
+      return std::equal(prefix.begin(), prefix.end(), path.begin(), [](char expected, char actual) {
+        return expected == static_cast<char>(std::tolower(static_cast<unsigned char>(actual)));
+      });
+    }
 
     [[nodiscard]] std::size_t parse_body_limit(const char* raw) {
       if (raw == nullptr || *raw == '\0') {
@@ -99,7 +114,7 @@ namespace fmgr::rest {
           "^/.*$", [root](const drogon::HttpRequestPtr& req,
                           std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             const std::string& path = req->path();
-            if (path.rfind("/api/", 0) == 0) {
+            if (starts_with_ci(path, "/api/")) {
               // The gateway's own routes are exact matches and never reach
               // here. An unknown /api/* path is still an API caller: answer in
               // JSON, not with the SPA shell that would look like a 200.
@@ -141,13 +156,13 @@ namespace fmgr::rest {
               resp->addHeader("Strict-Transport-Security", "max-age=31536000");
             }
             const std::string& path = req->path();
-            if (path.rfind("/api/", 0) == 0) {
+            if (starts_with_ci(path, "/api/")) {
               // API responses carry PHI and credentials: never on disk, never
               // in a shared cache, not even after a browser back-navigation.
               resp->addHeader("Cache-Control", "no-store");
               return;
             }
-            const bool immutable = path.rfind("/assets/", 0) == 0 &&
+            const bool immutable = starts_with_ci(path, "/assets/") &&
                                    resp->getStatusCode() == drogon::k200OK &&
                                    resp->contentType() != drogon::CT_TEXT_HTML;
             resp->addHeader("Cache-Control",
