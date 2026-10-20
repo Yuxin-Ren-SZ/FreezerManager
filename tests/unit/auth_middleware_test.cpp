@@ -129,6 +129,23 @@ namespace fmgr::rpc {
       return mw.authenticate(call, rule);
     }
 
+    // Installs a process data-tier limiter for one test and uninstalls it even
+    // when an assertion throws. The gate is process-global, so leaving one
+    // installed would silently throttle every later test in this binary (#128).
+    class ProcessDataLimiterGuard {
+    public:
+      explicit ProcessDataLimiterGuard(RateLimiter& limiter) {
+        AuthMiddleware::set_process_data_rate_limiter(&limiter);
+      }
+      ~ProcessDataLimiterGuard() {
+        AuthMiddleware::set_process_data_rate_limiter(nullptr);
+      }
+      ProcessDataLimiterGuard(const ProcessDataLimiterGuard&) = delete;
+      ProcessDataLimiterGuard& operator=(const ProcessDataLimiterGuard&) = delete;
+      ProcessDataLimiterGuard(ProcessDataLimiterGuard&&) = delete;
+      ProcessDataLimiterGuard& operator=(ProcessDataLimiterGuard&&) = delete;
+    };
+
     // ---- Fixture ----
 
     class AuthMiddlewareTest : public ::testing::Test {
@@ -584,6 +601,55 @@ namespace fmgr::rpc {
           *middleware_,
           RpcCall{.bearer_token = completed.plaintext_token, .method = "e3_test.PendingMfaRefused"},
           CredentialRule::TokenAndMfa));
+    }
+
+    // #128: the six TokenAndMfa RPCs never call authorize(), so before this they
+    // bypassed the process data-tier limiter. authenticate() is the gate those
+    // handlers do call, and it now applies the same limit for exactly that rule.
+    // A zero-capacity bucket refuses every request, so "the call succeeded" would
+    // be unambiguous evidence the limiter was not consulted.
+    TEST_F(AuthMiddlewareTest, AuthenticateAppliesTheDataTierLimiterToTokenAndMfa) {
+      RateLimiter limiter(RateLimiterConfig{.capacity = 0.0, .refill_per_sec = 0.0});
+      ProcessDataLimiterGuard guard(limiter);
+      const auto completed = lab_admin_mfa_complete();
+
+      EXPECT_THROW(
+          do_authenticate_on(*middleware_,
+                             RpcCall{.bearer_token = completed.plaintext_token, .method = ""},
+                             CredentialRule::TokenAndMfa),
+          auth::RateLimited);
+    }
+
+    // The two gates share one process budget: a request authorize() admitted
+    // spends the same token authenticate() would need for the same bearer.
+    TEST_F(AuthMiddlewareTest, AuthorizeAndAuthenticateShareTheProcessDataTierBudget) {
+      RateLimiter limiter(RateLimiterConfig{.capacity = 1.0, .refill_per_sec = 0.0});
+      ProcessDataLimiterGuard guard(limiter);
+      const auto completed = lab_admin_mfa_complete();
+
+      EXPECT_NO_THROW(do_authorize(*middleware_, completed.plaintext_token,
+                                   core::Permission::SampleRead, kLabA));
+      EXPECT_THROW(
+          do_authenticate_on(*middleware_,
+                             RpcCall{.bearer_token = completed.plaintext_token, .method = ""},
+                             CredentialRule::TokenAndMfa),
+          auth::RateLimited);
+    }
+
+    // TokenOnly is deliberately outside the data-tier budget (#128): SubmitMfa
+    // has its own per-user brute-force limiter, and Logout only removes
+    // authority, so a gate meant for data traffic must not starve either.
+    TEST_F(AuthMiddlewareTest, AuthenticateLeavesTokenOnlyOutsideTheDataTierLimiter) {
+      RateLimiter limiter(RateLimiterConfig{.capacity = 0.0, .refill_per_sec = 0.0});
+      ProcessDataLimiterGuard guard(limiter);
+      ASSERT_FALSE(lab_admin_token_.mfa_complete);
+
+      auth::SessionContext ctx;
+      EXPECT_NO_THROW(ctx = do_authenticate_on(
+                          *middleware_,
+                          RpcCall{.bearer_token = lab_admin_token_.plaintext_token, .method = ""},
+                          CredentialRule::TokenOnly));
+      EXPECT_FALSE(ctx.mfa_complete);
     }
 
     // The planted disagreement: this is the test that goes red when a handler

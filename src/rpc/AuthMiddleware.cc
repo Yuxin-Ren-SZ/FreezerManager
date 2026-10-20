@@ -157,6 +157,16 @@ namespace fmgr::rpc {
     process_data_limiter().store(limiter, std::memory_order_release);
   }
 
+  void AuthMiddleware::apply_data_tier_limit(std::string_view bearer_token) {
+    // An uninstalled gate (the default in unit tests and tooling) must not
+    // throttle: only a server's RateLimitInterceptor installs one.
+    if (auto* limiter = process_data_limiter().load(std::memory_order_acquire)) {
+      if (!limiter->try_acquire(std::string(bearer_token), rpc::RateLimiter::Clock::now())) {
+        throw auth::RateLimited("too many requests; slow down");
+      }
+    }
+  }
+
   auth::SessionContext AuthMiddleware::authorize(const RpcCall& call,
                                                  core::Permission required_perm,
                                                  std::optional<core::LabId> lab_id) const {
@@ -171,11 +181,7 @@ namespace fmgr::rpc {
     // Step 1: data-tier rate limit, keyed by the bearer token, before any work
     // (notably token validation). Throttles authenticated request floods across
     // every service (audit C-10). Skipped when no gate is installed.
-    if (auto* limiter = process_data_limiter().load(std::memory_order_acquire)) {
-      if (!limiter->try_acquire(std::string(bearer_token), rpc::RateLimiter::Clock::now())) {
-        throw auth::RateLimited("too many requests; slow down");
-      }
-    }
+    apply_data_tier_limit(bearer_token);
 
     // Step 2: validate token (may throw InvalidCredentials, TokenExpired, etc.)
     auth::SessionContext ctx = auth_.validate_token(bearer_token);
@@ -214,10 +220,20 @@ namespace fmgr::rpc {
     // presenting different credentials.
     require_credential_agreement(call, rule);
 
-    // Step 1: validate token (may throw InvalidCredentials, TokenExpired, etc.)
+    // Step 1: the data-tier rate limit, for TokenAndMfa only (#128). Those are
+    // authenticated data endpoints whose handlers never call authorize(), so
+    // before this they were the one authenticated class outside the process gate.
+    // TokenOnly is deliberately exempt: SubmitMfa has its own per-user brute-force
+    // limiter and Logout only removes authority, so a data-traffic budget must not
+    // make giving up a credential fail.
+    if (rule == CredentialRule::TokenAndMfa) {
+      apply_data_tier_limit(call.bearer_token);
+    }
+
+    // Step 2: validate token (may throw InvalidCredentials, TokenExpired, etc.)
     auth::SessionContext ctx = auth_.validate_token(call.bearer_token);
 
-    // Step 2: the MFA half of the rule. TokenOnly skips it deliberately — that is
+    // Step 3: the MFA half of the rule. TokenOnly skips it deliberately — that is
     // the whole of the #62 exception, and the reason the rule is named rather
     // than assumed. The message is the one these handlers used before #119 moved
     // the check here, so the wire text a client sees is unchanged.

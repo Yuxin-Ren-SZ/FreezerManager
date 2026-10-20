@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 #include "auth/LocalAuthProvider.h"
+#include "auth/Totp.h"
 #include "core/identity.h"
 #include "core/permissions.h"
 #include "core/role.h"
@@ -77,12 +78,7 @@ namespace fmgr::test {
         seed_test_user();
 
         // Start server on a random port (OS-assigned by using port 0).
-        server_opts_.listen_address = "localhost:0";
-        // Unmask INTERNAL detail: the registry-mismatch test (#60) asserts that
-        // the refusal names both permissions, and the default masks it in release
-        // builds (NDEBUG). Set explicitly rather than relying on the debug
-        // default, so the assertion holds in every preset CI builds.
-        server_opts_.mask_internal_errors = false;
+        server_opts_ = make_server_options();
         server_ = std::make_unique<server::FreezerServer>(*backend_, *provider_, server_opts_);
         // build() binds the port (fills bound_port_) without blocking.
         server_->build();
@@ -109,6 +105,20 @@ namespace fmgr::test {
         provider_.reset();
         backend_.reset();
         remove_sqlite_files(db_path_);
+      }
+
+      // Options for the fixture's server. A subclass overrides this to shrink a
+      // budget — the six-RPC data-tier test (#128) needs the bucket to hold one
+      // request, not the production 120 — without duplicating the fixture.
+      [[nodiscard]] virtual server::FreezerServerOptions make_server_options() const {
+        server::FreezerServerOptions opts;
+        opts.listen_address = "localhost:0";
+        // Unmask INTERNAL detail: the registry-mismatch test (#60) asserts that
+        // the refusal names both permissions, and the default masks it in release
+        // builds (NDEBUG). Set explicitly rather than relying on the debug
+        // default, so the assertion holds in every preset CI builds.
+        opts.mask_internal_errors = false;
+        return opts;
       }
 
       // Login and return the bearer token.
@@ -342,6 +352,19 @@ namespace fmgr::test {
         };
         txn->repo<core::User>().insert(no_permission_user, ctx);
         txn->commit();
+      }
+    };
+
+    // A server whose data-tier budget holds exactly one authenticated request, so
+    // a test can distinguish "the limiter saw this RPC" from "the request happened
+    // to fit in the production 120-token burst". Every login mints a new bearer
+    // token, i.e. a fresh bucket, so each RPC below starts with a full budget.
+    class TinyDataBudgetServerTest : public ServerIntegrationTest {
+    protected:
+      [[nodiscard]] server::FreezerServerOptions make_server_options() const override {
+        auto opts = ServerIntegrationTest::make_server_options();
+        opts.rate_limit.data = rpc::RateLimiterConfig{.capacity = 1.0, .refill_per_sec = 0.0};
+        return opts;
       }
     };
 
@@ -1301,6 +1324,149 @@ namespace fmgr::test {
       // UNAUTHENTICATED); the overflow is throttled before any work is done.
       EXPECT_GT(unauthenticated, 0);
       EXPECT_GT(resource_exhausted, 0);
+    }
+
+    // #128: the six TokenAndMfa RPCs are authenticated data endpoints, but their
+    // handlers call authenticate() rather than authorize(), so before this they
+    // never reached the process data-tier limiter. The budget here holds one
+    // request: the first call reaches the handler, the second is refused before
+    // any work is done. Each RPC gets a fresh login (a fresh bearer token and
+    // therefore a fresh bucket); asserting only on the second call would not
+    // distinguish a working limiter from a handler that never ran.
+    TEST_F(TinyDataBudgetServerTest, TokenAndMfaRpcsAreSubjectToTheDataTierLimiter) {
+      const auto assert_budget_is_one = [this](auto&& invoke) {
+        const auto token = login(kEmail, kPassword);
+        if (token.empty()) {
+          ADD_FAILURE() << "fixture login failed";
+          return;
+        }
+        const auto first = invoke(token);
+        EXPECT_NE(first.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED)
+            << "the first request must reach the handler: " << first.error_message();
+        const auto second = invoke(token);
+        EXPECT_EQ(second.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED)
+            << "the second request must be refused by the data-tier limiter: "
+            << second.error_message();
+      };
+
+      assert_budget_is_one([this](const std::string& token) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateApiTokenRequest req;
+        req.set_name("data-tier-budget");
+        req.set_scope_json(R"(["*"])");
+        fmgr::v1::CreateApiTokenResponse resp;
+        return auth_stub_->CreateApiToken(&ctx, req, &resp);
+      });
+      assert_budget_is_one([this](const std::string& token) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListApiTokensRequest req;
+        fmgr::v1::ListApiTokensResponse resp;
+        return auth_stub_->ListApiTokens(&ctx, req, &resp);
+      });
+      assert_budget_is_one([this](const std::string& token) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::RevokeApiTokenRequest req;
+        req.set_api_token_id("00000000-0000-4000-8000-000000000001");
+        fmgr::v1::RevokeApiTokenResponse resp;
+        return auth_stub_->RevokeApiToken(&ctx, req, &resp);
+      });
+      assert_budget_is_one([this](const std::string& token) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListSessionsRequest req;
+        fmgr::v1::ListSessionsResponse resp;
+        return session_stub_->ListSessions(&ctx, req, &resp);
+      });
+      assert_budget_is_one([this](const std::string& token) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::RevokeSessionRequest req;
+        req.set_session_id("00000000-0000-4000-8000-000000000002");
+        fmgr::v1::RevokeSessionResponse resp;
+        return session_stub_->RevokeSession(&ctx, req, &resp);
+      });
+      assert_budget_is_one([this](const std::string& token) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::ListLabsRequest req;
+        fmgr::v1::ListLabsResponse resp;
+        return lab_stub_->ListLabs(&ctx, req, &resp);
+      });
+    }
+
+    // #128: SubmitMfa is the one step between a leaked password and PHI. A
+    // six-digit code is guessable at machine speed, and before this change
+    // nothing slowed guesses down: the login limiter bounds a different RPC, and
+    // authenticate() did not consult the data-tier gate. Repeated wrong codes
+    // must be refused once the per-user bucket drains.
+    TEST_F(ServerIntegrationTest, SubmitMfaBurstIsRateLimited) {
+      const auto token = login(kMfaEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      const auto submit = [this, &token](std::string_view code) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::SubmitMfaRequest req;
+        req.set_totp_code(std::string(code));
+        fmgr::v1::SubmitMfaResponse resp;
+        return auth_stub_->SubmitMfa(&ctx, req, &resp);
+      };
+
+      const int attempts = static_cast<int>(server::AuthServiceImpl::k_mfa_rate_capacity) + 10;
+      int unauthenticated = 0;
+      int resource_exhausted = 0;
+      for (int i = 0; i < attempts; ++i) {
+        const auto status = submit("000000"); // wrong: failures must still drain the bucket
+        if (status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED) {
+          ++resource_exhausted;
+        } else if (status.error_code() == grpc::StatusCode::UNAUTHENTICATED) {
+          ++unauthenticated;
+        }
+      }
+      EXPECT_GT(unauthenticated, 0);
+      EXPECT_GT(resource_exhausted, 0);
+
+      // The budget belongs to the user, not the session: a re-login with the same
+      // stolen password must not hand the attacker a fresh set of guesses.
+      const auto second_session = login(kMfaEmail, kPassword);
+      ASSERT_FALSE(second_session.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, second_session);
+      fmgr::v1::SubmitMfaRequest req;
+      req.set_totp_code("000000");
+      fmgr::v1::SubmitMfaResponse resp;
+      const auto status = auth_stub_->SubmitMfa(&ctx, req, &resp);
+      EXPECT_EQ(status.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED)
+          << status.error_message();
+    }
+
+    // The other direction: one mistyped code must not lock a real user out. The
+    // budget exists to slow guessing, not to make a typo end the login.
+    TEST_F(ServerIntegrationTest, MistypedTotpOnceThenCorrectCodeIsAccepted) {
+      const auto token = login(kMfaEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      grpc::ClientContext wrong_ctx;
+      set_bearer(wrong_ctx, token);
+      fmgr::v1::SubmitMfaRequest wrong_req;
+      wrong_req.set_totp_code("000000");
+      fmgr::v1::SubmitMfaResponse wrong_resp;
+      const auto wrong = auth_stub_->SubmitMfa(&wrong_ctx, wrong_req, &wrong_resp);
+      EXPECT_EQ(wrong.error_code(), grpc::StatusCode::UNAUTHENTICATED) << wrong.error_message();
+
+      const auto now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+      grpc::ClientContext right_ctx;
+      set_bearer(right_ctx, token);
+      fmgr::v1::SubmitMfaRequest right_req;
+      right_req.set_totp_code(auth::totp_generate(kTotpSecret, now_s));
+      fmgr::v1::SubmitMfaResponse right_resp;
+      const auto right = auth_stub_->SubmitMfa(&right_ctx, right_req, &right_resp);
+      EXPECT_TRUE(right.ok()) << right.error_message();
     }
 
     // Security audit H-2: a production deployment that requires TLS must refuse

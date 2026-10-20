@@ -20,6 +20,15 @@ namespace fmgr::server {
     static constexpr double k_login_rate_capacity = 30.0;
     static constexpr double k_login_rate_refill_per_sec = 5.0;
 
+    // Brute-force budget for SubmitMfa, keyed by user rather than by session or
+    // token: a six-digit TOTP is guessable at machine speed, and re-logging in
+    // with the same stolen password must not mint a fresh set of guesses (#128).
+    // Five immediate attempts cover a mistyped code plus retries; past that the
+    // budget refills one attempt per minute. Referenced by tests so the limit
+    // stays in lockstep with the handler.
+    static constexpr double k_mfa_rate_capacity = 5.0;
+    static constexpr double k_mfa_rate_refill_per_sec = 1.0 / 60.0;
+
     explicit AuthServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend);
 
     grpc::Status Login(grpc::ServerContext* ctx, const fmgr::v1::LoginRequest* req,
@@ -54,6 +63,9 @@ namespace fmgr::server {
     rpc::AuthMiddleware middleware_;
     // Throttles unauthenticated Login attempts per source IP (audit H-1).
     rpc::RateLimiter login_limiter_;
+    // Throttles TOTP submissions per user (#128): Login's per-IP budget does not
+    // cover guessing a six-digit code through an already-issued pending session.
+    rpc::RateLimiter mfa_limiter_;
   };
 
 } // namespace fmgr::server
