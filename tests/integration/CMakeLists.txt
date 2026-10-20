@@ -284,6 +284,66 @@ target_link_libraries(
     GTest::gtest_main
 )
 
+# G0.3: freezerd serves the built SPA. Drogon's HTTP app is a process-wide
+# singleton, so each startup configuration (SPA on, SPA on with TLS + a lowered
+# body limit, SPA off) gets its own executable.
+add_executable(freezermanager_rest_static_assets_integration_tests
+  rest_static_assets_integration_test.cpp
+)
+
+target_include_directories(
+  freezermanager_rest_static_assets_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  freezermanager_rest_static_assets_integration_tests
+  PRIVATE
+    FreezerManager::rest
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+
+add_executable(freezermanager_rest_static_assets_tls_integration_tests
+  rest_static_assets_tls_integration_test.cpp
+)
+
+target_include_directories(
+  freezermanager_rest_static_assets_tls_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  freezermanager_rest_static_assets_tls_integration_tests
+  PRIVATE
+    FreezerManager::rest
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+
+add_executable(freezermanager_rest_static_assets_disabled_integration_tests
+  rest_static_assets_disabled_integration_test.cpp
+)
+
+target_include_directories(
+  freezermanager_rest_static_assets_disabled_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  freezermanager_rest_static_assets_disabled_integration_tests
+  PRIVATE
+    FreezerManager::rest
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 # These spin up an in-process gRPC server. The Conan gRPC/absl libraries are
 # prebuilt WITHOUT sanitizer instrumentation, so under asan/tsan they produce
@@ -315,3 +375,9 @@ gtest_discover_tests(freezermanager_demo_seed_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_rest_gateway_integration_tests
   PROPERTIES LABELS "grpc_integration")
+# These do not start a gRPC server (but FreezerManager::rest still links gRPC),
+# so they stay unlabelled: the asan/tsan presets should exercise this network
+# code. CTEST_PARALLEL_LEVEL=1 keeps their loopback listeners serialized anyway.
+gtest_discover_tests(freezermanager_rest_static_assets_integration_tests)
+gtest_discover_tests(freezermanager_rest_static_assets_tls_integration_tests)
+gtest_discover_tests(freezermanager_rest_static_assets_disabled_integration_tests)

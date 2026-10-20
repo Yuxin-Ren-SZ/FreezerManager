@@ -214,6 +214,7 @@ add_executable(freezermanager_rest_unit_tests
   browser_session_test.cpp
   json_proto_mapping_test.cpp
   rest_error_translation_test.cpp
+  static_assets_test.cpp
 )
 target_link_libraries(
   freezermanager_rest_unit_tests
