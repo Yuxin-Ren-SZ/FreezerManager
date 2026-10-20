@@ -88,6 +88,11 @@ ROLE_READONLY = "00000000-0000-0000-0000-000000000004"
 # JSON constant reused across many inserts
 CAPACITY_HINT_JSON = json.dumps({"rows": None, "cols": None, "depth": None})
 EMPTY_JSON = json.dumps({})
+# The write path stores "no dimensions" as the JSON text `null`
+# (dimensions_dump in src/storage/detail/BoxGeometryColumns.h), not `{}` —
+# the seed must agree so a seeded database and an API-created one are
+# indistinguishable (#138).
+NO_DIMENSIONS_JSON = "null"
 
 # Every demo account uses this password (printed at the end). The hash below is
 # the one argon2-cffi produces for "admin" with the parameters `hash_password`
@@ -325,7 +330,7 @@ def seed_container_types(conn: sqlite3.Connection, lab_ids: list[str]) -> dict:
                 "INSERT INTO container_types (id, lab_id, name, size_class,"
                 " outer_dimensions_json, material, supplier_sku, created_at_micros)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (ctid, lab_id, name, size_class, EMPTY_JSON, material, sku, now),
+                (ctid, lab_id, name, size_class, NO_DIMENSIONS_JSON, material, sku, now),
             )
             result[lab_id][size_class] = ctid
             counter += 1
