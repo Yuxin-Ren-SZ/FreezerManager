@@ -10,8 +10,10 @@ Notes dated before 2026-09-27 were moved here verbatim from `TODO.md`.
 
 - **Add a note in the same PR as the work**, never in a later one. The file is
   new, so it never conflicts with anyone else's PR.
-- Filename: `YYYY-MM-DD-<issue>-<slug>.md`, dated the day the PR is opened, for
-  example `2026-10-02-42-sse-sample-watch.md`.
+- Filename: `YYYY-MM-DD-<issue>-<slug>.md`, dated the day the PR is opened.
+  Take the date from `date +%F`, not from an example or another note: eleven
+  notes written on 2026-09-29 copied the date of the example that used to be
+  here, and were renamed on 2026-10-20.
 - Never edit someone else's note. If a later slice changes what it says, say so
   in the new note.
 - No PHI. Not in examples, logs or fixtures.

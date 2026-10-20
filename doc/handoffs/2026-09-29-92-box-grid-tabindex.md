@@ -1,4 +1,4 @@
-# Handoff note — 2026-10-02, [web] box grid roving tabindex (#92, worker-3)
+# Handoff note — 2026-09-29, [web] box grid roving tabindex (#92, worker-3)
 
 Issue **#92**: G3.4's grid already satisfied its acceptance criterion — a sample
 moves by keyboard — so nothing was broken and this is an ergonomic fix, not a

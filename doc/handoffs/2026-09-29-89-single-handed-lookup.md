@@ -1,4 +1,4 @@
-# Handoff note — 2026-10-02, the single-handed lookup (G3.5, worker-3)
+# Handoff note — 2026-09-29, the single-handed lookup (G3.5, worker-3)
 
 The bench's most common flow (PRD §9): scan or type, press Enter, read the
 location, be ready for the next scan before the user is. Branch

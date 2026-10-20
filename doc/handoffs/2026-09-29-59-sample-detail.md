@@ -1,4 +1,4 @@
-# Handoff note — 2026-10-02, G3.3 sample detail, create and edit (#59, worker-1)
+# Handoff note — 2026-09-29, G3.3 sample detail, create and edit (#59, worker-1)
 
 Everything a person does to one sample: read every field, create one, edit one,
 and run the five lifecycle actions. This is where the custom-field system

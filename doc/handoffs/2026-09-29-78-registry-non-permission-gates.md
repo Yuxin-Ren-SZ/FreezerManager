@@ -1,4 +1,4 @@
-# Handoff note — 2026-10-02, #78 the registry can say "no permission required" (worker-3)
+# Handoff note — 2026-09-29, #78 the registry can say "no permission required" (worker-3)
 
 The `AuthMiddleware` RPC → permission registry held a bare `core::Permission`,
 so it had no way to *express* "this RPC is gated by something other than a
