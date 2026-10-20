@@ -35,7 +35,7 @@ target_compile_definitions(
     FMGR_SEED_DATA_DIR="${CMAKE_SOURCE_DIR}/data/seed"
 )
 
-add_executable(freezermanager_storage_unit_tests storage_interface_test.cpp)
+add_executable(freezermanager_storage_unit_tests box_geometry_columns_test.cpp storage_interface_test.cpp)
 target_link_libraries(
   freezermanager_storage_unit_tests
   PRIVATE

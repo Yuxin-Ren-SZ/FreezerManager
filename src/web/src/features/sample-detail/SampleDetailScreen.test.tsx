@@ -124,6 +124,20 @@ describe('SampleDetailScreen', () => {
     expect(termValue(sampleDetailCopy.detail.volume)).toContain('100');
   });
 
+  it('shows the container type name, not its id, for a seeded row', async () => {
+    // A seeded sample references its container type by id; the visible symptom
+    // of #138 was the raw UUID rendered in this row. The screen resolves the
+    // reference data to the type's name, and the UUID may not appear.
+    const demo = createDemoLab();
+    sampleById(demo, SAMPLE_ID).containerTypeId = 'ct-15ml';
+    renderDetail({ demo });
+
+    await screen.findByRole('heading', { level: 1, name: 'Serum A' });
+
+    expect(termValue(sampleDetailCopy.detail.containerType)).toBe('15 mL tube');
+    expect(termValue(sampleDetailCopy.detail.containerType)).not.toContain('ct-15ml');
+  });
+
   it('renders a sample that is not in a box without inventing a location', async () => {
     const demo = createDemoLab();
     sampleById(demo, SAMPLE_ID).boxId = undefined;

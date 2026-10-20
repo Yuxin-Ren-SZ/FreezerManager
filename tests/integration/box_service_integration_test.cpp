@@ -768,6 +768,60 @@ namespace fmgr::test {
       EXPECT_GE(resp.container_types_size(), 1);
     }
 
+    TEST_F(BoxServiceTest, ListContainerTypesToleratesMalformedOuterDimensionsJson) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string planted_id;
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::CreateContainerTypeRequest req;
+        req.set_lab_id(kLab1);
+        req.set_name("Cryo");
+        req.set_size_class("9x9");
+        fmgr::v1::CreateContainerTypeResponse resp;
+        ASSERT_TRUE(box_stub_->CreateContainerType(&ctx, req, &resp).ok());
+        planted_id = resp.container_type().id();
+      }
+
+      // Plant the state the API cannot produce: the demo seed wrote `{}` where
+      // the write path stores the text `null` (dimensions_dump). The plant is
+      // the point of this test — without it the defect only shows on rows
+      // created outside the API, which is why CI never saw it.
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto& sqlite = dynamic_cast<storage::SqliteTransaction&>(*txn);
+        char* error = nullptr;
+        const std::string sql =
+            "UPDATE container_types SET outer_dimensions_json = '{}' WHERE id = '" + planted_id +
+            "'";
+        ASSERT_EQ(sqlite3_exec(sqlite.handle(), sql.c_str(), nullptr, nullptr, &error), SQLITE_OK)
+            << (error == nullptr ? "" : error);
+        sqlite3_free(error);
+        txn->commit();
+      }
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::ListContainerTypesRequest req;
+      req.set_lab_id(kLab1);
+      fmgr::v1::ListContainerTypesResponse resp;
+      const auto status = box_stub_->ListContainerTypes(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      bool found = false;
+      for (const auto& type : resp.container_types()) {
+        if (type.id() != planted_id) {
+          continue;
+        }
+        found = true;
+        EXPECT_EQ(type.name(), "Cryo");
+        // "Absent" on the wire is the empty proto3 string field — the same shape
+        // a row created by the API with no dimensions reads back with.
+        EXPECT_EQ(type.outer_dimensions_json(), "");
+      }
+      EXPECT_TRUE(found);
+    }
+
     TEST_F(BoxServiceTest, ListContainerTypesRejectsMember) {
       const auto token = login(kMemberEmail, kPassword);
       grpc::ClientContext ctx;
