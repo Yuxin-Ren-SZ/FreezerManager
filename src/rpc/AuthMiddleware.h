@@ -209,21 +209,25 @@ namespace fmgr::rpc {
     //      require_credential_agreement()). Checked before any credential work —
     //      a disagreement is a code defect, not something the caller can fix by
     //      presenting different credentials.
-    //   1. Validates the bearer token via IAuthProvider::validate_token().
-    //   2. Throws MfaRequired when rule == TokenAndMfa and ctx.mfa_complete is
+    //   1. For rule == TokenAndMfa, the process data-tier rate limit, keyed by the
+    //      bearer token, before any work. These are authenticated data endpoints
+    //      and used to bypass the gate that authorize() applies (#128).
+    //   2. Validates the bearer token via IAuthProvider::validate_token().
+    //   3. Throws MfaRequired when rule == TokenAndMfa and ctx.mfa_complete is
     //      false. TokenOnly skips this step: that is the whole of the #62
     //      exception, and it is why the rule has to be named rather than assumed.
     //
     // No permission check — enforcing no permission is what the registration
-    // says — and no data-tier rate limit: that is authorize()'s step for data
-    // endpoints, and Login/SubmitMfa keep AuthServiceImpl's per-IP limiter.
+    // says. TokenOnly deliberately stays outside the data-tier budget: SubmitMfa
+    // has its own per-user brute-force limiter (#128) and Logout only removes
+    // authority, so neither may be starved by a gate meant for data traffic.
     //
     // Precondition: rule != CredentialRule::None. There is no session context to
     // return for a rule that requires no credential; that rule is declared with
     // admit_no_credential().
     //
     // Throws: RpcRegistryMismatch (a code defect, → INTERNAL) or any AuthError
-    //         subclass (InvalidCredentials, TokenExpired, MfaRequired, …)
+    //         subclass (InvalidCredentials, TokenExpired, MfaRequired, RateLimited, …)
     [[nodiscard]] auth::SessionContext authenticate(const RpcCall& call, CredentialRule rule) const;
 
     // The CredentialRule::None half of the credential gate: admits a call that
@@ -240,14 +244,15 @@ namespace fmgr::rpc {
 
     // ---- Global data-tier rate limiting ----
     //
-    // authorize() is the single choke point every authenticated RPC handler
-    // passes through, so throttling here throttles all data endpoints across
-    // every service without per-handler code (security audit C-10/DoS). The
-    // limiter is a process-wide gate installed by the server for its lifetime;
-    // when unset (the default, e.g. in unit tests), authorize() does not rate
-    // limit. Health/metrics endpoints never reach authorize(), so they are
-    // exempt by construction. Auth endpoints (Login/SubmitMfa) are throttled
-    // separately at a higher burst by AuthServiceImpl's per-IP limiter.
+    // authorize() is the single choke point every permission-gated RPC handler
+    // passes through, and authenticate() applies the same gate for the
+    // TokenAndMfa credential rule, so throttling here throttles all data
+    // endpoints across every service without per-handler code (security audit
+    // C-10/DoS, #128). The limiter is a process-wide gate installed by the server
+    // for its lifetime; when unset (the default, e.g. in unit tests), neither
+    // gate rate limits. Health/metrics endpoints never reach either, so they are
+    // exempt by construction. Login keeps AuthServiceImpl's per-IP limiter;
+    // SubmitMfa keeps its own per-user brute-force limiter (#128).
     //
     // Installs `limiter` (may be null to uninstall) as the process gate. The
     // caller owns the limiter and must uninstall (pass nullptr) before it dies.
@@ -301,6 +306,12 @@ namespace fmgr::rpc {
     // would otherwise never be enforced, which is #78's hole with the sign
     // flipped (#119). No-op when the call carries no RPC identity.
     static void require_credential_agreement(const RpcCall& call, CredentialRule required);
+
+    // The shared body of the process data-tier limit: consumes one token for
+    // `bearer_token` when a limiter is installed and throws RateLimited when the
+    // bucket is empty. authorize() calls it for every permission-gated RPC;
+    // authenticate() calls it only for TokenAndMfa (#128).
+    static void apply_data_tier_limit(std::string_view bearer_token);
 
     auth::IAuthProvider& auth_;
   };

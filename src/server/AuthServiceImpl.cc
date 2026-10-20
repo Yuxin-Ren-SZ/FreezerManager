@@ -79,7 +79,9 @@ namespace fmgr::server {
   AuthServiceImpl::AuthServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend)
       : auth_(auth), backend_(backend), middleware_(auth),
         login_limiter_(rpc::RateLimiterConfig{.capacity = k_login_rate_capacity,
-                                              .refill_per_sec = k_login_rate_refill_per_sec}) {
+                                              .refill_per_sec = k_login_rate_refill_per_sec}),
+        mfa_limiter_(rpc::RateLimiterConfig{.capacity = k_mfa_rate_capacity,
+                                            .refill_per_sec = k_mfa_rate_refill_per_sec}) {
     // #78/#119: none of the auth/* RPCs is permission-gated, and session.revoke —
     // the permission all six used to name — is checked by no code path here. Each
     // now registers the credential rule its handler applies, and the handler asks
@@ -145,6 +147,18 @@ namespace fmgr::server {
       // this RPC does, so requiring it here would deadlock every login (#62).
       const auto sctx =
           middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenOnly);
+
+      // Brute-force budget (#128). A six-digit TOTP is guessable at machine
+      // speed, and the only other limit on this path is Login's per-IP bucket —
+      // a different RPC, which an attacker holding a valid password can drain
+      // once and then reuse the resulting pending session for every guess. Key on
+      // the user rather than the session or token: re-logging in must not mint a
+      // fresh budget. A mistyped code costs one of five immediate attempts; the
+      // bucket refills one attempt per minute.
+      if (!mfa_limiter_.try_acquire("user:" + sctx.user_id.to_string(),
+                                    rpc::RateLimiter::Clock::now())) {
+        return {grpc::StatusCode::RESOURCE_EXHAUSTED, "too many MFA attempts; slow down"};
+      }
       auth_.verify_totp(sctx.session_id, req->totp_code());
       return grpc::Status::OK;
     } catch (...) {
