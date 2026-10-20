@@ -47,7 +47,12 @@ namespace fmgr::server {
       const auth::MfaRequired error("TOTP not yet verified");
       const auto status = to_grpc_status(error);
       EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
-      EXPECT_NE(status.error_message().find("mfa_required:"), std::string::npos);
+      // The marker is a **prefix**, not a substring: RestErrorTranslation turns it
+      // into the envelope code MFA_REQUIRED by matching the start of the message,
+      // which is what lets a client tell "resume your TOTP prompt" from "signed
+      // out" without parsing a sentence (#140).
+      EXPECT_TRUE(std::string_view(status.error_message()).starts_with(rpc::k_mfa_required_marker))
+          << status.error_message();
       EXPECT_NE(status.error_message().find("TOTP not yet verified"), std::string::npos);
     }
 

@@ -5,6 +5,7 @@
 #include "auth/AuthTypes.h"
 #include "obs/Log.h"
 #include "rpc/AuthMiddleware.h"
+#include "rpc/ErrorCodes.h"
 #include "rpc/RpcMethodTracker.h"
 #include "storage/IStorageBackend.h"
 
@@ -49,7 +50,11 @@ namespace fmgr::server {
   }
 
   [[nodiscard]] inline grpc::Status to_grpc_status(const auth::MfaRequired& error) {
-    return {grpc::StatusCode::UNAUTHENTICATED, std::string("mfa_required: ") + error.what()};
+    // The marker is a named constant shared with the REST gateway, which turns it
+    // into the machine-readable envelope code `MFA_REQUIRED` (#140) — a client
+    // that has to resume the TOTP step must not be keying on a sentence.
+    return {grpc::StatusCode::UNAUTHENTICATED,
+            std::string(rpc::k_mfa_required_marker) + error.what()};
   }
 
   [[nodiscard]] inline grpc::Status to_grpc_status(const auth::AccountLocked& error) {

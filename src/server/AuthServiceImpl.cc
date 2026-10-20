@@ -3,10 +3,14 @@
 #include "server/AuthServiceImpl.h"
 #include "server/RequestId.h"
 
+#include "core/identity.h"
 #include "core/permissions.h"
+#include "core/role.h"
 #include "core/session.h"
 #include "server/GrpcErrorTranslation.h"
 #include "storage/IStorageBackend.h"
+#include "storage/IdentityTraits.h"
+#include "storage/RoleTraits.h"
 #include "storage/SessionTraits.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
@@ -40,6 +44,16 @@ namespace fmgr::server {
           .request_id = request_id_from(ctx),
           .reason = std::string(reason),
       };
+    }
+
+    // A deployment SystemAdmin is the only principal that holds a global-only
+    // permission globally (resolve_permissions() promotes global-only grants to
+    // global_permissions for the SystemAdmin role alone). LabProvision is the
+    // stable marker for "deployment-wide administrator" — the same predicate
+    // AuditServiceImpl and ShareServiceImpl spell by hand. Third copy: if a
+    // fourth appears, it belongs in one shared helper.
+    [[nodiscard]] bool is_system_admin(const auth::SessionContext& sctx) {
+      return sctx.has_global(core::Permission::LabProvision);
     }
 
     void fill_api_token_summary(fmgr::v1::ApiTokenSummary* out, const core::ApiToken& tok) {
@@ -83,6 +97,12 @@ namespace fmgr::server {
                                       rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/RevokeApiToken",
                                       rpc::RpcGate::token_and_mfa());
+    // #140: WhoAmI is self-management, so it declares the same rule ListApiTokens
+    // does rather than a permission. A pending-MFA session is a credential the
+    // browser holds but not one that may be told who the user is: the gate refuses
+    // it here, before the handler, and the handler asks for exactly this rule, so
+    // the two cannot drift (#119).
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuthService/WhoAmI", rpc::RpcGate::token_and_mfa());
   }
 
   grpc::Status AuthServiceImpl::Login(grpc::ServerContext* ctx, const fmgr::v1::LoginRequest* req,
@@ -223,6 +243,94 @@ namespace fmgr::server {
           middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
       const auto api_token_id = core::ApiTokenId::parse(req->api_token_id());
       auth_.revoke_api_token(api_token_id, make_ctx(*ctx, sctx, "revoke_api_token"));
+      return grpc::Status::OK;
+    } catch (...) {
+      return current_exception_to_grpc_status();
+    }
+  }
+
+  grpc::Status AuthServiceImpl::WhoAmI(grpc::ServerContext* ctx,
+                                       const fmgr::v1::WhoAmIRequest* /*req*/,
+                                       fmgr::v1::WhoAmIResponse* resp) {
+    try {
+      // Self-management, like ListApiTokens: no permission is involved, only a
+      // credential — and a complete one. A session whose second factor is
+      // outstanding is refused at the gate (the rule the registration above
+      // declares, which this call must name or the gate refuses the call as a
+      // code defect), so a half-finished login cannot enumerate an identity.
+      //
+      // The request is deliberately unread: the subject is the credential, never
+      // the message, so there is no way to ask this RPC about another user.
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
+
+      auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
+      rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+
+      const auto user = txn->repo<core::User>().find_by_id(sctx.user_id);
+      if (!user.has_value()) {
+        // A token that resolved to a user id with no row is a broken data state,
+        // not a caller error; NOT_FOUND is the honest answer and leaks nothing.
+        return {grpc::StatusCode::NOT_FOUND, "user not found"};
+      }
+
+      // Identity. No token, session id, password or TOTP state is copied out of
+      // the user row — only what the SPA renders (AGENTS.md §5).
+      resp->set_user_id(user->id.to_string());
+      resp->set_email(user->primary_email);
+      resp->set_display_name(user->display_name);
+      resp->set_is_system_admin(is_system_admin(sctx));
+
+      // Deployment-wide grants. A lab-scoped grant appears under its lab instead,
+      // so a client reading `permissions` cannot mistake one for the other.
+      for (const auto& permission : sctx.global_permissions) {
+        resp->add_permissions(std::string(core::to_key(permission)));
+      }
+
+      // Memberships, not "labs the caller can see": a deployment admin's ListLabs
+      // answers with every lab, and this answer must not — the SPA uses it to
+      // render the labs the user belongs to and the role held in each. Ordered by
+      // lab id in SQL so the answer is identical on SQLite and PostgreSQL.
+      const auto memberships = txn->repo<core::LabMembership>().query(
+          storage::Query<core::LabMembership>::where(
+              storage::field<core::LabMembership, std::string>(
+                  core::LabMembership::Field::UserId) == sctx.user_id.to_string())
+              .order_by(storage::field<core::LabMembership, std::string>(
+                  core::LabMembership::Field::LabId)));
+
+      for (const auto& membership : memberships) {
+        auto* entry = resp->add_labs();
+        entry->set_lab_id(membership.lab_id.to_string());
+
+        const auto lab = txn->repo<core::Lab>().find_by_id(membership.lab_id);
+        if (lab.has_value()) {
+          entry->set_lab_name(lab->name);
+          entry->set_is_phi_enabled(lab->is_phi_enabled);
+        }
+
+        if (membership.role_id.has_value()) {
+          entry->set_role_id(membership.role_id->to_string());
+          const auto role = txn->repo<core::Role>().find_by_id(*membership.role_id);
+          if (role.has_value()) {
+            entry->set_role_name(role->name);
+          }
+        }
+        // Empty while an invitation is pending, which is exactly what the caller
+        // holds there: the row exists, the grant does not.
+        entry->set_scope_filters_json(membership.scope_filters_json.dump());
+
+        // The permission keys come from the session context, not from the role
+        // table: they are what the gate actually enforces for this caller, so a
+        // client gating its navigation on them agrees with the server by
+        // construction. An unknown (or archived) role simply grants nothing.
+        const auto grants = sctx.permissions_by_lab.find(membership.lab_id);
+        if (grants != sctx.permissions_by_lab.end()) {
+          for (const auto& permission : grants->second) {
+            entry->add_permissions(std::string(core::to_key(permission)));
+          }
+        }
+      }
+      txn->commit();
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();

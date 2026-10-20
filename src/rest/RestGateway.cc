@@ -182,6 +182,13 @@ namespace fmgr::rest {
                ListApiTokensResponse);
     FMGR_ROUTE("/api/v1/auth/api-token/revoke", auth, RevokeApiToken, RevokeApiTokenRequest,
                RevokeApiTokenResponse);
+    // #140: who the caller is, which labs they belong to and what they may do
+    // there. The SPA calls this after a reload, when the only credential it has
+    // is the HttpOnly cookie it cannot read, so the route takes either that cookie
+    // or an Authorization header like any other. POST (the macro registers POST
+    // only) means it sits behind the CSRF gate for cookie callers — that is what
+    // the SPA's `X-CSRF-Token` echo is for, not a mistake.
+    FMGR_ROUTE("/api/v1/auth/whoami", auth, WhoAmI, WhoAmIRequest, WhoAmIResponse);
 
     // ---- AuthService, browser session (G0.1) ----
     // The same three RPCs, for a client that cannot hold a token: the token goes

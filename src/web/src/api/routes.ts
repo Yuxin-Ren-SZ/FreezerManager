@@ -22,6 +22,8 @@ import {
   RevokeApiTokenResponseSchema,
   SubmitMfaRequestSchema,
   SubmitMfaResponseSchema,
+  WhoAmIRequestSchema,
+  WhoAmIResponseSchema,
 } from '../gen/fmgr/v1/auth_pb';
 import {
   ArchiveBoxRequestSchema,
@@ -222,6 +224,17 @@ export const apiRoutes = {
     rpc: 'fmgr.v1.AuthService/RevokeApiToken',
     input: RevokeApiTokenRequestSchema,
     output: RevokeApiTokenResponseSchema,
+  },
+  // #140: the caller's own identity and lab memberships. The SPA calls it after
+  // a reload — with the session cookie as the credential. The answer carries no
+  // session id and no token (AGENTS.md §5) and a pending-MFA session is refused
+  // with `{"code":"MFA_REQUIRED"}` rather than answered. (This comment avoids
+  // commas: check-routes.mjs splits the table on them.)
+  'auth/whoami': {
+    path: '/api/v1/auth/whoami',
+    rpc: 'fmgr.v1.AuthService/WhoAmI',
+    input: WhoAmIRequestSchema,
+    output: WhoAmIResponseSchema,
   },
 
   // ---- AuthService browser session (G0.1) ----

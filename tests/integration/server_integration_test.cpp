@@ -150,6 +150,86 @@ namespace fmgr::test {
       // issue talks about ("authenticated but holds no permissions").
       const std::string kNoPermissionEmail{"nobody@example.com"};
       const std::string kNoPermissionUserId{"10000000-0000-0000-0000-000000000002"};
+      // #140: a caller who belongs to two labs with a different role in each.
+      // `...004` continues the id sequence above rather than reusing one, so a
+      // collision with another fixture account is a compile-time constant clash
+      // instead of an "user id already exists" failure in every test's SetUp()
+      // (the #117/#118 merge hazard the board records).
+      const std::string kTwoLabEmail{"two-lab@example.com"};
+      const std::string kTwoLabUserId{"10000000-0000-0000-0000-000000000004"};
+      const std::string kSecondLabId{"20000000-0000-0000-0000-000000000002"};
+      static constexpr std::string_view kSecondLabScopeFilter =
+          R"({"freezer_in":["30000000-0000-0000-0000-000000000001"]})";
+
+      // #140: seed the two-lab caller. Separate from seed_test_user() so no other
+      // test's expectations about the shared lab change; every row here belongs
+      // to the account nothing else logs in as.
+      void seed_two_lab_caller() {
+        const auto password_hash = provider_->hash_password(kPassword);
+        const core::User user{
+            .id = core::UserId::parse(kTwoLabUserId),
+            .primary_email = kTwoLabEmail,
+            .display_name = "Two Lab User",
+            .status = core::UserStatus::Active,
+            .created_at = core::Timestamp::from_unix_micros(1),
+            .auth_bindings = nlohmann::json::array(
+                {nlohmann::json::object({{"provider", "local"}, {"hash", password_hash}})}),
+        };
+        // PHI enabled on the *second* lab only, so a response that defaulted the
+        // flag — or read the first lab's — fails the assertion that reads it back.
+        const core::Lab second_lab{
+            .id = core::LabId::parse(kSecondLabId),
+            .name = "Second Lab",
+            .contact = "second@example.com",
+            .created_at = core::Timestamp::from_unix_micros(1),
+            .settings_json = nlohmann::json::object(),
+            .is_phi_enabled = true,
+        };
+        const core::LabMembership admin_of_the_first{
+            .user_id = user.id,
+            .lab_id = core::LabId::parse(kLabId),
+            .role_id = core::builtin_role_id(core::RoleKind::LabAdmin),
+            .scope_filters_json = nlohmann::json::object(),
+            .joined_at = core::Timestamp::from_unix_micros(1),
+        };
+        const core::LabMembership member_of_the_second{
+            .user_id = user.id,
+            .lab_id = second_lab.id,
+            .role_id = core::builtin_role_id(core::RoleKind::Member),
+            .scope_filters_json = nlohmann::json::parse(kSecondLabScopeFilter),
+            .joined_at = core::Timestamp::from_unix_micros(1),
+        };
+        const storage::MutationContext ctx{
+            .actor_user_id = core::UserId::parse("00000000-0000-0000-0000-000000000000"),
+            .actor_session_id = "seed",
+            .request_id = "seed",
+            .reason = "test setup",
+        };
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::User>().insert(user, ctx);
+        txn->repo<core::Lab>().insert(second_lab, ctx);
+        txn->repo<core::LabMembership>().insert(admin_of_the_first, ctx);
+        txn->repo<core::LabMembership>().insert(member_of_the_second, ctx);
+        txn->commit();
+      }
+
+      // The membership entry for `lab_id`, or nullptr. The response's lab order
+      // is an implementation detail, so assertions look entries up by id.
+      [[nodiscard]] static const fmgr::v1::WhoAmIMembership*
+      lab_entry(const fmgr::v1::WhoAmIResponse& resp, const std::string& lab_id) {
+        for (const auto& lab : resp.labs()) {
+          if (lab.lab_id() == lab_id) {
+            return &lab;
+          }
+        }
+        return nullptr;
+      }
+
+      [[nodiscard]] static bool holds(const fmgr::v1::WhoAmIMembership& lab,
+                                      std::string_view permission) {
+        return std::find(lab.permissions().begin(), lab.permissions().end(), permission) !=
+               lab.permissions().end();
+      }
 
       std::filesystem::path db_path_;
       std::unique_ptr<storage::SqliteBackend> backend_;
@@ -486,6 +566,180 @@ namespace fmgr::test {
       EXPECT_GE(resp.sessions_size(), 1);
     }
 
+    // ---- #140: AuthService.WhoAmI ----
+
+    // The SPA cannot read its own session cookie, so after a reload only the
+    // server can say who is signed in. This is the acceptance test for the whole
+    // answer: the caller's own identity, every lab they belong to with the role
+    // they hold there, and the permission keys the server enforces. The caller is
+    // deliberately in **two** labs — the demo's blocker B3 was a session with
+    // exactly one fake lab, and an RPC that reported one lab would have passed a
+    // weaker test.
+    TEST_F(ServerIntegrationTest, WhoAmIListsEveryLabTheCallerBelongsToWithItsRole) {
+      seed_two_lab_caller();
+      const auto token = login(kTwoLabEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::WhoAmIRequest req;
+      fmgr::v1::WhoAmIResponse resp;
+      const auto status = auth_stub_->WhoAmI(&ctx, req, &resp);
+      ASSERT_TRUE(status.ok()) << status.error_message();
+
+      EXPECT_EQ(resp.user_id(), kTwoLabUserId);
+      EXPECT_EQ(resp.email(), kTwoLabEmail);
+      EXPECT_EQ(resp.display_name(), "Two Lab User");
+      EXPECT_FALSE(resp.is_system_admin())
+          << "administrating a lab is not deployment administration";
+      EXPECT_EQ(resp.permissions_size(), 0)
+          << "a lab role grants nothing deployment-wide; lab grants belong to their lab";
+
+      ASSERT_EQ(resp.labs_size(), 2) << "a caller in two labs must get both";
+      const auto* first = lab_entry(resp, kLabId);
+      const auto* second = lab_entry(resp, kSecondLabId);
+      ASSERT_NE(first, nullptr) << "the lab the caller administrates is missing";
+      ASSERT_NE(second, nullptr) << "the second lab the caller belongs to is missing";
+
+      // LabAdmin in the first lab: its grants include user management.
+      EXPECT_EQ(first->lab_name(), "Test Lab");
+      EXPECT_EQ(first->role_id(), core::builtin_role_id(core::RoleKind::LabAdmin).to_string());
+      EXPECT_EQ(first->role_name(), "LabAdmin");
+      EXPECT_FALSE(first->is_phi_enabled());
+      EXPECT_TRUE(holds(*first, "sample.read"));
+      EXPECT_TRUE(holds(*first, "user.invite"));
+      EXPECT_FALSE(holds(*first, "sample.delete_hard"))
+          << "a global-only permission must never appear as a lab grant";
+
+      // Member in the second lab: read/write, no user management, and the lab's
+      // PHI flag and the membership's scope filter come from that lab's rows.
+      EXPECT_EQ(second->lab_name(), "Second Lab");
+      EXPECT_EQ(second->role_id(), core::builtin_role_id(core::RoleKind::Member).to_string());
+      EXPECT_EQ(second->role_name(), "Member");
+      EXPECT_TRUE(second->is_phi_enabled());
+      EXPECT_TRUE(holds(*second, "sample.read"));
+      EXPECT_FALSE(holds(*second, "user.invite"))
+          << "the role in each lab is what decides the permissions in that lab";
+      EXPECT_EQ(second->scope_filters_json(), kSecondLabScopeFilter);
+    }
+
+    // The same claim as above, planted against a second account: whatever the
+    // caller is, the answer describes them and not somebody else. Two sessions
+    // call the RPC, and each response is checked to name its own user and to
+    // carry none of the other's labs.
+    TEST_F(ServerIntegrationTest, WhoAmIDescribesOnlyTheCaller) {
+      seed_two_lab_caller();
+      const auto admin_token = login(kEmail, kPassword);
+      const auto other_token = login(kTwoLabEmail, kPassword);
+      ASSERT_FALSE(admin_token.empty());
+      ASSERT_FALSE(other_token.empty());
+
+      const auto who_am_i = [this](const std::string& bearer) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, bearer);
+        fmgr::v1::WhoAmIRequest req;
+        fmgr::v1::WhoAmIResponse resp;
+        return std::pair{auth_stub_->WhoAmI(&ctx, req, &resp), resp};
+      };
+
+      const auto [admin_status, admin_resp] = who_am_i(admin_token);
+      ASSERT_TRUE(admin_status.ok()) << admin_status.error_message();
+      EXPECT_EQ(admin_resp.user_id(), "10000000-0000-0000-0000-000000000001");
+      EXPECT_EQ(admin_resp.email(), kEmail);
+      EXPECT_TRUE(admin_resp.is_system_admin());
+      EXPECT_EQ(admin_resp.labs_size(), 1)
+          << "memberships, not the labs a deployment admin may see: this account "
+             "belongs to one lab";
+      EXPECT_EQ(lab_entry(admin_resp, kSecondLabId), nullptr)
+          << "the other account's lab leaked into this response";
+      EXPECT_NE(admin_resp.user_id(), kTwoLabUserId);
+
+      const auto [other_status, other_resp] = who_am_i(other_token);
+      ASSERT_TRUE(other_status.ok()) << other_status.error_message();
+      EXPECT_EQ(other_resp.user_id(), kTwoLabUserId);
+      EXPECT_EQ(other_resp.email(), kTwoLabEmail);
+      EXPECT_NE(other_resp.user_id(), admin_resp.user_id());
+      // Both accounts are members of kLabId, so it appears in both answers — with
+      // each caller's own role in it, never the other's.
+      const auto* other_first = lab_entry(other_resp, kLabId);
+      ASSERT_NE(other_first, nullptr);
+      EXPECT_EQ(other_first->role_name(), "LabAdmin");
+      EXPECT_NE(lab_entry(other_resp, kSecondLabId), nullptr);
+      const auto* admin_first = lab_entry(admin_resp, kLabId);
+      ASSERT_NE(admin_first, nullptr);
+      EXPECT_EQ(admin_first->role_name(), "SystemAdmin");
+    }
+
+    // The identity is the credential's, so there is nothing to ask *about*: the
+    // request message has no fields. Asserted on the descriptor rather than on a
+    // comment, so a later PR that adds `user_id` to the request has to delete
+    // this test to get green.
+    TEST_F(ServerIntegrationTest, WhoAmIRequestHasNoSubjectField) {
+      const auto* descriptor = fmgr::v1::WhoAmIRequest::descriptor();
+      EXPECT_EQ(descriptor->field_count(), 0)
+          << "WhoAmI describes the caller named by the bearer token; a request field "
+             "could be used to describe someone else";
+    }
+
+    // #140's "no secret material, and no PHI" criterion, pinned by name. The
+    // response is a fixed whitelist: it carries no session token, no session id,
+    // no token prefix and no password or TOTP state, so a later field of that
+    // kind has to fail this test and be argued for in review instead of being
+    // added quietly (AGENTS.md §5).
+    TEST_F(ServerIntegrationTest, WhoAmIResponseCarriesNoCredentialOrSessionMaterial) {
+      const auto field_names = [](const google::protobuf::Descriptor& message) {
+        std::vector<std::string> names;
+        names.reserve(static_cast<std::size_t>(message.field_count()));
+        for (int index = 0; index < message.field_count(); ++index) {
+          names.emplace_back(message.field(index)->name());
+        }
+        return names;
+      };
+
+      EXPECT_EQ(field_names(*fmgr::v1::WhoAmIResponse::descriptor()),
+                (std::vector<std::string>{"user_id", "email", "display_name", "is_system_admin",
+                                          "permissions", "labs"}));
+      EXPECT_EQ(field_names(*fmgr::v1::WhoAmIMembership::descriptor()),
+                (std::vector<std::string>{"lab_id", "lab_name", "role_id", "role_name",
+                                          "permissions", "scope_filters_json", "is_phi_enabled"}));
+
+      // Behavioural half: the session token this caller is holding does not
+      // appear anywhere in the serialized answer.
+      const auto token = login(kEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      fmgr::v1::WhoAmIRequest req;
+      fmgr::v1::WhoAmIResponse resp;
+      ASSERT_TRUE(auth_stub_->WhoAmI(&ctx, req, &resp).ok());
+      EXPECT_EQ(resp.SerializeAsString().find(token), std::string::npos)
+          << "the bearer token must never be echoed back";
+    }
+
+    // Unauthenticated callers get nothing: no identity, no lab list. A token
+    // that was never issued must not be distinguishable from no token at all.
+    TEST_F(ServerIntegrationTest, WhoAmIRejectsAbsentAndUnissuedCredentials) {
+      {
+        grpc::ClientContext ctx; // no Authorization header
+        fmgr::v1::WhoAmIRequest req;
+        fmgr::v1::WhoAmIResponse resp;
+        const auto status = auth_stub_->WhoAmI(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED) << status.error_message();
+        EXPECT_EQ(resp.user_id(), "");
+        EXPECT_EQ(resp.labs_size(), 0);
+      }
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, "fmgr_sess_never-issued");
+        fmgr::v1::WhoAmIRequest req;
+        fmgr::v1::WhoAmIResponse resp;
+        const auto status = auth_stub_->WhoAmI(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED) << status.error_message();
+        EXPECT_EQ(resp.user_id(), "");
+        EXPECT_EQ(resp.labs_size(), 0);
+      }
+    }
+
     // #60: the count floor is gone. The registry must hold exactly the RPCs the
     // server serves — no fewer (an RPC would be served with no registration for
     // the gate to check against) and no more (an entry for an RPC nobody serves
@@ -630,11 +884,12 @@ namespace fmgr::test {
       rpc::AuthMiddleware::register_rpc(sample_read_rpc, core::Permission::SampleRead);
     }
 
-    // #78/#119: the nine registrations that used to name a permission no code
-    // path enforced. Each now states the credential rule its handler applies, and
-    // that rule is what the gate applies on every call (#119). This test pins the
-    // declaration; CredentialRuleDisagreeingWithEnforcedRuleIsRefused proves the
-    // declaration is not the only thing standing between a caller and the RPC, and
+    // #78/#119: the registrations that used to name a permission no code path
+    // enforced — nine then, ten after #140 added WhoAmI. Each states the
+    // credential rule its handler applies, and that rule is what the gate applies
+    // on every call (#119). This test pins the declaration;
+    // CredentialRuleDisagreeingWithEnforcedRuleIsRefused proves the declaration is
+    // not the only thing standing between a caller and the RPC, and
     // EveryRpcDeclaringTokenAndMfaRefusesAPendingMfaSession checks the third rule
     // at the boundary it names. The tenth of #78's ten, VerifyAuditChain, is
     // genuinely gated — on the deployment-admin predicate this repo spells
@@ -643,13 +898,14 @@ namespace fmgr::test {
     TEST_F(ServerIntegrationTest, RpcRegistryStatesTheCredentialRuleEachNonPermissionRpcHas) {
       const auto registry = rpc::AuthMiddleware::registered_rpcs();
 
-      const std::array<std::pair<std::string, rpc::CredentialRule>, 9> expected{{
+      const std::array<std::pair<std::string, rpc::CredentialRule>, 10> expected{{
           {"/fmgr.v1.AuthService/Login", rpc::CredentialRule::None},
           {"/fmgr.v1.AuthService/SubmitMfa", rpc::CredentialRule::TokenOnly},
           {"/fmgr.v1.AuthService/Logout", rpc::CredentialRule::TokenOnly},
           {"/fmgr.v1.AuthService/CreateApiToken", rpc::CredentialRule::TokenAndMfa},
           {"/fmgr.v1.AuthService/ListApiTokens", rpc::CredentialRule::TokenAndMfa},
           {"/fmgr.v1.AuthService/RevokeApiToken", rpc::CredentialRule::TokenAndMfa},
+          {"/fmgr.v1.AuthService/WhoAmI", rpc::CredentialRule::TokenAndMfa},
           {"/fmgr.v1.SessionService/ListSessions", rpc::CredentialRule::TokenAndMfa},
           {"/fmgr.v1.SessionService/RevokeSession", rpc::CredentialRule::TokenAndMfa},
           {"/fmgr.v1.LabService/ListLabs", rpc::CredentialRule::TokenAndMfa},
@@ -868,16 +1124,44 @@ namespace fmgr::test {
         fmgr::v1::ListLabsResponse resp;
         expect_mfa_refusal(lab_stub_->ListLabs(&ctx, req, &resp), "ListLabs");
       }
+      {
+        // #140: a half-finished login must not be able to enumerate an identity,
+        // so WhoAmI is on this list rather than returning an empty answer for a
+        // pending-MFA session.
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::WhoAmIRequest req;
+        fmgr::v1::WhoAmIResponse resp;
+        expect_mfa_refusal(auth_stub_->WhoAmI(&ctx, req, &resp), "WhoAmI");
+        EXPECT_EQ(resp.user_id(), "") << "the refusal must not carry an identity";
+        EXPECT_EQ(resp.labs_size(), 0);
+      }
     }
 
     // #78 criterion 3, still standing after #119 turned the entries into enforced
-    // rules: every one of the ten has a test pinning its actual gate.
+    // rules: every one of them has a test pinning its actual gate.
     // The caller below holds no permission whatsoever — it has no lab membership,
     // so resolve_permissions() grants it nothing — and the control at the end
     // proves that is real by showing a permission-gated RPC refuses it.
     TEST_F(ServerIntegrationTest, PermissionlessCallerReachesEveryRpcThatRequiresNoPermission) {
       const auto token = login(kNoPermissionEmail, kPassword);
       ASSERT_FALSE(token.empty()) << "Login needs no permission; it is where a caller gets one";
+
+      // WhoAmI (#140): self-management. A caller with no membership still learns
+      // who they are; they simply belong to no lab and hold nothing.
+      {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::WhoAmIRequest req;
+        fmgr::v1::WhoAmIResponse resp;
+        const auto status = auth_stub_->WhoAmI(&ctx, req, &resp);
+        EXPECT_TRUE(status.ok()) << status.error_message();
+        EXPECT_EQ(resp.user_id(), kNoPermissionUserId);
+        EXPECT_EQ(resp.email(), kNoPermissionEmail);
+        EXPECT_FALSE(resp.is_system_admin());
+        EXPECT_EQ(resp.permissions_size(), 0);
+        EXPECT_EQ(resp.labs_size(), 0) << "no membership means no lab entry, not a refusal";
+      }
 
       // ListSessions: the caller's own rows, and only those.
       {
