@@ -57,11 +57,13 @@ fi
 
 # The demo database lives under out/ (gitignored, per-checkout), never in data/.
 DB="${FMGR_DEMO_DB_PATH:-$ROOT/out/demo/freezer.db}"
-if [[ -n "$MAIN_CHECKOUT" && "$DB" == "$MAIN_CHECKOUT/data/freezer.db" ]]; then
-  printf '[demo] ERROR: refusing to use the main checkout database (%s) as the demo database.\n' "$DB" >&2
-  printf '  Point FMGR_DEMO_DB_PATH somewhere under out/ instead.\n' >&2
-  exit 1
-fi
+case "$DB" in
+  */data/freezer.db | data/freezer.db)
+    printf '[demo] ERROR: refusing to use a data/freezer.db path as the demo database: %s\n' "$DB" >&2
+    printf '  That is a checkout database, not the demo one. Point FMGR_DEMO_DB_PATH under out/.\n' >&2
+    exit 1
+    ;;
+esac
 
 # The demo admin's fixed TOTP secret (RFC 4648 base32; the RFC 6238 test
 # vector). Fixed on purpose: a demo needs a code the presenter can reproduce.
