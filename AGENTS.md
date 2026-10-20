@@ -57,7 +57,11 @@ FreezerManager is a self-hostable freezer / biospecimen manager: a C++20 server
   onto `main`** (owner-delegated, each one recorded with a `[lead] DECISION` on
   the issue), and is the only writer of `TODO.md` and of the board issue body.
   The lead can take tasks itself only when no worker is available, and follows
-  the worker rules while doing so.
+  the worker rules while doing so. **Progress reports:** while any worker
+  subagent has been running for more than 10 minutes, the lead posts a progress
+  report to the owner at least every 10 minutes (a board `[lead] STATUS` comment
+  and/or a session message) — including when nothing changed since the last
+  report.
 - **Workers** (`worker-1` … `worker-3`): do exactly the issue they are assigned.
   They never self-assign, never edit `TODO.md`, never merge, and never touch
   another agent's branch or worktree.
