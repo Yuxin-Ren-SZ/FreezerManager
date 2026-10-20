@@ -24,7 +24,10 @@
     "location": "Location",
     "volume": "Volume",
     "created": "Created",
-    "phi": "{{label}} (PHI)"
+    "phi": "{{label}} (PHI)",
+    "withItemType": "{{label}} ({{itemType}})",
+    "phiWithType": "{{label}} ({{itemType}}, PHI)",
+    "allItemTypes": "All item types"
   },
   "placement": {
     "unplaced": "Not in a box",
