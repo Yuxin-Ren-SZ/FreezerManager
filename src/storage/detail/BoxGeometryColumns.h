@@ -100,8 +100,30 @@ namespace fmgr::storage::detail {
 
   [[nodiscard]] inline std::optional<core::OuterDimensionsMm>
   parse_dimensions(std::string_view text) {
-    const auto json = nlohmann::json::parse(text);
-    if (json.is_null()) {
+    // Tolerant reader. The write path only ever stores a complete
+    // `{"width","height","depth"}` object or the text `null`, but rows written
+    // outside the API can hold anything the column accepts: the demo seed wrote
+    // `{}`, and a SQL NULL surfaces as empty text on the SQLite read path.
+    // Every such value reads back as "no dimensions" — the same state
+    // `dimensions_dump(nullopt)` writes — so a malformed row degrades instead of
+    // 500ing the list RPC (#138).
+    if (text.empty()) {
+      return std::nullopt;
+    }
+    nlohmann::json json;
+    try {
+      json = nlohmann::json::parse(text);
+    } catch (const nlohmann::json::exception&) {
+      return std::nullopt;
+    }
+    if (json.is_null() || !json.is_object()) {
+      return std::nullopt;
+    }
+    const auto width = json.find("width");
+    const auto height = json.find("height");
+    const auto depth = json.find("depth");
+    if (width == json.end() || height == json.end() || depth == json.end() || !width->is_number() ||
+        !height->is_number() || !depth->is_number()) {
       return std::nullopt;
     }
     return json.get<core::OuterDimensionsMm>();
