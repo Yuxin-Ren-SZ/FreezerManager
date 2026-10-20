@@ -416,17 +416,18 @@ describe('the live-connection state', () => {
       onFrame: vi.fn(),
       eventSourceFactory: factory,
     });
+    expect(FakeEventSource.all()).toHaveLength(2);
     const [a, b] = FakeEventSource.all();
 
-    a?.open();
+    a.open();
     expect(getLiveConnectionState()).toBe('live');
 
-    a?.transportError();
+    a.transportError();
     // One feed dropped but the other has not opened yet: the shell must not
     // claim "live" while the only connected stream is reconnecting.
     expect(getLiveConnectionState()).toBe('reconnecting');
 
-    b?.open();
+    b.open();
     expect(getLiveConnectionState()).toBe('live');
 
     first();
