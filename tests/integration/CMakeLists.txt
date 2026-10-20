@@ -4,6 +4,9 @@ find_package(gRPC CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+# #143's demo-seed test runs the real scripts/seed_demo.py (stdlib only when
+# argon2-cffi is absent) to pin the seeded shape end to end.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 add_executable(freezermanager_server_integration_tests
   server_integration_test.cpp
@@ -218,6 +221,41 @@ target_link_libraries(
     GTest::gtest_main
 )
 
+# #143: runs the demo seed and then the real gRPC server over the seeded file.
+add_executable(freezermanager_demo_seed_integration_tests
+  demo_seed_integration_test.cpp
+)
+
+# The seed shells out to the built CLI for the audited sample import, so the
+# binary must exist before the test runs (it is part of the dev build anyway).
+add_dependencies(freezermanager_demo_seed_integration_tests freezerctl)
+
+target_include_directories(
+  freezermanager_demo_seed_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(
+  freezermanager_demo_seed_integration_tests
+  PRIVATE
+    FMGR_SOURCE_DIR="${PROJECT_SOURCE_DIR}"
+    FMGR_FREEZERCTL_BIN="$<TARGET_FILE:freezerctl>"
+    FMGR_PYTHON3="${Python3_EXECUTABLE}"
+)
+
+target_link_libraries(
+  freezermanager_demo_seed_integration_tests
+  PRIVATE
+    FreezerManager::server_lib
+    FreezerManager::storage_sqlite
+    FreezerManager::auth
+    FreezerManager::audit
+    gRPC::grpc++
+    GTest::gtest_main
+)
+
 add_executable(freezermanager_rest_gateway_integration_tests
   rest_gateway_integration_test.cpp
 )
@@ -267,6 +305,8 @@ gtest_discover_tests(freezermanager_audit_service_integration_tests
 gtest_discover_tests(freezermanager_share_service_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_session_service_integration_tests
+  PROPERTIES LABELS "grpc_integration")
+gtest_discover_tests(freezermanager_demo_seed_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_rest_gateway_integration_tests
   PROPERTIES LABELS "grpc_integration")
