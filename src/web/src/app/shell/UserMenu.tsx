@@ -16,10 +16,10 @@ const LOGIN_PATH = '/login';
  * Escape-to-close and returning focus to the trigger are all easy to get
  * subtly wrong.
  *
- * "Sign out" clears the local session and returns to `/login`. G2.1 replaces
- * the body with `auth/browser/logout` (which revokes the session server-side)
- * plus a TanStack Query cache reset — G-arch 7 requires the cache to be dropped
- * on logout, and that reset belongs with the auth flow, not with a menu.
+ * "Sign out" asks the session to end and returns to `/login`. G2.1 put both
+ * halves where they belong: `signOut()` revokes the session server-side
+ * (`auth/browser/logout`) and drops the TanStack Query cache — G-arch 7 — so
+ * this menu only has to say that the user is done.
  */
 export function UserMenu() {
   const { t } = useTranslation('shell');
@@ -51,7 +51,10 @@ export function UserMenu() {
           <DropdownMenu.Item
             className={styles.menuItem}
             onSelect={() => {
-              signOut();
+              // Fire-and-forget: revoking the session must not block the
+              // navigation, and `signOut()` ends the local state even when the
+              // server cannot be reached.
+              void signOut();
               void navigate(LOGIN_PATH);
             }}
           >

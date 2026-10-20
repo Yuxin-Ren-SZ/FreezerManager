@@ -1,31 +1,36 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { useState } from 'react';
 import { RouterProvider } from 'react-router-dom';
+import { call } from '../api/client';
 import { AppErrorBoundary } from './ErrorBoundary';
 import { AppProviders } from './providers';
 import { createAppRouter } from './router';
-import { stubSessionLoader } from './stubSession';
+import { createWhoAmISessionLoader } from './whoamiSession';
+
+/**
+ * The real session loader (G2.1): `AuthService.WhoAmI` (#140) names the caller
+ * from the `HttpOnly` session cookie, so a signed-in user who reloads stays
+ * signed in. `createWhoAmISessionLoader` keeps the three answers apart — a
+ * user, no session (`UNAUTHENTICATED` → `null` → the sign-in form) and a
+ * pending second factor (`MFA_REQUIRED` → `MfaPendingError` → `/login/mfa`).
+ */
+const loadSession = createWhoAmISessionLoader(() => call('auth/whoami', {}));
 
 /**
  * The application root: providers outside the router, so a route error still has
  * the toast host and the session it needs to explain itself.
  *
- * TODO(G2.1): two stubs are wired here and nowhere else, and neither is
- * finished by the G1.2 merge — `src/api/sse.ts` and the `auth/whoami` client
- * exist now, but nothing calls them from the shell yet.
- *   - `stubSessionLoader` (see `stubSession.ts`) becomes the `auth/whoami`
- *     call; the RPC itself is G0.2.
- *   - `connectionStatus` becomes the state of the SSE wrapper in
- *     `src/api/sse.ts`. It is `'offline'` rather than `'live'` today because
- *     nothing has opened a stream, and an indicator that always says "Live" is
- *     worse than no indicator at all.
+ * TODO(G2.1): `connectionStatus` becomes the state of the SSE wrapper in
+ * `src/api/sse.ts`. It is `'offline'` rather than `'live'` today because nothing
+ * has opened a stream, and an indicator that always says "Live" is worse than no
+ * indicator at all.
  */
 export function App() {
   const [router] = useState(createAppRouter);
 
   return (
     <AppErrorBoundary>
-      <AppProviders loadSession={stubSessionLoader} connectionStatus="offline">
+      <AppProviders loadSession={loadSession} connectionStatus="offline">
         <RouterProvider router={router} />
       </AppProviders>
     </AppErrorBoundary>

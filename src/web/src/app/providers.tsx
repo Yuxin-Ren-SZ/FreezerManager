@@ -6,13 +6,14 @@ import { ConnectionProvider, type ConnectionState } from './connection';
 import { LabProvider } from './labs';
 import { createQueryClient } from './queryClient';
 import { SessionProvider, type SessionLoader } from './session';
+import { SessionExpiryWatcher } from './sessionExpiry';
 import { ToastProvider } from '../ui';
 
 export interface AppProvidersProps {
   children: ReactNode;
-  /** How the shell learns who is signed in; the stub until G1.2 lands. */
+  /** How the shell learns who is signed in; the `auth/whoami` call (G0.2). */
   loadSession: SessionLoader;
-  /** Live-connection state; G1.2's SSE wrapper will drive this. */
+  /** Live-connection state; the SSE wrapper in `src/api/sse.ts` will drive this. */
   connectionStatus?: ConnectionState;
 }
 
@@ -39,6 +40,8 @@ export function AppProviders({
   return (
     <QueryClientProvider client={queryClient}>
       <SessionProvider loadSession={loadSession}>
+        {/* Inside the session, because "the session ended" is what it writes. */}
+        <SessionExpiryWatcher />
         <LabProvider>
           <ConnectionProvider status={connectionStatus}>
             <ToastProvider>{children}</ToastProvider>

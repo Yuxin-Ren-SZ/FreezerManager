@@ -9,7 +9,12 @@ import {
   type MessageInitShape,
 } from '@bufbuild/protobuf';
 import { HttpResponse, http, type HttpHandler } from 'msw';
-import { isGrpcCode, type GrpcCode } from '../api/errors';
+import {
+  isGrpcCode,
+  MFA_REQUIRED_ENVELOPE_CODE,
+  MFA_REQUIRED_PREFIX,
+  type GrpcCode,
+} from '../api/errors';
 import { apiRoutes, type RpcName } from '../api/routes';
 import { AuditEventSchema, type AuditEvent } from '../gen/fmgr/v1/audit_pb';
 import {
@@ -143,7 +148,62 @@ export interface DemoLab {
   containerTypes: ContainerType[];
   boxTypes: BoxType[];
   boxes: Box[];
+  /** The browser-session state `auth/*` reads and mutates (G2.1). */
+  auth: FakeAuth;
 }
+
+/**
+ * The accounts the `auth/*` routes accept.
+ *
+ * Synthetic credentials, deliberately not shared with any real deployment: the
+ * login route's whole job is to separate an accepted password from a refused
+ * one, and a fake that accepts everything (or answers with the response
+ * message's defaults, which is what an unimplemented resolver did) makes every
+ * "wrong password" branch untestable while looking tested.
+ */
+export interface FakeAuthAccount {
+  readonly userId: string;
+  readonly email: string;
+  /** What `auth/whoami` reports as `display_name` (G0.2). */
+  readonly displayName: string;
+  readonly password: string;
+  /** `true` when the account has a TOTP secret — login answers `mfa_required`. */
+  readonly requiresMfa: boolean;
+}
+
+export interface FakeAuth {
+  readonly accounts: readonly FakeAuthAccount[];
+  /**
+   * The account whose password was accepted and whose TOTP code is still
+   * outstanding — the session the browser holds between `login` and
+   * `submit-mfa`. `null` when no login is half-finished.
+   *
+   * This is the fake's stand-in for the session cookie: jsdom's `fetch` does not
+   * apply `Set-Cookie` to `document.cookie`, so the real cookie jar cannot be
+   * modelled here. What matters for the tests is the *state* it implies.
+   */
+  pendingMfaUserId: string | null;
+  /**
+   * The account whose cookie session is **complete** — the only holder
+   * `auth/whoami` answers for. `null` when nobody is signed in *and* while a
+   * TOTP code is outstanding: the server refuses `WhoAmI` for a half-finished
+   * login (#62, registered `token_and_mfa`), which the pending gate below
+   * reproduces as the `MFA_REQUIRED` refusal.
+   */
+  currentUserId: string | null;
+}
+
+/** The password `fakeApi()` accepts for every seeded account. */
+export const DEMO_PASSWORD = 'demo-password';
+
+/** The TOTP code `fakeApi()` accepts (`submit-mfa`). */
+export const DEMO_TOTP_CODE = '123456';
+
+/** The account without a second factor: password login is enough. */
+export const DEMO_USER_EMAIL = 'demo@example.test';
+
+/** The account with TOTP: login answers `mfa_required: true`. */
+export const DEMO_MFA_EMAIL = 'mfa@example.test';
 
 /** A seeded, in-memory demo lab. Pass your own to `fakeApi({ lab })` to inspect it. */
 /** A real `Timestamp` message, not a bare object: nested messages must be messages. */
@@ -539,6 +599,26 @@ export function createDemoLab(): DemoLab {
         barcode: 'DEMO-0004',
       }),
     ],
+    auth: {
+      accounts: [
+        {
+          userId: 'user-demo',
+          email: DEMO_USER_EMAIL,
+          displayName: 'Demo User',
+          password: DEMO_PASSWORD,
+          requiresMfa: false,
+        },
+        {
+          userId: 'user-mfa',
+          email: DEMO_MFA_EMAIL,
+          displayName: 'MFA User',
+          password: DEMO_PASSWORD,
+          requiresMfa: true,
+        },
+      ],
+      pendingMfaUserId: null,
+      currentUserId: null,
+    },
   };
 }
 
@@ -768,6 +848,67 @@ export class FakeRpcError extends Error {
 const fields = (message: Message): Record<string, unknown> => message;
 
 type Resolver = (lab: DemoLab, message: Message) => MessageInitShape<DescMessage> | undefined;
+
+/**
+ * `AuthServiceImpl::Login` / `LocalAuthProvider::authenticate`: an unknown email
+ * and a wrong password are the *same* refusal on purpose (no account
+ * enumeration), and both are `UNAUTHENTICATED`.
+ */
+function passwordLogin(lab: DemoLab, message: Message, options: { withToken: boolean }) {
+  const { email, password } = fields(message) as { email: string; password: string };
+  const account = lab.auth.accounts.find((candidate) => candidate.email === email);
+  if (account?.password !== password) {
+    throw new FakeRpcError('UNAUTHENTICATED', 'invalid email or password');
+  }
+
+  // The second factor is still outstanding until `submit-mfa` is accepted.
+  lab.auth.pendingMfaUserId = account.requiresMfa ? account.userId : null;
+  // A completed session exists the moment the password is accepted and no TOTP
+  // is outstanding; with TOTP, `auth/whoami` stays refused by the pending gate
+  // until the code lands (#62).
+  lab.auth.currentUserId = account.requiresMfa ? null : account.userId;
+
+  return {
+    ...(options.withToken ? { sessionToken: `token-${account.userId}` } : {}),
+    sessionId: `session-${account.userId}`,
+    userId: account.userId,
+    mfaRequired: account.requiresMfa,
+  };
+}
+
+/**
+ * `LocalAuthProvider::verify_totp`: `InvalidCredentials` — `UNAUTHENTICATED`
+ * with no `mfa_required:` prefix — for a missing session, an already-complete
+ * one and a wrong code alike. The prefix distinction is why the SPA cannot read
+ * "wrong code" out of the status alone and has to re-ask who it is.
+ */
+function verifyTotp(lab: DemoLab, message: Message) {
+  const { totpCode } = fields(message) as { totpCode: string };
+  const pending = lab.auth.pendingMfaUserId;
+  if (pending === null) {
+    throw new FakeRpcError('UNAUTHENTICATED', 'invalid session for TOTP verification');
+  }
+  if (totpCode !== DEMO_TOTP_CODE) {
+    throw new FakeRpcError('UNAUTHENTICATED', 'invalid TOTP code');
+  }
+  lab.auth.pendingMfaUserId = null;
+  lab.auth.currentUserId = pending;
+  return {};
+}
+
+/**
+ * The routes a session with an outstanding second factor may still call, and
+ * the reason the server registers them `token_only`/`no_credential` (#62): a
+ * half-finished login must be resumable *and* abandonable.
+ */
+const PENDING_MFA_EXEMPT_ROUTES: ReadonlySet<RpcName> = new Set([
+  'auth/login',
+  'auth/browser/login',
+  'auth/submit-mfa',
+  'auth/browser/submit-mfa',
+  'auth/logout',
+  'auth/browser/logout',
+]);
 
 /**
  * Paging for `sample/list` — the one route this fake serves whose service
@@ -1232,6 +1373,70 @@ function nextFakeId(prefix: string, taken: readonly { id: string }[]): string {
  * own, and it keeps the fake one place.
  */
 const resolvers: Partial<Record<RpcName, Resolver>> = {
+  // ---- AuthService: the browser session (G2.1, gateway G0.1) ----
+  //
+  // `Login` answers a token in the body for `/auth/login` (scripts, the CLI)
+  // and no token for `/auth/browser/login`, where the gateway moves it into an
+  // `HttpOnly` cookie — see `RestGateway.cc`'s `success_response` overload. Both
+  // set the fake's pending-MFA state, because both are the same RPC.
+  'auth/login': (lab, message) => passwordLogin(lab, message, { withToken: true }),
+  'auth/browser/login': (lab, message) => passwordLogin(lab, message, { withToken: false }),
+
+  // `SubmitMfa` holds a token but not a completed second factor (#62), so it
+  // answers the only question it can: is a code still outstanding, and is this
+  // the right one? A code with no half-finished login behind it is refused the
+  // way `verify_totp` refuses a session it cannot find.
+  'auth/submit-mfa': (lab, message) => verifyTotp(lab, message),
+  'auth/browser/submit-mfa': (lab, message) => verifyTotp(lab, message),
+
+  // `Logout` is token-only for the same #62 reason: an abandoned login must be
+  // able to give the credential up. It therefore also clears the pending state.
+  'auth/logout': (lab) => {
+    lab.auth.pendingMfaUserId = null;
+    lab.auth.currentUserId = null;
+    return {};
+  },
+  'auth/browser/logout': (lab) => {
+    lab.auth.pendingMfaUserId = null;
+    lab.auth.currentUserId = null;
+    return {};
+  },
+
+  // `WhoAmI` (G0.2) names the holder of the completed cookie session, and
+  // nothing else — the response carries no token and no session id. A browser
+  // without a session gets the same `UNAUTHENTICATED` refusal a real expired
+  // session gets, and a pending-MFA session never reaches this resolver: the
+  // pending gate above refuses it with the `MFA_REQUIRED` envelope, exactly as
+  // the server's `token_and_mfa` registration does (#62, #140).
+  'auth/whoami': (lab) => {
+    const { currentUserId } = lab.auth;
+    if (currentUserId === null) {
+      throw new FakeRpcError('UNAUTHENTICATED', 'no valid session');
+    }
+    const account = lab.auth.accounts.find((candidate) => candidate.userId === currentUserId);
+    if (account === undefined) {
+      throw new FakeRpcError('UNAUTHENTICATED', 'no valid session');
+    }
+    return {
+      userId: account.userId,
+      email: account.email,
+      displayName: account.displayName,
+      isSystemAdmin: false,
+      permissions: [],
+      labs: [
+        {
+          labId: 'lab-demo',
+          labName: 'Demo Lab',
+          roleId: 'role-labadmin',
+          roleName: 'LabAdmin',
+          permissions: ['sample.read', 'sample.write', 'sample.checkout', 'audit.read'],
+          // `scope_filters_json` and `is_phi_enabled` are left out on purpose:
+          // proto3 omits their defaults, and the SPA fails closed on both.
+        },
+      ],
+    };
+  },
+
   // ---- The un-paged lists: the server ignores `page`, so these do too ----
   'lab/list': (lab) => ({ labs: lab.labs }),
 
@@ -1785,6 +1990,21 @@ function errorResponse(code: GrpcCode, message: string) {
 }
 
 /**
+ * The gateway's pending-MFA refusal (#140): still HTTP 401, but with the
+ * envelope code `MFA_REQUIRED` instead of `UNAUTHENTICATED`, because that one
+ * state cannot be told apart from an expired session by the gRPC code.
+ */
+function mfaRequiredResponse() {
+  return HttpResponse.json(
+    {
+      code: MFA_REQUIRED_ENVELOPE_CODE,
+      message: `${MFA_REQUIRED_PREFIX} MFA required before this operation`,
+    },
+    { status: HTTP_STATUS_FOR.UNAUTHENTICATED },
+  );
+}
+
+/**
  * Handlers for every route in `routes.ts`. Spread them into the MSW server:
  *
  * ```ts
@@ -1829,6 +2049,17 @@ export function fakeApi(options: FakeApiOptions = {}): HttpHandler[] {
       }
 
       try {
+        // Every RPC that needs a completed second factor — `AuthMiddleware`'s
+        // `CredentialRule::TokenAndMfa` — refuses a pending-MFA session with
+        // `UNAUTHENTICATED` and the `mfa_required: ` prefix. The routes below are
+        // the #62 exception: finishing the login, giving the credential up and
+        // logging in again are exactly what a half-finished session may still
+        // call. Without this, a test could log in with an MFA account, never
+        // submit a code, and still read lab data that production refuses.
+        if (lab.auth.pendingMfaUserId !== null && !PENDING_MFA_EXEMPT_ROUTES.has(rpc as RpcName)) {
+          return mfaRequiredResponse();
+        }
+
         const resolved = resolvers[rpc as RpcName]?.(lab, parsed);
         const response = create(route.output, resolved ?? {});
         return HttpResponse.json(toJson(route.output, response, { useProtoFieldName: true }));

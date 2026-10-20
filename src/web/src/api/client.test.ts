@@ -192,6 +192,34 @@ describe('session-expired listener', () => {
     expect((listener.mock.calls[0]?.[0] as ApiError).code).toBe('UNAUTHENTICATED');
   });
 
+  it('reads the gateway MFA_REQUIRED envelope as a pending second factor (#140)', async () => {
+    const listener = vi.fn();
+    onSessionExpired(listener);
+    // The one state the gRPC code cannot identify: HTTP 401 and, underneath,
+    // still UNAUTHENTICATED — but the SPA must resume the code prompt rather
+    // than send the user back to the password form.
+    server.use(
+      http.post(SAMPLE_LIST, () =>
+        HttpResponse.json(
+          { code: 'MFA_REQUIRED', message: 'mfa_required: MFA required before this operation' },
+          { status: 401 },
+        ),
+      ),
+    );
+
+    const error = (await call('sample/list', { labId: 'lab-1' }).catch(
+      (caught: unknown) => caught,
+    )) as ApiError;
+
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.mfaRequired).toBe(true);
+    expect(error.httpStatus).toBe(401);
+    expect(error.message).toContain('mfa_required:');
+    // Still a 401, so the cache is cleared (G-arch 7) — the session state the
+    // watcher moves to is what differs, not whether it moves.
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   it('does not notify listeners for other failures', async () => {
     const listener = vi.fn();
     onSessionExpired(listener);

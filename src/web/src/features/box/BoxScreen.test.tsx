@@ -8,7 +8,8 @@ import boxCopy from '../../../locales/en/box.json';
 import type { GrpcCode } from '../../api/errors';
 import type { RpcName } from '../../api/routes';
 import type { CurrentUser } from '../../app/session';
-import { STUB_CURRENT_USER, STUB_CURRENT_USER_ALL_PERMISSIONS } from '../../app/stubSession';
+import { ALL_PERMISSIONS } from '../../app/permissions';
+import { currentUserWith } from '../../test/session';
 import { BoxPositionSchema, BoxSchema, BoxTypeSchema } from '../../gen/fmgr/v1/box_pb';
 import { SampleSchema, SampleStatus, type Sample } from '../../gen/fmgr/v1/sample_pb';
 import { TimestampSchema } from '../../gen/fmgr/v1/common/types_pb';
@@ -49,19 +50,11 @@ const MIXED_BOX_ID = 'box-mixed';
 const MIXED_BOX_LABEL = 'Mixed rack';
 const WELL_BOX_ID = 'box-1';
 
-/** The stub session, whose global permission list covers the whole catalog. */
-const ADMIN: CurrentUser = STUB_CURRENT_USER_ALL_PERMISSIONS;
+/** Every permission the catalog has, in the demo lab. */
+const ADMIN: CurrentUser = currentUserWith(ALL_PERMISSIONS, { labId: LAB_ID });
 
 /** A ReadOnly member: `sample.read` and nothing else, so no move is offered. */
-const READ_ONLY: CurrentUser = {
-  ...STUB_CURRENT_USER,
-  permissions: ['sample.read'],
-  labs: STUB_CURRENT_USER.labs.map((lab) => ({
-    ...lab,
-    labId: LAB_ID,
-    permissions: ['sample.read'],
-  })),
-};
+const READ_ONLY: CurrentUser = currentUserWith(['sample.read'], { labId: LAB_ID });
 
 /**
  * The D4.2 mixed template's 13 positions — `data/seed/box_types/mixed_eppendorf.json`,
