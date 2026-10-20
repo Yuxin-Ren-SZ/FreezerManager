@@ -1,89 +1,385 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-or-later
 # ──────────────────────────────────────────────────────────────────────────────
-# FreezerManager Demo Setup
+# FreezerManager Demo — one command that serves a seeded server AND the SPA.
 #
-# One command to set up everything:
-#   bash scripts/demo-setup.sh
+#   bash scripts/demo-setup.sh              # start the demo
+#   bash scripts/demo-setup.sh --reset      # start with a freshly seeded database
+#   bash scripts/demo-setup.sh --totp-code  # print the current TOTP code for the
+#                                           # demo admin, right before sign-in
 #
 # What it does:
-#   1. Kill any running freezerd / Qt client
-#   2. Wipe old DB
-#   3. Start freezerd briefly to run migrations, then kill it
-#   4. Seed demo data
-#   5. Start freezerd on localhost:8080
-#   6. Start Qt client
+#   1. Starts freezerd briefly on the demo database to run migrations, then
+#      stops it again (only the server process it started — never a pkill).
+#   2. On the first run (or with --reset) seeds demo data with the venv python
+#      (argon2 required; the script fails loudly with the one-time fix when it
+#      is missing, rather than half-running). Later runs reuse the database.
+#   3. Gives the demo admin a fixed TOTP secret, so the demo shows the real
+#      sign-in + second-factor flow.
+#   4. Starts freezerd and the Vite dev server on ONE matching loopback port
+#      pair: Vite proxies /api to freezerd's REST listener, and this script
+#      exports the same FMGR_* variables both sides read (vite.config.ts and
+#      freezerd), so they cannot disagree.
+#   5. Starts the Qt client only if its binary exists — and only claims to
+#      when it did.
+#   6. Stays in the foreground; Ctrl-C stops exactly the processes it started.
+#
+# Prerequisite: the server binary must be built in this checkout first
+# (`cmake --build --preset dev`); the script says so instead of building.
+#
+# Ports (loopback only, never 0.0.0.0): the demo defaults avoid the per-agent
+# slot pattern (50051/18080/5173 + 10·N). When an agent has sourced
+# scripts/agent/env.sh first, its slot's REST/web ports are used instead and
+# the Vite proxy follows automatically.
+#
+# Nothing here deletes anything without --reset, and --reset names the exact
+# files it deletes. Nothing here touches data/freezer.db, the main checkout's
+# database, or any process this script did not start.
 # ──────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DB="$ROOT/data/freezer.db"
 SERVER="$ROOT/out/build/dev/src/server/freezerd"
 QT="$ROOT/out/build/dev/src/qt/freezermanager-qt"
-SEED="python3 $ROOT/scripts/seed_demo.py"
+WEB_DIR="$ROOT/src/web"
+LOGDIR="$ROOT/out/demo"
 
-echo "============================================"
-echo " FreezerManager Demo Setup"
-echo "============================================"
+# The main checkout owns the shared toolchain (.venv, Conan cache, Node 22).
+# env.sh exports FMGR_MAIN_CHECKOUT, but this script must also work in a worktree
+# when env.sh was never sourced, so derive it from git when the variable is
+# absent. From a worktree, --git-common-dir is the main checkout's .git.
+MAIN_CHECKOUT="${FMGR_MAIN_CHECKOUT:-}"
+if [[ -z "$MAIN_CHECKOUT" ]]; then
+  _common_dir="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  [[ -n "$_common_dir" ]] && MAIN_CHECKOUT="$(dirname "$_common_dir")"
+  unset _common_dir
+fi
 
-# ── 1. Kill existing processes ──
-echo "[1/5] Stopping existing processes..."
-pkill -f freezerd     2>/dev/null || true
-pkill -f freezermanager-qt 2>/dev/null || true
-sleep 1
-
-# ── 2. Wipe old DB ──
-echo "[2/5] Wiping old database..."
-rm -f "$DB" "$DB-wal" "$DB-shm"
-
-# ── 3. Start server to migrate, then kill ──
-echo "[3/5] Running migrations..."
-FMGR_DB_PATH="$DB" FMGR_REST_LISTEN=127.0.0.1:8081 "$SERVER" &
-SERVER_PID=$!
-sleep 3
-
-# Verify server is healthy
-if ! curl -sf http://127.0.0.1:8081/api/v1/health > /dev/null 2>&1; then
-    echo "ERROR: server failed to start for migration"
-    kill $SERVER_PID 2>/dev/null || true
+# The demo database lives under out/ (gitignored, per-checkout), never in data/.
+DB="${FMGR_DEMO_DB_PATH:-$ROOT/out/demo/freezer.db}"
+case "$DB" in
+  */data/freezer.db | data/freezer.db)
+    printf '[demo] ERROR: refusing to use a data/freezer.db path as the demo database: %s\n' "$DB" >&2
+    printf '  That is a checkout database, not the demo one. Point FMGR_DEMO_DB_PATH under out/.\n' >&2
     exit 1
+    ;;
+esac
+
+# The demo admin's fixed TOTP secret (RFC 4648 base32; the RFC 6238 test
+# vector). Fixed on purpose: a demo needs a code the presenter can reproduce.
+DEMO_TOTP_SECRET="JBSWY3DPEHPK3PXP"
+DEMO_ADMIN_EMAIL="admin@freezer.local"
+
+log() { printf '[demo] %s\n' "$*"; }
+fail() {
+  printf '[demo] ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+# One consistent loopback port pair. Agent env (scripts/agent/env.sh) wins if
+# present, so a worker's demo lands on its slot ports; otherwise the fixed demo
+# ports. FMGR_WEB_DEV_PORT is the port Vite binds and FMGR_REST_LISTEN is where
+# Vite proxies /api — they must agree, and here they always do because this
+# script exports both for its children.
+REST_LISTEN="${FMGR_REST_LISTEN:-127.0.0.1:18090}"
+WEB_PORT="${FMGR_WEB_DEV_PORT:-5190}"
+GRPC_LISTEN="${FMGR_LISTEN:-127.0.0.1:50090}"
+REST_PORT="${REST_LISTEN##*:}"
+
+# This is a demo on a shared machine: it must never be reachable off-box. The
+# gateway and Vite bind what this script passes them, so refuse anything but a
+# loopback listener rather than trusting the caller's environment.
+case "$REST_LISTEN" in
+  127.0.0.1:* | localhost:*) ;;
+  *) fail "FMGR_REST_LISTEN must be a loopback listener (127.0.0.1:PORT), got: $REST_LISTEN" ;;
+esac
+case "$GRPC_LISTEN" in
+  127.0.0.1:* | localhost:*) ;;
+  *) fail "FMGR_LISTEN must be a loopback listener (127.0.0.1:PORT), got: $GRPC_LISTEN" ;;
+esac
+case "$WEB_PORT" in
+  '' | *[!0-9]*) fail "FMGR_WEB_DEV_PORT must be a port number, got: $WEB_PORT" ;;
+esac
+
+# Browser sessions over plain http://127.0.0.1 need non-Secure cookies: Safari
+# will not store a Secure cookie from http://127.0.0.1, which would make the
+# sign-in look broken. freezerd refuses this flag in production, so a demo
+# cannot silently turn it on there.
+export FMGR_DEV_INSECURE_COOKIES=1
+
+SERVER_PID=""
+VITE_PID=""
+QT_PID=""
+
+cleanup() {
+  local pid
+  for pid in "$VITE_PID" "$QT_PID" "$SERVER_PID"; do
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      log "stopping process $pid"
+      kill "$pid" 2>/dev/null || true
+    fi
+  done
+  sleep 1
+}
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# ── Helpers ────────────────────────────────────────────────────────────────
+
+find_seed_python() {
+  # The seed needs argon2 (argon2-cffi), which the system python3 (3.9.6) does
+  # not have. The main checkout's venv does; scripts/agent/env.sh exports
+  # FMGR_MAIN_CHECKOUT when sourced, and the block above derives it otherwise,
+  # so this works in a worktree even without env.sh.
+  if [[ -n "$MAIN_CHECKOUT" && -x "$MAIN_CHECKOUT/.venv/bin/python3" ]]; then
+    printf '%s\n' "$MAIN_CHECKOUT/.venv/bin/python3"
+    return 0
+  fi
+  if [[ -x "$ROOT/.venv/bin/python3" ]]; then
+    printf '%s\n' "$ROOT/.venv/bin/python3"
+    return 0
+  fi
+  printf '%s\n' "$(command -v python3 || true)"
+}
+
+verify_seed_python() {
+  local py="$1"
+  [[ -n "$py" && -x "$py" ]] || fail "no python3 found; create a venv: python3 -m venv .venv"
+  if ! "$py" -c 'import argon2' 2>/dev/null; then
+    fail "seed python ($py) has no argon2 — the seed would half-run without it.
+  One-time fix:  <main checkout>/.venv/bin/pip install argon2-cffi
+  (scripts/agent/env.sh already puts that venv first on PATH.)"
+  fi
+}
+
+port_in_use() {
+  # macOS `lsof` form; a non-empty answer means something is listening.
+  lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null
+}
+
+wait_for_url() {
+  local url="$1" what="$2" tries=30
+  for _ in $(seq 1 "$tries"); do
+    if curl -sf --max-time 2 "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  fail "$what did not become ready in time at $url"
+}
+
+ensure_port_free() {
+  local port="$1" who="$2"
+  if port_in_use "$port" >/dev/null; then
+    fail "port $port is already in use ($who would land on it).
+  Find the holder with:  lsof -nP -iTCP:$port -sTCP:LISTEN
+  This script never kills other processes — stop the holder yourself, or run
+  with FMGR_REST_LISTEN / FMGR_WEB_DEV_PORT / FMGR_LISTEN set to free ports."
+  fi
+}
+
+find_node() {
+  # Node 22 is pinned by the repo's .nvmrc; this machine keeps it under
+  # out/tools/node22 (installed in the main checkout, shared by worktrees).
+  local node_dir
+  for node_dir in "$ROOT/out/tools/node22/bin" "$MAIN_CHECKOUT/out/tools/node22/bin"; do
+    if [[ -n "$node_dir" && -x "$node_dir/node" ]]; then
+      export PATH="$node_dir:$PATH"
+      break
+    fi
+  done
+  command -v node >/dev/null 2>&1 || fail "no node on PATH (need Node 22: see $ROOT/.nvmrc)"
+  # An inherited NODE_ENV=production makes npm skip devDependencies and Vite
+  # fail to start (doc/dev/web.md). Never run the dev server under it.
+  unset NODE_ENV
+}
+
+# ── --totp-code: print the current code for the demo admin ─────────────────
+
+if [[ "${1:-}" == "--totp-code" ]]; then
+  PY="$(find_seed_python)"
+  [[ -n "$PY" && -x "$PY" ]] || PY="$(command -v python3 || true)"
+  [[ -n "$PY" && -x "$PY" ]] || fail "no python3 found"
+  "$PY" - "$DEMO_TOTP_SECRET" <<'PYEOF'
+import base64
+import hashlib
+import hmac
+import struct
+import sys
+import time
+
+secret = sys.argv[1]
+key = base64.b32decode(secret + "=" * ((8 - len(secret) % 8) % 8))
+counter = int(time.time()) // 30
+digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+offset = digest[-1] & 0x0F
+code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % 10**6
+print(f"{code:06d}")
+PYEOF
+  exit 0
 fi
 
-kill $SERVER_PID 2>/dev/null || true
-wait $SERVER_PID 2>/dev/null || true
-echo "  Migrations applied."
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  printf 'Usage: bash scripts/demo-setup.sh [--reset] [--totp-code]\n'
+  exit 0
+fi
 
-# ── 4. Seed demo data ──
-echo "[4/5] Seeding demo data..."
-$SEED
+RESET=0
+if [[ "${1:-}" == "--reset" ]]; then
+  RESET=1
+elif [[ -n "${1:-}" ]]; then
+  fail "unknown argument: $1 (use --reset or --totp-code)"
+fi
 
-# ── 5. Start server + Qt client ──
-echo "[5/5] Starting server + Qt client..."
+# ── 0. Preflight: ports, binary, python, node ──────────────────────────────
 
-# Start server on port 8080
-FMGR_DB_PATH="$DB" FMGR_REST_LISTEN=127.0.0.1:8080 "$SERVER" &
-sleep 2
+log "demo database: $DB"
+ensure_port_free "$REST_PORT" "freezerd"
+ensure_port_free "$WEB_PORT" "the Vite dev server"
+ensure_port_free "${GRPC_LISTEN##*:}" "freezerd gRPC"
 
-# Verify
-if curl -sf http://127.0.0.1:8080/api/v1/health > /dev/null 2>&1; then
-    echo "  Server: http://127.0.0.1:8080 ✓"
+[[ -x "$SERVER" ]] || fail "server binary not built: $SERVER
+  Build it first in this checkout:  cmake --build --preset dev"
+
+PY="$(find_seed_python)"
+verify_seed_python "$PY"
+find_node
+log "seed python: $PY"
+log "node: $(command -v node) ($(node --version))"
+
+mkdir -p "$LOGDIR"
+
+# ── 1. Fresh database (opt-in reset only) ──────────────────────────────────
+
+# Decided before migrations run: the server creates the file, so testing for it
+# afterwards would always say "it already existed" and skip the seed.
+FRESH=0
+if [[ "$RESET" == 1 && -e "$DB" ]]; then
+  log "reset requested — deleting exactly:"
+  log "  $DB"
+  log "  $DB-wal"
+  log "  $DB-shm"
+  rm -f "$DB" "$DB-wal" "$DB-shm"
+fi
+
+if [[ -e "$DB" ]]; then
+  log "reusing the existing demo database (no --reset given; nothing deleted)"
 else
-    echo "  WARNING: server health check failed"
+  FRESH=1
+  log "no demo database yet — migrations and seeding will run"
 fi
 
-# Start Qt client
-QT_QPA_PLATFORM=xcb "$QT" &
-echo "  Qt client: started"
+# ── 2. Migrations: start freezerd, wait for health, stop it ────────────────
 
+export FMGR_DB_PATH="$DB"
+export FMGR_LISTEN="$GRPC_LISTEN"
+export FMGR_REST_LISTEN="$REST_LISTEN"
+
+"$SERVER" >>"$LOGDIR/freezerd-migrate.log" 2>&1 &
+SERVER_PID=$!
+wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd (migration phase)"
+kill "$SERVER_PID" 2>/dev/null || true
+wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
+log "migrations applied"
+
+# ── 3. Seed demo data (venv python with argon2) ────────────────────────────
+
+if [[ "$FRESH" == 1 ]]; then
+  log "seeding demo data..."
+  FREEZER_DB_PATH="$DB" "$PY" "$ROOT/scripts/seed_demo.py"
+else
+  log "database already seeded; skipping seed (use --reset for a fresh one)"
+fi
+
+# Give the demo admin a fixed TOTP secret so the demo shows the real MFA flow
+# (a user without a secret signs in with the password alone). Run on every
+# start: it is idempotent, and an older demo database may predate the secret.
+"$PY" - "$DB" "$DEMO_TOTP_SECRET" "$DEMO_ADMIN_EMAIL" <<'PYEOF'
+import sqlite3
+import sys
+
+db_path, secret, email = sys.argv[1], sys.argv[2], sys.argv[3]
+conn = sqlite3.connect(db_path)
+cur = conn.execute(
+    "UPDATE users SET totp_secret_enc = ? WHERE primary_email = ?",
+    (secret, email),
+)
+conn.commit()
+if cur.rowcount != 1:
+    sys.exit(f"expected exactly one {email} row to enable TOTP on, updated {cur.rowcount}")
+print(f"  TOTP enabled for {email} ({cur.rowcount} row)")
+PYEOF
+
+# ── 4. freezerd, for real this time ────────────────────────────────────────
+
+"$SERVER" >>"$LOGDIR/freezerd.log" 2>&1 &
+SERVER_PID=$!
+wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd"
+log "freezerd: gRPC $GRPC_LISTEN, REST http://$REST_LISTEN (pid $SERVER_PID)"
+
+# ── 5. Qt client — only if it is actually built ────────────────────────────
+
+if [[ -x "$QT" ]]; then
+  "$QT" >>"$LOGDIR/qt.log" 2>&1 &
+  QT_PID=$!
+  log "Qt client: started (pid $QT_PID)"
+else
+  log "Qt client: not started — $QT does not exist (Qt6 is not installed on this machine)"
+fi
+
+# ── 6. Vite dev server (proxies /api to $REST_LISTEN) ──────────────────────
+
+if [[ ! -d "$WEB_DIR/node_modules" ]]; then
+  log "installing web dependencies (npm ci, first run only)..."
+  (cd "$WEB_DIR" && npm ci --cache "$ROOT/out/npm-cache" >>"$LOGDIR/npm-ci.log" 2>&1)
+fi
+
+# Generate the proto/icon inputs once, then run Vite directly instead of through
+# `npm run dev`: the PID this script records is then the process that owns the
+# port, so Ctrl-C cannot leave an orphaned Vite behind.
+(cd "$WEB_DIR" && npm run gen >>"$LOGDIR/vite.log" 2>&1) || fail "npm run gen failed (see $LOGDIR/vite.log)"
+export FMGR_WEB_DEV_PORT="$WEB_PORT"
+(cd "$WEB_DIR" && exec env NODE_ENV=development ./node_modules/.bin/vite >>"$LOGDIR/vite.log" 2>&1) &
+VITE_PID=$!
+wait_for_url "http://127.0.0.1:$WEB_PORT/" "the Vite dev server"
+# The proxy must answer too — this check is what catches a port disagreement
+# between the script and vite.config.ts.
+PROXIED_HEALTH="$(curl -sf --max-time 5 "http://127.0.0.1:$WEB_PORT/api/v1/health" || true)"
+if [[ "$PROXIED_HEALTH" != *'"status":"ok"'* ]]; then
+  echo >&2
+  fail "Vite is up but /api/v1/health through the proxy failed — the /api proxy
+  target ($REST_LISTEN) does not match the server. Check $LOGDIR/vite.log."
+fi
 echo
-echo "============================================"
-echo " Demo is ready!"
-echo ""
-echo " Login:  admin@freezer.local"
-echo " Pass:   admin"
-echo ""
-echo " Other users (all password: admin):"
-echo "   wang@neuro.local    (Neuro LabAdmin)"
-echo "   chen@onco.local     (Onco LabAdmin)"
-echo "   li@neuro.local      (Neuro Member)"
-echo "   zhang@neuro.local   (ReadOnly)"
-echo "============================================"
+log "SPA: http://127.0.0.1:$WEB_PORT (Vite, pid $VITE_PID) — /api proxied to $REST_LISTEN"
+
+# ── 7. Summary ─────────────────────────────────────────────────────────────
+
+cat <<EOF
+
+============================================================
+ Demo is ready:  http://127.0.0.1:$WEB_PORT
+============================================================
+ Sign in (TOTP is enabled for the SystemAdmin):
+
+   email:    $DEMO_ADMIN_EMAIL
+   password: admin
+   TOTP:     bash scripts/demo-setup.sh --totp-code
+             (or scan into any authenticator app:
+              otpauth://totp/FreezerManager%20Demo:$DEMO_ADMIN_EMAIL?secret=$DEMO_TOTP_SECRET&issuer=FreezerManager%20Demo&algorithm=SHA1&digits=6&period=30)
+
+ Other users (password-only sign-in, all password: admin):
+   wang@neuro.local    (Neuro LabAdmin)
+   chen@onco.local     (Onco LabAdmin)
+   li@neuro.local      (Neuro Member)
+   zhang@neuro.local   (ReadOnly)
+
+ Database: $DB   (--reset deletes exactly this file before seeding)
+ Logs:     $LOGDIR/{freezerd,vite}.log
+ Stop:     press Ctrl-C here — only the processes started above are stopped.
+============================================================
+EOF
+
+# Stay in the foreground; Ctrl-C runs cleanup and stops exactly our PIDs.
+wait "$SERVER_PID" "$VITE_PID"

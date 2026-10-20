@@ -184,6 +184,106 @@ The SPA is same-origin only (G-arch 5): in production `freezerd` (G0.3) or a
 reverse proxy in front of it serves the built `dist/`, and the gateway sends no
 CORS headers. There is no separate API host to point at.
 
+## Demo (`scripts/demo-setup.sh`, #142)
+
+One command seeds a demo database, starts `freezerd` **and** serves the SPA on a
+matching loopback port pair. The script exports the same `FMGR_REST_LISTEN` /
+`FMGR_WEB_DEV_PORT` that `vite.config.ts` and `freezerd` both read, so the proxy
+target and the server cannot disagree (the pre-#142 script hardcoded 8080 while
+the proxy pointed at 18080). It refuses a non-loopback listener, never binds
+`0.0.0.0`, and never kills a process it did not start.
+
+| What | Default | With `AGENT_SLOT=N source scripts/agent/env.sh` |
+|---|---|---|
+| `freezerd` REST | `127.0.0.1:18090` | `127.0.0.1:18080+10·N` |
+| `freezerd` gRPC | `127.0.0.1:50090` | `127.0.0.1:50051+10·N` |
+| SPA (Vite) | `127.0.0.1:5190` | `127.0.0.1:5173+10·N` |
+
+The agent slot's ports win when its environment is sourced, so three agents can
+run demos at once; the defaults stay clear of slot 0, which the lead uses.
+
+```sh
+cmake --build --preset dev              # once: the server binary must exist
+bash scripts/demo-setup.sh              # first run seeds; then starts both servers
+bash scripts/demo-setup.sh --reset      # delete the demo DB first, then re-seed
+bash scripts/demo-setup.sh --totp-code  # the demo admin's current 6-digit TOTP code
+```
+
+Prerequisites the script checks and explains rather than assumes:
+
+- **The demo database** lives at `out/demo/freezer.db` (gitignored, per
+  worktree), never `data/freezer.db`. The first run migrates it and seeds it;
+  later runs reuse it. `--reset` is opt-in and logs the three files it deletes
+  (`freezer.db`, `-wal`, `-shm`) before deleting them.
+- **The seed python** is the main checkout's `.venv/bin/python3`, found through
+  `FMGR_MAIN_CHECKOUT` or derived with `git rev-parse --git-common-dir`. The
+  system `python3` is 3.9.6 without argon2; if argon2 is missing the script
+  exits 1 with the one-time fix (`.venv/bin/pip install argon2-cffi`) instead of
+  half-running.
+- **Node 22** comes from `out/tools/node22/bin` (repo `.nvmrc`), again found in
+  the main checkout when run from a worktree. `NODE_ENV` is unset for the SPA:
+  an inherited `NODE_ENV=production` makes Vite's install/start fail.
+- **Web dependencies** are installed with `npm ci` on first use.
+- The **Qt client** starts only when `out/build/dev/src/qt/freezermanager-qt`
+  exists; otherwise the script says it did not start it (Qt6 is not installed
+  on this machine).
+
+The script stays in the foreground and Ctrl-C stops exactly the `freezerd`,
+Vite and (if started) Qt processes it launched. A port already in use fails
+loudly with the `lsof` command to find the holder.
+
+### Click path (what the presenter does)
+
+1. **Open the printed URL**, e.g. `http://127.0.0.1:5190`. You land on `/login`.
+2. **Sign in with TOTP.** `admin@freezer.local`, password `admin`, then the
+   six-digit code on `/login/mfa`. Get the code with
+   `bash scripts/demo-setup.sh --totp-code` in a second terminal, or scan the
+   `otpauth://` URI the script prints into an authenticator app (the admin's
+   secret is fixed on purpose: the RFC 6238 test vector `JBSWY3DPEHPK3PXP`). The
+   other four accounts use password `admin` and have no TOTP secret:
+   `wang@neuro.local` and `chen@onco.local` are lab admins, `li@neuro.local` a
+   Member, `zhang@neuro.local` ReadOnly.
+3. **Reload keeps the session.** Press Cmd-R / F5: the SPA calls
+   `POST /api/v1/auth/whoami` with the `HttpOnly` session cookie and comes back
+   signed in — no second sign-in, nothing credential-shaped in browser storage.
+4. **Lookup** (side nav, G3.5). Type `P001` and press Enter: six matches. Each
+   card shows the sample's location and a **Check out** button; click
+   `P001-CSF-01` to open it, or check out straight from the card.
+5. **Detail** (G3.3, `/labs/<labId>/samples/<sampleId>`): volume, box position,
+   custom fields and the audit-backed History panel. **Check out** here is one
+   click (no dialog); the status becomes *Checked out*.
+6. **Box view** (G3.4): side nav **Layout**, then `CSF Bank - Box 1` under
+   `Neuro Freezer A` (the tree is expanded by default), or open
+   `/labs/<labId>/boxes/<boxId>`. The grid shows `A1` holding `P001-CSF-01` in
+   the checked-out state. It is live (SSE) and supports drag-and-drop moves and a
+   print sheet. (The current seed draws every box on the 10×10 type; #143
+   restores the intended 9×9/10×10 split.)
+
+A fresh sign-in lands on **Home**, which is still a placeholder (G4.2); use the
+side nav. Screens on the demo path that are real today: **Lookup**, **Samples**,
+**sample detail/create/edit**, **Scan**, **Layout** tree, **Box view** (and
+**Item types** admin). Still placeholders, safe to skip: **Home**, **Import**
+(G3.7), **Shares** (G3.13), **Audit** (G3.12), **Members** (G3.10),
+**Account** (G3.11), **Layout setup** (G3.8). The sample History panel is real
+even though the Audit screen is a placeholder.
+
+### What "verified end to end" means for this file
+
+The acceptance check is a full run on this machine, not a reading of the script;
+the #142 PR carries the exact commands and output. It runs, in order: seed →
+`freezerd` healthy → Vite up → `GET <vite>/api/v1/health` returns `"status":"ok"`
+*through the proxy* → browser-route login with a cookie jar (TOTP required) →
+`browser/submit-mfa` → a **fresh** `whoami` request with only the cookie still
+authenticated (the reload path) → lookup `sample/list?query=P001` → `sample/get`
+→ `sample/checkout` → the box view's `box/get` + `box-type/list` +
+`sample/list?box_id=`, showing `A1` checked out.
+
+Two dates to keep honest: the seeded history/box-size shape changes when **#143**
+merges (this run predates it), and the browser sign-in/MFA screens are **G2.1
+(#137)** — before that lands, `/login` renders its placeholder and the flow above
+is verified at the API level with a cookie jar. Re-verify the click path after
+each of those merges; the presenter-facing steps above do not change.
+
 ## Layout (G-arch 11)
 
 | Path | What goes there | Landed in |
