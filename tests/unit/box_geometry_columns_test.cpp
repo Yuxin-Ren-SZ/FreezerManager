@@ -26,7 +26,7 @@ namespace fmgr::storage::detail {
     }
 
     TEST(ParseDimensionsTest, ReturnsAbsentForJsonStringNull) {
-      EXPECT_FALSE(parse_dimensions("\"null\"").has_value());
+      EXPECT_FALSE(parse_dimensions(R"("null")").has_value());
     }
 
     TEST(ParseDimensionsTest, ReturnsAbsentForEmptyObject) {
@@ -34,16 +34,16 @@ namespace fmgr::storage::detail {
     }
 
     TEST(ParseDimensionsTest, ReturnsAbsentForObjectMissingAField) {
-      EXPECT_FALSE(parse_dimensions("{\"width\": 12.5}").has_value());
-      EXPECT_FALSE(parse_dimensions("{\"width\": 12.5, \"height\": 40.0}").has_value());
-      EXPECT_FALSE(parse_dimensions("{\"height\": 40.0, \"depth\": 12.5}").has_value());
+      EXPECT_FALSE(parse_dimensions(R"({"width": 12.5})").has_value());
+      EXPECT_FALSE(parse_dimensions(R"({"width": 12.5, "height": 40.0})").has_value());
+      EXPECT_FALSE(parse_dimensions(R"({"height": 40.0, "depth": 12.5})").has_value());
     }
 
     TEST(ParseDimensionsTest, ReturnsAbsentForNonNumericFields) {
       EXPECT_FALSE(
-          parse_dimensions("{\"width\": \"wide\", \"height\": 40.0, \"depth\": 12.5}").has_value());
+          parse_dimensions(R"({"width": "wide", "height": 40.0, "depth": 12.5})").has_value());
       EXPECT_FALSE(
-          parse_dimensions("{\"width\": 12.5, \"height\": null, \"depth\": 12.5}").has_value());
+          parse_dimensions(R"({"width": 12.5, "height": null, "depth": 12.5})").has_value());
     }
 
     TEST(ParseDimensionsTest, ReturnsAbsentForNonObjectJson) {
@@ -53,8 +53,7 @@ namespace fmgr::storage::detail {
     }
 
     TEST(ParseDimensionsTest, ReturnsDimensionsForACompleteObject) {
-      const auto dimensions =
-          parse_dimensions("{\"width\": 12.5, \"height\": 40.0, \"depth\": 8.0}");
+      const auto dimensions = parse_dimensions(R"({"width": 12.5, "height": 40.0, "depth": 8.0})");
       ASSERT_TRUE(dimensions.has_value());
       EXPECT_EQ(dimensions->width, 12.5);
       EXPECT_EQ(dimensions->height, 40.0);
