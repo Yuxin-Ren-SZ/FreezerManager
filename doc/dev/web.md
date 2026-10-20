@@ -215,6 +215,13 @@ Prerequisites the script checks and explains rather than assumes:
   worktree), never `data/freezer.db`. The first run migrates it and seeds it;
   later runs reuse it. `--reset` is opt-in and logs the three files it deletes
   (`freezer.db`, `-wal`, `-shm`) before deleting them.
+- **The PHI master key** is fixed and demo-only: the script exports
+  `FMGR_MASTER_KEK` (base64 of 32 bytes) before it seeds *and* before it starts
+  `freezerd`, so the CSF `diagnosis` value the seed encrypts is the one the
+  admin's detail page decrypts. Like the TOTP secret it is fixed on purpose —
+  a demo must survive `--reset` and restarts — and it protects only synthetic
+  `out/demo/` data. Never use it for real PHI; a real deployment generates its
+  own (`openssl rand -base64 32`, see `doc/UPGRADE.md`).
 - **The seed python** is the main checkout's `.venv/bin/python3`, found through
   `FMGR_MAIN_CHECKOUT` or derived with `git rev-parse --git-common-dir`. The
   system `python3` is 3.9.6 without argon2; if argon2 is missing the script
@@ -250,14 +257,16 @@ loudly with the `lsof` command to find the holder.
    card shows the sample's location and a **Check out** button; click
    `P001-CSF-01` to open it, or check out straight from the card.
 5. **Detail** (G3.3, `/labs/<labId>/samples/<sampleId>`): volume, box position,
-   custom fields and the audit-backed History panel. **Check out** here is one
-   click (no dialog); the status becomes *Checked out*.
+   custom fields and the audit-backed History panel (non-empty: the seed
+   imported every sample through the audited write path, so it shows the
+   `sample.insert` event). **Check out** here is one click (no dialog); the
+   status becomes *Checked out*.
 6. **Box view** (G3.4): side nav **Layout**, then `CSF Bank - Box 1` under
    `Neuro Freezer A` (the tree is expanded by default), or open
    `/labs/<labId>/boxes/<boxId>`. The grid shows `A1` holding `P001-CSF-01` in
    the checked-out state. It is live (SSE) and supports drag-and-drop moves and a
-   print sheet. (The current seed draws every box on the 10×10 type; #143
-   restores the intended 9×9/10×10 split.)
+   print sheet. The seed uses both templates: `CSF Bank - Box 1` is 9×9 (81
+   positions) and `Plasma/Serum - Box 1` is 10×10 (100 positions).
 
 A fresh sign-in lands on **Home**, which is still a placeholder (G4.2); use the
 side nav. Screens on the demo path that are real today: **Lookup**, **Samples**,
@@ -278,11 +287,13 @@ authenticated (the reload path) → lookup `sample/list?query=P001` → `sample/
 → `sample/checkout` → the box view's `box/get` + `box-type/list` +
 `sample/list?box_id=`, showing `A1` checked out.
 
-Two dates to keep honest: the seeded history/box-size shape changes when **#143**
-merges (this run predates it), and the browser sign-in/MFA screens are **G2.1
-(#137)** — before that lands, `/login` renders its placeholder and the flow above
-is verified at the API level with a cookie jar. Re-verify the click path after
-each of those merges; the presenter-facing steps above do not change.
+Both prerequisites are now on `main` — G2.1 (#137, so `/login` and `/login/mfa`
+are real screens) and the final seed (#143: audit history, the CSF `diagnosis`
+PHI field, both box grids) — and #164 re-ran the whole flow on 2026-10-20
+against them. Its PR carries the exact commands and output: TOTP sign-in, the
+reload keeping the session, lookup → detail → check-out → box view, the
+admin-vs-ReadOnly PHI gate, both grids and the non-empty history. The presenter
+steps above do not change.
 
 ## Layout (G-arch 11)
 
