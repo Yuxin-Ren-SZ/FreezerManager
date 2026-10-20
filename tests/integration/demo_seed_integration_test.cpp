@@ -266,7 +266,7 @@ namespace fmgr::test {
         return nlohmann::json::parse(sample.custom_fields_json());
       }
 
-      const std::string& seed_output() const {
+      [[nodiscard]] const std::string& seed_output() const {
         return seed_output_;
       }
 
