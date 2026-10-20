@@ -375,9 +375,20 @@ gtest_discover_tests(freezermanager_demo_seed_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_rest_gateway_integration_tests
   PROPERTIES LABELS "grpc_integration")
-# These do not start a gRPC server (but FreezerManager::rest still links gRPC),
-# so they stay unlabelled: the asan/tsan presets should exercise this network
-# code. CTEST_PARALLEL_LEVEL=1 keeps their loopback listeners serialized anyway.
-gtest_discover_tests(freezermanager_rest_static_assets_integration_tests)
-gtest_discover_tests(freezermanager_rest_static_assets_tls_integration_tests)
-gtest_discover_tests(freezermanager_rest_static_assets_disabled_integration_tests)
+# G0.3's three SPA-served binaries start no gRPC server, so they stay unlabelled
+# and run under the sanitizers. Drogon is prebuilt without sanitizer
+# instrumentation, and its process-exit teardown trips a container-overflow
+# report inside its own std::unordered_map: the container is filled by
+# uninstrumented drogon code and annotated by the instrumented libc++ headers,
+# which is a false positive, not our memory. Disable that one check for these
+# binaries so ASan still covers the new HTTP path; the pure path/config logic
+# also runs under full ASan in freezermanager_rest_unit_tests.
+gtest_discover_tests(
+  freezermanager_rest_static_assets_integration_tests
+  PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_container_overflow=0")
+gtest_discover_tests(
+  freezermanager_rest_static_assets_tls_integration_tests
+  PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_container_overflow=0")
+gtest_discover_tests(
+  freezermanager_rest_static_assets_disabled_integration_tests
+  PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_container_overflow=0")
