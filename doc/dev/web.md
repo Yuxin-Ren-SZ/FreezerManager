@@ -252,8 +252,8 @@ loudly with the `lsof` command to find the holder.
 5. **Detail** (G3.3, `/labs/<labId>/samples/<sampleId>`): volume, box position,
    custom fields and the audit-backed History panel. **Check out** here is one
    click (no dialog); the status becomes *Checked out*.
-6. **Box view** (G3.4): side nav **Layout** → expand `Neuroscience Lab` →
-   `CSF Bank - Box 1`, or open
+6. **Box view** (G3.4): side nav **Layout**, then `CSF Bank - Box 1` under
+   `Neuro Freezer A` (the tree is expanded by default), or open
    `/labs/<labId>/boxes/<boxId>`. The grid shows `A1` holding `P001-CSF-01` in
    the checked-out state. It is live (SSE) and supports drag-and-drop moves and a
    print sheet. (The current seed draws every box on the 10×10 type; #143
