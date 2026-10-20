@@ -933,7 +933,7 @@ real `freezerd` safely until G0.1–G0.3 land.
 
 ### G2 — Auth flows
 
-- [ ] **G2.1. Sign-in, MFA and session lifecycle** (`features/auth/`).
+- [x] **G2.1. Sign-in, MFA and session lifecycle** (`features/auth/`).
   - `/login` sends email and password to `auth/browser/login`. If
     `mfa_required`, it goes to `/login/mfa`, which takes a 6-digit code
     (`autocomplete="one-time-code"`, paste-friendly) and calls
