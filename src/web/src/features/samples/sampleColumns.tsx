@@ -18,10 +18,15 @@ import { placementKind, placementPath } from './placement';
  * Two decisions worth knowing:
  *
  *  - **Custom fields are columns, and their set comes from the server.** Each
- *    `CustomFieldDefinition` becomes one column keyed `field:<key>`; a row that
- *    does not carry the value shows a dash rather than an empty cell, because
- *    "this row has no value" and "this row's value is the empty string" are
- *    different things to a scientist reading the table.
+ *    `CustomFieldDefinition` becomes one column keyed by **item type and key**
+ *    (`field:<item_type_id>:<key>`), because the server returns a definition
+ *    per item type: a key used on five item types is five columns, and keying
+ *    by the key alone made React see five children with one id (#139). The
+ *    header names the item type when a key is shared, so the user can tell the
+ *    columns apart. A row that does not carry the value shows a dash rather
+ *    than an empty cell, because "this row has no value" and "this row's value
+ *    is the empty string" are different things to a scientist reading the
+ *    table.
  *  - **Placement has three states, not two** (`placement.ts`): a cell must not
  *    call a broken location "never placed".
  *
@@ -55,9 +60,14 @@ export interface SampleColumnsOptions {
   readonly locationPath: (boxId: string, position?: string) => LocationPath;
 }
 
-/** `field:concentration` — stable, and distinct from a built-in column id. */
-export function customFieldColumnId(key: string): string {
-  return `field:${key}`;
+/**
+ * `field:<item_type_id>:<key>` — stable, distinct from a built-in column id,
+ * and distinct per item type. The item type is part of the identity because the
+ * server returns a definition per item type; `field:<key>` collided whenever a
+ * key was defined on more than one (#139).
+ */
+export function customFieldColumnId(itemTypeId: string, key: string): string {
+  return `field:${itemTypeId}:${key}`;
 }
 
 /**
@@ -73,7 +83,7 @@ export function sampleColumnIds(options: Pick<SampleColumnsOptions, 'cfds'>): st
     'location',
     'volume',
     'created',
-    ...options.cfds.map((cfd) => customFieldColumnId(cfd.key)),
+    ...options.cfds.map((cfd) => customFieldColumnId(cfd.itemTypeId ?? '', cfd.key)),
   ];
 }
 
@@ -86,6 +96,27 @@ export function buildSampleColumns({
   locationPath,
 }: SampleColumnsOptions): TableColumn<Sample>[] {
   const itemTypesById = new Map(itemTypes.map((itemType) => [itemType.id, itemType]));
+
+  // A key is shared when more than one definition carries it — normally one per
+  // item type. Only a shared key needs its type in the header; a field that
+  // exists on one type stays just its label.
+  const definitionsByKey = new Map<string, number>();
+  for (const cfd of cfds) {
+    definitionsByKey.set(cfd.key, (definitionsByKey.get(cfd.key) ?? 0) + 1);
+  }
+
+  const itemTypeName = (itemTypeId: string | undefined): string =>
+    itemTypesById.get(itemTypeId ?? '')?.name ??
+    (itemTypeId === undefined || itemTypeId === '' ? t('columns.allItemTypes') : itemTypeId);
+
+  const customFieldHeader = (cfd: CustomFieldDefinition): string => {
+    if ((definitionsByKey.get(cfd.key) ?? 0) === 1) {
+      return cfd.isPhi ? t('columns.phi', { label: cfd.label }) : cfd.label;
+    }
+    return cfd.isPhi
+      ? t('columns.phiWithType', { label: cfd.label, itemType: itemTypeName(cfd.itemTypeId) })
+      : t('columns.withItemType', { label: cfd.label, itemType: itemTypeName(cfd.itemTypeId) });
+  };
 
   const placement = (sample: Sample): string => {
     const path = locationPath(sample.boxId ?? '', sample.positionLabel ?? '');
@@ -162,8 +193,8 @@ export function buildSampleColumns({
       cell: ({ row }) => formatTimestamp(row.original.createdAt?.unixMicros) ?? EMPTY_CELL,
     },
     ...cfds.map((cfd) => ({
-      id: customFieldColumnId(cfd.key),
-      header: cfd.isPhi ? t('columns.phi', { label: cfd.label }) : cfd.label,
+      id: customFieldColumnId(cfd.itemTypeId ?? '', cfd.key),
+      header: customFieldHeader(cfd),
       cell: ({ row }: { row: { original: Sample } }) => {
         const value = formatCustomFieldValue(
           parseCustomFields(row.original.customFieldsJson)[cfd.key],

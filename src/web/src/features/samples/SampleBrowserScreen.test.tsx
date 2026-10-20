@@ -11,6 +11,11 @@ import { currentUserWith } from '../../test/session';
 import type { GrpcCode } from '../../api/errors';
 import type { RpcName } from '../../api/routes';
 import { SampleSchema, SampleStatus } from '../../gen/fmgr/v1/sample_pb';
+import {
+  CustomFieldDefinitionSchema,
+  FieldDataType,
+  ScopeKind,
+} from '../../gen/fmgr/v1/item_type_pb';
 import { FakeEventSource } from '../../test/fakeEventSource';
 import { createDemoLab, fakeApi, seedSamples, type DemoLab } from '../../test/fakeApi';
 import { renderWithProviders } from '../../test/render';
@@ -540,6 +545,51 @@ describe('SampleBrowserScreen', () => {
       // aliquot count), and an unscoped query would match both.
       const serumRow = within(table()).getByRole('row', { name: /Serum A/ });
       expect(within(serumRow).getByRole('cell', { name: '3' })).toBeInTheDocument();
+    });
+
+    it('shows shared field keys as separate columns without duplicate React keys', async () => {
+      // The audit's shape: one custom-field key defined on several item types.
+      // The demo lab already shares `notes` between Blood and Serum; define
+      // `collection_date` on Serum too, so two keys collide across two types.
+      const lab = createDemoLab();
+      lab.customFieldDefs.push(
+        create(CustomFieldDefinitionSchema, {
+          id: 'cfd-collection-date-serum',
+          labId: LAB_ID,
+          scopeKind: ScopeKind.SAMPLE,
+          itemTypeId: 'it-serum',
+          key: 'collection_date',
+          label: 'Collection date',
+          dataType: FieldDataType.DATE,
+        }),
+      );
+
+      // React's duplicate-key complaint is a console error, not a render
+      // result: the table still draws, so only the console catches the bug.
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      let messages: string[] = [];
+      try {
+        renderScreen({ demo: lab });
+        await screen.findByRole('table', { name: samplesCopy.table.caption });
+        // The definitions are a second request; `12.5` is a custom-field cell,
+        // so waiting for it means the colliding columns are in the table.
+        await waitFor(() => {
+          expect(within(table()).getByRole('cell', { name: '12.5' })).toBeInTheDocument();
+        });
+
+        messages = consoleError.mock.calls.map((args) => args.map(String).join(' '));
+        expect(messages.filter((message) => /same key/i.test(message))).toEqual([]);
+
+        // Both columns are still there, told apart by item type.
+        expect(
+          within(table()).getByRole('columnheader', { name: 'Notes (Blood)' }),
+        ).toBeInTheDocument();
+        expect(
+          within(table()).getByRole('columnheader', { name: 'Serum notes (Serum)' }),
+        ).toBeInTheDocument();
+      } finally {
+        consoleError.mockRestore();
+      }
     });
 
     it('offers the custom columns to a member whose only permission is sample.read', async () => {
