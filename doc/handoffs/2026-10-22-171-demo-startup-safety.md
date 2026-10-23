@@ -22,7 +22,13 @@ Validation:
 
 - `python3 scripts/test_demo_setup.py` — 10 tests passed.
 - `bash -n scripts/demo-setup.sh` — passed.
+- `PYTHONPYCACHEPREFIX=/private/tmp/fmgr-171-pycache python3 -m py_compile scripts/test_demo_setup.py` — passed.
 - `git diff --check` — passed.
+- `tools/check-spdx-headers.sh` — passed.
+- `cmake --preset dev` — passed after registering the harness.
+- `ctest --preset dev -R '^DemoSetupStartupSafety$'` — 1/1 CTest passed, running all 10 Python tests (11.01 s).
 
-No full C++ build was run; the lead handles that check against the existing main
-build. Implemented by worker-3 (Codex).
+Shared unchanged-C++ baseline on `main53cbe15` (lead run, separate from this
+worktree): `cmake --build --preset dev` passed; `ctest --preset dev` exited 0
+with 1685 discovered, 1453 passed, 232 PostgreSQL skipped and 0 failed
+(120.95 s). Implemented by worker-3 (Codex).
