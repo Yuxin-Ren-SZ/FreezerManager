@@ -8,4 +8,4 @@ Validation:
 
 - `PATH=/Users/yuxin/Code/personal/FreezerManager/out/tools/node22/bin:$PATH npm run test -- sampleColumns.test.tsx` — 1 file passed, 13 tests passed.
 - `PATH=/Users/yuxin/Code/personal/FreezerManager/out/tools/node22/bin:$PATH npm run check` — passed; 50 test files, 809 tests. ESLint emitted the existing `react-hooks/incompatible-library` warning in `src/ui/Table.tsx`.
-- `ctest --preset dev` — not run in this web-only worktree; the lead is running the shared full C++ suite.
+- On unchanged `main` at C++ source commit `53cbe15`, the lead ran `cmake --build --preset dev` successfully, then `AGENT_SLOT=0 source scripts/agent/env.sh; ctest --preset dev` outside the sandbox — exit 0, 1,685 discovered, 1,453 passed, 232 PostgreSQL tests skipped (no `FMGR_TEST_POSTGRES_URL`), 0 failed, 120.95 seconds. The first sandboxed run failed on local gRPC binding; the unsandboxed rerun passed. This is the lead's shared main-checkout baseline, not a per-worktree run.
