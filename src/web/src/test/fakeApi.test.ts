@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { call } from '../api/client';
 import { ApiError, GRPC_CODES } from '../api/errors';
 import { apiRoutes, type RpcName } from '../api/routes';
@@ -127,6 +127,28 @@ describe('fakeApi demo lab', () => {
     await expect(
       call('auth/browser/submit-mfa', { totpCode: DEMO_TOTP_CODE }),
     ).rejects.toMatchObject({ code: 'RESOURCE_EXHAUSTED', httpStatus: 429 });
+  });
+
+  it('refills one MFA attempt after a minute', async () => {
+    const lab = createDemoLab();
+    let now = Date.now();
+    const dateNow = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    server.use(...fakeApi({ lab }));
+
+    try {
+      await call('auth/browser/login', { email: DEMO_MFA_EMAIL, password: DEMO_PASSWORD });
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await expect(call('auth/browser/submit-mfa', { totpCode: '000000' })).rejects.toMatchObject(
+          { code: 'UNAUTHENTICATED' },
+        );
+      }
+      now += 60_000;
+
+      await call('auth/browser/submit-mfa', { totpCode: DEMO_TOTP_CODE });
+      expect(lab.auth.currentUserId).toBe('user-mfa');
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it('serves the seeded samples of the requested lab only', async () => {

@@ -76,7 +76,7 @@ describe('LoginScreen', () => {
   });
 
   it.each(['RESOURCE_EXHAUSTED', 'PERMISSION_DENIED'] as const)(
-    'shows retry advice for a %s login lockout',
+    'handles a %s login lockout without exposing account state',
     async (code) => {
       server.use(...fakeApi({ fail: { 'auth/browser/login': code } }));
       renderApp({ path: '/login', user: null });
