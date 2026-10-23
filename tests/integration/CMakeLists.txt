@@ -8,6 +8,11 @@ find_package(OpenSSL REQUIRED)
 # argon2-cffi is absent) to pin the seeded shape end to end.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+add_test(
+  NAME DemoSetupStartupSafety
+  COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/scripts/test_demo_setup.py"
+)
+
 add_executable(freezermanager_server_integration_tests
   server_integration_test.cpp
 )
