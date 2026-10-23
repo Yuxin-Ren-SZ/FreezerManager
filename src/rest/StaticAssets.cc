@@ -91,8 +91,7 @@ namespace fmgr::rest {
     [[nodiscard]] std::optional<std::filesystem::path>
     // Candidate comes first so the call reads as "keep this path within this root".
     canonical_within(
-        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): both parameters are paths,
-        // distinguished by their names and documented call order.
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): named path roles.
         const std::filesystem::path& candidate_path, const std::filesystem::path& canonical_root) {
       std::error_code error;
       auto resolved = std::filesystem::weakly_canonical(candidate_path, error);
