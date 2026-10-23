@@ -3,9 +3,12 @@
 """Isolated startup regressions for demo-setup.sh (stdlib only)."""
 
 import os
+import shlex
 import shutil
 import signal
+import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -25,6 +28,8 @@ class DemoSetupTest(unittest.TestCase):
         shutil.copy2(SCRIPT, self.root / "scripts" / "demo-setup.sh")
         self.server = self.root / "out/build/dev/src/server/freezerd"
         self.cli = self.root / "out/build/dev/src/cli/freezerctl"
+        self.db = self.root / "out/demo/freezer.db"
+        self.marker = Path(f"{self.db}.demo-seeded")
         self.server.parent.mkdir(parents=True)
         self.cli.parent.mkdir(parents=True)
         web = self.root / "src/web"
@@ -40,12 +45,20 @@ class DemoSetupTest(unittest.TestCase):
             "#!/bin/sh\n"
             "if [ \"${1:-}\" = -c ]; then\n"
             "  case \"${2:-}\" in *'import argon2'*) exit 0;; esac\n"
-            "  case \"${2:-}\" in *'DEMO_SEED_COMPLETE'*) [ \"${DEMO_STUB_SEEDED:-0}\" = 1 ]; exit;; esac\n"
-            "  exit 0\n"
             "fi\n"
-            "input=$(cat)\n"
-            "case \"$input\" in *DEMO_SEED_COMPLETE*) [ \"${DEMO_STUB_SEEDED:-0}\" = 1 ]; exit;; esac\n"
-            "exit 0\n"
+            "if [ \"${1:-}\" = - ]; then\n"
+            "  input=$(cat)\n"
+            "  case \"$input\" in\n"
+            "    *LEGACY_DEMO_SEED_CHECK*) printf '%s\\n' \"$input\" | "
+            + shlex.quote(sys.executable)
+            + " - \"$2\"; exit $?;;\n"
+            "    *'UPDATE users SET totp_secret_enc'*) exit 0;;\n"
+            "  esac\n"
+            "fi\n"
+            "case \"${1:-}\" in */seed_demo.py) [ \"${DEMO_SEED_FAIL:-0}\" != 1 ]; exit;; esac\n"
+            "exec "
+            + shlex.quote(sys.executable)
+            + " \"$@\"\n"
         )
         venv_python.chmod(0o755)
         self.server.write_text(
@@ -76,6 +89,7 @@ class DemoSetupTest(unittest.TestCase):
         self._stub("touch", "#!/bin/sh\nexec /usr/bin/touch \"$@\"\n")
         self._stub("dirname", "#!/bin/sh\nexec /usr/bin/dirname \"$@\"\n")
         self._stub("env", "#!/bin/sh\nexec /usr/bin/env \"$@\"\n")
+        self._stub("mv", "#!/bin/sh\nexec /bin/mv \"$@\"\n")
         self._stub(
             "lsof",
             "#!/bin/sh\n"
@@ -100,7 +114,7 @@ class DemoSetupTest(unittest.TestCase):
             **os.environ,
             "PATH": str(self.bin),
             "FMGR_MAIN_CHECKOUT": str(self.root),
-            "FMGR_DEMO_DB_PATH": str(self.root / "out/demo/freezer.db"),
+            "FMGR_DEMO_DB_PATH": str(self.db),
             "FMGR_FREEZERCTL": str(self.cli),
             "FMGR_LISTEN": "127.0.0.1:51003",
             "FMGR_REST_LISTEN": "127.0.0.1:18113",
@@ -153,17 +167,77 @@ class DemoSetupTest(unittest.TestCase):
         self.assertNotIn("server-start", events)
 
     def test_incomplete_database_refuses_reuse_with_reset_recovery_message(self):
-        db = self.root / "out/demo/freezer.db"
-        db.parent.mkdir(parents=True, exist_ok=True)
-        db.write_text("incomplete")
+        self.db.parent.mkdir(parents=True, exist_ok=True)
+        self.db.write_text("incomplete")
 
-        result, events = self.run_demo(DEMO_STUB_SEEDED="0")
+        result, events = self.run_demo()
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("incomplete", result.stderr.lower())
         self.assertIn("--reset", result.stderr)
-        self.assertEqual(db.read_text(), "incomplete")
+        self.assertEqual(self.db.read_text(), "incomplete")
         self.assertNotIn("server-start", events)
+
+    def create_legacy_database(self, neuro_samples=20, onco_samples=12):
+        self.db.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(self.db) as conn:
+            conn.executescript(
+                "CREATE TABLE users (id TEXT PRIMARY KEY, primary_email TEXT, totp_secret_enc TEXT);"
+                "CREATE TABLE labs (id TEXT PRIMARY KEY);"
+                "CREATE TABLE samples (id INTEGER PRIMARY KEY, lab_id TEXT);"
+            )
+            conn.execute(
+                "INSERT INTO users VALUES (?, ?, NULL)",
+                ("00000000-0000-b001-0000-000000000001", "admin@freezer.local"),
+            )
+            labs = (
+                "00000000-0000-a001-0000-000000000001",
+                "00000000-0000-a001-0000-000000000002",
+            )
+            conn.executemany("INSERT INTO labs VALUES (?)", [(lab,) for lab in labs])
+            conn.executemany(
+                "INSERT INTO samples (lab_id) VALUES (?)",
+                [(labs[0],)] * neuro_samples + [(labs[1],)] * onco_samples,
+            )
+
+    def test_partial_reference_only_seed_is_rejected_without_mutation(self):
+        self.create_legacy_database(neuro_samples=0, onco_samples=0)
+
+        result, events = self.run_demo()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("seed state is unknown", result.stderr.lower())
+        self.assertIn("--reset", result.stderr)
+        self.assertFalse(self.marker.exists())
+        self.assertNotIn("server-start", events)
+
+    def test_completed_legacy_seed_bootstraps_marker_without_audit_count(self):
+        self.create_legacy_database()
+
+        result, _ = self.run_demo()
+
+        self.assertIn(result.returncode, (0, 130), result.stderr)
+        self.assertTrue(self.marker.exists())
+        self.assertEqual(self.marker.read_text().strip(), "freezermanager-demo-seeded-v1")
+
+    def test_marker_allows_normal_sample_edits_without_reseeding(self):
+        self.create_legacy_database(neuro_samples=0, onco_samples=0)
+        self.marker.write_text("freezermanager-demo-seeded-v1\n")
+
+        result, _ = self.run_demo()
+
+        self.assertIn(result.returncode, (0, 130), result.stderr)
+        self.assertIn("completion marker found", result.stdout)
+        self.assertEqual(self.marker.read_text().strip(), "freezermanager-demo-seeded-v1")
+
+    def test_reset_removes_stale_marker_before_a_failed_seed(self):
+        self.create_legacy_database()
+        self.marker.write_text("freezermanager-demo-seeded-v1\n")
+
+        result, _ = self.run_demo("--reset", DEMO_SEED_FAIL="1")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.marker.exists())
 
     def test_occupied_port_is_reported_without_starting_server(self):
         result, events = self.run_demo(DEMO_STUB_PORT_BUSY="18113")
@@ -187,6 +261,7 @@ class DemoSetupTest(unittest.TestCase):
         self.assertIn("Demo is ready", result.stdout)
         self.assertIn("server-start", events)
         self.assertIn("curl", events)
+        self.assertTrue(self.marker.exists())
 
 
 if __name__ == "__main__":

@@ -57,6 +57,8 @@ fi
 
 # The demo database lives under out/ (gitignored, per-checkout), never in data/.
 DB="${FMGR_DEMO_DB_PATH:-$ROOT/out/demo/freezer.db}"
+SEED_MARKER="$DB.demo-seeded"
+SEED_MARKER_VALUE="freezermanager-demo-seeded-v1"
 case "$DB" in
   */data/freezer.db | data/freezer.db)
     printf '[demo] ERROR: refusing to use a data/freezer.db path as the demo database: %s\n' "$DB" >&2
@@ -293,31 +295,45 @@ mkdir -p "$LOGDIR"
 # Decided before migrations run: the server creates the file, so testing for it
 # afterwards would always say "it already existed" and skip the seed.
 FRESH=0
-if [[ "$RESET" == 1 && -e "$DB" ]]; then
+if [[ "$RESET" == 1 && ( -e "$DB" || -e "$SEED_MARKER" ) ]]; then
   log "reset requested — deleting exactly:"
   log "  $DB"
   log "  $DB-wal"
   log "  $DB-shm"
-  rm -f "$DB" "$DB-wal" "$DB-shm"
+  log "  $SEED_MARKER"
+  rm -f "$DB" "$DB-wal" "$DB-shm" "$SEED_MARKER"
 fi
 
+LEGACY_SEED=0
 if [[ -e "$DB" && "$RESET" != 1 ]]; then
-  if ! "$PY" - "$DB" <<'PYEOF'
+  MARKER_CONTENT=""
+  if [[ -f "$SEED_MARKER" ]]; then
+    IFS= read -r MARKER_CONTENT < "$SEED_MARKER" || true
+  fi
+  if [[ "$MARKER_CONTENT" == "$SEED_MARKER_VALUE" ]]; then
+    log "demo seed completion marker found"
+  elif "$PY" - "$DB" <<'PYEOF'
 import sqlite3
 import sys
 
-# DEMO_SEED_COMPLETE
+# LEGACY_DEMO_SEED_CHECK
 conn = sqlite3.connect(sys.argv[1])
 try:
-    admin_count = conn.execute(
-        "SELECT count(*) FROM users WHERE primary_email = 'admin@freezer.local'"
+    user_count = conn.execute(
+        "SELECT count(*) FROM users WHERE id = '00000000-0000-b001-0000-000000000001'"
     ).fetchone()[0]
-    sample_count = conn.execute("SELECT count(*) FROM samples").fetchone()[0]
-    audit_count = conn.execute("SELECT count(*) FROM audit_events").fetchone()[0]
-    sentinel_count = conn.execute(
-        "SELECT count(*) FROM samples WHERE name = 'P001-CSF-01'"
+    lab_count = conn.execute(
+        "SELECT count(*) FROM labs WHERE id IN ("
+        "'00000000-0000-a001-0000-000000000001', "
+        "'00000000-0000-a001-0000-000000000002')"
     ).fetchone()[0]
-    complete = admin_count == 1 and sample_count >= 32 and audit_count >= 32 and sentinel_count == 1
+    neuro_samples = conn.execute(
+        "SELECT count(*) FROM samples WHERE lab_id = '00000000-0000-a001-0000-000000000001'"
+    ).fetchone()[0]
+    onco_samples = conn.execute(
+        "SELECT count(*) FROM samples WHERE lab_id = '00000000-0000-a001-0000-000000000002'"
+    ).fetchone()[0]
+    complete = user_count == 1 and lab_count == 2 and neuro_samples >= 20 and onco_samples >= 12
 except sqlite3.Error:
     complete = False
 finally:
@@ -325,7 +341,10 @@ finally:
 sys.exit(0 if complete else 1)
 PYEOF
   then
-    fail "existing demo database is incomplete; it was left untouched. Review or back it up, then run with --reset to replace it with a complete demo database."
+    LEGACY_SEED=1
+    log "complete legacy demo sample coverage found; a completion marker will be added after TOTP setup"
+  else
+    fail "existing demo database is incomplete or its seed state is unknown; it was left untouched. Review or back it up, then run with --reset to replace it with a complete demo database."
   fi
 fi
 
@@ -377,6 +396,15 @@ if cur.rowcount != 1:
     sys.exit(f"expected exactly one {email} row to enable TOTP on, updated {cur.rowcount}")
 print(f"  TOTP enabled for {email} ({cur.rowcount} row)")
 PYEOF
+
+# Mark only after both the seed and the idempotent TOTP update completed. Legacy
+# markerless databases are marked after validating their fixed seeded identities.
+if [[ "$FRESH" == 1 || "$LEGACY_SEED" == 1 ]]; then
+  marker_tmp="$SEED_MARKER.tmp.$$"
+  printf '%s\n' "$SEED_MARKER_VALUE" > "$marker_tmp"
+  mv -f "$marker_tmp" "$SEED_MARKER"
+  log "demo seed completion marker written: $SEED_MARKER"
+fi
 
 # ── 4. freezerd, for real this time ────────────────────────────────────────
 

@@ -212,12 +212,15 @@ bash scripts/demo-setup.sh --totp-code  # the demo admin's current 6-digit TOTP 
 Prerequisites the script checks and explains rather than assumes:
 
 - **The demo database** lives at `out/demo/freezer.db` (gitignored, per
-  worktree), never `data/freezer.db`. The first run migrates it and seeds it;
-  later runs reuse it only when the expected demo admin, `P001-CSF-01` sample,
-  sample count and audit count show that seeding completed. An incomplete
-  existing file is left untouched and the script explains how `--reset` can
-  replace it. `--reset` is opt-in and logs the three files it deletes
-  (`freezer.db`, `-wal`, `-shm`) before deleting them.
+  worktree), never `data/freezer.db`. The first run migrates it and seeds it,
+  then writes `freezer.db.demo-seeded` after both seeding and TOTP setup finish.
+  Later runs reuse the database while that marker is present, including after
+  ordinary sample edits. A markerless legacy database is recognized once from
+  the fixed demo admin and lab IDs plus the expected sample coverage in both
+  labs; the script then adds the marker. An unrecognized or partial database is
+  left untouched with an explicit `--reset` recovery message. `--reset` is
+  opt-in and logs the four files it deletes (`freezer.db`, `-wal`, `-shm`, and
+  `freezer.db.demo-seeded`) before deleting them.
 - **The PHI master key** is fixed and demo-only: the script exports
   `FMGR_MASTER_KEK` (base64 of 32 bytes) before it seeds *and* before it starts
   `freezerd`, so the CSF `diagnosis` value the seed encrypts is the one the
