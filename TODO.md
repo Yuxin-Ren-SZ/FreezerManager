@@ -792,7 +792,7 @@ real `freezerd` safely until G0.1–G0.3 land.
     refuses a session on every request once it is 12 h idle or 7 d old
     (D9.3; defaults in `LocalAuthProvider.h`). Returning the derived deadline,
     `min(last_seen_at + idle, created_at + absolute)`, so the SPA can warn
-    before an idle timeout, is part of #148. *(This bullet said until
+    before an idle timeout, is part of #148 part 2. *(This bullet said until
     2026-10-20 that the auth layer enforces no TTL. That was wrong; see the
     owner's comment on #148.)*
   - **Files:** `proto/fmgr/v1/auth.proto`,
@@ -937,6 +937,14 @@ real `freezerd` safely until G0.1–G0.3 land.
 ### G2 — Auth flows
 
 - [x] **G2.1. Sign-in, MFA and session lifecycle** (`features/auth/`).
+  - **Follow-up #181 delivered by PR #189:** MFA refusals distinguish wrong
+    codes, rate limits and transport failures; a mid-use HTTP 401 shows an
+    expiry notice, including during mutations. Login `PERMISSION_DENIED`
+    (account locked) deliberately keeps the generic invalid-credentials message
+    to avoid account enumeration; `RESOURCE_EXHAUSTED` gives retry advice.
+    The fake models five MFA attempts per user and one refill per minute (#155
+    tracks broader fake/server conformance). Terminal SSE expiry and sign-out
+    routing remain #182; durable MFA backoff and replay protection remain #179.
   - `/login` sends email and password to `auth/browser/login`. If
     `mfa_required`, it goes to `/login/mfa`, which takes a 6-digit code
     (`autocomplete="one-time-code"`, paste-friendly) and calls
@@ -1241,14 +1249,15 @@ workers at a time; lock and file conflicts are checked per wave.
 | Wave | Tasks | Done when |
 |---|---|---|
 | **A — complete** — a demo you can start and sign into | G2.1 (#145), #139/#141, #138/#143 and #142 are merged; #164/#167 supplies the shared demo KEK and records the re-verification. | One command from #142 starts a seeded demo. A user signs in with TOTP, reloads without losing the session, and completes lookup → detail → check-out → box view. |
-| **B** — deployable, with a real landing page | G0.3 (#44, PR #168 blocked on ASan/TSan and clang-tidy); G4.1 (#133, `lock:proto`) → G4.2 (#134); #128 (MFA brute force) is merged, while #148 (open watch streams outlive logout, revocation and expiry) remains required before non-loopback deployment; G3.7 (CSV import wizard) | `freezerd` alone serves the SPA with its security headers, `/` is the dashboard, and the two auth gaps are closed. |
+| **B** — deployable, with a real landing page | G0.3 (#44, PR #168 requires sanitizer/lint and security fixes); G4.1 (#133, `lock:proto`) → G4.2 (#134); #128 (MFA brute force) is merged, while #148 part 1 (open watch streams), #178 (limiter coverage) and #179 (MFA replay/backoff) remain required before non-loopback deployment; G3.7 (CSV import wizard) | `freezerd` alone serves the SPA with its security headers, `/` is the dashboard, and the deployment auth gates are closed. |
 | **C** — admin parity, then the gates | G3.8, G3.10, G3.11 → G3.12, G3.13 → G5.1 (`lock:ci`) → G5.2, G5.3 | M4 exit: every G item ticked except the blocked G2.2/G2.3. |
 
 **P2 correctness backlog:** one item per wave when a worker frees up, oldest
 first, starting with #144. #111/#135 is merged as `53cbe15`; the draft/ESLint
-blocker is resolved. The owner separately authorized the 2026-10-22 review
-fixes (#169–#172); the earlier wave-B queue remains paused while that tranche
-runs. **New findings** are filed, not fixed in the current wave, unless they
+blocker is resolved. The 2026-10-22 review fixes (#169–#172, #187) are merged.
+The owner resumed implementation in small sections: #44, #178 and #181 first
+(#181 merged as PR #189), then a bounded #180 correctness slice. #133 still
+follows #44. **New findings** are filed, not fixed in the current wave, unless they
 are P0 or the owner explicitly changes the scope.
 
 ---

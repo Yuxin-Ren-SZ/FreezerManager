@@ -27,3 +27,14 @@ wave.
 
 **Never re-push to "unstick" a queued run.** A push adds another run and
 lengthens the queue for everyone.
+
+## Local arm64 macOS ASan does not check leaks
+
+LeakSanitizer does not run on arm64 Darwin. A passing local ASan run checks
+the enabled memory diagnostics, but provides no leak evidence. For Drogon/HTTP
+changes, require the Linux CI ASan leg for leak detection and the Linux TSan
+leg for race detection. Record any excluded tests explicitly.
+
+PR #168 (#44) illustrates the distinction: local ASan passed while Linux
+LeakSanitizer found a c-ares allocation leaked by URL-based HTTP client
+construction. A local pass must not be used to dismiss a Linux sanitizer failure.
