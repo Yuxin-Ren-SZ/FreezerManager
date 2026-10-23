@@ -117,12 +117,10 @@ namespace fmgr::test {
         if (field->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING) {
           continue;
         }
-        if (field->name() == "source_lab_id") {
+        if (field->name() == "source_lab_id" || field->name() == "lab_id") {
           reflection->SetString(&message, field, std::string(lab_id));
         } else if (field->name() == "target_lab_id") {
           reflection->SetString(&message, field, "30000000-0000-0000-0000-000000000001");
-        } else if (field->name() == "lab_id") {
-          reflection->SetString(&message, field, std::string(lab_id));
         } else if (field->name() == "id" || field->name().ends_with("_id")) {
           reflection->SetString(&message, field, "00000000-0000-4000-8000-000000000001");
         } else if (field->name() == "name") {
