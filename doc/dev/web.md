@@ -212,9 +212,15 @@ bash scripts/demo-setup.sh --totp-code  # the demo admin's current 6-digit TOTP 
 Prerequisites the script checks and explains rather than assumes:
 
 - **The demo database** lives at `out/demo/freezer.db` (gitignored, per
-  worktree), never `data/freezer.db`. The first run migrates it and seeds it;
-  later runs reuse it. `--reset` is opt-in and logs the three files it deletes
-  (`freezer.db`, `-wal`, `-shm`) before deleting them.
+  worktree), never `data/freezer.db`. The first run migrates it and seeds it,
+  then writes `freezer.db.demo-seeded` after both seeding and TOTP setup finish.
+  Later runs reuse the database while that marker is present, including after
+  ordinary sample edits. A markerless legacy database is recognized once from
+  the fixed demo admin and lab IDs plus the expected sample coverage in both
+  labs; the script then adds the marker. An unrecognized or partial database is
+  left untouched with an explicit `--reset` recovery message. `--reset` is
+  opt-in and logs the four files it deletes (`freezer.db`, `-wal`, `-shm`, and
+  `freezer.db.demo-seeded`) before deleting them.
 - **The PHI master key** is fixed and demo-only: the script exports
   `FMGR_MASTER_KEK` (base64 of 32 bytes) before it seeds *and* before it starts
   `freezerd`, so the CSF `diagnosis` value the seed encrypts is the one the
@@ -226,7 +232,8 @@ Prerequisites the script checks and explains rather than assumes:
   `FMGR_MAIN_CHECKOUT` or derived with `git rev-parse --git-common-dir`. The
   system `python3` is 3.9.6 without argon2; if argon2 is missing the script
   exits 1 with the one-time fix (`.venv/bin/pip install argon2-cffi`) instead of
-  half-running.
+  half-running. The `freezerctl` binary is resolved and checked before reset or
+  migration, then the same path is passed to the seed's audited sample import.
 - **Node 22** comes from `out/tools/node22/bin` (repo `.nvmrc`), again found in
   the main checkout when run from a worktree. `NODE_ENV` is unset for the SPA:
   an inherited `NODE_ENV=production` makes Vite's install/start fail.
@@ -235,9 +242,14 @@ Prerequisites the script checks and explains rather than assumes:
   exists; otherwise the script says it did not start it (Qt6 is not installed
   on this machine).
 
-The script stays in the foreground and Ctrl-C stops exactly the `freezerd`,
-Vite and (if started) Qt processes it launched. A port already in use fails
-loudly with the `lsof` command to find the holder.
+The script requires `lsof` to confirm all three ports are free; missing `lsof`
+is a preflight error, before reset or migration. Each readiness probe also checks
+that the process started by this script is still alive before and after curl,
+so another listener cannot make a dead child look ready. Early exits identify
+the corresponding log under `out/demo/`. The script stays in the foreground and
+Ctrl-C stops exactly the `freezerd`, Vite and (if started) Qt processes it
+launched. A port already in use fails loudly with the `lsof` command to find the
+holder.
 
 ### Click path (what the presenter does)
 

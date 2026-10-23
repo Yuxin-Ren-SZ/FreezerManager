@@ -57,6 +57,8 @@ fi
 
 # The demo database lives under out/ (gitignored, per-checkout), never in data/.
 DB="${FMGR_DEMO_DB_PATH:-$ROOT/out/demo/freezer.db}"
+SEED_MARKER="$DB.demo-seeded"
+SEED_MARKER_VALUE="freezermanager-demo-seeded-v1"
 case "$DB" in
   */data/freezer.db | data/freezer.db)
     printf '[demo] ERROR: refusing to use a data/freezer.db path as the demo database: %s\n' "$DB" >&2
@@ -166,10 +168,36 @@ port_in_use() {
   lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null
 }
 
+find_freezerctl() {
+  local candidate
+  if [[ -n "${FMGR_FREEZERCTL:-}" ]]; then
+    candidate="$FMGR_FREEZERCTL"
+  elif [[ -x "$ROOT/out/build/dev/src/cli/freezerctl" ]]; then
+    candidate="$ROOT/out/build/dev/src/cli/freezerctl"
+  else
+    candidate="$(command -v freezerctl || true)"
+  fi
+  [[ -n "$candidate" && -f "$candidate" && -x "$candidate" ]] \
+    || fail "freezerctl not found or not executable: ${candidate:-<not found>}
+  Build it first:  cmake --build --preset dev
+  or point FMGR_FREEZERCTL at the binary."
+  printf '%s\n' "$candidate"
+}
+
+ensure_child_alive() {
+  local child_pid="$1" what="$2" logfile="$3" status
+  if ! kill -0 "$child_pid" 2>/dev/null; then
+    if wait "$child_pid"; then status=0; else status=$?; fi
+    fail "$what exited before becoming ready (exit $status; see $logfile)"
+  fi
+}
+
 wait_for_url() {
-  local url="$1" what="$2" tries=30
+  local url="$1" what="$2" child_pid="$3" logfile="$4" tries=30
   for _ in $(seq 1 "$tries"); do
+    ensure_child_alive "$child_pid" "$what" "$logfile"
     if curl -sf --max-time 2 "$url" >/dev/null 2>&1; then
+      ensure_child_alive "$child_pid" "$what" "$logfile"
       return 0
     fi
     sleep 1
@@ -243,6 +271,7 @@ fi
 # ── 0. Preflight: ports, binary, python, node ──────────────────────────────
 
 log "demo database: $DB"
+command -v lsof >/dev/null 2>&1 || fail "lsof is required to verify demo ports are free; install lsof and retry"
 ensure_port_free "$REST_PORT" "freezerd"
 ensure_port_free "$WEB_PORT" "the Vite dev server"
 ensure_port_free "${GRPC_LISTEN##*:}" "freezerd gRPC"
@@ -252,8 +281,11 @@ ensure_port_free "${GRPC_LISTEN##*:}" "freezerd gRPC"
 
 PY="$(find_seed_python)"
 verify_seed_python "$PY"
+FREEZERCTL="$(find_freezerctl)"
+export FMGR_FREEZERCTL="$FREEZERCTL"
 find_node
 log "seed python: $PY"
+log "freezerctl: $FREEZERCTL"
 log "node: $(command -v node) ($(node --version))"
 
 mkdir -p "$LOGDIR"
@@ -263,12 +295,57 @@ mkdir -p "$LOGDIR"
 # Decided before migrations run: the server creates the file, so testing for it
 # afterwards would always say "it already existed" and skip the seed.
 FRESH=0
-if [[ "$RESET" == 1 && -e "$DB" ]]; then
+if [[ "$RESET" == 1 && ( -e "$DB" || -e "$SEED_MARKER" ) ]]; then
   log "reset requested — deleting exactly:"
   log "  $DB"
   log "  $DB-wal"
   log "  $DB-shm"
-  rm -f "$DB" "$DB-wal" "$DB-shm"
+  log "  $SEED_MARKER"
+  rm -f "$DB" "$DB-wal" "$DB-shm" "$SEED_MARKER"
+fi
+
+LEGACY_SEED=0
+if [[ -e "$DB" && "$RESET" != 1 ]]; then
+  MARKER_CONTENT=""
+  if [[ -f "$SEED_MARKER" ]]; then
+    IFS= read -r MARKER_CONTENT < "$SEED_MARKER" || true
+  fi
+  if [[ "$MARKER_CONTENT" == "$SEED_MARKER_VALUE" ]]; then
+    log "demo seed completion marker found"
+  elif "$PY" - "$DB" <<'PYEOF'
+import sqlite3
+import sys
+
+# LEGACY_DEMO_SEED_CHECK
+conn = sqlite3.connect(sys.argv[1])
+try:
+    user_count = conn.execute(
+        "SELECT count(*) FROM users WHERE id = '00000000-0000-b001-0000-000000000001'"
+    ).fetchone()[0]
+    lab_count = conn.execute(
+        "SELECT count(*) FROM labs WHERE id IN ("
+        "'00000000-0000-a001-0000-000000000001', "
+        "'00000000-0000-a001-0000-000000000002')"
+    ).fetchone()[0]
+    neuro_samples = conn.execute(
+        "SELECT count(*) FROM samples WHERE lab_id = '00000000-0000-a001-0000-000000000001'"
+    ).fetchone()[0]
+    onco_samples = conn.execute(
+        "SELECT count(*) FROM samples WHERE lab_id = '00000000-0000-a001-0000-000000000002'"
+    ).fetchone()[0]
+    complete = user_count == 1 and lab_count == 2 and neuro_samples >= 20 and onco_samples >= 12
+except sqlite3.Error:
+    complete = False
+finally:
+    conn.close()
+sys.exit(0 if complete else 1)
+PYEOF
+  then
+    LEGACY_SEED=1
+    log "complete legacy demo sample coverage found; a completion marker will be added after TOTP setup"
+  else
+    fail "existing demo database is incomplete or its seed state is unknown; it was left untouched. Review or back it up, then run with --reset to replace it with a complete demo database."
+  fi
 fi
 
 if [[ -e "$DB" ]]; then
@@ -286,7 +363,7 @@ export FMGR_REST_LISTEN="$REST_LISTEN"
 
 "$SERVER" >>"$LOGDIR/freezerd-migrate.log" 2>&1 &
 SERVER_PID=$!
-wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd (migration phase)"
+wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd (migration phase)" "$SERVER_PID" "$LOGDIR/freezerd-migrate.log"
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
@@ -296,7 +373,7 @@ log "migrations applied"
 
 if [[ "$FRESH" == 1 ]]; then
   log "seeding demo data..."
-  FREEZER_DB_PATH="$DB" "$PY" "$ROOT/scripts/seed_demo.py"
+  FREEZER_DB_PATH="$DB" FMGR_FREEZERCTL="$FREEZERCTL" "$PY" "$ROOT/scripts/seed_demo.py"
 else
   log "database already seeded; skipping seed (use --reset for a fresh one)"
 fi
@@ -320,11 +397,20 @@ if cur.rowcount != 1:
 print(f"  TOTP enabled for {email} ({cur.rowcount} row)")
 PYEOF
 
+# Mark only after both the seed and the idempotent TOTP update completed. Legacy
+# markerless databases are marked after validating their fixed seeded identities.
+if [[ "$FRESH" == 1 || "$LEGACY_SEED" == 1 ]]; then
+  marker_tmp="$SEED_MARKER.tmp.$$"
+  printf '%s\n' "$SEED_MARKER_VALUE" > "$marker_tmp"
+  mv -f "$marker_tmp" "$SEED_MARKER"
+  log "demo seed completion marker written: $SEED_MARKER"
+fi
+
 # ── 4. freezerd, for real this time ────────────────────────────────────────
 
 "$SERVER" >>"$LOGDIR/freezerd.log" 2>&1 &
 SERVER_PID=$!
-wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd"
+wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd" "$SERVER_PID" "$LOGDIR/freezerd.log"
 log "freezerd: gRPC $GRPC_LISTEN, REST http://$REST_LISTEN (pid $SERVER_PID)"
 
 # ── 5. Qt client — only if it is actually built ────────────────────────────
@@ -351,10 +437,14 @@ fi
 export FMGR_WEB_DEV_PORT="$WEB_PORT"
 (cd "$WEB_DIR" && exec env NODE_ENV=development ./node_modules/.bin/vite >>"$LOGDIR/vite.log" 2>&1) &
 VITE_PID=$!
-wait_for_url "http://127.0.0.1:$WEB_PORT/" "the Vite dev server"
+wait_for_url "http://127.0.0.1:$WEB_PORT/" "the Vite dev server" "$VITE_PID" "$LOGDIR/vite.log"
 # The proxy must answer too — this check is what catches a port disagreement
 # between the script and vite.config.ts.
+ensure_child_alive "$SERVER_PID" "freezerd" "$LOGDIR/freezerd.log"
+ensure_child_alive "$VITE_PID" "the Vite dev server" "$LOGDIR/vite.log"
 PROXIED_HEALTH="$(curl -sf --max-time 5 "http://127.0.0.1:$WEB_PORT/api/v1/health" || true)"
+ensure_child_alive "$SERVER_PID" "freezerd" "$LOGDIR/freezerd.log"
+ensure_child_alive "$VITE_PID" "the Vite dev server" "$LOGDIR/vite.log"
 if [[ "$PROXIED_HEALTH" != *'"status":"ok"'* ]]; then
   echo >&2
   fail "Vite is up but /api/v1/health through the proxy failed — the /api proxy
