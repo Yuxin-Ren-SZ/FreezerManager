@@ -111,6 +111,24 @@ describe('fakeApi coverage', () => {
 });
 
 describe('fakeApi demo lab', () => {
+  it('limits MFA guesses to five immediate attempts per user across sessions', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+
+    await call('auth/browser/login', { email: DEMO_MFA_EMAIL, password: DEMO_PASSWORD });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await expect(call('auth/browser/submit-mfa', { totpCode: '000000' })).rejects.toMatchObject({
+        code: 'UNAUTHENTICATED',
+      });
+    }
+    await call('auth/browser/logout', {});
+    await call('auth/browser/login', { email: DEMO_MFA_EMAIL, password: DEMO_PASSWORD });
+
+    await expect(
+      call('auth/browser/submit-mfa', { totpCode: DEMO_TOTP_CODE }),
+    ).rejects.toMatchObject({ code: 'RESOURCE_EXHAUSTED', httpStatus: 429 });
+  });
+
   it('serves the seeded samples of the requested lab only', async () => {
     const lab = createDemoLab();
     server.use(...fakeApi({ lab }));

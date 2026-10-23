@@ -49,6 +49,22 @@ async function submitCode(code: string) {
 }
 
 describe('MfaScreen', () => {
+  it.each([
+    ['UNAUTHENTICATED', authCopy.mfa.invalidCode],
+    ['RESOURCE_EXHAUSTED', authCopy.mfa.tooManyAttempts],
+    ['UNAVAILABLE', authCopy.unreachable],
+    ['DEADLINE_EXCEEDED', authCopy.unreachable],
+    ['INTERNAL', authCopy.failed],
+  ] as const)('explains a %s refusal without mislabeling it', async (code, expected) => {
+    await startPendingLogin();
+    server.use(...fakeApi({ fail: { 'auth/browser/submit-mfa': code } }));
+    renderApp({ path: '/login/mfa', mfaPending: true });
+
+    await submitCode(DEMO_TOTP_CODE);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(expected);
+  });
+
   it('completes the login with an accepted code and continues to the target', async () => {
     const target = '/labs/lab-1/samples';
     await startPendingLogin();

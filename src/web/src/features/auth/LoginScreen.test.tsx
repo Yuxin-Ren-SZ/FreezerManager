@@ -75,6 +75,20 @@ describe('LoginScreen', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(authCopy.unreachable);
   });
 
+  it.each(['RESOURCE_EXHAUSTED', 'PERMISSION_DENIED'] as const)(
+    'shows retry advice for a %s login lockout',
+    async (code) => {
+      server.use(...fakeApi({ fail: { 'auth/browser/login': code } }));
+      renderApp({ path: '/login', user: null });
+
+      await submitCredentials(DEMO_USER_EMAIL, DEMO_PASSWORD);
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        code === 'RESOURCE_EXHAUSTED' ? authCopy.tooManyAttempts : authCopy.invalidCredentials,
+      );
+    },
+  );
+
   it('does not treat a refused sign-in as an expired session', async () => {
     // `client.ts` reports every `UNAUTHENTICATED` to the session-expired
     // listeners; a login that fails is not a session ending, and the form must
