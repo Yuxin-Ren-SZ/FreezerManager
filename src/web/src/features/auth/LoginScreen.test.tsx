@@ -185,17 +185,23 @@ describe('LoginScreen', () => {
 });
 
 describe('LoginScreen not leaking the session', () => {
-  it('never writes to localStorage or sessionStorage', async () => {
+  it('stores only an opaque cross-tab signal, never credentials or session data', async () => {
     const localSet = vi.spyOn(Storage.prototype, 'setItem');
     renderApp({ path: '/login', user: null });
 
     await submitCredentials(DEMO_USER_EMAIL, DEMO_PASSWORD);
     await screen.findByRole('alert');
 
-    // AGENTS.md §5 / G-arch 6-7: no PHI, no token, no session id in browser
-    // storage. `fmgr.selectedLabId` is the only allowed key, and this screen
-    // has no business writing even that.
-    expect(localSet).not.toHaveBeenCalled();
+    // Storage events reach peers whose browser cannot open BroadcastChannel.
+    // The value is an opaque signal id; the cookie, credentials, identity and
+    // API payload never enter browser storage.
+    expect(localSet).toHaveBeenCalledOnce();
+    expect(localSet).toHaveBeenCalledWith(
+      'fmgr-session-change-v1',
+      expect.stringMatching(/^\d+-\d+\.\d+$/),
+    );
+    expect(localSet.mock.calls[0]?.[1]).not.toContain(DEMO_USER_EMAIL);
+    expect(localSet.mock.calls[0]?.[1]).not.toContain(DEMO_PASSWORD);
 
     localSet.mockRestore();
   });

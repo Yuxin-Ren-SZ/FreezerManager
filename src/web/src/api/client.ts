@@ -7,6 +7,7 @@ import {
   type MessageInitShape,
 } from '@bufbuild/protobuf';
 import { ApiError, isGrpcCode, MFA_REQUIRED_ENVELOPE_CODE } from './errors';
+import { getSessionChangeVersion } from '../app/sessionChange';
 import {
   apiRoutes,
   type ApiRoutes,
@@ -137,8 +138,11 @@ function notifySessionExpired(error: ApiError): void {
  * makes G-arch 7's "any 401 clears the query cache" true rather than usually
  * true — otherwise the SPA keeps rendering cached data as if still signed in.
  */
-function fail(error: ApiError): never {
-  if (error.code === 'UNAUTHENTICATED' || error.httpStatus === 401) {
+function fail(error: ApiError, requestSessionVersion?: number): never {
+  if (
+    (error.code === 'UNAUTHENTICATED' || error.httpStatus === 401) &&
+    (requestSessionVersion === undefined || requestSessionVersion === getSessionChangeVersion())
+  ) {
     notifySessionExpired(error);
   }
   throw error;
@@ -188,6 +192,7 @@ export async function call<K extends RpcName>(
   rpc: K,
   request: RequestInitOf<K> = {} as RequestInitOf<K>,
 ): Promise<ResponseOf<K>> {
+  const requestSessionVersion = getSessionChangeVersion();
   const route: ApiRoutes[K] = apiRoutes[rpc];
   const requestId = newRequestId();
 
@@ -240,12 +245,13 @@ export async function call<K extends RpcName>(
           requestId: response.headers.get(REQUEST_ID_HEADER_NAME) ?? requestId,
           cause,
         }),
+        requestSessionVersion,
       );
     }
   }
 
   if (!response.ok) {
-    fail(toApiError(json, response, requestId));
+    fail(toApiError(json, response, requestId), requestSessionVersion);
   }
 
   try {

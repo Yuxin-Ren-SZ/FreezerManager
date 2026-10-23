@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { call } from './client';
+import { announceSessionChange } from '../app/sessionChange';
 
 /**
  * The browser session: the three `auth/browser/*` routes G0.1 added
@@ -25,12 +26,14 @@ export interface SignInResult {
 /** `POST /api/v1/auth/browser/login` — email + password, TOTP still pending. */
 export async function signIn(email: string, password: string): Promise<SignInResult> {
   const response = await call('auth/browser/login', { email, password });
+  announceSessionChange();
   return { mfaRequired: response.mfaRequired };
 }
 
 /** `POST /api/v1/auth/browser/submit-mfa` — completes the second factor. */
 export async function submitMfaCode(totpCode: string): Promise<void> {
   await call('auth/browser/submit-mfa', { totpCode });
+  announceSessionChange();
 }
 
 /**
@@ -40,4 +43,5 @@ export async function submitMfaCode(totpCode: string): Promise<void> {
  */
 export async function signOutOfBrowserSession(): Promise<void> {
   await call('auth/browser/logout', {});
+  announceSessionChange();
 }

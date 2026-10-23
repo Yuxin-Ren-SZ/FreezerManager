@@ -3,7 +3,7 @@ import { QueryClientProvider, type QueryClient } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { HttpResponse, http } from 'msw';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, MFA_REQUIRED_PREFIX } from '../api/errors';
 import { createTestQueryClient } from '../test/render';
 import { currentUserWith } from '../test/session';
@@ -38,7 +38,13 @@ function renderSession(loader: SessionLoader) {
 
 /** Something a screen's query would have cached before the session ended. */
 function seedCache(queryClient: QueryClient): void {
-  queryClient.setQueryData(['sample', 'sample-1'], { name: 'Serum A' });
+  queryClient.setQueryData(['protected'], { sentinel: 'synthetic-protected-data' });
+}
+
+function signalFromAnotherTab(): void {
+  const peer = new BroadcastChannel('fmgr-session-change-v1');
+  peer.postMessage({ type: 'session-changed', id: `${String(Date.now())}-test-peer` });
+  peer.close();
 }
 
 describe('SessionProvider', () => {
@@ -180,5 +186,156 @@ describe('SessionProvider', () => {
     await waitFor(() => {
       expect(result.current.status).toBe('authenticated');
     });
+  });
+
+  it('clears protected data and hides the old identity before a cross-tab reload resolves', async () => {
+    type UserResolver = (user: ReturnType<typeof currentUserWith> | null) => void;
+    const resolvers: UserResolver[] = [];
+    const makeLoader = (): SessionLoader => {
+      let loads = 0;
+      return () => {
+        loads += 1;
+        if (loads === 1) return Promise.resolve(currentUserWith(['sample.read', 'phi.read']));
+        return new Promise((resolve) => {
+          resolvers.push(resolve);
+        });
+      };
+    };
+    const firstTab = renderSession(makeLoader());
+    const secondTab = renderSession(makeLoader());
+    await waitFor(() => {
+      expect(firstTab.result.current.status).toBe('authenticated');
+    });
+    await waitFor(() => {
+      expect(secondTab.result.current.status).toBe('authenticated');
+    });
+    seedCache(firstTab.queryClient);
+    seedCache(secondTab.queryClient);
+
+    act(() => {
+      signalFromAnotherTab();
+    });
+
+    await waitFor(() => {
+      expect(firstTab.result.current.status).toBe('loading');
+    });
+    expect(secondTab.result.current.status).toBe('loading');
+    expect(firstTab.result.current.user).toBeNull();
+    expect(secondTab.result.current.user).toBeNull();
+    expect(firstTab.queryClient.getQueryCache().getAll()).toHaveLength(0);
+    expect(secondTab.queryClient.getQueryCache().getAll()).toHaveLength(0);
+    await waitFor(() => {
+      expect(resolvers).toHaveLength(2);
+    });
+
+    act(() => {
+      resolvers[0]?.(currentUserWith(['sample.read']));
+      resolvers[1]?.(currentUserWith(['sample.read']));
+    });
+    await waitFor(() => {
+      expect(firstTab.result.current.status).toBe('authenticated');
+    });
+    expect(secondTab.result.current.status).toBe('authenticated');
+    expect(firstTab.result.current.user?.permissions).toEqual([]);
+    expect(firstTab.result.current.user?.labs[0]?.permissions).toEqual(['sample.read']);
+    expect(secondTab.result.current.user?.labs[0]?.permissions).toEqual(['sample.read']);
+  });
+
+  it('ignores an old in-flight identity load after a cross-tab session change', async () => {
+    let resolveOld: ((user: ReturnType<typeof currentUserWith> | null) => void) | undefined;
+    let loads = 0;
+    const loader: SessionLoader = () => {
+      loads += 1;
+      if (loads === 1) {
+        return new Promise((resolve) => {
+          resolveOld = resolve;
+        });
+      }
+      return Promise.resolve(currentUserWith(['sample.read']));
+    };
+    const { result } = renderSession(loader);
+
+    act(() => {
+      signalFromAnotherTab();
+    });
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('authenticated');
+    });
+    act(() => {
+      resolveOld?.(currentUserWith(['backup.run']));
+    });
+    await waitFor(() => {
+      expect(result.current.user?.permissions).toEqual([]);
+    });
+    expect(result.current.user?.labs[0]?.permissions).toEqual(['sample.read']);
+  });
+
+  it('closes the cross-tab listener when the provider unmounts', async () => {
+    const close = vi.fn();
+    class TrackedBroadcastChannel {
+      onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
+
+      constructor(readonly name: string) {}
+
+      postMessage(): void {
+        void 0;
+      }
+
+      close(): void {
+        close();
+      }
+    }
+    vi.stubGlobal('BroadcastChannel', TrackedBroadcastChannel);
+    try {
+      const rendered = renderSession(() => Promise.resolve(currentUserWith(['sample.read'])));
+      await waitFor(() => {
+        expect(rendered.result.current.status).toBe('authenticated');
+      });
+
+      rendered.unmount();
+
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('uses the storage event fallback when BroadcastChannel is unavailable', async () => {
+    vi.stubGlobal('BroadcastChannel', undefined);
+    let resolveReload: ((user: ReturnType<typeof currentUserWith> | null) => void) | undefined;
+    let loads = 0;
+    const loader: SessionLoader = () => {
+      loads += 1;
+      if (loads === 1) return Promise.resolve(currentUserWith(['phi.read']));
+      return new Promise((resolve) => {
+        resolveReload = resolve;
+      });
+    };
+    try {
+      const rendered = renderSession(loader);
+      await waitFor(() => {
+        expect(rendered.result.current.status).toBe('authenticated');
+      });
+      seedCache(rendered.queryClient);
+
+      window.dispatchEvent(
+        new StorageEvent('storage', { key: 'fmgr-session-change-v1', newValue: 'peer-signal' }),
+      );
+
+      await waitFor(() => {
+        expect(rendered.result.current.status).toBe('loading');
+      });
+      expect(rendered.queryClient.getQueryCache().getAll()).toHaveLength(0);
+      act(() => {
+        resolveReload?.(null);
+      });
+      await waitFor(() => {
+        expect(rendered.result.current.status).toBe('unauthenticated');
+      });
+      rendered.unmount();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
