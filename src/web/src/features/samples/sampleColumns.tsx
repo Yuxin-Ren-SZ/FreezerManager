@@ -11,6 +11,7 @@ import type { TableColumn } from '../../ui/Table';
 import type { LocationPath } from '../layout/layoutModel';
 import { formatCustomFieldValue, parseCustomFields } from './customFields';
 import { placementKind, placementPath } from './placement';
+import { resolveInheritedDefinitions } from '../sample-detail/customFields';
 
 /**
  * The columns of the sample browser (TODO.md G3.2).
@@ -96,6 +97,16 @@ export function buildSampleColumns({
   locationPath,
 }: SampleColumnsOptions): TableColumn<Sample>[] {
   const itemTypesById = new Map(itemTypes.map((itemType) => [itemType.id, itemType]));
+  const applicableFieldColumnsByItemType = new Map(
+    itemTypes.map((itemType) => [
+      itemType.id,
+      new Set(
+        resolveInheritedDefinitions(itemTypes, cfds, itemType.id).map((cfd) =>
+          customFieldColumnId(cfd.itemTypeId ?? '', cfd.key),
+        ),
+      ),
+    ]),
+  );
 
   // A key is shared when more than one definition carries it — normally one per
   // item type. Only a shared key needs its type in the header; a field that
@@ -192,15 +203,21 @@ export function buildSampleColumns({
       header: t('columns.created'),
       cell: ({ row }) => formatTimestamp(row.original.createdAt?.unixMicros) ?? EMPTY_CELL,
     },
-    ...cfds.map((cfd) => ({
-      id: customFieldColumnId(cfd.itemTypeId ?? '', cfd.key),
-      header: customFieldHeader(cfd),
-      cell: ({ row }: { row: { original: Sample } }) => {
-        const value = formatCustomFieldValue(
-          parseCustomFields(row.original.customFieldsJson)[cfd.key],
-        );
-        return value === '' ? EMPTY_CELL : value;
-      },
-    })),
+    ...cfds.map((cfd) => {
+      const id = customFieldColumnId(cfd.itemTypeId ?? '', cfd.key);
+      return {
+        id,
+        header: customFieldHeader(cfd),
+        cell: ({ row }: { row: { original: Sample } }) => {
+          if (!applicableFieldColumnsByItemType.get(row.original.itemTypeId)?.has(id)) {
+            return EMPTY_CELL;
+          }
+          const value = formatCustomFieldValue(
+            parseCustomFields(row.original.customFieldsJson)[cfd.key],
+          );
+          return value === '' ? EMPTY_CELL : value;
+        },
+      };
+    }),
   ];
 }

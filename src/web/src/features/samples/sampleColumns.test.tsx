@@ -6,7 +6,9 @@ import {
   CustomFieldDefinitionSchema,
   FieldDataType,
   ItemTypeSchema,
+  ScopeKind,
 } from '../../gen/fmgr/v1/item_type_pb';
+import { SampleSchema } from '../../gen/fmgr/v1/sample_pb';
 import { buildSampleColumns, customFieldColumnId, sampleColumnIds } from './sampleColumns';
 
 /**
@@ -27,6 +29,7 @@ function cfd(key: string, label: string, isPhi = false, itemTypeId?: string) {
     key,
     label,
     dataType: FieldDataType.TEXT,
+    scopeKind: ScopeKind.SAMPLE,
     isPhi,
     ...(itemTypeId === undefined ? {} : { itemTypeId }),
   });
@@ -173,4 +176,153 @@ describe('custom-field columns on more than one item type', () => {
       t('columns.withItemType', { label: 'Patient ID', itemType: 'it-tissue' }),
     );
   });
+
+  it('shows a shared key only under the winning unrelated root type', () => {
+    const serum = create(SampleSchema, {
+      id: 'sample-serum',
+      itemTypeId: 'it-tissue',
+      customFieldsJson: '{"patient_id":"T-123"}',
+    });
+    const blood = create(SampleSchema, {
+      id: 'sample-blood',
+      itemTypeId: 'it-blood',
+      customFieldsJson: '{"patient_id":"B-456"}',
+    });
+    const columns = buildSampleColumns(options);
+    const tissueColumn = columns.find((column) => column.id === 'field:it-tissue:patient_id');
+    const bloodColumn = columns.find((column) => column.id === 'field:it-blood:patient_id');
+
+    expect(renderCustomFieldCell(tissueColumn, serum)).toBe('T-123');
+    expect(renderCustomFieldCell(bloodColumn, serum)).toBe('—');
+    expect(renderCustomFieldCell(tissueColumn, blood)).toBe('—');
+    expect(renderCustomFieldCell(bloodColumn, blood)).toBe('B-456');
+  });
+
+  it('shows inherited and lab-wide values under their winning definitions and child overrides', () => {
+    const hierarchy = [
+      create(ItemTypeSchema, { id: 'it-root', labId: 'lab-demo', name: 'Root' }),
+      create(ItemTypeSchema, {
+        id: 'it-child',
+        labId: 'lab-demo',
+        name: 'Child',
+        parentId: 'it-root',
+      }),
+    ];
+    const definitions = [
+      cfd('storage_note', 'Storage note'),
+      cfd('root_code', 'Root code', false, 'it-root'),
+      cfd('shared_code', 'Root code', false, 'it-root'),
+      cfd('shared_code', 'Child code', false, 'it-child'),
+    ];
+    const sample = create(SampleSchema, {
+      id: 'sample-child',
+      itemTypeId: 'it-child',
+      customFieldsJson: '{"storage_note":"global","root_code":"inherited","shared_code":"child"}',
+    });
+    const columns = buildSampleColumns({ ...options, itemTypes: hierarchy, cfds: definitions });
+
+    expect(
+      renderCustomFieldCell(
+        columns.find((column) => column.id === 'field::storage_note'),
+        sample,
+      ),
+    ).toBe('global');
+    expect(
+      renderCustomFieldCell(
+        columns.find((column) => column.id === 'field:it-root:root_code'),
+        sample,
+      ),
+    ).toBe('inherited');
+    expect(
+      renderCustomFieldCell(
+        columns.find((column) => column.id === 'field:it-root:shared_code'),
+        sample,
+      ),
+    ).toBe('—');
+    expect(
+      renderCustomFieldCell(
+        columns.find((column) => column.id === 'field:it-child:shared_code'),
+        sample,
+      ),
+    ).toBe('child');
+  });
+
+  it('leaves type-specific cells empty when a sample type is unknown', () => {
+    const unknown = create(SampleSchema, {
+      id: 'sample-unknown',
+      itemTypeId: 'it-missing',
+      customFieldsJson: '{"patient_id":"unknown"}',
+    });
+    const columns = buildSampleColumns(options);
+
+    expect(
+      renderCustomFieldCell(
+        columns.find((column) => column.id === 'field:it-tissue:patient_id'),
+        unknown,
+      ),
+    ).toBe('—');
+    expect(
+      renderCustomFieldCell(
+        columns.find((column) => column.id === 'field:it-blood:patient_id'),
+        unknown,
+      ),
+    ).toBe('—');
+  });
+
+  it('bounds applicability to the visited types when ancestry is cyclic', () => {
+    const cyclicTypes = [
+      create(ItemTypeSchema, {
+        id: 'it-a',
+        labId: 'lab-demo',
+        name: 'A',
+        parentId: 'it-b',
+      }),
+      create(ItemTypeSchema, {
+        id: 'it-b',
+        labId: 'lab-demo',
+        name: 'B',
+        parentId: 'it-a',
+      }),
+      ...itemTypes,
+    ];
+    const definitions = [
+      cfd('shared', 'A field', false, 'it-a'),
+      cfd('shared', 'B field', false, 'it-b'),
+      cfd('shared', 'Unrelated field', false, 'it-tissue'),
+    ];
+    const sample = create(SampleSchema, {
+      id: 'sample-cycle',
+      itemTypeId: 'it-a',
+      customFieldsJson: '{"shared":"cycle-value"}',
+    });
+    const columns = buildSampleColumns({ ...options, itemTypes: cyclicTypes, cfds: definitions });
+
+    expect(
+      renderCustomFieldCell(
+        columns.find((column) => column.id === 'field:it-a:shared'),
+        sample,
+      ),
+    ).toBe('cycle-value');
+    expect(
+      renderCustomFieldCell(
+        columns.find((column) => column.id === 'field:it-b:shared'),
+        sample,
+      ),
+    ).toBe('—');
+    expect(
+      renderCustomFieldCell(
+        columns.find((column) => column.id === 'field:it-tissue:shared'),
+        sample,
+      ),
+    ).toBe('—');
+  });
 });
+
+function renderCustomFieldCell(
+  column: ReturnType<typeof buildSampleColumns>[number] | undefined,
+  sample: ReturnType<typeof create<typeof SampleSchema>>,
+): string | undefined {
+  if (column === undefined || typeof column.cell !== 'function') return undefined;
+  const cell = column.cell as unknown as (context: { row: { original: typeof sample } }) => unknown;
+  return String(cell({ row: { original: sample } }));
+}
