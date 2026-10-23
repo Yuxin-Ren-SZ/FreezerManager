@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <string>
 #include <thread>
@@ -46,6 +47,7 @@ namespace fmgr::test {
 
       void SetUp() override {
         instance = this;
+        working_dir_.create("plaintext");
         // The developer's shell must not decide what this binary tests.
         ::unsetenv("FMGR_WEB_ROOT");
         ::unsetenv("FMGR_REST_MAX_BODY_BYTES");
@@ -67,7 +69,11 @@ namespace fmgr::test {
               auto resp = drogon::HttpResponse::newHttpResponse();
               resp->setStatusCode(drogon::k200OK);
               resp->setContentTypeCode(drogon::CT_APPLICATION_JSON);
-              resp->setBody(nlohmann::json{{"received", req->body().size()}}.dump());
+              const bool spilled_to_disk = static_assets::has_upload_temp_files();
+              const auto body_size = req->body().size();
+              resp->setBody(
+                  nlohmann::json{{"received", body_size}, {"spilled_to_disk", spilled_to_disk}}
+                      .dump());
               callback(resp);
             },
             {drogon::Post});
@@ -110,10 +116,11 @@ namespace fmgr::test {
           }
         }
         web_.remove();
+        working_dir_.restore_and_remove();
       }
 
-      [[nodiscard]] std::string base_url() const {
-        return "http://127.0.0.1:" + std::to_string(port_);
+      [[nodiscard]] std::uint16_t port() const {
+        return port_;
       }
 
       [[nodiscard]] const WebRoot& web() const {
@@ -121,6 +128,7 @@ namespace fmgr::test {
       }
 
     private:
+      static_assets::WorkingDirectory working_dir_;
       WebRoot web_;
       std::uint16_t port_{0};
       std::thread app_thread_;
@@ -132,12 +140,12 @@ namespace fmgr::test {
     const ::testing::Environment* const kEnv =
         ::testing::AddGlobalTestEnvironment(new RestStaticAssetsEnv);
 
-    [[nodiscard]] std::string base_url() {
-      return RestStaticAssetsEnv::instance->base_url();
+    [[nodiscard]] std::uint16_t port() {
+      return RestStaticAssetsEnv::instance->port();
     }
 
     [[nodiscard]] HttpResult fetch(const std::string& path) {
-      return get(base_url(), path);
+      return get(port(), path);
     }
 
     TEST(RestStaticAssets, ServesIndexHtmlAtTheRoot) {
@@ -182,6 +190,13 @@ namespace fmgr::test {
       EXPECT_EQ(result.cache_control, "no-store");
     }
 
+    TEST(RestStaticAssets, UnknownApiPreflightDoesNotReflectOrigin) {
+      const auto result = static_assets::request(port(), drogon::Options, "/api/v1/nope", {},
+                                                 "https://attacker.example");
+      ASSERT_TRUE(result.ok());
+      EXPECT_EQ(result.allow_origin, "");
+    }
+
     TEST(RestStaticAssets, ClassifiesApiPathsCaseInsensitively) {
       // Drogon's exact routing lowercases the lookup path, so /API/... can
       // reach a gateway route (or miss one); the fallback and the cache advice
@@ -193,7 +208,7 @@ namespace fmgr::test {
           << unknown.content_type;
       EXPECT_EQ(unknown.cache_control, "no-store");
 
-      const auto known = post(base_url(), "/API/v1/sample/import", R"({"samples":[]})");
+      const auto known = post(port(), "/API/v1/sample/import", R"({"samples":[]})");
       ASSERT_TRUE(known.ok());
       EXPECT_EQ(known.status, 200);
       EXPECT_EQ(known.cache_control, "no-store");
@@ -201,7 +216,7 @@ namespace fmgr::test {
 
     TEST(RestStaticAssets, KnownApiResponsesAreNoStore) {
       const std::string body = R"({"samples":[{"external_id":"S-1"}]})";
-      const auto result = post(base_url(), "/api/v1/sample/import", body);
+      const auto result = post(port(), "/api/v1/sample/import", body);
       ASSERT_TRUE(result.ok());
       EXPECT_EQ(result.status, 200);
       EXPECT_EQ(result.cache_control, "no-store");
@@ -273,10 +288,12 @@ namespace fmgr::test {
       // Above Drogon's 1 MiB default: the raised limit is what makes a real CSV
       // import reach the gateway instead of failing with 413.
       const std::string body(static_cast<std::size_t>(2) * 1024 * 1024, 'x');
-      const auto result = post(base_url(), "/api/v1/sample/import", body);
+      const auto result = post(port(), "/api/v1/sample/import", body);
       ASSERT_TRUE(result.ok()) << "transport: " << static_cast<int>(result.transport);
       EXPECT_EQ(result.status, 200);
-      EXPECT_EQ(nlohmann::json::parse(result.body).value("received", std::size_t{0}), body.size());
+      const auto response = nlohmann::json::parse(result.body);
+      EXPECT_EQ(response.value("received", std::size_t{0}), body.size());
+      EXPECT_FALSE(response.value("spilled_to_disk", true));
     }
 
   } // namespace

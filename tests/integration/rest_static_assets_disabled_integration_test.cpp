@@ -14,6 +14,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
@@ -31,6 +32,7 @@ namespace fmgr::test {
 
       void SetUp() override {
         instance = this;
+        working_dir_.create("disabled");
         ::unsetenv("FMGR_WEB_ROOT");
         ::unsetenv("FMGR_REST_MAX_BODY_BYTES");
 
@@ -39,9 +41,12 @@ namespace fmgr::test {
           ADD_FAILURE() << "FMGR_WEB_ROOT leaked into the disabled configuration";
           return;
         }
-        // A route on disk the SPA would serve if it were enabled: it must stay
-        // invisible, not even as a fallback.
+        // Files in Drogon's default cwd root must stay invisible when SPA
+        // serving is disabled.
         web_ = static_assets::WebRoot::create("disabled");
+        write(std::filesystem::current_path() / "index.html", "disabled-cwd-index-canary");
+        write(std::filesystem::current_path() / "canary.js", "disabled-cwd-js-canary");
+        write(std::filesystem::current_path() / "canary.txt", "disabled-cwd-txt-canary");
 
         rest::StaticAssets::install(config);
 
@@ -61,13 +66,20 @@ namespace fmgr::test {
           }
         }
         web_.remove();
+        working_dir_.restore_and_remove();
       }
 
-      [[nodiscard]] std::string base_url() const {
-        return "http://127.0.0.1:" + std::to_string(port_);
+      [[nodiscard]] std::uint16_t port() const {
+        return port_;
       }
 
     private:
+      static void write(const std::filesystem::path& path, std::string_view contents) {
+        std::ofstream output(path, std::ios::binary);
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+      }
+
+      static_assets::WorkingDirectory working_dir_;
       static_assets::WebRoot web_;
       std::uint16_t port_{0};
       std::thread app_thread_;
@@ -79,21 +91,37 @@ namespace fmgr::test {
     const ::testing::Environment* const kEnv =
         ::testing::AddGlobalTestEnvironment(new RestStaticAssetsDisabledEnv);
 
-    [[nodiscard]] std::string base_url() {
-      return RestStaticAssetsDisabledEnv::instance->base_url();
+    [[nodiscard]] std::uint16_t port() {
+      return RestStaticAssetsDisabledEnv::instance->port();
     }
 
     TEST(RestStaticAssetsDisabled, DoesNotServeFilesFromTheWebRoot) {
       for (const char* path : {"/", "/index.html", "/assets/app-abc123.js"}) {
-        const auto result = get(base_url(), path);
+        const auto result = get(port(), path);
         ASSERT_TRUE(result.ok()) << path;
         EXPECT_EQ(result.status, 404) << path;
         EXPECT_EQ(result.body.find("spa-index"), std::string::npos) << path;
       }
     }
 
+    TEST(RestStaticAssetsDisabled, DoesNotServeImplicitPagesOrFilesFromTheWorkingDirectory) {
+      const auto index = get(port(), "/");
+      ASSERT_TRUE(index.ok());
+      EXPECT_EQ(index.status, 404);
+      EXPECT_EQ(index.body.find("disabled-cwd-index-canary"), std::string::npos);
+
+      for (const auto& [path, canary] :
+           {std::pair{std::string("/canary.js"), std::string("disabled-cwd-js-canary")},
+            std::pair{std::string("/canary.txt"), std::string("disabled-cwd-txt-canary")}}) {
+        const auto file = get(port(), path);
+        ASSERT_TRUE(file.ok());
+        EXPECT_EQ(file.status, 404) << path;
+        EXPECT_EQ(file.body.find(canary), std::string::npos) << path;
+      }
+    }
+
     TEST(RestStaticAssetsDisabled, DoesNotAddTheSpaSecurityHeaders) {
-      const auto result = get(base_url(), "/");
+      const auto result = get(port(), "/");
       ASSERT_TRUE(result.ok());
       EXPECT_EQ(result.status, 404);
       EXPECT_TRUE(result.csp.empty());
@@ -106,7 +134,7 @@ namespace fmgr::test {
       // With the SPA disabled nothing claims /api/*; Drogon's default 404 page
       // is what callers got before G0.3. (With the SPA enabled the fallback
       // turns this into a JSON 404 — see rest_static_assets_integration_test.)
-      const auto result = get(base_url(), "/api/v1/does-not-exist");
+      const auto result = get(port(), "/api/v1/does-not-exist");
       ASSERT_TRUE(result.ok());
       EXPECT_EQ(result.status, 404);
       EXPECT_EQ(result.body.find("spa-index"), std::string::npos);

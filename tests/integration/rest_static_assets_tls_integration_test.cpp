@@ -45,6 +45,7 @@ namespace fmgr::test {
 
       void SetUp() override {
         instance = this;
+        working_dir_.create("tls");
         ::unsetenv("FMGR_WEB_ROOT");
         ::unsetenv("FMGR_REST_MAX_BODY_BYTES");
         web_ = WebRoot::create("tls");
@@ -91,13 +92,15 @@ namespace fmgr::test {
           }
         }
         web_.remove();
+        working_dir_.restore_and_remove();
       }
 
-      [[nodiscard]] std::string base_url() const {
-        return "http://127.0.0.1:" + std::to_string(port_);
+      [[nodiscard]] std::uint16_t port() const {
+        return port_;
       }
 
     private:
+      static_assets::WorkingDirectory working_dir_;
       WebRoot web_;
       std::uint16_t port_{0};
       std::thread app_thread_;
@@ -109,12 +112,12 @@ namespace fmgr::test {
     const ::testing::Environment* const kEnv =
         ::testing::AddGlobalTestEnvironment(new RestStaticAssetsTlsEnv);
 
-    [[nodiscard]] std::string base_url() {
-      return RestStaticAssetsTlsEnv::instance->base_url();
+    [[nodiscard]] std::uint16_t port() {
+      return RestStaticAssetsTlsEnv::instance->port();
     }
 
     TEST(RestStaticAssetsTls, SendsHstsWhenTheRestListenerTerminatesTls) {
-      const auto result = get(base_url(), "/");
+      const auto result = get(port(), "/");
       ASSERT_TRUE(result.ok());
       EXPECT_EQ(result.status, 200);
       EXPECT_EQ(result.hsts, "max-age=31536000");
@@ -124,7 +127,7 @@ namespace fmgr::test {
 
     TEST(RestStaticAssetsTls, AcceptsAnImportBodyWithinTheConfiguredLimit) {
       const std::string body(static_cast<std::size_t>(512), 'x');
-      const auto result = post(base_url(), "/api/v1/sample/import", body);
+      const auto result = post(port(), "/api/v1/sample/import", body);
       ASSERT_TRUE(result.ok());
       EXPECT_EQ(result.status, 200);
       EXPECT_EQ(nlohmann::json::parse(result.body).value("received", std::size_t{0}), body.size());
@@ -132,7 +135,7 @@ namespace fmgr::test {
 
     TEST(RestStaticAssetsTls, RejectsATwoMebibyteImportBodyWhenTheLimitIsLowered) {
       const std::string body(static_cast<std::size_t>(2) * 1024 * 1024, 'x');
-      const auto result = post(base_url(), "/api/v1/sample/import", body);
+      const auto result = post(port(), "/api/v1/sample/import", body);
       EXPECT_EQ(result.status, 413);
     }
 

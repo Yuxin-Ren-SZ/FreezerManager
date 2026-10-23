@@ -18,14 +18,14 @@ namespace fmgr::rest {
     // The exact value pinned by TODO.md G0.3. No 'unsafe-inline': the Vite
     // bundle is external JS/CSS, and inline script/style would only widen the
     // attack surface here.
-    constexpr std::string_view kContentSecurityPolicy =
+    constexpr std::string_view k_content_security_policy =
         "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
     // Vite fingerprints every file under /assets/ with a content hash, so a
     // year-long immutable cache is safe: a new build produces new names.
-    constexpr std::string_view kImmutableCache = "public, max-age=31536000, immutable";
+    constexpr std::string_view k_immutable_cache = "public, max-age=31536000, immutable";
     // HTML must be revalidated on every load, or a deploy keeps serving the old
     // shell (and the old asset names) until the cache expires.
-    constexpr std::string_view kRevalidateCache = "no-cache";
+    constexpr std::string_view k_revalidate_cache = "no-cache";
 
     // Drogon routes exact handlers case-insensitively (it lowercases the lookup
     // path), so an API caller can reach a gateway route with /API/V1/... in the
@@ -42,7 +42,7 @@ namespace fmgr::rest {
 
     [[nodiscard]] std::size_t parse_body_limit(const char* raw) {
       if (raw == nullptr || *raw == '\0') {
-        return StaticAssetsConfig::kDefaultMaxBodyBytes;
+        return StaticAssetsConfig::k_default_max_body_bytes;
       }
       const std::string text(raw);
       if (text.find_first_not_of("0123456789") != std::string::npos) {
@@ -89,13 +89,17 @@ namespace fmgr::rest {
     // `root`. weakly_canonical resolves symlinks, so a link inside the root
     // that points outside it is refused too.
     [[nodiscard]] std::optional<std::filesystem::path>
-    canonical_within(const std::filesystem::path& root, const std::filesystem::path& candidate) {
+    // Candidate comes first so the call reads as "keep this path within this root".
+    canonical_within(
+        // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): both parameters are paths,
+        // distinguished by their names and documented call order.
+        const std::filesystem::path& candidate_path, const std::filesystem::path& canonical_root) {
       std::error_code error;
-      const auto resolved = std::filesystem::weakly_canonical(candidate, error);
+      auto resolved = std::filesystem::weakly_canonical(candidate_path, error);
       if (error) {
         return std::nullopt;
       }
-      const auto relative = resolved.lexically_relative(root);
+      const auto relative = resolved.lexically_relative(canonical_root);
       if (relative.empty() || relative.is_absolute()) {
         return std::nullopt;
       }
@@ -106,13 +110,13 @@ namespace fmgr::rest {
       return resolved;
     }
 
-    // The SPA handler. Registered for every method because an unknown /api/*
-    // path must be a JSON 404 no matter what verb reaches it; only GET serves
+    // The SPA handler. Non-OPTIONS API verbs receive a JSON 404; only GET serves
     // files, and exact gateway routes are matched before a regex ever runs.
     void register_handler(const std::filesystem::path& root) {
       drogon::app().registerHandlerViaRegex(
-          "^/.*$", [root](const drogon::HttpRequestPtr& req,
-                          std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
+          "^/.*$",
+          [root](const drogon::HttpRequestPtr& req,
+                 std::function<void(const drogon::HttpResponsePtr&)>&& callback) {
             const std::string& path = req->path();
             if (starts_with_ci(path, "/api/")) {
               // The gateway's own routes are exact matches and never reach
@@ -131,7 +135,7 @@ namespace fmgr::rest {
               callback(drogon::HttpResponse::newNotFoundResponse(req));
               return;
             }
-            const auto resolved = StaticAssets::resolve_path(root, path);
+            auto resolved = StaticAssets::resolve_path(root, path);
             if (!resolved.has_value()) {
               callback(drogon::HttpResponse::newNotFoundResponse(req));
               return;
@@ -142,14 +146,15 @@ namespace fmgr::rest {
               return;
             }
             callback(drogon::HttpResponse::newFileResponse(resolved->string()));
-          });
+          },
+          {drogon::Get, drogon::Post, drogon::Put, drogon::Delete, drogon::Patch});
     }
 
     // Post-handling advice: RestGateway.cc stays unaware of the SPA (G0.3).
     void register_advice(bool tls) {
       drogon::app().registerPostHandlingAdvice(
           [tls](const drogon::HttpRequestPtr& req, const drogon::HttpResponsePtr& resp) {
-            resp->addHeader("Content-Security-Policy", std::string(kContentSecurityPolicy));
+            resp->addHeader("Content-Security-Policy", std::string(k_content_security_policy));
             resp->addHeader("X-Content-Type-Options", "nosniff");
             resp->addHeader("Referrer-Policy", "no-referrer");
             if (tls) {
@@ -166,7 +171,7 @@ namespace fmgr::rest {
                                    resp->getStatusCode() == drogon::k200OK &&
                                    resp->contentType() != drogon::CT_TEXT_HTML;
             resp->addHeader("Cache-Control",
-                            std::string(immutable ? kImmutableCache : kRevalidateCache));
+                            std::string(immutable ? k_immutable_cache : k_revalidate_cache));
           });
     }
 
@@ -187,6 +192,12 @@ namespace fmgr::rest {
     // FMGR_WEB_ROOT still imports CSVs through /api/v1/sample/import and needs
     // the same ~10 MiB ceiling the gRPC listener already has (C-10).
     drogon::app().setClientMaxBodySize(config.max_body_bytes);
+    drogon::app().setClientMaxMemoryBodySize(config.max_body_bytes);
+    // Keep PHI-bearing request bodies in memory up to the accepted body cap;
+    // Drogon otherwise spills larger bodies to plaintext uploads/tmp files.
+    // Disable Drogon's default cwd file router even when the SPA is disabled.
+    // Static files are served only by the validated FMGR_WEB_ROOT handler.
+    drogon::app().setFileTypes({}).setImplicitPageEnable(false);
     if (!config.serves_spa()) {
       return;
     }
@@ -227,7 +238,7 @@ namespace fmgr::rest {
     }
 
     if (!relative.empty()) {
-      const auto candidate = canonical_within(root, root / relative);
+      auto candidate = canonical_within(root / relative, root);
       if (!candidate.has_value()) {
         // The path escaped the root (a symlink, or a canonicalisation error).
         // Refuse it; falling back to index.html would hide the attempt.
@@ -241,7 +252,7 @@ namespace fmgr::rest {
     // Not a file: a client-side route. index.html is resolved through the same
     // containment check, so a web root whose index is a symlink outside the
     // root is refused rather than served.
-    return canonical_within(root, root / "index.html");
+    return canonical_within(root / "index.html", root);
   }
 
 } // namespace fmgr::rest

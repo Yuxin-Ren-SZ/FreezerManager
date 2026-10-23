@@ -375,20 +375,27 @@ gtest_discover_tests(freezermanager_demo_seed_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_rest_gateway_integration_tests
   PROPERTIES LABELS "grpc_integration")
-# G0.3's three SPA-served binaries start no gRPC server, so they stay unlabelled
-# and run under the sanitizers. Drogon is prebuilt without sanitizer
-# instrumentation, and its process-exit teardown trips a container-overflow
-# report inside its own std::unordered_map: the container is filled by
-# uninstrumented drogon code and annotated by the instrumented libc++ headers,
-# which is a false positive, not our memory. Disable that one check for these
-# binaries so ASan still covers the new HTTP path; the pure path/config logic
-# also runs under full ASan in freezermanager_rest_unit_tests.
-gtest_discover_tests(
-  freezermanager_rest_static_assets_integration_tests
-  PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_container_overflow=0")
-gtest_discover_tests(
-  freezermanager_rest_static_assets_tls_integration_tests
-  PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_container_overflow=0")
-gtest_discover_tests(
-  freezermanager_rest_static_assets_disabled_integration_tests
-  PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_container_overflow=0")
+# These three binaries exercise the Drogon HTTP server directly. Under TSan,
+# shutdown races inside prebuilt Drogon/trantor make their process teardown
+# noisy without any FreezerManager frames. Keep them registered under ASan (so
+# LeakSanitizer checks the client lifecycle) and all normal builds; the pure
+# StaticAssets path/config tests remain registered under every sanitizer.
+if(NOT FREEZERMANAGER_ENABLE_TSAN)
+  if(APPLE AND FREEZERMANAGER_ENABLE_ASAN)
+    # Apple libc++ container annotations conflict with uninstrumented Drogon
+    # writes during process teardown on macOS. Keep this narrow workaround
+    # Apple-ASan-only; Linux retains container checks and LeakSanitizer.
+    set(_static_assets_test_properties
+      PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_container_overflow=0")
+    gtest_discover_tests(freezermanager_rest_static_assets_integration_tests
+      ${_static_assets_test_properties})
+    gtest_discover_tests(freezermanager_rest_static_assets_tls_integration_tests
+      ${_static_assets_test_properties})
+    gtest_discover_tests(freezermanager_rest_static_assets_disabled_integration_tests
+      ${_static_assets_test_properties})
+  else()
+    gtest_discover_tests(freezermanager_rest_static_assets_integration_tests)
+    gtest_discover_tests(freezermanager_rest_static_assets_tls_integration_tests)
+    gtest_discover_tests(freezermanager_rest_static_assets_disabled_integration_tests)
+  endif()
+endif()

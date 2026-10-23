@@ -267,10 +267,9 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const char* rest_key = std::getenv("FMGR_REST_TLS_KEY");
     const bool rest_tls = rest_cert != nullptr && rest_key != nullptr;
 
-    // Optional built SPA (G0.3): FMGR_WEB_ROOT serves Vite's dist/ from this
-    // listener too, and raises the HTTP body cap to the gRPC inbound cap so a
-    // CSV import does not die at Drogon's 1 MiB default. Unset it and nothing
-    // below changes what the listener did before.
+    // Keep this after every route registration: the SPA catch-all must be the
+    // last route registered. FMGR_WEB_ROOT enables Vite dist serving; the body
+    // cap also lets CSV imports reach the gateway.
     const auto static_assets = fmgr::rest::StaticAssetsConfig::from_env(rest_tls);
     fmgr::rest::StaticAssets::install(static_assets);
     if (static_assets.serves_spa()) {

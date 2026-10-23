@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -34,6 +35,49 @@ namespace fmgr::test::static_assets {
       "<!doctype html><html><body><div id=\"root\">spa-index</div></body></html>";
   inline constexpr std::string_view kHashedAsset = "console.log('hashed-asset');";
   inline constexpr std::string_view kSecret = "TOP-SECRET-TRAVERSAL-CANARY";
+
+  // Give each Drogon integration binary its own current directory. Drogon
+  // derives rootPath and uploads/tmp from cwd when its singleton is created.
+  struct WorkingDirectory {
+    std::filesystem::path original;
+    std::filesystem::path path;
+
+    void create(std::string_view name) {
+      original = std::filesystem::current_path();
+      path =
+          std::filesystem::temp_directory_path() /
+          ("fmgr-rest-static-assets-cwd-" + std::string(name) + "-" + std::to_string(::getpid()));
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+      std::filesystem::create_directories(path);
+      std::filesystem::current_path(path);
+    }
+
+    void restore_and_remove() {
+      if (path.empty()) {
+        return;
+      }
+      std::filesystem::current_path(original);
+      std::error_code error;
+      std::filesystem::remove_all(path, error);
+      path.clear();
+    }
+  };
+
+  [[nodiscard]] inline bool has_upload_temp_files() {
+    const auto temp = std::filesystem::current_path() / "uploads" / "tmp";
+    std::error_code error;
+    if (!std::filesystem::is_directory(temp, error)) {
+      return false;
+    }
+    for (std::filesystem::recursive_directory_iterator it(temp, error), end; it != end && !error;
+         it.increment(error)) {
+      if (it->is_regular_file(error)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   // A throwaway Vite-like web root: index.html plus one hashed asset under
   // /assets. A canary file next to the root proves traversal never reaches it,
@@ -104,6 +148,7 @@ namespace fmgr::test::static_assets {
     std::string nosniff;
     std::string referrer_policy;
     std::string hsts;
+    std::string allow_origin;
 
     [[nodiscard]] bool ok() const {
       return transport == drogon::ReqResult::Ok;
@@ -113,14 +158,17 @@ namespace fmgr::test::static_assets {
   // `path` is sent byte for byte (`setPathEncode(false)`): the percent-encoded
   // traversal cases must reach the server exactly as written, and Drogon decodes
   // the URL path server-side — which is the layer under test.
-  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-  [[nodiscard]] inline HttpResult request(const std::string& base_url, drogon::HttpMethod method,
-                                          const std::string& path, const std::string& body = {}) {
-    auto client = drogon::HttpClient::newHttpClient(base_url);
+  [[nodiscard]] inline HttpResult request(const std::uint16_t port, drogon::HttpMethod method,
+                                          std::string_view path, const std::string& body = {},
+                                          std::string_view origin = {}) {
+    auto client = drogon::HttpClient::newHttpClient("127.0.0.1", port);
     auto req = drogon::HttpRequest::newHttpRequest();
     req->setPathEncode(false);
     req->setMethod(method);
-    req->setPath(path);
+    req->setPath(std::string(path));
+    if (!origin.empty()) {
+      req->addHeader("Origin", std::string(origin));
+    }
     if (!body.empty()) {
       req->setContentTypeCode(drogon::CT_APPLICATION_JSON);
       req->setBody(body);
@@ -139,16 +187,17 @@ namespace fmgr::test::static_assets {
     out.nosniff = resp->getHeader("x-content-type-options");
     out.referrer_policy = resp->getHeader("referrer-policy");
     out.hsts = resp->getHeader("strict-transport-security");
+    out.allow_origin = resp->getHeader("access-control-allow-origin");
     return out;
   }
 
-  [[nodiscard]] inline HttpResult get(const std::string& base_url, const std::string& path) {
-    return request(base_url, drogon::Get, path);
+  [[nodiscard]] inline HttpResult get(const std::uint16_t port, const std::string& path) {
+    return request(port, drogon::Get, path);
   }
 
-  [[nodiscard]] inline HttpResult post(const std::string& base_url, const std::string& path,
+  [[nodiscard]] inline HttpResult post(const std::uint16_t port, const std::string& path,
                                        const std::string& body) {
-    return request(base_url, drogon::Post, path, body);
+    return request(port, drogon::Post, path, body);
   }
 
 } // namespace fmgr::test::static_assets

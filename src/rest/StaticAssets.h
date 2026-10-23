@@ -34,7 +34,7 @@ namespace fmgr::rest {
 
   struct StaticAssetsConfig {
     // Matches FreezerServerOptions::max_receive_message_bytes (C-10).
-    static constexpr std::size_t kDefaultMaxBodyBytes = 10u * 1024u * 1024u;
+    static constexpr std::size_t k_default_max_body_bytes = std::size_t{10} * 1024 * 1024;
 
     // Vite `dist/` directory. Empty disables static serving entirely: no
     // fallback handler and no security-header advice are registered.
@@ -43,7 +43,7 @@ namespace fmgr::rest {
     // default matches FreezerServerOptions::max_receive_message_bytes (C-10),
     // so a CSV import that fits the gRPC inbound cap also fits the HTTP front
     // door instead of dying at Drogon's 1 MiB default.
-    std::size_t max_body_bytes{kDefaultMaxBodyBytes};
+    std::size_t max_body_bytes{k_default_max_body_bytes};
     // True when the REST listener terminates TLS; HSTS is only advertised there.
     bool tls{false};
 
