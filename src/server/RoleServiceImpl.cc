@@ -137,15 +137,21 @@ namespace fmgr::server {
   RoleServiceImpl::RoleServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend)
       : auth_(auth), backend_(backend), middleware_(auth) {
     using P = core::Permission;
+    // Entity-id reads/archives/grants use TokenAndMfa admission and retain the
+    // UserManageRoles check against the loaded role's owning lab.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/ListRoles", P::UserManageRoles);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/GetRole", P::UserManageRoles);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/GetRole",
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/CreateRole", P::UserManageRoles);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/UpdateRole", P::UserManageRoles);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/ArchiveRole", P::UserManageRoles);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/ArchiveRole",
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/ListRolePermissions",
-                                      P::UserManageRoles);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/GrantPermission", P::UserManageRoles);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/RevokePermission", P::UserManageRoles);
+                                      rpc::RpcGate::token_and_mfa());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/GrantPermission",
+                                      rpc::RpcGate::token_and_mfa());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.RoleService/RevokePermission",
+                                      rpc::RpcGate::token_and_mfa());
   }
 
   // =====================================================================
@@ -192,10 +198,7 @@ namespace fmgr::server {
                                         fmgr::v1::GetRoleResponse* resp) {
     try {
       const auto role_id = core::RoleId::parse(req->role_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -287,10 +290,7 @@ namespace fmgr::server {
                                             fmgr::v1::ArchiveRoleResponse* /*resp*/) {
     try {
       const auto role_id = core::RoleId::parse(req->role_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -321,10 +321,7 @@ namespace fmgr::server {
                                                     fmgr::v1::ListRolePermissionsResponse* resp) {
     try {
       const auto role_id = core::RoleId::parse(req->role_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -354,10 +351,7 @@ namespace fmgr::server {
                                                 fmgr::v1::GrantPermissionResponse* /*resp*/) {
     try {
       const auto role_id = core::RoleId::parse(req->role_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -398,10 +392,7 @@ namespace fmgr::server {
                                                  fmgr::v1::RevokePermissionResponse* /*resp*/) {
     try {
       const auto role_id = core::RoleId::parse(req->role_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);

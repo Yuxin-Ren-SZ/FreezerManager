@@ -1700,13 +1700,11 @@ namespace fmgr::test {
       }
     }
 
-    // The registry entry is documentation and the method's authorize() call is
-    // the enforcement point (AGENTS.md §5), so the two have to move together.
-    // RpcRegistryCoversAllExpectedMethods asserts only a count floor and cannot
-    // see a permission mismatch (#60 makes the pairing structural); these two
-    // tests pin the registry half for every RPC in this service. The behavioral
-    // half is the tests above: if a method's authorize() still demanded
-    // item_type.define, ListItemTypesAllowsMember would be red.
+    // Permission entries are checked against authorize() by the gate (#60).
+    // Entity-id handlers perform manual lab-scoped permission checks, so their
+    // registry entries instead declare TokenAndMfa admission; the credential
+    // rule must match the middleware call while the handler tests pin its
+    // operation-specific permission behavior.
     void expect_registered(const std::string& rpc, core::Permission expected) {
       const auto registry = rpc::AuthMiddleware::registered_rpcs();
       const auto entry = registry.find(rpc);
@@ -1717,11 +1715,19 @@ namespace fmgr::test {
       EXPECT_EQ(entry->second.permission(), expected) << rpc;
     }
 
+    void expect_token_and_mfa(const std::string& rpc) {
+      const auto registry = rpc::AuthMiddleware::registered_rpcs();
+      const auto entry = registry.find(rpc);
+      ASSERT_NE(entry, registry.end()) << rpc << " is missing from the RPC registry";
+      ASSERT_EQ(entry->second.kind(), rpc::RpcGate::Kind::Credential) << rpc;
+      EXPECT_EQ(entry->second.credential_rule(), rpc::CredentialRule::TokenAndMfa) << rpc;
+    }
+
     TEST_F(ItemTypeServiceTest, RegistryGatesCatalogReadsOnSampleRead) {
       expect_registered("/fmgr.v1.ItemTypeService/ListItemTypes", core::Permission::SampleRead);
-      expect_registered("/fmgr.v1.ItemTypeService/GetItemType", core::Permission::SampleRead);
       expect_registered("/fmgr.v1.ItemTypeService/ListCustomFieldDefinitions",
                         core::Permission::SampleRead);
+      expect_token_and_mfa("/fmgr.v1.ItemTypeService/GetItemType");
     }
 
     TEST_F(ItemTypeServiceTest, RegistryKeepsDefineOnCatalogWrites) {
@@ -1729,14 +1735,12 @@ namespace fmgr::test {
                         core::Permission::ItemTypeDefine);
       expect_registered("/fmgr.v1.ItemTypeService/UpdateItemType",
                         core::Permission::ItemTypeDefine);
-      expect_registered("/fmgr.v1.ItemTypeService/ArchiveItemType",
-                        core::Permission::ItemTypeDefine);
       expect_registered("/fmgr.v1.ItemTypeService/CreateCustomFieldDefinition",
                         core::Permission::CustomFieldDefine);
       expect_registered("/fmgr.v1.ItemTypeService/UpdateCustomFieldDefinition",
                         core::Permission::CustomFieldDefine);
-      expect_registered("/fmgr.v1.ItemTypeService/ArchiveCustomFieldDefinition",
-                        core::Permission::CustomFieldDefine);
+      expect_token_and_mfa("/fmgr.v1.ItemTypeService/ArchiveItemType");
+      expect_token_and_mfa("/fmgr.v1.ItemTypeService/ArchiveCustomFieldDefinition");
     }
 
     // =====================================================================

@@ -23,18 +23,23 @@
 
 #include "rpc/AuthMiddleware.h"
 
+#include <fmgr/v1/audit.grpc.pb.h>
 #include <fmgr/v1/auth.grpc.pb.h>
 #include <fmgr/v1/lab.grpc.pb.h>
 #include <fmgr/v1/sample.grpc.pb.h>
 #include <fmgr/v1/session.grpc.pb.h>
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/dynamic_message.h>
+#include <google/protobuf/message.h>
+#include <grpcpp/generic/generic_stub.h>
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -59,6 +64,75 @@ namespace fmgr::test {
       static std::atomic<int> counter{0};
       return std::filesystem::temp_directory_path() /
              ("fmgr-srv-test-" + std::to_string(counter.fetch_add(1)) + ".db");
+    }
+
+    [[nodiscard]] std::vector<const google::protobuf::MethodDescriptor*>
+    authenticated_rpc_methods() {
+      const auto registry = rpc::AuthMiddleware::registered_rpcs();
+      std::vector<const google::protobuf::MethodDescriptor*> methods;
+      for (const auto& [path, gate] : registry) {
+        if (gate.kind() != rpc::RpcGate::Kind::Permission &&
+            gate.credential_rule() != rpc::CredentialRule::TokenAndMfa) {
+          continue;
+        }
+        const std::string_view rpc_path(path);
+        const auto separator = rpc_path.find('/', 1);
+        if (separator == std::string_view::npos || separator + 1 >= rpc_path.size()) {
+          throw std::runtime_error("malformed RPC registry path: " + path);
+        }
+        const std::string method_name = std::string(rpc_path.substr(1, separator - 1)) + "." +
+                                        std::string(rpc_path.substr(separator + 1));
+        const auto* method =
+            google::protobuf::DescriptorPool::generated_pool()->FindMethodByName(method_name);
+        if (method == nullptr) {
+          throw std::runtime_error("RPC registry method has no generated descriptor: " + path);
+        }
+        methods.push_back(method);
+      }
+      return methods;
+    }
+
+    void fill_parseable_string_fields(google::protobuf::Message& message, std::string_view lab_id,
+                                      int depth = 0) {
+      const auto* descriptor = message.GetDescriptor();
+      const auto* reflection = message.GetReflection();
+      for (int field_index = 0; field_index < descriptor->field_count(); ++field_index) {
+        const auto* field = descriptor->field(field_index);
+        if (field->is_repeated()) {
+          continue;
+        }
+        if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE) {
+          if (depth < 4) {
+            auto* nested = reflection->MutableMessage(&message, field);
+            fill_parseable_string_fields(*nested, lab_id, depth + 1);
+          }
+          continue;
+        }
+        if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_ENUM) {
+          if (field->name() == "approver_role" && field->enum_type()->value_count() > 1) {
+            reflection->SetEnum(&message, field, field->enum_type()->value(1));
+          }
+          continue;
+        }
+        if (field->cpp_type() != google::protobuf::FieldDescriptor::CPPTYPE_STRING) {
+          continue;
+        }
+        if (field->name() == "source_lab_id") {
+          reflection->SetString(&message, field, std::string(lab_id));
+        } else if (field->name() == "target_lab_id") {
+          reflection->SetString(&message, field, "30000000-0000-0000-0000-000000000001");
+        } else if (field->name() == "lab_id") {
+          reflection->SetString(&message, field, std::string(lab_id));
+        } else if (field->name() == "id" || field->name().ends_with("_id")) {
+          reflection->SetString(&message, field, "00000000-0000-4000-8000-000000000001");
+        } else if (field->name() == "name") {
+          reflection->SetString(&message, field, "rate-limit-coverage");
+        } else if (field->name() == "scope_json") {
+          reflection->SetString(&message, field, R"(["*"])");
+        } else if (field->name() == "permission_key") {
+          reflection->SetString(&message, field, "user.manage_roles");
+        }
+      }
     }
 
     // Fixture that spins up an in-process FreezerServer on a random port.
@@ -92,6 +166,7 @@ namespace fmgr::test {
         session_stub_ = fmgr::v1::SessionService::NewStub(channel_);
         sample_stub_ = fmgr::v1::SampleService::NewStub(channel_);
         lab_stub_ = fmgr::v1::LabService::NewStub(channel_);
+        audit_stub_ = fmgr::v1::AuditService::NewStub(channel_);
       }
 
       void TearDown() override {
@@ -108,7 +183,7 @@ namespace fmgr::test {
       }
 
       // Options for the fixture's server. A subclass overrides this to shrink a
-      // budget — the six-RPC data-tier test (#128) needs the bucket to hold one
+      // budget — the data-tier test (#178) needs the bucket to hold one
       // request, not the production 120 — without duplicating the fixture.
       [[nodiscard]] virtual server::FreezerServerOptions make_server_options() const {
         server::FreezerServerOptions opts;
@@ -119,6 +194,62 @@ namespace fmgr::test {
         // default, so the assertion holds in every preset CI builds.
         opts.mask_internal_errors = false;
         return opts;
+      }
+
+      [[nodiscard]] grpc::Status
+      invoke_authenticated_rpc(const google::protobuf::MethodDescriptor& method,
+                               const std::string& token) {
+        std::string path{"/"};
+        path.append(method.service()->full_name().data(), method.service()->full_name().size());
+        path += '/';
+        path.append(method.name().data(), method.name().size());
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(2));
+
+        if (method.server_streaming()) {
+          if (method.name() == "WatchSampleList") {
+            fmgr::v1::WatchSampleListRequest req;
+            req.set_lab_id(kLabId);
+            fmgr::v1::Sample sample;
+            auto reader = sample_stub_->WatchSampleList(&ctx, req);
+            while (reader->Read(&sample)) {
+            }
+            return reader->Finish();
+          }
+          if (method.name() == "WatchAuditFeed") {
+            fmgr::v1::WatchAuditFeedRequest req;
+            fmgr::v1::AuditEvent event;
+            auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+            while (reader->Read(&event)) {
+            }
+            return reader->Finish();
+          }
+          return {grpc::StatusCode::UNIMPLEMENTED,
+                  "test fixture has no invocation for this streaming RPC"};
+        }
+
+        google::protobuf::DynamicMessageFactory factory;
+        const auto* prototype = factory.GetPrototype(method.input_type());
+        if (prototype == nullptr) {
+          return {grpc::StatusCode::INTERNAL, "no dynamic request prototype"};
+        }
+        std::unique_ptr<google::protobuf::Message> request(prototype->New());
+        fill_parseable_string_fields(*request, kLabId);
+        std::string serialized;
+        if (!request->SerializeToString(&serialized)) {
+          return {grpc::StatusCode::INTERNAL, "could not serialize dynamic request"};
+        }
+        grpc::Slice request_slice(serialized.data(), serialized.size());
+        grpc::ByteBuffer request_buffer(&request_slice, 1);
+        grpc::ByteBuffer response_buffer;
+        std::promise<grpc::Status> completion;
+        auto result = completion.get_future();
+        grpc::GenericStub generic_stub(channel_);
+        generic_stub.UnaryCall(
+            &ctx, path, grpc::StubOptions{}, &request_buffer, &response_buffer,
+            [&completion](grpc::Status status) { completion.set_value(std::move(status)); });
+        return result.get();
       }
 
       // Login and return the bearer token.
@@ -252,6 +383,7 @@ namespace fmgr::test {
       std::unique_ptr<fmgr::v1::SessionService::Stub> session_stub_;
       std::unique_ptr<fmgr::v1::SampleService::Stub> sample_stub_;
       std::unique_ptr<fmgr::v1::LabService::Stub> lab_stub_;
+      std::unique_ptr<fmgr::v1::AuditService::Stub> audit_stub_;
 
     private:
       static void remove_sqlite_files(const std::filesystem::path& path) {
@@ -950,6 +1082,48 @@ namespace fmgr::test {
           << "chain verification is deployment-wide, i.e. system-admin only";
     }
 
+    // Manual entity-scope handlers use the credential gate for admission, then
+    // enforce the named permission after resolving the row. Their registry kind
+    // must describe that gate without erasing the handler's actual permission check.
+    TEST_F(ServerIntegrationTest, ManuallyAuthorizedHandlersDeclareTokenAndMfa) {
+      const std::array<std::string_view, 26> rpcs{{
+          "/fmgr.v1.AuditService/ListAuditEvents",
+          "/fmgr.v1.AuditService/GetAuditEvent",
+          "/fmgr.v1.AuditService/ExportAuditLog",
+          "/fmgr.v1.AuditService/WatchAuditFeed",
+          "/fmgr.v1.BoxService/GetFreezer",
+          "/fmgr.v1.BoxService/ArchiveFreezer",
+          "/fmgr.v1.BoxService/ArchiveStorageContainer",
+          "/fmgr.v1.BoxService/GetBox",
+          "/fmgr.v1.BoxService/ArchiveBox",
+          "/fmgr.v1.ItemTypeService/GetItemType",
+          "/fmgr.v1.ItemTypeService/ArchiveItemType",
+          "/fmgr.v1.ItemTypeService/ArchiveCustomFieldDefinition",
+          "/fmgr.v1.RoleService/GetRole",
+          "/fmgr.v1.RoleService/ArchiveRole",
+          "/fmgr.v1.RoleService/ListRolePermissions",
+          "/fmgr.v1.RoleService/GrantPermission",
+          "/fmgr.v1.RoleService/RevokePermission",
+          "/fmgr.v1.SampleService/GetSample",
+          "/fmgr.v1.SampleService/SoftDeleteSample",
+          "/fmgr.v1.SampleService/MoveSample",
+          "/fmgr.v1.SampleService/CheckoutSample",
+          "/fmgr.v1.ShareService/GetShareRequest",
+          "/fmgr.v1.ShareService/ListShareRequests",
+          "/fmgr.v1.ShareService/ApproveShareRequest",
+          "/fmgr.v1.ShareService/RejectShareRequest",
+          "/fmgr.v1.ShareService/RevokeShareRequest",
+      }};
+      const auto registry = rpc::AuthMiddleware::registered_rpcs();
+      for (const auto name : rpcs) {
+        const auto entry = registry.find(std::string(name));
+        ASSERT_NE(entry, registry.end()) << name;
+        ASSERT_EQ(entry->second.kind(), rpc::RpcGate::Kind::Credential)
+            << name << " is still registered with an authorization permission";
+        EXPECT_EQ(entry->second.credential_rule(), rpc::CredentialRule::TokenAndMfa) << name;
+      }
+    }
+
     // #119 acceptance test, the mirror of #60's
     // RegisteredPermissionDisagreeingWithEnforcedPermissionIsRefused for the nine
     // RPCs that never call authorize(). Their registry entry is no longer a
@@ -1161,6 +1335,57 @@ namespace fmgr::test {
       }
     }
 
+    TEST_F(ServerIntegrationTest, AuditLabAndGlobalBranchesKeepTheirPermissionChecks) {
+      const auto token = login(kNoPermissionEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+
+      fmgr::v1::ListAuditEventsRequest lab_req;
+      lab_req.set_lab_id(kLabId);
+      fmgr::v1::ListAuditEventsResponse lab_resp;
+      grpc::ClientContext lab_ctx;
+      set_bearer(lab_ctx, token);
+      const auto lab_status = audit_stub_->ListAuditEvents(&lab_ctx, lab_req, &lab_resp);
+      EXPECT_EQ(lab_status.error_code(), grpc::StatusCode::PERMISSION_DENIED)
+          << lab_status.error_message();
+
+      fmgr::v1::ListAuditEventsRequest global_req;
+      fmgr::v1::ListAuditEventsResponse global_resp;
+      grpc::ClientContext global_ctx;
+      set_bearer(global_ctx, token);
+      const auto global_status =
+          audit_stub_->ListAuditEvents(&global_ctx, global_req, &global_resp);
+      EXPECT_EQ(global_status.error_code(), grpc::StatusCode::PERMISSION_DENIED)
+          << global_status.error_message();
+    }
+
+    TEST_F(TinyDataBudgetServerTest, AuditLabAndGlobalBranchesSpendOneDataTierToken) {
+      const auto assert_branch_spends_once = [this](bool global_scope) {
+        const auto token = login(kNoPermissionEmail, kPassword);
+        if (token.empty()) {
+          ADD_FAILURE() << "fixture login failed";
+          return;
+        }
+        const auto invoke = [this, &token, global_scope] {
+          grpc::ClientContext ctx;
+          set_bearer(ctx, token);
+          fmgr::v1::ListAuditEventsRequest req;
+          if (!global_scope) {
+            req.set_lab_id(kLabId);
+          }
+          fmgr::v1::ListAuditEventsResponse resp;
+          return audit_stub_->ListAuditEvents(&ctx, req, &resp);
+        };
+        const auto first = invoke();
+        EXPECT_EQ(first.error_code(), grpc::StatusCode::PERMISSION_DENIED) << first.error_message();
+        const auto second = invoke();
+        EXPECT_EQ(second.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED)
+            << second.error_message();
+      };
+
+      assert_branch_spends_once(false);
+      assert_branch_spends_once(true);
+    }
+
     // #78 criterion 3, still standing after #119 turned the entries into enforced
     // rules: every one of them has a test pinning its actual gate.
     // The caller below holds no permission whatsoever — it has no lab membership,
@@ -1326,75 +1551,41 @@ namespace fmgr::test {
       EXPECT_GT(resource_exhausted, 0);
     }
 
-    // #128: the six TokenAndMfa RPCs are authenticated data endpoints, but their
-    // handlers call authenticate() rather than authorize(), so before this they
-    // never reached the process data-tier limiter. The budget here holds one
-    // request: the first call reaches the handler, the second is refused before
-    // any work is done. Each RPC gets a fresh login (a fresh bearer token and
-    // therefore a fresh bucket); asserting only on the second call would not
-    // distinguish a working limiter from a handler that never ran.
-    TEST_F(TinyDataBudgetServerTest, TokenAndMfaRpcsAreSubjectToTheDataTierLimiter) {
-      const auto assert_budget_is_one = [this](auto&& invoke) {
-        const auto token = login(kEmail, kPassword);
-        if (token.empty()) {
-          ADD_FAILURE() << "fixture login failed";
-          return;
-        }
-        const auto first = invoke(token);
-        EXPECT_NE(first.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED)
-            << "the first request must reach the handler: " << first.error_message();
-        const auto second = invoke(token);
-        EXPECT_EQ(second.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED)
-            << "the second request must be refused by the data-tier limiter: "
-            << second.error_message();
-      };
+    // Enumerate generated service descriptors against the live gate registry so
+    // a new permission-gated or TokenAndMfa RPC joins this check automatically.
+    // Each target uses its own token: its first call reaches the handler and its
+    // second call must be refused at the data-tier gate, including streams and
+    // manual-scope handlers that used to call validate_token() directly.
+    TEST_F(TinyDataBudgetServerTest, EveryCredentialedRpcIsSubjectToTheDataTierLimiter) {
+      const auto methods = authenticated_rpc_methods();
+      ASSERT_GT(methods.size(), 10U);
 
-      assert_budget_is_one([this](const std::string& token) {
-        grpc::ClientContext ctx;
-        set_bearer(ctx, token);
-        fmgr::v1::CreateApiTokenRequest req;
-        req.set_name("data-tier-budget");
-        req.set_scope_json(R"(["*"])");
-        fmgr::v1::CreateApiTokenResponse resp;
-        return auth_stub_->CreateApiToken(&ctx, req, &resp);
-      });
-      assert_budget_is_one([this](const std::string& token) {
-        grpc::ClientContext ctx;
-        set_bearer(ctx, token);
-        fmgr::v1::ListApiTokensRequest req;
-        fmgr::v1::ListApiTokensResponse resp;
-        return auth_stub_->ListApiTokens(&ctx, req, &resp);
-      });
-      assert_budget_is_one([this](const std::string& token) {
-        grpc::ClientContext ctx;
-        set_bearer(ctx, token);
-        fmgr::v1::RevokeApiTokenRequest req;
-        req.set_api_token_id("00000000-0000-4000-8000-000000000001");
-        fmgr::v1::RevokeApiTokenResponse resp;
-        return auth_stub_->RevokeApiToken(&ctx, req, &resp);
-      });
-      assert_budget_is_one([this](const std::string& token) {
-        grpc::ClientContext ctx;
-        set_bearer(ctx, token);
-        fmgr::v1::ListSessionsRequest req;
-        fmgr::v1::ListSessionsResponse resp;
-        return session_stub_->ListSessions(&ctx, req, &resp);
-      });
-      assert_budget_is_one([this](const std::string& token) {
-        grpc::ClientContext ctx;
-        set_bearer(ctx, token);
-        fmgr::v1::RevokeSessionRequest req;
-        req.set_session_id("00000000-0000-4000-8000-000000000002");
-        fmgr::v1::RevokeSessionResponse resp;
-        return session_stub_->RevokeSession(&ctx, req, &resp);
-      });
-      assert_budget_is_one([this](const std::string& token) {
-        grpc::ClientContext ctx;
-        set_bearer(ctx, token);
-        fmgr::v1::ListLabsRequest req;
-        fmgr::v1::ListLabsResponse resp;
-        return lab_stub_->ListLabs(&ctx, req, &resp);
-      });
+      for (const auto* method : methods) {
+        // Mint directly through the provider so this registry-wide sweep does
+        // not exhaust the separate per-IP Login budget before reaching all RPCs.
+        const auto token = provider_
+                               ->authenticate(auth::PasswordCredentials{.email = kNoPermissionEmail,
+                                                                        .password = kPassword},
+                                              auth::ClientInfo{})
+                               .plaintext_token;
+        ASSERT_FALSE(token.empty()) << method->service()->full_name() << "/" << method->name();
+
+        const auto first = invoke_authenticated_rpc(*method, token);
+        EXPECT_NE(first.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED)
+            << method->service()->full_name() << "/" << method->name()
+            << " first call: " << first.error_message();
+        EXPECT_NE(first.error_code(), grpc::StatusCode::UNIMPLEMENTED)
+            << method->service()->full_name() << "/" << method->name()
+            << " fixture error: " << first.error_message();
+        EXPECT_NE(first.error_code(), grpc::StatusCode::INTERNAL)
+            << method->service()->full_name() << "/" << method->name()
+            << " fixture error: " << first.error_message();
+
+        const auto second = invoke_authenticated_rpc(*method, token);
+        EXPECT_EQ(second.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED)
+            << method->service()->full_name() << "/" << method->name() << ": "
+            << second.error_message();
+      }
     }
 
     // #128: SubmitMfa is the one step between a leaked password and PHI. A
@@ -1428,6 +1619,15 @@ namespace fmgr::test {
       }
       EXPECT_GT(unauthenticated, 0);
       EXPECT_GT(resource_exhausted, 0);
+
+      const auto now_s = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+      const auto correct_code_status = submit(auth::totp_generate(kTotpSecret, now_s));
+      EXPECT_EQ(correct_code_status.error_code(), grpc::StatusCode::RESOURCE_EXHAUSTED)
+          << correct_code_status.error_message();
+      EXPECT_FALSE(provider_->validate_token(token).mfa_complete)
+          << "a rate-limited correct code must leave the MFA session pending";
 
       // The budget belongs to the user, not the session: a re-login with the same
       // stolen password must not hand the attacker a fresh set of guesses.

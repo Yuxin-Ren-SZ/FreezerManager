@@ -216,27 +216,34 @@ namespace fmgr::server {
     // declare. The mutating RPCs keep *.configure, which is what actually guards
     // the layout. Container *types* are not part of that read set and stay on
     // box.configure.
+    // Entity-id RPCs use TokenAndMfa admission, then enforce their operation's
+    // manual lab check: freezer/container reads and archives use
+    // freezer.configure, GetBox uses sample.read, and ArchiveBox uses
+    // box.configure.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListFreezers", P::SampleRead);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetFreezer", P::FreezerConfigure);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetFreezer",
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateFreezer", P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/UpdateFreezer", P::FreezerConfigure);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveFreezer", P::FreezerConfigure);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveFreezer",
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListStorageContainers", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateStorageContainer",
                                       P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/UpdateStorageContainer",
                                       P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveStorageContainer",
-                                      P::FreezerConfigure);
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListContainerTypes", P::BoxConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateContainerType", P::BoxConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListBoxTypes", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateBoxType", P::BoxConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListBoxes", P::SampleRead);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetBox", P::SampleRead);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetBox", rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateBox", P::BoxConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/UpdateBox", P::BoxConfigure);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveBox", P::BoxConfigure);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveBox",
+                                      rpc::RpcGate::token_and_mfa());
   }
 
   // =====================================================================
@@ -273,10 +280,7 @@ namespace fmgr::server {
                                           fmgr::v1::GetFreezerResponse* resp) {
     try {
       const auto freezer_id = core::FreezerId::parse(req->freezer_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -384,10 +388,7 @@ namespace fmgr::server {
                                               fmgr::v1::ArchiveFreezerResponse* /*resp*/) {
     try {
       const auto freezer_id = core::FreezerId::parse(req->freezer_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -529,10 +530,7 @@ namespace fmgr::server {
                                           fmgr::v1::ArchiveStorageContainerResponse* /*resp*/) {
     try {
       const auto container_id = core::StorageContainerId::parse(req->container_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -713,10 +711,7 @@ namespace fmgr::server {
                                       fmgr::v1::GetBoxResponse* resp) {
     try {
       const auto box_id = core::BoxId::parse(req->box_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -806,10 +801,7 @@ namespace fmgr::server {
                                           fmgr::v1::ArchiveBoxResponse* /*resp*/) {
     try {
       const auto box_id = core::BoxId::parse(req->box_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
