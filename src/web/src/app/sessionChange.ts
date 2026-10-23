@@ -53,9 +53,9 @@ export function getSessionChangeVersion(): number {
 
 /**
  * Notify other same-origin tabs that the shared HttpOnly cookie may have
- * changed. The message is a fixed, non-sensitive signal with no identity or
- * credential data. BroadcastChannel is preferred; storage events are the
- * fallback for browsers or contexts where it cannot be opened.
+ * changed. The same fixed, non-sensitive signal goes over BroadcastChannel and
+ * a storage event so peers with different transport support still hear it.
+ * Neither transport carries identity, credentials, or API payloads.
  */
 export function announceSessionChange(): void {
   sessionChangeVersion += 1;
@@ -64,17 +64,16 @@ export function announceSessionChange(): void {
   if (activeChannel !== null) {
     try {
       activeChannel.postMessage({ type: SIGNAL, id: signalId });
-      return;
     } catch {
-      // Storage events below are the fallback when posting is disabled.
+      // The storage event below still reaches peers when posting is disabled.
     }
   }
 
   try {
     window.localStorage.setItem(STORAGE_KEY, signalId);
   } catch {
-    // A blocked storage area means this tab cannot notify peers. The local
-    // auth flow still proceeds; no credential is persisted as a workaround.
+    // The BroadcastChannel may still reach peers. A blocked storage area must
+    // never prevent the local auth flow, and no credential is stored here.
   }
 }
 
