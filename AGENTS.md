@@ -128,6 +128,9 @@ Every comment on an issue or PR starts with the author and a tag:
 
 Tags: `ASSIGN`, `STATUS`, `QUESTION`, `BLOCKED`, `DECISION`, `HANDOFF`.
 
+- **Keep STATUS and HANDOFF comments short:** lead and workers use a verdict
+  line, a short list and links. Put detailed reasoning and validation evidence
+  in the handoff note under `doc/handoffs/`, then link it from the comment.
 - **Workers read their issue comments** (`gh issue view <n> --comments`) before
   starting, after each commit, before opening or readying the PR, and whenever
   they are blocked. They read the board issue at the start and before readying
