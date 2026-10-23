@@ -166,10 +166,36 @@ port_in_use() {
   lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null
 }
 
+find_freezerctl() {
+  local candidate
+  if [[ -n "${FMGR_FREEZERCTL:-}" ]]; then
+    candidate="$FMGR_FREEZERCTL"
+  elif [[ -x "$ROOT/out/build/dev/src/cli/freezerctl" ]]; then
+    candidate="$ROOT/out/build/dev/src/cli/freezerctl"
+  else
+    candidate="$(command -v freezerctl || true)"
+  fi
+  [[ -n "$candidate" && -f "$candidate" && -x "$candidate" ]] \
+    || fail "freezerctl not found or not executable: ${candidate:-<not found>}
+  Build it first:  cmake --build --preset dev
+  or point FMGR_FREEZERCTL at the binary."
+  printf '%s\n' "$candidate"
+}
+
+ensure_child_alive() {
+  local child_pid="$1" what="$2" logfile="$3" status
+  if ! kill -0 "$child_pid" 2>/dev/null; then
+    if wait "$child_pid"; then status=0; else status=$?; fi
+    fail "$what exited before becoming ready (exit $status; see $logfile)"
+  fi
+}
+
 wait_for_url() {
-  local url="$1" what="$2" tries=30
+  local url="$1" what="$2" child_pid="$3" logfile="$4" tries=30
   for _ in $(seq 1 "$tries"); do
+    ensure_child_alive "$child_pid" "$what" "$logfile"
     if curl -sf --max-time 2 "$url" >/dev/null 2>&1; then
+      ensure_child_alive "$child_pid" "$what" "$logfile"
       return 0
     fi
     sleep 1
@@ -243,6 +269,7 @@ fi
 # ── 0. Preflight: ports, binary, python, node ──────────────────────────────
 
 log "demo database: $DB"
+command -v lsof >/dev/null 2>&1 || fail "lsof is required to verify demo ports are free; install lsof and retry"
 ensure_port_free "$REST_PORT" "freezerd"
 ensure_port_free "$WEB_PORT" "the Vite dev server"
 ensure_port_free "${GRPC_LISTEN##*:}" "freezerd gRPC"
@@ -252,8 +279,11 @@ ensure_port_free "${GRPC_LISTEN##*:}" "freezerd gRPC"
 
 PY="$(find_seed_python)"
 verify_seed_python "$PY"
+FREEZERCTL="$(find_freezerctl)"
+export FMGR_FREEZERCTL="$FREEZERCTL"
 find_node
 log "seed python: $PY"
+log "freezerctl: $FREEZERCTL"
 log "node: $(command -v node) ($(node --version))"
 
 mkdir -p "$LOGDIR"
@@ -271,6 +301,34 @@ if [[ "$RESET" == 1 && -e "$DB" ]]; then
   rm -f "$DB" "$DB-wal" "$DB-shm"
 fi
 
+if [[ -e "$DB" && "$RESET" != 1 ]]; then
+  if ! "$PY" - "$DB" <<'PYEOF'
+import sqlite3
+import sys
+
+# DEMO_SEED_COMPLETE
+conn = sqlite3.connect(sys.argv[1])
+try:
+    admin_count = conn.execute(
+        "SELECT count(*) FROM users WHERE primary_email = 'admin@freezer.local'"
+    ).fetchone()[0]
+    sample_count = conn.execute("SELECT count(*) FROM samples").fetchone()[0]
+    audit_count = conn.execute("SELECT count(*) FROM audit_events").fetchone()[0]
+    sentinel_count = conn.execute(
+        "SELECT count(*) FROM samples WHERE name = 'P001-CSF-01'"
+    ).fetchone()[0]
+    complete = admin_count == 1 and sample_count >= 32 and audit_count >= 32 and sentinel_count == 1
+except sqlite3.Error:
+    complete = False
+finally:
+    conn.close()
+sys.exit(0 if complete else 1)
+PYEOF
+  then
+    fail "existing demo database is incomplete; it was left untouched. Review or back it up, then run with --reset to replace it with a complete demo database."
+  fi
+fi
+
 if [[ -e "$DB" ]]; then
   log "reusing the existing demo database (no --reset given; nothing deleted)"
 else
@@ -286,7 +344,7 @@ export FMGR_REST_LISTEN="$REST_LISTEN"
 
 "$SERVER" >>"$LOGDIR/freezerd-migrate.log" 2>&1 &
 SERVER_PID=$!
-wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd (migration phase)"
+wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd (migration phase)" "$SERVER_PID" "$LOGDIR/freezerd-migrate.log"
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""
@@ -296,7 +354,7 @@ log "migrations applied"
 
 if [[ "$FRESH" == 1 ]]; then
   log "seeding demo data..."
-  FREEZER_DB_PATH="$DB" "$PY" "$ROOT/scripts/seed_demo.py"
+  FREEZER_DB_PATH="$DB" FMGR_FREEZERCTL="$FREEZERCTL" "$PY" "$ROOT/scripts/seed_demo.py"
 else
   log "database already seeded; skipping seed (use --reset for a fresh one)"
 fi
@@ -324,7 +382,7 @@ PYEOF
 
 "$SERVER" >>"$LOGDIR/freezerd.log" 2>&1 &
 SERVER_PID=$!
-wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd"
+wait_for_url "http://$REST_LISTEN/api/v1/health" "freezerd" "$SERVER_PID" "$LOGDIR/freezerd.log"
 log "freezerd: gRPC $GRPC_LISTEN, REST http://$REST_LISTEN (pid $SERVER_PID)"
 
 # ── 5. Qt client — only if it is actually built ────────────────────────────
@@ -351,10 +409,14 @@ fi
 export FMGR_WEB_DEV_PORT="$WEB_PORT"
 (cd "$WEB_DIR" && exec env NODE_ENV=development ./node_modules/.bin/vite >>"$LOGDIR/vite.log" 2>&1) &
 VITE_PID=$!
-wait_for_url "http://127.0.0.1:$WEB_PORT/" "the Vite dev server"
+wait_for_url "http://127.0.0.1:$WEB_PORT/" "the Vite dev server" "$VITE_PID" "$LOGDIR/vite.log"
 # The proxy must answer too — this check is what catches a port disagreement
 # between the script and vite.config.ts.
+ensure_child_alive "$SERVER_PID" "freezerd" "$LOGDIR/freezerd.log"
+ensure_child_alive "$VITE_PID" "the Vite dev server" "$LOGDIR/vite.log"
 PROXIED_HEALTH="$(curl -sf --max-time 5 "http://127.0.0.1:$WEB_PORT/api/v1/health" || true)"
+ensure_child_alive "$SERVER_PID" "freezerd" "$LOGDIR/freezerd.log"
+ensure_child_alive "$VITE_PID" "the Vite dev server" "$LOGDIR/vite.log"
 if [[ "$PROXIED_HEALTH" != *'"status":"ok"'* ]]; then
   echo >&2
   fail "Vite is up but /api/v1/health through the proxy failed — the /api proxy

@@ -213,7 +213,10 @@ Prerequisites the script checks and explains rather than assumes:
 
 - **The demo database** lives at `out/demo/freezer.db` (gitignored, per
   worktree), never `data/freezer.db`. The first run migrates it and seeds it;
-  later runs reuse it. `--reset` is opt-in and logs the three files it deletes
+  later runs reuse it only when the expected demo admin, `P001-CSF-01` sample,
+  sample count and audit count show that seeding completed. An incomplete
+  existing file is left untouched and the script explains how `--reset` can
+  replace it. `--reset` is opt-in and logs the three files it deletes
   (`freezer.db`, `-wal`, `-shm`) before deleting them.
 - **The PHI master key** is fixed and demo-only: the script exports
   `FMGR_MASTER_KEK` (base64 of 32 bytes) before it seeds *and* before it starts
@@ -226,7 +229,8 @@ Prerequisites the script checks and explains rather than assumes:
   `FMGR_MAIN_CHECKOUT` or derived with `git rev-parse --git-common-dir`. The
   system `python3` is 3.9.6 without argon2; if argon2 is missing the script
   exits 1 with the one-time fix (`.venv/bin/pip install argon2-cffi`) instead of
-  half-running.
+  half-running. The `freezerctl` binary is resolved and checked before reset or
+  migration, then the same path is passed to the seed's audited sample import.
 - **Node 22** comes from `out/tools/node22/bin` (repo `.nvmrc`), again found in
   the main checkout when run from a worktree. `NODE_ENV` is unset for the SPA:
   an inherited `NODE_ENV=production` makes Vite's install/start fail.
@@ -235,9 +239,14 @@ Prerequisites the script checks and explains rather than assumes:
   exists; otherwise the script says it did not start it (Qt6 is not installed
   on this machine).
 
-The script stays in the foreground and Ctrl-C stops exactly the `freezerd`,
-Vite and (if started) Qt processes it launched. A port already in use fails
-loudly with the `lsof` command to find the holder.
+The script requires `lsof` to confirm all three ports are free; missing `lsof`
+is a preflight error, before reset or migration. Each readiness probe also checks
+that the process started by this script is still alive before and after curl,
+so another listener cannot make a dead child look ready. Early exits identify
+the corresponding log under `out/demo/`. The script stays in the foreground and
+Ctrl-C stops exactly the `freezerd`, Vite and (if started) Qt processes it
+launched. A port already in use fails loudly with the `lsof` command to find the
+holder.
 
 ### Click path (what the presenter does)
 
