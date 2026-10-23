@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { LoginResponseSchema } from '../gen/fmgr/v1/auth_pb';
 import { SampleSchema } from '../gen/fmgr/v1/sample_pb';
 import { server } from '../test/server';
+import { announceSessionChange } from '../app/sessionChange';
 import { call, onSessionExpired, resetSessionExpiredListeners } from './client';
 import { ApiError } from './errors';
 
@@ -190,6 +191,37 @@ describe('session-expired listener', () => {
 
     expect(listener).toHaveBeenCalledTimes(1);
     expect((listener.mock.calls[0]?.[0] as ApiError).code).toBe('UNAUTHENTICATED');
+  });
+
+  it('ignores a 401 from a request sent before the shared session changed', async () => {
+    const listener = vi.fn();
+    onSessionExpired(listener);
+    let markStarted!: () => void;
+    let releaseResponse!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const responseGate = new Promise<void>((resolve) => {
+      releaseResponse = resolve;
+    });
+    server.use(
+      http.post(SAMPLE_LIST, async () => {
+        markStarted();
+        await responseGate;
+        return HttpResponse.json(
+          { code: 'UNAUTHENTICATED', message: 'old session' },
+          { status: 401 },
+        );
+      }),
+    );
+
+    const request = call('sample/list', { labId: 'lab-1' }).catch(() => undefined);
+    await started;
+    announceSessionChange();
+    releaseResponse();
+    await request;
+
+    expect(listener).not.toHaveBeenCalled();
   });
 
   it('reads the gateway MFA_REQUIRED envelope as a pending second factor (#140)', async () => {

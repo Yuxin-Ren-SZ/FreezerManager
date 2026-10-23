@@ -12,6 +12,7 @@ import {
 import type { ReactNode } from 'react';
 import { signOutOfBrowserSession } from '../api/auth';
 import { isMfaRequired } from '../api/errors';
+import { subscribeToSessionChanges } from './sessionChange';
 import type { PermissionKey } from './permissions';
 
 /**
@@ -196,6 +197,20 @@ export function SessionProvider({ loadSession, children }: SessionProviderProps)
   useEffect(() => {
     void load();
   }, [load, attempt]);
+
+  useEffect(
+    () =>
+      subscribeToSessionChanges(() => {
+        // Hide protected screens and clear cached payloads synchronously with
+        // the notification, before asking WhoAmI which cookie is now active.
+        // The new load id also makes every older in-flight answer stale.
+        runId.current += 1;
+        queryClient?.clear();
+        setState({ status: 'loading', user: null, error: null });
+        void load();
+      }),
+    [load, queryClient],
+  );
 
   const reload = useCallback(() => {
     setState((current) => ({ ...current, status: 'loading', error: null }));
