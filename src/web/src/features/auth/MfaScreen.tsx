@@ -3,6 +3,7 @@ import { useState, type SyntheticEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { submitMfaCode } from '../../api/auth';
+import { isApiError } from '../../api/errors';
 import { useSession } from '../../app/session';
 import { Button, TextField } from '../../ui';
 import { loginPath, safeNext } from './next';
@@ -70,8 +71,19 @@ export function MfaScreen() {
       return;
     }
     if (refused !== null && reloaded.status === 'mfa-pending') {
-      // Still pending, so the code was the problem — and the login survives it.
-      setError(t('auth:mfa.invalidCode'));
+      if (isApiError(refused) && refused.code === 'UNAUTHENTICATED') {
+        // The pending session survived the refusal, so the code was wrong.
+        setError(t('auth:mfa.invalidCode'));
+      } else if (isApiError(refused) && refused.code === 'RESOURCE_EXHAUSTED') {
+        setError(t('auth:mfa.tooManyAttempts'));
+      } else if (
+        isApiError(refused) &&
+        (refused.code === 'UNAVAILABLE' || refused.code === 'DEADLINE_EXCEEDED')
+      ) {
+        setError(t('auth:unreachable'));
+      } else {
+        setError(t('auth:failed'));
+      }
     } else {
       setError(reloaded.status === 'error' ? t('auth:unreachable') : t('auth:failed'));
     }

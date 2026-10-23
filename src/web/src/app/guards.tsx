@@ -18,14 +18,16 @@ import styles from './guards.module.css';
  *   flash the sign-in form before `auth/whoami` answered.
  * - `error` (the request itself failed) shows a retry, *not* a redirect: a
  *   dropped connection must not look like being signed out.
- * - `unauthenticated` redirects to `/login?next=…`, and `next` is the path plus
- *   query string G2.1 validates as same-origin before using it.
+ * - `unauthenticated` redirects to `/login?next=…`; an expired mid-use session
+ *   also carries `expired=1` so the login form can explain the interruption.
+ *   `next` is the path plus query string G2.1 validates as same-origin before
+ *   using it.
  * - `mfa-pending` redirects to `/login/mfa?next=…`, which resumes the session
  *   the cookie already holds (#62) instead of starting the login over.
  */
 export function RequireSession({ children }: { children: ReactNode }) {
   const { t } = useTranslation('shell');
-  const { status, error, reload } = useSession();
+  const { status, error, reload, expired } = useSession();
   const location = useLocation();
 
   if (status === 'loading') {
@@ -50,7 +52,8 @@ export function RequireSession({ children }: { children: ReactNode }) {
 
   if (status === 'unauthenticated') {
     const next = `${location.pathname}${location.search}`;
-    return <Navigate to={`/login?next=${encodeURIComponent(next)}`} replace />;
+    const marker = expired ? '&expired=1' : '';
+    return <Navigate to={`/login?next=${encodeURIComponent(next)}${marker}`} replace />;
   }
 
   if (status === 'mfa-pending') {

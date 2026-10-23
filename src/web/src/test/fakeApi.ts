@@ -202,6 +202,8 @@ export interface FakeAuth {
    * reproduces as the `MFA_REQUIRED` refusal.
    */
   currentUserId: string | null;
+  /** SubmitMfa's per-user token bucket: five immediate attempts, then one/minute. */
+  mfaBudgetsByUser: Record<string, { tokens: number; updatedAtMs: number }>;
 }
 
 /** The password `fakeApi()` accepts for every seeded account. */
@@ -629,6 +631,7 @@ export function createDemoLab(): DemoLab {
       ],
       pendingMfaUserId: null,
       currentUserId: null,
+      mfaBudgetsByUser: {},
     },
   };
 }
@@ -899,6 +902,14 @@ function verifyTotp(lab: DemoLab, message: Message) {
   if (pending === null) {
     throw new FakeRpcError('UNAUTHENTICATED', 'invalid session for TOTP verification');
   }
+  const now = Date.now();
+  const budget = (lab.auth.mfaBudgetsByUser[pending] ??= { tokens: 5, updatedAtMs: now });
+  budget.tokens = Math.min(5, budget.tokens + (now - budget.updatedAtMs) / 60_000);
+  budget.updatedAtMs = now;
+  if (budget.tokens < 1) {
+    throw new FakeRpcError('RESOURCE_EXHAUSTED', 'too many MFA attempts; slow down');
+  }
+  budget.tokens -= 1;
   if (totpCode !== DEMO_TOTP_CODE) {
     throw new FakeRpcError('UNAUTHENTICATED', 'invalid TOTP code');
   }

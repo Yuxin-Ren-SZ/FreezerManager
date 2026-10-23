@@ -84,6 +84,8 @@ export interface SessionReload {
 export interface SessionValue {
   status: SessionStatus;
   user: CurrentUser | null;
+  /** True after a protected request proves the active session has expired. */
+  expired: boolean;
   /** Non-null only when `status === 'error'`. */
   error: Error | null;
   /** Re-runs the loader; the retry action on the session error screen. */
@@ -133,9 +135,15 @@ interface SessionState {
   status: SessionStatus;
   user: CurrentUser | null;
   error: Error | null;
+  expired: boolean;
 }
 
-const SIGNED_OUT: SessionState = { status: 'unauthenticated', user: null, error: null };
+const SIGNED_OUT: SessionState = {
+  status: 'unauthenticated',
+  user: null,
+  error: null,
+  expired: false,
+};
 
 function signedOutState(): SessionState {
   return { ...SIGNED_OUT };
@@ -160,7 +168,12 @@ function useQueryCache(): QueryClient | null {
 
 export function SessionProvider({ loadSession, children }: SessionProviderProps) {
   const queryClient = useQueryCache();
-  const [state, setState] = useState<SessionState>({ status: 'loading', user: null, error: null });
+  const [state, setState] = useState<SessionState>({
+    status: 'loading',
+    user: null,
+    error: null,
+    expired: false,
+  });
   const [attempt, setAttempt] = useState(0);
 
   // Every load gets an id, and only the newest may write state. Without it, a
@@ -177,12 +190,13 @@ export function SessionProvider({ loadSession, children }: SessionProviderProps)
         status: loaded === null ? 'unauthenticated' : 'authenticated',
         user: loaded,
         error: null,
+        expired: false,
       };
     } catch (cause) {
       next =
         cause instanceof MfaPendingError
-          ? { status: 'mfa-pending', user: null, error: null }
-          : { status: 'error', user: null, error: toError(cause) };
+          ? { status: 'mfa-pending', user: null, error: null, expired: false }
+          : { status: 'error', user: null, error: toError(cause), expired: false };
     }
 
     if (runId.current === id) {
@@ -206,7 +220,7 @@ export function SessionProvider({ loadSession, children }: SessionProviderProps)
         // The new load id also makes every older in-flight answer stale.
         runId.current += 1;
         queryClient?.clear();
-        setState({ status: 'loading', user: null, error: null });
+        setState({ status: 'loading', user: null, error: null, expired: false });
         void load();
       }),
     [load, queryClient],
@@ -242,8 +256,8 @@ export function SessionProvider({ loadSession, children }: SessionProviderProps)
       queryClient?.clear();
       setState(
         isMfaRequired(cause)
-          ? { status: 'mfa-pending', user: null, error: null }
-          : signedOutState(),
+          ? { status: 'mfa-pending', user: null, error: null, expired: false }
+          : { ...signedOutState(), expired: true },
       );
     },
     [queryClient],
@@ -254,6 +268,7 @@ export function SessionProvider({ loadSession, children }: SessionProviderProps)
       status: state.status,
       user: state.user,
       error: state.error,
+      expired: state.expired,
       reload,
       refresh,
       signOut,

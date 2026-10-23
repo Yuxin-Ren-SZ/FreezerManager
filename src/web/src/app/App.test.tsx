@@ -6,6 +6,7 @@ import { HttpResponse, http } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppErrorBoundary, ErrorBoundary } from './ErrorBoundary';
 import { App } from './App';
+import { call } from '../api/client';
 import { AppProviders } from './providers';
 import { RouteGuard } from './guards';
 import { ALL_PERMISSIONS, type PermissionKey } from './permissions';
@@ -557,12 +558,29 @@ describe('session lifecycle (G2.1)', () => {
     // The interrupted address travels with the redirect, so signing in again
     // lands where the user was going rather than on the dashboard.
     expect(router.state.location.search).toBe(
-      `?next=${encodeURIComponent(`/labs/${LAB_ID}/samples`)}`,
+      `?next=${encodeURIComponent(`/labs/${LAB_ID}/samples`)}&expired=1`,
     );
+    expect(await screen.findByText(authCopy.mfa.expired)).toHaveAttribute('role', 'status');
     expect(
       await screen.findByRole('heading', { level: 1, name: authCopy.title }),
     ).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Something went wrong' })).not.toBeInTheDocument();
+  });
+
+  it('marks the session expired when a mutation returns 401', async () => {
+    const { router } = renderApp({ path: '/', user: user(ALL_PERMISSIONS) });
+    await screen.findByRole('navigation', { name: 'Main navigation' });
+    server.use(...fakeApi({ fail: { 'sample/delete': 'UNAUTHENTICATED' } }));
+
+    await expect(call('sample/delete', { sampleId: 'sample-1' })).rejects.toMatchObject({
+      code: 'UNAUTHENTICATED',
+    });
+
+    await waitFor(() => {
+      expect(router.state.location.pathname).toBe('/login');
+      expect(router.state.location.search).toContain('expired=1');
+    });
+    expect(await screen.findByText(authCopy.mfa.expired)).toHaveAttribute('role', 'status');
   });
 
   it('sends a half-finished login to the second-factor screen, not the sign-in form', async () => {

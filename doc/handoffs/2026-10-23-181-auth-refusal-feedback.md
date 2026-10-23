@@ -1,0 +1,11 @@
+# Handoff — #181 MFA refusal feedback and session expiry
+
+**Implemented by worker-3 (Codex), PR #189.** The MFA screen now distinguishes an invalid code from a rate limit, an unreachable server, and other failures. The rate-limit copy tells the user to wait one minute, matching the server bucket's one-token-per-minute refill. Session expiry during a protected request carries `expired=1` to the login page, where the existing notice is visible. Login `RESOURCE_EXHAUSTED` keeps retry guidance; `PERMISSION_DENIED` remains indistinguishable from invalid credentials to avoid account enumeration, per the lead's decision. That policy and the fake limiter note should be recorded in TODO G2.1 / #155 by the lead; this worker did not edit `TODO.md`.
+
+The fake API models a per-user budget of five immediate MFA attempts and refills one attempt per minute, including across a logout and new login. This is a test model of the current process-local server limiter; durable budget state and TOTP replay protection remain #179. The fake-budget observation belongs in the follow-up for #155.
+
+**Validation:** `cd src/web && npm run check` — 52 test files, 835 tests passed; route consistency, lint, typecheck, Prettier, production build and bundle-size checks passed. The initial JavaScript bundle was 203.6 KiB gzipped against the 250 KiB budget. ESLint emitted one existing warning in `src/ui/Table.tsx` (`react-hooks/incompatible-library`). Focused recheck after adding per-minute fake-budget coverage: `npm run test -- src/features/auth/LoginScreen.test.tsx src/test/fakeApi.test.ts` — 2 files, 66 tests passed.
+
+**Manual browser check:** opened the Vite app at `127.0.0.1:5203`, proxied through to the seeded `freezerd` on `127.0.0.1:18110`, and signed into the synthetic demo's MFA account. Five wrong codes each showed the invalid-code message. Submitting the current valid code after the fifth attempt displayed “Too many verification attempts. Wait one minute before trying again.” The browser stayed on the MFA page; no sample data or PHI was opened.
+
+The shared C++ baseline (1453 passed, 232 local PostgreSQL skips, 0 failed) was reported by the lead and was not rerun in this web-only worktree.
