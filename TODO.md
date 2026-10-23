@@ -1137,15 +1137,17 @@ inline.
 - [ ] **G4.1. `ReportService.GetLabSummary` RPC**
       (`POST /api/v1/report/lab-summary`). This is the server side of the
       home dashboard, and the Qt dashboard in PRD §9 will use it too. For one
-      lab it returns:
+      lab the first cut (#133) returns:
   - sample counts by status;
   - open check-outs: the count, plus the 20 oldest with sample, user and
     start time;
-  - the 20 boxes with the least free space (label, capacity, occupied);
-  - fill per freezer (occupied / capacity);
-  - a sample-age histogram with fixed buckets (< 1 month, 1–6 months,
-    6–12 months, 1–2 years, 2–5 years, > 5 years);
-  - daily check-out and check-in counts for the last 30 days.
+  - the 20 boxes with the least free space (label, capacity, occupied).
+
+  Deferred until after the demo, as scoped in #133 (not required for its
+  first cut): fill per freezer (occupied / capacity), a sample-age histogram
+  with fixed buckets (< 1 month, 1–6 months,
+  6–12 months, 1–2 years, 2–5 years, > 5 years), and daily check-out and
+  check-in counts for the last 30 days.
 
   Aggregation happens in the storage layer, through new backend methods in
   both backends covered by conformance tests. Raw rows are never sent to the
@@ -1173,8 +1175,9 @@ inline.
 
 - [ ] **G4.2. Home dashboard** (`features/dashboard/`, route `/`). Shows the
       status counts, open check-outs (oldest first, each linking to its
-      sample), boxes low on space, a per-freezer fill heatmap, the
-      sample-age histogram and 30-day check-out activity, all from G4.1.
+      sample), and boxes low on space, all from G4.1's three-block first cut
+      (#133/#134). The per-freezer fill heatmap, sample-age histogram and
+      30-day check-out activity are deferred with their G4.1 data sources.
       Charts are inline SVG components with text alternatives that work in
       both themes; a chart library needs the lead's approval.
       **Depends on:** G4.1, G1.3.
@@ -1223,7 +1226,7 @@ its own server item before a G task can be written:
   `parent_sample_id` filter);
 - the SQLite amber banner (PRD §20; no server signal exists).
 
-### Order of the remaining work (revised 2026-10-20)
+### Order of the remaining work (revised 2026-10-22)
 
 The original nine-wave table no longer described the project: the screens
 (G3.1–G3.6, G3.9) ran ahead of G0.2, G0.3 and G2.1, and a demo-readiness
@@ -1233,14 +1236,16 @@ workers at a time; lock and file conflicts are checked per wave.
 
 | Wave | Tasks | Done when |
 |---|---|---|
-| **A** — a demo you can start and sign into | G2.1 (#145, plus the one-line WhoAmI wiring), then #139 → #141 (one worker, web); #138 → #143 (one worker, both touch the seed); #142 (demo entry point and runbook, re-verified after #143) | One command from #142 starts a seeded demo. A user signs in with TOTP, reloads without losing the session, and completes lookup → detail → check-out → box view. |
-| **B** — deployable, with a real landing page | G0.3 (#44); G4.1 (#133, `lock:proto`) → G4.2 (#134); #128 (MFA brute force) and #148 (open watch streams outlive logout, revocation and expiry) before any non-loopback deployment; G3.7 (CSV import wizard) | `freezerd` alone serves the SPA with its security headers, `/` is the dashboard, and the two auth gaps are closed. |
+| **A — complete** — a demo you can start and sign into | G2.1 (#145), #139/#141, #138/#143 and #142 are merged; #164/#167 supplies the shared demo KEK and records the re-verification. | One command from #142 starts a seeded demo. A user signs in with TOTP, reloads without losing the session, and completes lookup → detail → check-out → box view. |
+| **B** — deployable, with a real landing page | G0.3 (#44, PR #168 blocked on ASan/TSan and clang-tidy); G4.1 (#133, `lock:proto`) → G4.2 (#134); #128 (MFA brute force) is merged, while #148 (open watch streams outlive logout, revocation and expiry) remains required before non-loopback deployment; G3.7 (CSV import wizard) | `freezerd` alone serves the SPA with its security headers, `/` is the dashboard, and the two auth gaps are closed. |
 | **C** — admin parity, then the gates | G3.8, G3.10, G3.11 → G3.12, G3.13 → G5.1 (`lock:ci`) → G5.2, G5.3 | M4 exit: every G item ticked except the blocked G2.2/G2.3. |
 
 **P2 correctness backlog:** one item per wave when a worker frees up, oldest
-first, starting with #111 (draft #135 exists; its `web` job is red on three
-ESLint errors in `fakeApi.ts`). **New findings** are filed, not fixed in the
-current wave, unless they are P0.
+first, starting with #144. #111/#135 is merged as `53cbe15`; the draft/ESLint
+blocker is resolved. The owner separately authorized the 2026-10-22 review
+fixes (#169–#172); the earlier wave-B queue remains paused while that tranche
+runs. **New findings** are filed, not fixed in the current wave, unless they
+are P0 or the owner explicitly changes the scope.
 
 ---
 
