@@ -194,12 +194,19 @@ namespace fmgr::server {
   ShareServiceImpl::ShareServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend)
       : auth_(auth), backend_(backend), middleware_(auth) {
     using P = core::Permission;
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/ListShareRequests", P::ShareRequest);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/GetShareRequest", P::ShareRequest);
+    // Get/list/approve/reject/revoke use TokenAndMfa admission, then retain the
+    // existing source/target-lab ShareRequest or ShareApprove checks below.
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/ListShareRequests",
+                                      rpc::RpcGate::token_and_mfa());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/GetShareRequest",
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/CreateShareRequest", P::ShareRequest);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/ApproveShareRequest", P::ShareApprove);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/RejectShareRequest", P::ShareApprove);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/RevokeShareRequest", P::ShareRequest);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/ApproveShareRequest",
+                                      rpc::RpcGate::token_and_mfa());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/RejectShareRequest",
+                                      rpc::RpcGate::token_and_mfa());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ShareService/RevokeShareRequest",
+                                      rpc::RpcGate::token_and_mfa());
   }
 
   grpc::Status ShareServiceImpl::CreateShareRequest(grpc::ServerContext* ctx,
@@ -250,10 +257,7 @@ namespace fmgr::server {
                                                  fmgr::v1::GetShareRequestResponse* resp) {
     try {
       const auto request_id = core::ShareRequestId::parse(req->share_request_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -277,10 +281,7 @@ namespace fmgr::server {
                                                    const fmgr::v1::ListShareRequestsRequest* req,
                                                    fmgr::v1::ListShareRequestsResponse* resp) {
     try {
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       std::optional<core::LabId> source_filter;
       std::optional<core::LabId> target_filter;
@@ -366,10 +367,7 @@ namespace fmgr::server {
     try {
       const auto request_id = core::ShareRequestId::parse(req->share_request_id());
       const auto role = from_proto_role(req->approver_role());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -415,10 +413,7 @@ namespace fmgr::server {
     try {
       const auto request_id = core::ShareRequestId::parse(req->share_request_id());
       const auto role = from_proto_role(req->approver_role());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -453,10 +448,7 @@ namespace fmgr::server {
                                        fmgr::v1::RevokeShareRequestResponse* /*resp*/) {
     try {
       const auto request_id = core::ShareRequestId::parse(req->share_request_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);

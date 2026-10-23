@@ -116,11 +116,12 @@ namespace fmgr::rpc {
     }
   }
 
-  // #119: the same contract for the nine RPCs that never reach authorize(). Their
+  // #119: the same contract for RPCs that never reach authorize(). Their
   // credential rule used to be a claim in the registry that no code path observed
   // — a handler could start demanding MFA and every test stayed green — so the
   // gate now compares the rule a handler applies against the one its RPC
-  // declares, and refuses the call when they disagree. The mirror of #60, one
+  // declares, and refuses the call when they disagree. Any separate manual
+  // permission checks remain the handler's responsibility. The mirror of #60, one
   // kind over: a handler that asks for a *different* credential rule from the one
   // it registered is a code defect, not a caller who presented the wrong
   // credential.
@@ -220,7 +221,18 @@ namespace fmgr::rpc {
     // presenting different credentials.
     require_credential_agreement(call, rule);
 
-    // Step 1: the data-tier rate limit, for TokenAndMfa only (#128). Those are
+    // Step 1: validate token (may throw InvalidCredentials, TokenExpired, etc.)
+    auth::SessionContext ctx = auth_.validate_token(call.bearer_token);
+
+    // Step 2: the MFA half of the rule. TokenOnly skips it deliberately — that is
+    // the whole of the #62 exception, and the reason the rule is named rather
+    // than assumed. The message is the one these handlers used before #119 moved
+    // the check here, so the wire text a client sees is unchanged.
+    if (rule == CredentialRule::TokenAndMfa && !ctx.mfa_complete) {
+      throw auth::MfaRequired("MFA required before this operation");
+    }
+
+    // Step 3: the data-tier rate limit, for TokenAndMfa only (#128). These are
     // authenticated data endpoints whose handlers never call authorize(), so
     // before this they were the one authenticated class outside the process gate.
     // TokenOnly is deliberately exempt: SubmitMfa has its own per-user brute-force
@@ -228,17 +240,6 @@ namespace fmgr::rpc {
     // make giving up a credential fail.
     if (rule == CredentialRule::TokenAndMfa) {
       apply_data_tier_limit(call.bearer_token);
-    }
-
-    // Step 2: validate token (may throw InvalidCredentials, TokenExpired, etc.)
-    auth::SessionContext ctx = auth_.validate_token(call.bearer_token);
-
-    // Step 3: the MFA half of the rule. TokenOnly skips it deliberately — that is
-    // the whole of the #62 exception, and the reason the rule is named rather
-    // than assumed. The message is the one these handlers used before #119 moved
-    // the check here, so the wire text a client sees is unchanged.
-    if (rule == CredentialRule::TokenAndMfa && !ctx.mfa_complete) {
-      throw auth::MfaRequired("MFA required before this operation");
     }
 
     return ctx;

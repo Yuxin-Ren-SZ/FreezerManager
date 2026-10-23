@@ -170,16 +170,22 @@ namespace fmgr::server {
   AuditServiceImpl::AuditServiceImpl(auth::IAuthProvider& auth, storage::IStorageBackend& backend)
       : auth_(auth), backend_(backend), middleware_(auth) {
     using P = core::Permission;
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/ListAuditEvents", P::AuditRead);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/GetAuditEvent", P::AuditRead);
+    // These handlers use the TokenAndMfa admission gate, then enforce AuditRead/
+    // AuditExport for a requested lab or SystemAdmin for a deployment-wide query.
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/ListAuditEvents",
+                                      rpc::RpcGate::token_and_mfa());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/GetAuditEvent",
+                                      rpc::RpcGate::token_and_mfa());
     // #78: verification is deployment-wide and system-admin only, and this repo's
     // marker for a deployment admin is the global-only lab.provision grant (see
     // is_system_admin() above). Registering audit.read was a permission the
     // handler never enforced; lab.provision is the one it does, and routing the
     // handler through authorize() makes the gate check it on every call.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/VerifyAuditChain", P::LabProvision);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/ExportAuditLog", P::AuditExport);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/WatchAuditFeed", P::AuditRead);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/ExportAuditLog",
+                                      rpc::RpcGate::token_and_mfa());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.AuditService/WatchAuditFeed",
+                                      rpc::RpcGate::token_and_mfa());
   }
 
   grpc::Status AuditServiceImpl::ListAuditEvents(grpc::ServerContext* ctx,
@@ -189,20 +195,17 @@ namespace fmgr::server {
       // Lab-scoped list gates on AuditRead for the lab; an unscoped list spans
       // every lab and is restricted to a deployment SystemAdmin.
       std::optional<core::LabId> lab_filter;
-      auth::SessionContext sctx;
       if (req->has_lab_id()) {
         lab_filter = core::LabId::parse(req->lab_id());
-        sctx =
-            middleware_.authorize(extract_bearer(*ctx), core::Permission::AuditRead, *lab_filter);
-      } else {
-        sctx = auth_.validate_token(extract_bearer(*ctx));
-        if (!sctx.mfa_complete) {
-          throw auth::MfaRequired("MFA required before this operation");
+      }
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
+      if (lab_filter.has_value()) {
+        if (!sctx.has_for_lab(*lab_filter, core::Permission::AuditRead)) {
+          throw auth::PermissionDenied("caller lacks required permission for target lab");
         }
-        if (!is_system_admin(sctx)) {
-          throw auth::PermissionDenied(
-              "deployment-wide audit read requires a system administrator");
-        }
+      } else if (!is_system_admin(sctx)) {
+        throw auth::PermissionDenied("deployment-wide audit read requires a system administrator");
       }
 
       auto query = storage::Query<core::AuditEvent>::all();
@@ -269,10 +272,7 @@ namespace fmgr::server {
                                                fmgr::v1::GetAuditEventResponse* resp) {
     try {
       const auto event_id = core::AuditEventId::parse(req->audit_event_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -338,20 +338,18 @@ namespace fmgr::server {
                                                 fmgr::v1::ExportAuditLogResponse* resp) {
     try {
       std::optional<core::LabId> lab_filter;
-      auth::SessionContext sctx;
       if (req->has_lab_id()) {
         lab_filter = core::LabId::parse(req->lab_id());
-        sctx =
-            middleware_.authorize(extract_bearer(*ctx), core::Permission::AuditExport, *lab_filter);
-      } else {
-        sctx = auth_.validate_token(extract_bearer(*ctx));
-        if (!sctx.mfa_complete) {
-          throw auth::MfaRequired("MFA required before this operation");
+      }
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
+      if (lab_filter.has_value()) {
+        if (!sctx.has_for_lab(*lab_filter, core::Permission::AuditExport)) {
+          throw auth::PermissionDenied("caller lacks required permission for target lab");
         }
-        if (!is_system_admin(sctx)) {
-          throw auth::PermissionDenied(
-              "deployment-wide audit export requires a system administrator");
-        }
+      } else if (!is_system_admin(sctx)) {
+        throw auth::PermissionDenied(
+            "deployment-wide audit export requires a system administrator");
       }
 
       auto query = storage::Query<core::AuditEvent>::all();
@@ -404,20 +402,17 @@ namespace fmgr::server {
       // a lab-scoped feed needs AuditRead for that lab; an unscoped feed spans
       // every lab and is system-admin only.
       std::optional<core::LabId> lab_filter;
-      auth::SessionContext sctx;
       if (req->has_lab_id()) {
         lab_filter = core::LabId::parse(req->lab_id());
-        sctx =
-            middleware_.authorize(extract_bearer(*ctx), core::Permission::AuditRead, *lab_filter);
-      } else {
-        sctx = auth_.validate_token(extract_bearer(*ctx));
-        if (!sctx.mfa_complete) {
-          throw auth::MfaRequired("MFA required before this operation");
+      }
+      const auto sctx =
+          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
+      if (lab_filter.has_value()) {
+        if (!sctx.has_for_lab(*lab_filter, core::Permission::AuditRead)) {
+          throw auth::PermissionDenied("caller lacks required permission for target lab");
         }
-        if (!is_system_admin(sctx)) {
-          throw auth::PermissionDenied(
-              "deployment-wide audit feed requires a system administrator");
-        }
+      } else if (!is_system_admin(sctx)) {
+        throw auth::PermissionDenied("deployment-wide audit feed requires a system administrator");
       }
 
       // Poll-tail cursor. We re-query rows with at >= cursor each cycle (>= not >

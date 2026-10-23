@@ -525,14 +525,19 @@ namespace fmgr::server {
                                        kms::IKmsProvider* kms)
       : auth_(auth), backend_(backend), kms_(kms), middleware_(auth) {
     using P = core::Permission;
+    // Entity-id reads and mutations use TokenAndMfa admission, then retain the
+    // sample's lab-scoped read/write/delete/checkout check after loading it.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ListSamples", P::SampleRead);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/GetSample", P::SampleRead);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/GetSample",
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/CreateSample", P::SampleWrite);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/UpdateSample", P::SampleWrite);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/SoftDeleteSample",
-                                      P::SampleDeleteSoft);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/MoveSample", P::SampleWrite);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/CheckoutSample", P::SampleCheckout);
+                                      rpc::RpcGate::token_and_mfa());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/MoveSample",
+                                      rpc::RpcGate::token_and_mfa());
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/CheckoutSample",
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ExportSamplesCsv", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/ImportSamples", P::SampleWrite);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.SampleService/WatchSampleList", P::SampleRead);
@@ -627,10 +632,7 @@ namespace fmgr::server {
                                             fmgr::v1::GetSampleResponse* resp) {
     try {
       const auto sample_id = core::SampleId::parse(req->sample_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -863,10 +865,7 @@ namespace fmgr::server {
                                                    fmgr::v1::SoftDeleteSampleResponse* /*resp*/) {
     try {
       const auto sample_id = core::SampleId::parse(req->sample_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -890,10 +889,7 @@ namespace fmgr::server {
                                              fmgr::v1::MoveSampleResponse* resp) {
     try {
       const auto sample_id = core::SampleId::parse(req->sample_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -927,10 +923,7 @@ namespace fmgr::server {
                                                  fmgr::v1::CheckoutSampleResponse* resp) {
     try {
       const auto sample_id = core::SampleId::parse(req->sample_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);

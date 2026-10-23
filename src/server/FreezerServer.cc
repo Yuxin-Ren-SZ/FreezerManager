@@ -176,7 +176,8 @@ namespace fmgr::server {
 
     // Global request throttle (C-10 DoS). AuthServiceImpl's per-IP login limiter
     // is handed the auth-tier config separately; this interceptor installs the
-    // data-tier gate that all authenticated RPCs pass through via AuthMiddleware.
+    // data-tier gate used by AuthMiddleware for both permission-gated and
+    // TokenAndMfa-admitted data RPCs.
     rate_limiter_ = std::make_unique<RateLimitInterceptor>(opts_.rate_limit);
     if (opts_.rate_limit.enabled) {
       fmgr::obs::log_lifecycle(
