@@ -284,6 +284,66 @@ target_link_libraries(
     GTest::gtest_main
 )
 
+# G0.3: freezerd serves the built SPA. Drogon's HTTP app is a process-wide
+# singleton, so each startup configuration (SPA on, SPA on with TLS + a lowered
+# body limit, SPA off) gets its own executable.
+add_executable(freezermanager_rest_static_assets_integration_tests
+  rest_static_assets_integration_test.cpp
+)
+
+target_include_directories(
+  freezermanager_rest_static_assets_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  freezermanager_rest_static_assets_integration_tests
+  PRIVATE
+    FreezerManager::rest
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+
+add_executable(freezermanager_rest_static_assets_tls_integration_tests
+  rest_static_assets_tls_integration_test.cpp
+)
+
+target_include_directories(
+  freezermanager_rest_static_assets_tls_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  freezermanager_rest_static_assets_tls_integration_tests
+  PRIVATE
+    FreezerManager::rest
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+
+add_executable(freezermanager_rest_static_assets_disabled_integration_tests
+  rest_static_assets_disabled_integration_test.cpp
+)
+
+target_include_directories(
+  freezermanager_rest_static_assets_disabled_integration_tests
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/tests
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(
+  freezermanager_rest_static_assets_disabled_integration_tests
+  PRIVATE
+    FreezerManager::rest
+    nlohmann_json::nlohmann_json
+    GTest::gtest_main
+)
+
 include(GoogleTest)
 # These spin up an in-process gRPC server. The Conan gRPC/absl libraries are
 # prebuilt WITHOUT sanitizer instrumentation, so under asan/tsan they produce
@@ -315,3 +375,27 @@ gtest_discover_tests(freezermanager_demo_seed_integration_tests
   PROPERTIES LABELS "grpc_integration")
 gtest_discover_tests(freezermanager_rest_gateway_integration_tests
   PROPERTIES LABELS "grpc_integration")
+# These three binaries exercise the Drogon HTTP server directly. Under TSan,
+# shutdown races inside prebuilt Drogon/trantor make their process teardown
+# noisy without any FreezerManager frames. Keep them registered under ASan (so
+# LeakSanitizer checks the client lifecycle) and all normal builds; the pure
+# StaticAssets path/config tests remain registered under every sanitizer.
+if(NOT FREEZERMANAGER_ENABLE_TSAN)
+  if(APPLE AND FREEZERMANAGER_ENABLE_ASAN)
+    # Apple libc++ container annotations conflict with uninstrumented Drogon
+    # writes during process teardown on macOS. Keep this narrow workaround
+    # Apple-ASan-only; Linux retains container checks and LeakSanitizer.
+    set(_static_assets_test_properties
+      PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_container_overflow=0")
+    gtest_discover_tests(freezermanager_rest_static_assets_integration_tests
+      ${_static_assets_test_properties})
+    gtest_discover_tests(freezermanager_rest_static_assets_tls_integration_tests
+      ${_static_assets_test_properties})
+    gtest_discover_tests(freezermanager_rest_static_assets_disabled_integration_tests
+      ${_static_assets_test_properties})
+  else()
+    gtest_discover_tests(freezermanager_rest_static_assets_integration_tests)
+    gtest_discover_tests(freezermanager_rest_static_assets_tls_integration_tests)
+    gtest_discover_tests(freezermanager_rest_static_assets_disabled_integration_tests)
+  endif()
+endif()

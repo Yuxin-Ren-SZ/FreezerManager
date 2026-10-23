@@ -10,6 +10,7 @@
 #include "rest/BrowserSession.h"
 #include "rest/GatewayStubs.h"
 #include "rest/RestGateway.h"
+#include "rest/StaticAssets.h"
 #include "server/FreezerServer.h"
 #include "storage/sqlite/AuditRepositories.h"
 #include "storage/sqlite/BoxGeometryRepositories.h"
@@ -265,6 +266,20 @@ int main(int /*argc*/, char* /*argv*/[]) {
     const char* rest_cert = std::getenv("FMGR_REST_TLS_CERT");
     const char* rest_key = std::getenv("FMGR_REST_TLS_KEY");
     const bool rest_tls = rest_cert != nullptr && rest_key != nullptr;
+
+    // Keep this after every route registration: the SPA catch-all must be the
+    // last route registered. FMGR_WEB_ROOT enables Vite dist serving; the body
+    // cap also lets CSV imports reach the gateway.
+    const auto static_assets = fmgr::rest::StaticAssetsConfig::from_env(rest_tls);
+    fmgr::rest::StaticAssets::install(static_assets);
+    if (static_assets.serves_spa()) {
+      fmgr::obs::log_lifecycle(
+          fmgr::obs::Level::Info,
+          fmt::format("freezerd: serving the SPA from {} (body limit {} bytes)",
+                      static_assets.web_root.string(), static_assets.max_body_bytes),
+          "server.spa_assets");
+    }
+
     drogon::app().addListener(rest_host, rest_port, rest_tls, rest_cert != nullptr ? rest_cert : "",
                               rest_key != nullptr ? rest_key : "");
     fmgr::obs::log_lifecycle(fmgr::obs::Level::Info,
