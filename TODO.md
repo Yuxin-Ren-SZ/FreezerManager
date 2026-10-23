@@ -668,8 +668,11 @@ Changing one needs a lead `DECISION` on the issue and an edit here.
    Every mutation sends a CSRF header.
 7. **PHI in the browser:** API data is never written to `localStorage`,
    `sessionStorage`, IndexedDB or the Cache API, and there is no service
-   worker. `localStorage` holds UI preferences only (selected lab id, column
-   layout). API payloads are never logged to the console. Logout, session
+   worker. `localStorage` holds UI preferences (selected lab id, column
+   layout) and the opaque `fmgr-session-change-v1` notification nonce (#169).
+   That nonce carries no credentials, user/session identity or API payload;
+   it lets other tabs clear their caches when the shared cookie changes.
+   API payloads are never logged to the console. Logout, session
    expiry and any 401 clear the TanStack Query cache. URLs carry ids only.
    Fixtures and PR screenshots use synthetic demo data
    (`scripts/seed_demo.py`) only.
@@ -1195,7 +1198,8 @@ inline.
       and commit, export, and logout. `@axe-core/playwright` must report no
       serious or critical violations on any page visited. The job also checks
       that API responses are `no-store` and that `localStorage` holds only UI
-      preferences afterwards.
+      preferences and the opaque session-change nonce afterwards, never
+      credentials, user/session identity or API payloads.
       **Locks:** `lock:ci`. **Depends on:** G0.1–G0.3, G2.1, G3.2–G3.7.
 
 - [ ] **G5.2. Ship the SPA with `freezerd`.** A CMake `install()` rule copies

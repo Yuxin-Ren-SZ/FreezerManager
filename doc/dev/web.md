@@ -339,7 +339,12 @@ other costs the coverage the other exists for.
 5. **PHI stays out of the browser** (G-arch 7): no API data in
    `localStorage`/`sessionStorage`/IndexedDB/Cache API, no service worker, no API
    payloads in `console.log`, and the TanStack Query cache is cleared on logout,
-   expiry and any 401. `localStorage` holds UI preferences only.
+   expiry and any 401. `localStorage` holds UI preferences and the opaque
+   `fmgr-session-change-v1` notification nonce. The same nonce is sent over
+   BroadcastChannel and storage events so tabs with different transport support
+   can clear cached data and reload WhoAmI when the shared cookie changes.
+   Duplicate signals are ignored; neither transport carries credentials,
+   user/session identity or API payloads.
 6. **Permission gating is UX, not security** (G-arch 8): the server enforces;
    every screen still handles `PERMISSION_DENIED`.
 7. **Testing** (G-arch 10, TDD): write the test first. MSW fakes come from one
