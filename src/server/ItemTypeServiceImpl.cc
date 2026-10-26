@@ -316,12 +316,16 @@ namespace fmgr::server {
     // Member holds sample.read but neither *.define, so gating the catalog read
     // on the define permission left every generated form empty. The mutating
     // RPCs keep *.define -- that is what actually guards the catalog.
+    // Entity-id handlers use TokenAndMfa admission, then enforce the resolved
+    // lab's actual permission: GetItemType uses sample.read, ArchiveItemType
+    // item_type.define, and ArchiveCustomFieldDefinition custom_field.define.
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ListItemTypes", P::SampleRead);
-    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/GetItemType", P::SampleRead);
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/GetItemType",
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/CreateItemType", P::ItemTypeDefine);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/UpdateItemType", P::ItemTypeDefine);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ArchiveItemType",
-                                      P::ItemTypeDefine);
+                                      rpc::RpcGate::token_and_mfa());
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ListCustomFieldDefinitions",
                                       P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/CreateCustomFieldDefinition",
@@ -329,7 +333,7 @@ namespace fmgr::server {
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/UpdateCustomFieldDefinition",
                                       P::CustomFieldDefine);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.ItemTypeService/ArchiveCustomFieldDefinition",
-                                      P::CustomFieldDefine);
+                                      rpc::RpcGate::token_and_mfa());
   }
 
   // =====================================================================
@@ -371,10 +375,7 @@ namespace fmgr::server {
                                                 fmgr::v1::GetItemTypeResponse* resp) {
     try {
       const auto item_type_id = core::ItemTypeId::parse(req->item_type_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -474,10 +475,7 @@ namespace fmgr::server {
                                                     fmgr::v1::ArchiveItemTypeResponse* /*resp*/) {
     try {
       const auto item_type_id = core::ItemTypeId::parse(req->item_type_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
@@ -656,10 +654,7 @@ namespace fmgr::server {
                                                     fmgr::v1::ArchiveCfdResponse* /*resp*/) {
     try {
       const auto cfd_id = core::CustomFieldDefinitionId::parse(req->cfd_id());
-      auto sctx = auth_.validate_token(extract_bearer(*ctx));
-      if (!sctx.mfa_complete) {
-        throw auth::MfaRequired("MFA required before this operation");
-      }
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);

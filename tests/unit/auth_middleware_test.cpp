@@ -611,13 +611,30 @@ namespace fmgr::rpc {
     TEST_F(AuthMiddlewareTest, AuthenticateAppliesTheDataTierLimiterToTokenAndMfa) {
       RateLimiter limiter(RateLimiterConfig{.capacity = 0.0, .refill_per_sec = 0.0});
       ProcessDataLimiterGuard guard(limiter);
-      const auto completed = lab_admin_mfa_complete();
+      AuthMiddleware::register_rpc("e3_test.TokenAndMfa", RpcGate::token_and_mfa());
 
-      EXPECT_THROW(
-          do_authenticate_on(*middleware_,
-                             RpcCall{.bearer_token = completed.plaintext_token, .method = ""},
-                             CredentialRule::TokenAndMfa),
-          auth::RateLimited);
+      // A bad token and a pending-MFA session fail before consuming the data
+      // budget. Only an authenticated, MFA-complete request reaches the limiter.
+      EXPECT_THROW(do_authenticate_on(
+                       *middleware_,
+                       RpcCall{.bearer_token = "not-a-token", .method = "e3_test.TokenAndMfa"},
+                       CredentialRule::TokenAndMfa),
+                   auth::InvalidCredentials);
+      EXPECT_EQ(limiter.tracked_keys(), 0U);
+      EXPECT_THROW(do_authenticate_on(*middleware_,
+                                      RpcCall{.bearer_token = lab_admin_token_.plaintext_token,
+                                              .method = "e3_test.TokenAndMfa"},
+                                      CredentialRule::TokenAndMfa),
+                   auth::MfaRequired);
+      EXPECT_EQ(limiter.tracked_keys(), 0U);
+
+      const auto completed = lab_admin_mfa_complete();
+      EXPECT_THROW(do_authenticate_on(*middleware_,
+                                      RpcCall{.bearer_token = completed.plaintext_token,
+                                              .method = "e3_test.TokenAndMfa"},
+                                      CredentialRule::TokenAndMfa),
+                   auth::RateLimited);
+      EXPECT_EQ(limiter.tracked_keys(), 1U);
     }
 
     // The two gates share one process budget: a request authorize() admitted

@@ -110,13 +110,12 @@ namespace fmgr::rpc {
   //               permission. The gate checks it on every call and refuses the
   //               call when it disagrees (#60), so this entry is verified, not
   //               documented.
-  //   Credential  the handler must not be permission-gated at all, and this is
-  //               the credential rule it applies. It asks the gate for the same
-  //               rule — authenticate(), or admit_no_credential() for `None` —
-  //               the gate validates the credential itself, and it refuses the
-  //               call when the handler asks for a different rule (#119). An RPC
-  //               registered this way whose handler calls authorize() is refused
-  //               too, so the state cannot be used to silence the #60 check.
+  //   Credential  the handler asks the gate to apply this credential rule. It
+  //               calls authenticate(), or admit_no_credential() for `None`;
+  //               any separate scope/domain permission checks remain in the
+  //               handler. The gate refuses a different requested rule (#119).
+  //               An RPC registered this way whose handler calls authorize() is
+  //               refused too, so the state cannot silence the #60 check.
   class RpcGate {
   public:
     enum class Kind {
@@ -199,7 +198,7 @@ namespace fmgr::rpc {
     authorize(const RpcCall& call, core::Permission required_perm,
               std::optional<core::LabId> lab_id = std::nullopt) const;
 
-    // Credential gate for the RPCs that are not permission-gated (#119).
+    // Credential gate for RPC handlers that do not call authorize() (#119).
     //
     // Those handlers never call authorize(), so before #119 the gate never
     // observed their registrations: their credential rule was declared in the
@@ -209,16 +208,18 @@ namespace fmgr::rpc {
     //      require_credential_agreement()). Checked before any credential work —
     //      a disagreement is a code defect, not something the caller can fix by
     //      presenting different credentials.
-    //   1. For rule == TokenAndMfa, the process data-tier rate limit, keyed by the
-    //      bearer token, before any work. These are authenticated data endpoints
-    //      and used to bypass the gate that authorize() applies (#128).
-    //   2. Validates the bearer token via IAuthProvider::validate_token().
-    //   3. Throws MfaRequired when rule == TokenAndMfa and ctx.mfa_complete is
+    //   1. Validates the bearer token via IAuthProvider::validate_token().
+    //   2. Throws MfaRequired when rule == TokenAndMfa and ctx.mfa_complete is
     //      false. TokenOnly skips this step: that is the whole of the #62
     //      exception, and it is why the rule has to be named rather than assumed.
+    //   3. For rule == TokenAndMfa, applies the process data-tier rate limit,
+    //      keyed by the bearer token. These are authenticated data endpoints
+    //      whose handlers used to bypass the gate that authorize() applies (#128).
     //
-    // No permission check — enforcing no permission is what the registration
-    // says. TokenOnly deliberately stays outside the data-tier budget: SubmitMfa
+    // This does not replace a handler's scope/domain permission checks. The
+    // registration states the credential gate only; handlers that enforce
+    // permissions manually keep doing so after admission. TokenOnly deliberately
+    // stays outside the data-tier budget: SubmitMfa
     // has its own per-user brute-force limiter (#128) and Logout only removes
     // authority, so neither may be starved by a gate meant for data traffic.
     //
@@ -270,17 +271,18 @@ namespace fmgr::rpc {
     // registry is not write-only metadata: authorize() checks the permission a
     // handler enforces against the entry its RPC registered, and refuses the call
     // when they disagree (#60); authenticate()/admit_no_credential() do the same
-    // for the credential rule a non-permission handler applies (#119).
+    // for the credential rule a handler applies when it does not call authorize
+    // (#119). Any separate permission checks remain in that handler.
     // verify_registry_covers() does the other half at server startup — a served
     // RPC that is not registered cannot be looked up, so the server refuses to
     // start rather than serve it.
     //
     // An RPC that does not gate through authorize() (AGENTS.md §5) registers the
     // credential rule its handler applies — RpcGate::token_and_mfa(),
-    // RpcGate::token_only() or RpcGate::no_credential() — rather than a
-    // permission nothing checks. The gate applies that rule and refuses the call
-    // when the handler asks it for a different one, and it still refuses an RPC
-    // registered this way whose handler calls authorize().
+    // RpcGate::token_only() or RpcGate::no_credential(). When the handler also
+    // checks scoped/domain permissions, those checks remain there. The gate
+    // refuses a different credential rule and refuses an RPC registered this
+    // way whose handler calls authorize().
     static void register_rpc(std::string rpc_name, RpcGate gate);
     // Returns a snapshot copy of the registry (safe for iteration in tests/CI).
     [[nodiscard]] static std::unordered_map<std::string, RpcGate> registered_rpcs();
