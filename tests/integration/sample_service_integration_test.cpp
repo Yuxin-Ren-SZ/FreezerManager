@@ -49,6 +49,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace fmgr::test {
@@ -784,6 +785,9 @@ namespace fmgr::test {
         ASSERT_TRUE(row.has_value());
         EXPECT_EQ(row->volume_value, expected);
         EXPECT_EQ(row->mass_value, expected);
+        // Establish different quantities so the next assertion proves an update wrote them.
+        ASSERT_TRUE(
+            update_sample({.token = token, .id = id, .volume_value = 100, .mass_value = 200}).ok());
         ASSERT_TRUE(
             update_sample({.token = token, .id = id, .volume_value = value, .mass_value = value})
                 .ok());
