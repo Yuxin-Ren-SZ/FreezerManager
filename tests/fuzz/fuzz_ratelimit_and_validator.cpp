@@ -37,42 +37,53 @@ namespace fmgr::fuzz {
     // ---- RateLimiter fuzz ----
 
     TEST(FuzzRateLimiter, TokenCountNeverExceedsCapacity) {
-      // We can't read per-bucket tokens directly from the public API, but we can
-      // verify the observable invariant: a single key can never acquire more than
-      // capacity + ceiling(refill_over_observed_time) tokens without rejections
-      // interspersed. We exercise the limiter with randomized intervals and check
-      // that it never allows an unbounded burst.
-      auto& gen = rng();
+      // For every inclusive request interval [i, j], a bucket can supply at
+      // most C + r * (t_j - t_i) tokens: at most C before request i, plus
+      // continuous refill through request j. Rejections do not reset this bound.
+      // If A is the number allowed so far, this is equivalent to checking
+      // A_after_j - r*t_j <= C + min_i(A_before_i - r*t_i). Maintaining that
+      // minimum checks every interval in O(kOps), including equal timestamps.
+      // Use unrounded elapsed seconds (no ceiling); epsilon covers accumulated
+      // double rounding, and is far smaller than one token.
+      const auto seed = ::testing::UnitTest::GetInstance()->random_seed();
+      SCOPED_TRACE(::testing::Message() << "Replay with --gtest_random_seed=" << seed);
+      std::mt19937_64 gen(static_cast<std::uint64_t>(seed));
       constexpr int kCapacity = 5;
       constexpr int kRefillPerSec = 2;
+      constexpr double kEpsilon = 1e-9;
       rpc::RateLimiter limiter(
           rpc::RateLimiterConfig{.capacity = static_cast<double>(kCapacity),
                                  .refill_per_sec = static_cast<double>(kRefillPerSec)});
-      auto clock = rpc::RateLimiter::TimePoint{};
+      const auto start = rpc::RateLimiter::TimePoint{};
+      auto clock = start;
       constexpr int kOps = 2000;
+      int allowed_total = 0;
+      double min_interval_start = 0.0;
 
-      int consecutive_allowed = 0;
-      int max_consecutive_allowed = 0;
-
-      for (int i = 0; i < kOps; ++i) {
-        const bool allowed = limiter.try_acquire("fuzz-key", clock);
-        if (allowed) {
-          ++consecutive_allowed;
-          max_consecutive_allowed = std::max(max_consecutive_allowed, consecutive_allowed);
-        } else {
-          consecutive_allowed = 0;
+      const auto check_request = [&] {
+        const double refill =
+            std::chrono::duration<double>(clock - start).count() * kRefillPerSec;
+        min_interval_start = std::min(min_interval_start, allowed_total - refill);
+        if (limiter.try_acquire("fuzz-key", clock)) {
+          ++allowed_total;
         }
-        // Random time advance: 0..500 ms
-        const auto ms = std::uniform_int_distribution<int>(0, 500)(gen);
-        clock += std::chrono::milliseconds(ms);
-      }
+        EXPECT_LE(allowed_total - refill, kCapacity + min_interval_start + kEpsilon)
+            << "allowed=" << allowed_total << " elapsed_refill=" << refill;
+      };
 
-      // A token bucket with capacity C should never allow more than C tokens
-      // in an instant (no time passes). With time passing, the practical burst
-      // observed can be at most C + a few refills during the concurrent window.
-      // We check a generous upper bound: capacity * 3.
-      EXPECT_LE(max_consecutive_allowed, kCapacity * 3)
-          << "token bucket allowed an unexpectedly large burst";
+      // Explicitly exercise an empty bucket and a long idle followed by an
+      // instantaneous burst, so a missing refill cap is covered on every seed.
+      for (int i = 0; i < kCapacity * 2; ++i) {
+        check_request();
+      }
+      clock += 10s;
+      for (int i = 0; i < kCapacity * 2; ++i) {
+        check_request();
+      }
+      for (int i = 0; i < kOps; ++i) {
+        clock += std::chrono::milliseconds(std::uniform_int_distribution<int>(0, 500)(gen));
+        check_request();
+      }
     }
 
     TEST(FuzzRateLimiter, DistinctKeysDontInterfere) {
