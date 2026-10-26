@@ -39,9 +39,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -147,6 +149,8 @@ namespace fmgr::test {
         std::int64_t volume_ul{0};    // >0 sets volume_value (µL)
         std::int64_t volume_ml{0};    // >0 sets volume_value in mL instead (#111)
         std::string barcode{};        // empty = none
+        std::optional<double> volume_value{};
+        std::optional<double> mass_value{};
       };
       grpc::Status create_sample(const CreateArgs& args, std::string* out_id) {
         grpc::ClientContext ctx;
@@ -175,6 +179,14 @@ namespace fmgr::test {
         if (args.volume_ml > 0) {
           req.set_volume_value(static_cast<double>(args.volume_ml));
           req.set_volume_unit("mL");
+        }
+        if (args.volume_value.has_value()) {
+          req.set_volume_value(*args.volume_value);
+          req.set_volume_unit("µL");
+        }
+        if (args.mass_value.has_value()) {
+          req.set_mass_value(*args.mass_value);
+          req.set_mass_unit("mg");
         }
         fmgr::v1::CreateSampleResponse resp;
         const auto status = sample_stub_->CreateSample(&ctx, req, &resp);
@@ -236,6 +248,8 @@ namespace fmgr::test {
         std::string id;
         std::string name{"specimen"};
         std::string custom_fields{"{}"};
+        std::optional<double> volume_value{};
+        std::optional<double> mass_value{};
       };
       grpc::Status update_sample(const UpdateArgs& args,
                                  fmgr::v1::UpdateSampleResponse* out = nullptr) {
@@ -248,6 +262,14 @@ namespace fmgr::test {
         sample->set_item_type_id(kItemType);
         sample->set_name(args.name);
         sample->set_custom_fields_json(args.custom_fields);
+        if (args.volume_value.has_value()) {
+          sample->set_volume_value(*args.volume_value);
+          sample->set_volume_unit("µL");
+        }
+        if (args.mass_value.has_value()) {
+          sample->set_mass_value(*args.mass_value);
+          sample->set_mass_unit("mg");
+        }
         fmgr::v1::UpdateSampleResponse resp;
         const auto status = sample_stub_->UpdateSample(&ctx, req, &resp);
         if (out != nullptr) {
@@ -444,6 +466,16 @@ namespace fmgr::test {
         const auto row = txn->repo<core::Sample>().find_by_id(core::SampleId::parse(sample_id));
         txn->commit();
         return row;
+      }
+
+      // Snapshot both persisted entities and the audit chain around refused writes.
+      [[nodiscard]] auto stored_samples_and_audit() {
+        auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        const auto samples = txn->repo<core::Sample>().query(storage::Query<core::Sample>::all());
+        const auto audit =
+            txn->repo<core::AuditEvent>().query(storage::Query<core::AuditEvent>::all());
+        txn->commit();
+        return std::pair{samples, audit};
       }
 
       const std::string kAdminEmail{"admin@example.com"};
@@ -686,6 +718,120 @@ namespace fmgr::test {
     // =====================================================================
     // CreateSample
     // =====================================================================
+
+    TEST_F(SampleServiceTest, CreateSampleRejectsInvalidQuantitiesWithoutWritingRowsOrAudit) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string existing_id;
+      ASSERT_TRUE(
+          create_sample({.token = token, .volume_value = 100, .mass_value = 200}, &existing_id)
+              .ok());
+      const auto before = stored_samples_and_audit();
+      for (const double value :
+           {0.5, -1.0, -0.5, 1e19, 0x1p63, std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::infinity()}) {
+        for (const bool volume : {true, false}) {
+          SCOPED_TRACE(::testing::Message() << "volume=" << volume << " value=" << value);
+          std::string id;
+          const auto status =
+              create_sample({.token = token,
+                             .volume_value = volume ? std::optional{value} : std::nullopt,
+                             .mass_value = volume ? std::nullopt : std::optional{value}},
+                            &id);
+          EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+          EXPECT_NE(status.error_message().find(volume ? "volume_value" : "mass_value"),
+                    std::string::npos);
+          EXPECT_TRUE(id.empty());
+          EXPECT_EQ(stored_samples_and_audit(), before);
+        }
+      }
+    }
+
+    TEST_F(SampleServiceTest, UpdateSampleRejectsInvalidQuantitiesWithoutChangingRowsOrAudit) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(
+          create_sample({.token = token, .volume_value = 100, .mass_value = 200}, &id).ok());
+      const auto before = stored_samples_and_audit();
+      for (const double value :
+           {0.5, -1.0, -0.5, 1e19, 0x1p63, std::numeric_limits<double>::quiet_NaN(),
+            std::numeric_limits<double>::infinity()}) {
+        for (const bool volume : {true, false}) {
+          SCOPED_TRACE(::testing::Message() << "volume=" << volume << " value=" << value);
+          const auto status = update_sample({.token = token,
+                                             .id = id,
+                                             .name = "must not change",
+                                             .volume_value = volume ? value : 100.0,
+                                             .mass_value = volume ? 200.0 : value});
+          EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+          EXPECT_NE(status.error_message().find(volume ? "volume_value" : "mass_value"),
+                    std::string::npos);
+          EXPECT_EQ(stored_samples_and_audit(), before);
+        }
+      }
+    }
+
+    TEST_F(SampleServiceTest, CreateAndUpdateSampleStoreWholeQuantityBoundariesExactly) {
+      const auto token = login(kAdminEmail, kPassword);
+      // int64 max rounds up to 2^63 as a double; its predecessor is exactly 2^63 - 1024.
+      constexpr std::int64_t largest_wire_integer = 9223372036854774784LL;
+      for (const double value : {0.0, 42.0, std::nextafter(0x1p63, 0.0)}) {
+        SCOPED_TRACE(value);
+        const auto expected = value > 42 ? largest_wire_integer : static_cast<std::int64_t>(value);
+        std::string id;
+        ASSERT_TRUE(
+            create_sample({.token = token, .volume_value = value, .mass_value = value}, &id).ok());
+        auto row = stored_row(id);
+        ASSERT_TRUE(row.has_value());
+        EXPECT_EQ(row->volume_value, expected);
+        EXPECT_EQ(row->mass_value, expected);
+        ASSERT_TRUE(
+            update_sample({.token = token, .id = id, .volume_value = value, .mass_value = value})
+                .ok());
+        row = stored_row(id);
+        ASSERT_TRUE(row.has_value());
+        EXPECT_EQ(row->volume_value, expected);
+        EXPECT_EQ(row->mass_value, expected);
+      }
+    }
+
+    TEST_F(SampleServiceTest, SampleQuantityOmissionRetainsCreateAndReplacementUpdateSemantics) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token}, &id).ok());
+      auto row = stored_row(id);
+      ASSERT_TRUE(row.has_value());
+      EXPECT_FALSE(row->volume_value.has_value());
+      EXPECT_FALSE(row->mass_value.has_value());
+      ASSERT_TRUE(
+          update_sample({.token = token, .id = id, .volume_value = 10, .mass_value = 20}).ok());
+      ASSERT_TRUE(update_sample({.token = token, .id = id}).ok());
+      row = stored_row(id);
+      ASSERT_TRUE(row.has_value());
+      EXPECT_FALSE(row->volume_value.has_value());
+      EXPECT_FALSE(row->volume_unit.has_value());
+      EXPECT_FALSE(row->mass_value.has_value());
+      EXPECT_FALSE(row->mass_unit.has_value());
+    }
+
+    TEST_F(SampleServiceTest, ImportSamplesRejectsInvalidQuantityTextWithoutWritingRowsOrAudit) {
+      const auto token = login(kAdminEmail, kPassword);
+      const auto before = stored_samples_and_audit();
+      for (const std::string value : {"0.5", "-1", "10000000000000000000", "NaN", "+inf"}) {
+        for (const std::string field : {"volume", "mass"}) {
+          SCOPED_TRACE(field + "=" + value);
+          const std::string csv = "name,item_type_id," + field + "_value," + field +
+                                  "_unit\nimported," + kItemType + "," + value + "," +
+                                  (field == "volume" ? "µL" : "mg") + "\n";
+          fmgr::v1::ImportSamplesResponse resp;
+          ASSERT_TRUE(import_csv(token, false, csv, &resp).ok());
+          EXPECT_FALSE(resp.committed());
+          ASSERT_EQ(resp.rows_size(), 1);
+          EXPECT_FALSE(resp.rows(0).ok());
+          EXPECT_NE(resp.rows(0).error().find(field + "_value"), std::string::npos);
+          EXPECT_EQ(stored_samples_and_audit(), before);
+        }
+      }
+    }
 
     TEST_F(SampleServiceTest, CreateSampleAsAdminSucceeds) {
       const auto token = login(kAdminEmail, kPassword);
@@ -2165,6 +2311,25 @@ namespace fmgr::test {
       EXPECT_DOUBLE_EQ(stored.volume_value(), 100);
       EXPECT_EQ(stored.status(), fmgr::v1::SAMPLE_STATUS_CHECKED_OUT);
       EXPECT_EQ(stored_checkout_events(id).size(), 1U);
+    }
+
+    TEST_F(SampleServiceTest, CheckoutSampleRejectsNonfiniteAndOutOfRangeVolumeWithoutWriting) {
+      const auto token = login(kAdminEmail, kPassword);
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .volume_ul = 100}, &id).ok());
+      ASSERT_TRUE(checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKOUT).ok());
+      const auto before = stored_samples_and_audit();
+      const auto events = stored_checkout_events(id);
+      for (const double value : {1e19, 0x1p63, std::numeric_limits<double>::infinity(),
+                                 std::numeric_limits<double>::quiet_NaN()}) {
+        SCOPED_TRACE(value);
+        const auto status =
+            checkout_sample(token, id, fmgr::v1::CHECKOUT_ACTION_CHECKIN, value, std::string("µL"));
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INVALID_ARGUMENT);
+        EXPECT_NE(status.error_message().find("volume_used"), std::string::npos);
+        EXPECT_EQ(stored_samples_and_audit(), before);
+        EXPECT_EQ(stored_checkout_events(id), events);
+      }
     }
 
     TEST_F(SampleServiceTest, CheckoutSampleAcceptsExplicitZeroVolumeAsARecordedNoOp) {
