@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, expect, it, vi } from 'vitest';
+import { create } from '@bufbuild/protobuf';
 import { call } from '../api/client';
 import { ApiError, GRPC_CODES } from '../api/errors';
 import { apiRoutes, type RpcName } from '../api/routes';
@@ -111,6 +112,97 @@ describe('fakeApi coverage', () => {
 });
 
 describe('fakeApi demo lab', () => {
+  it('stores accepted whole quantities unchanged and refuses invalid create/update values atomically', async () => {
+    const lab = createDemoLab();
+    server.use(...fakeApi({ lab }));
+    const accepted = await call('sample/create', {
+      labId: 'lab-demo',
+      itemTypeId: 'it-serum',
+      name: 'Measured serum',
+      volumeValue: 42,
+      massValue: 7,
+    });
+    expect(accepted.sample?.volumeValue).toBe(42);
+    expect(accepted.sample?.massValue).toBe(7);
+    const largestRepresentableBelowLimit = 2 ** 63 - 1024;
+    const large = await call('sample/create', {
+      labId: 'lab-demo',
+      itemTypeId: 'it-serum',
+      name: 'Large measured serum',
+      volumeValue: largestRepresentableBelowLimit,
+    });
+    expect(large.sample?.volumeValue).toBe(largestRepresentableBelowLimit);
+
+    const original = lab.samples[0];
+    const acceptedUpdate = create(SampleSchema, {
+      ...original,
+      volumeValue: largestRepresentableBelowLimit,
+      massValue: 9,
+      customFieldsJson: '{"concentration":12.5}',
+    });
+    const updated = await call('sample/update', { sample: acceptedUpdate });
+    expect(updated.sample?.volumeValue).toBe(largestRepresentableBelowLimit);
+    expect(updated.sample?.massValue).toBe(9);
+
+    // UpdateSample is a full replacement (there is no update_mask); omitted
+    // optional quantity fields clear their stored values.
+    if (updated.sample === undefined) throw new Error('sample/update returned no sample');
+    const cleared = create(SampleSchema, {
+      ...updated.sample,
+      volumeValue: undefined,
+      massValue: undefined,
+    });
+    const clearedResult = await call('sample/update', { sample: cleared });
+    expect(clearedResult.sample?.volumeValue).toBeUndefined();
+    expect(clearedResult.sample?.massValue).toBeUndefined();
+
+    const originalCount = lab.samples.length;
+    for (const [field, value] of [
+      ['volumeValue', 0.5],
+      ['massValue', 0.5],
+      ['volumeValue', -1],
+      ['massValue', -1],
+      ['volumeValue', 1e19],
+      ['massValue', 1e19],
+      ['volumeValue', 2 ** 63],
+      ['volumeValue', Number.NaN],
+      ['massValue', Number.POSITIVE_INFINITY],
+    ] as const) {
+      const error = await call('sample/create', {
+        labId: 'lab-demo',
+        itemTypeId: 'it-serum',
+        name: 'Rejected serum',
+        [field]: value,
+      }).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: 'INVALID_ARGUMENT' });
+      expect((error as ApiError).message).toContain(
+        field === 'volumeValue' ? 'volume_value' : 'mass_value',
+      );
+      expect(lab.samples).toHaveLength(originalCount);
+    }
+
+    const sampleBefore = { ...lab.samples[0] };
+    for (const [field, value] of [
+      ['volumeValue', 0.5],
+      ['massValue', -1],
+      ['volumeValue', 1e19],
+      ['massValue', Number.NaN],
+      ['volumeValue', Number.POSITIVE_INFINITY],
+      ['massValue', 2 ** 63],
+      ['volumeValue', Number.NEGATIVE_INFINITY],
+    ] as const) {
+      const updated = create(SampleSchema, { ...lab.samples[0], [field]: value });
+      const error = await call('sample/update', { sample: updated }).catch(
+        (caught: unknown) => caught,
+      );
+      expect(error).toMatchObject({ code: 'INVALID_ARGUMENT' });
+      expect((error as ApiError).message).toContain(
+        field === 'volumeValue' ? 'volume_value' : 'mass_value',
+      );
+      expect(lab.samples[0]).toEqual(sampleBefore);
+    }
+  });
+
   it('limits MFA guesses to five immediate attempts per user across sessions', async () => {
     const lab = createDemoLab();
     server.use(...fakeApi({ lab }));
@@ -493,6 +585,27 @@ describe('fakeApi checkout volume contract (#100)', () => {
     expect(sampleById(lab, 'sample-3').volumeValue).toBe(100);
     expect(lab.checkoutEvents).toEqual([]);
   });
+
+  it.each([1e19, Number.NaN, Number.POSITIVE_INFINITY])(
+    'refuses a non-finite or out-of-range volume_used (%s) without changing state',
+    async (volumeUsed) => {
+      const lab = checkedOutLab();
+      server.use(...fakeApi({ lab }));
+
+      const error = (await call('sample/checkout', {
+        sampleId: 'sample-3',
+        action: CheckoutAction.CHECKIN,
+        volumeUsed,
+        volumeUnit: 'µL',
+      }).catch((caught: unknown) => caught)) as ApiError;
+
+      expect(error.code).toBe('INVALID_ARGUMENT');
+      expect(error.message).toContain('volume_used');
+      expect(sampleById(lab, 'sample-3').volumeValue).toBe(100);
+      expect(sampleById(lab, 'sample-3').status).toBe(SampleStatus.CHECKED_OUT);
+      expect(lab.checkoutEvents).toEqual([]);
+    },
+  );
 
   it('accepts an explicit zero volume, which is not a negative one', async () => {
     const lab = checkedOutLab();

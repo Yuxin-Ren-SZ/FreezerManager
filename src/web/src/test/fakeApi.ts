@@ -92,8 +92,21 @@ export interface CheckoutEventRecord {
 
 /** The units `core::parse_volume_unit` accepts — anything else is refused. */
 const VOLUME_UNITS = ['mL', 'µL'] as const;
+const MAX_INT64_EXCLUSIVE = 2 ** 63;
 
 type VolumeUnit = (typeof VOLUME_UNITS)[number];
+
+/** Match the server's whole, nonnegative finite double-to-int64 validation. */
+function requireSampleQuantity(value: number | undefined, field: 'volume_value' | 'mass_value') {
+  if (value === undefined) return;
+  if (!Number.isFinite(value) || !Number.isInteger(value)) {
+    throw new FakeRpcError('INVALID_ARGUMENT', `${field}: must be a finite whole number`);
+  }
+  if (value < 0) throw new FakeRpcError('INVALID_ARGUMENT', `${field}: must not be negative`);
+  if (value >= MAX_INT64_EXCLUSIVE) {
+    throw new FakeRpcError('INVALID_ARGUMENT', `${field}: is too large to represent`);
+  }
+}
 
 function isVolumeUnit(value: string): value is VolumeUnit {
   return (VOLUME_UNITS as readonly string[]).includes(value);
@@ -1754,6 +1767,8 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
   'sample/create': (lab, message) => {
     const init = fields(message) as MessageInitShape<typeof SampleSchema>;
     requireId(init.labId ?? '', 'lab');
+    requireSampleQuantity(init.volumeValue, 'volume_value');
+    requireSampleQuantity(init.massValue, 'mass_value');
     if ((init.name ?? '').trim() === '') {
       throw new FakeRpcError('INVALID_ARGUMENT', 'name is required');
     }
@@ -1789,6 +1804,8 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
     if (incoming === undefined) throw new FakeRpcError('INVALID_ARGUMENT', 'sample is required');
     const index = lab.samples.findIndex((candidate) => candidate.id === incoming.id);
     if (index < 0) throw new FakeRpcError('NOT_FOUND', 'no such sample');
+    requireSampleQuantity(incoming.volumeValue, 'volume_value');
+    requireSampleQuantity(incoming.massValue, 'mass_value');
     requireValidCustomFields(lab, incoming.itemTypeId, incoming.customFieldsJson);
     if (incoming.boxId !== undefined && incoming.positionLabel !== undefined) {
       if (positionHolder(lab, incoming.boxId, incoming.positionLabel, incoming.id) !== undefined) {
@@ -1906,7 +1923,7 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
         `volume_used: must be a whole number of ${volumeUnit} (got ${String(volumeUsed)})`,
       );
     }
-    if (volumeUsed !== undefined && !Number.isSafeInteger(volumeUsed)) {
+    if (volumeUsed !== undefined && volumeUsed >= MAX_INT64_EXCLUSIVE) {
       throw new FakeRpcError('INVALID_ARGUMENT', 'volume_used: is too large to represent');
     }
 

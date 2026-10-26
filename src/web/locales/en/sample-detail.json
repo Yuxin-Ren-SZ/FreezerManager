@@ -12,6 +12,7 @@
     "box": "Box",
     "position": "Position",
     "volumeValue": "Volume",
+    "quantityHint": "Enter a nonnegative whole number.",
     "volumeUnit": "Volume unit",
     "massValue": "Mass",
     "massUnit": "Mass unit",
@@ -86,6 +87,7 @@
   },
   "validation": {
     "required": "This field is required.",
+    "quantityWhole": "Enter a nonnegative whole number within the supported range.",
     "rejected": "The server rejected this value.",
     "tooMany": "Too many custom field values.",
     "belowMin": "The value is below the minimum.",

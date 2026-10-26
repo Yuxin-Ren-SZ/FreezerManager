@@ -4,7 +4,7 @@ import { fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { Route, Routes } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import sampleDetailCopy from '../../../locales/en/sample-detail.json';
 import { apiRoutes } from '../../api/routes';
 import { SessionProvider } from '../../app/session';
@@ -111,6 +111,8 @@ describe('SampleCreateScreen', () => {
     ]) {
       expect(byLabel(label), label).toBeInTheDocument();
     }
+    expect(byLabel(sampleDetailCopy.form.volumeValue)).toHaveAttribute('step', '1');
+    expect(byLabel(sampleDetailCopy.form.massValue)).toHaveAttribute('step', '1');
   });
 
   it('lists the lab item types and nothing from another lab', async () => {
@@ -278,6 +280,62 @@ describe('SampleCreateScreen', () => {
 
     expect(await screen.findByText(sampleDetailCopy.validation.aboveMax)).toBeInTheDocument();
     expect(screen.queryByText('detail screen')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    '0.5',
+    '9007199254740993',
+    '9007199254740992.5',
+    '9223372036854775000',
+    '9.007199254740993e15',
+    '90071992547409925e-1',
+    '1.00000000000000001',
+    '1e-999',
+    '-1e-999',
+  ])('rejects inexact or fractional quantity %s before sending a create request', async (raw) => {
+    const { demo } = renderCreate();
+    const originalCount = demo.samples.length;
+    await chooseItemType('it-serum');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Serum C');
+    fireEvent.change(byLabel(sampleDetailCopy.form.volumeValue), { target: { value: raw } });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await submit();
+
+    expect(await screen.findByText(sampleDetailCopy.validation.quantityWhole)).toBeInTheDocument();
+    expect(demo.samples).toHaveLength(originalCount);
+    expect(
+      fetchSpy.mock.calls.some(([input]) => {
+        const url =
+          input instanceof Request ? input.url : input instanceof URL ? input.href : input;
+        return url.includes('/api/v1/sample/create');
+      }),
+    ).toBe(false);
+    fetchSpy.mockRestore();
+    expect(screen.queryByText('detail screen')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['0', 0],
+    ['0e-99999', 0],
+    ['42.00', 42],
+    ['4.2e1', 42],
+    ['.5e1', 5],
+    ['1.00e+3', 1000],
+    ['9007199254740992', 2 ** 53],
+    ['9.007199254740992e15', 2 ** 53],
+    ['9223372036854774784', 2 ** 63 - 1024],
+  ])('creates the exact whole quantity entered as %s', async (raw, expected) => {
+    const { demo } = renderCreate();
+    await chooseItemType('it-serum');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Serum C');
+    fireEvent.change(byLabel(sampleDetailCopy.form.volumeValue), { target: { value: raw } });
+
+    await submit();
+
+    await screen.findByText('detail screen');
+    expect(demo.samples.at(-1)?.volumeValue).toBe(expected);
+    expect(demo.samples.at(-1)?.massValue).toBeUndefined();
   });
 
   it('shows a server rejection on the field it names, even one the form could not render', async () => {
@@ -494,6 +552,50 @@ const save = async () => {
   await userEvent.click(screen.getByRole('button', { name: sampleDetailCopy.form.submitUpdate }));
   await screen.findByText(sampleDetailCopy.form.saved);
 };
+
+describe('SampleForm: edit quantities', () => {
+  it('rejects a rounded mass before sending an update and preserves the sample', async () => {
+    const { demo } = renderEdit();
+    await openEditor();
+    const original = structuredClone(demo.samples);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    fireEvent.change(byLabel(sampleDetailCopy.form.massValue), {
+      target: { value: '9007199254740992.5' },
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: sampleDetailCopy.form.submitUpdate }));
+
+    expect(await screen.findByText(sampleDetailCopy.validation.quantityWhole)).toBeInTheDocument();
+    expect(byLabel(sampleDetailCopy.form.massValue)).toHaveAttribute('aria-invalid', 'true');
+    expect(demo.samples).toEqual(original);
+    expect(
+      fetchSpy.mock.calls.some(([input]) => {
+        const url =
+          input instanceof Request ? input.url : input instanceof URL ? input.href : input;
+        return url.includes('/api/v1/sample/update');
+      }),
+    ).toBe(false);
+    fetchSpy.mockRestore();
+  });
+
+  it('displays and saves an exact large stored quantity while clearing an optional quantity', async () => {
+    const demo = createDemoLab();
+    const sample = demo.samples.find((candidate) => candidate.id === 'sample-1');
+    if (sample === undefined) throw new Error('fixture has no sample-1');
+    sample.volumeValue = 2 ** 63 - 1024;
+    sample.massValue = 42;
+    renderEdit({ demo });
+    await openEditor();
+    expect(byLabel(sampleDetailCopy.form.volumeValue)).toHaveDisplayValue('9223372036854774784');
+    fireEvent.change(byLabel(sampleDetailCopy.form.massValue), { target: { value: '' } });
+
+    await save();
+
+    const saved = demo.samples.find((candidate) => candidate.id === 'sample-1');
+    expect(saved?.volumeValue).toBe(2 ** 63 - 1024);
+    expect(saved?.massValue).toBeUndefined();
+  });
+});
 
 describe('SampleForm: PHI the caller cannot read', () => {
   it('leaves a withheld Bool PHI field out of the payload rather than sending false', async () => {

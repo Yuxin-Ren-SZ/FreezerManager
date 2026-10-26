@@ -75,9 +75,48 @@ export interface SampleFormProps {
 /** `mL`/`µL` and `mg`/`g` are the only units `core::parse_*_unit` accepts. */
 const VOLUME_UNITS = ['', 'mL', '\u00b5L'];
 /** HTML `step` values: attributes, not copy. */
-const STEP_ANY = 'any';
 const STEP_INTEGER = '1';
+const MAX_INT64_EXCLUSIVE = 2 ** 63;
 const MASS_UNITS = ['', 'mg', 'g'];
+
+/** Check the decimal text before Number conversion can hide a fraction or round an integer. */
+function isExactWholeQuantity(raw: string): boolean {
+  const quantity = Number(raw);
+  if (
+    !Number.isFinite(quantity) ||
+    !Number.isInteger(quantity) ||
+    quantity < 0 ||
+    quantity >= MAX_INT64_EXCLUSIVE
+  ) {
+    return false;
+  }
+  const match = /^([+-]?)(\d+(?:\.\d*)?|\.\d+)(?:[eE]([+-]?\d+))?$/.exec(raw);
+  if (match === null) return false;
+  const [, sign, significand, exponent = '0'] = match;
+  const [whole, fraction = ''] = significand.split('.');
+  const digits = `${whole}${fraction}`.replace(/^0+/, '');
+  if (digits === '') return quantity === 0;
+  if (sign === '-') return false;
+
+  // Compare normalized coefficient * 10^scale, without constructing 10^exponent
+  // for arbitrarily large input exponents. BigInt(Number) gives the exact stored
+  // integer; String(Number) can instead give a rounded, shortest decimal spelling.
+  const coefficient = digits.replace(/0+$/, '');
+  const scale =
+    BigInt(exponent) - BigInt(fraction.length) + BigInt(digits.length - coefficient.length);
+  const exactDigits = BigInt(quantity).toString();
+  const exactCoefficient = exactDigits.replace(/0+$/, '');
+  return (
+    coefficient === exactCoefficient &&
+    scale === BigInt(exactDigits.length - exactCoefficient.length)
+  );
+}
+
+/** Keep an untouched stored integer exact when displaying it in an edit control. */
+function quantityText(value: number | undefined): string {
+  if (value === undefined) return '';
+  return Number.isInteger(value) ? BigInt(value).toString() : String(value);
+}
 
 const defaultRaw = (cfd: CustomFieldDefinition): RawValue =>
   cfd.dataType === FieldDataType.BOOL ? false : '';
@@ -134,13 +173,9 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
   const [containerTypeId, setContainerTypeId] = useState(sample?.containerTypeId ?? '');
   const [boxId, setBoxId] = useState(sample?.boxId ?? '');
   const [positionLabel, setPositionLabel] = useState(sample?.positionLabel ?? '');
-  const [volumeValue, setVolumeValue] = useState(
-    sample?.volumeValue === undefined ? '' : String(sample.volumeValue),
-  );
+  const [volumeValue, setVolumeValue] = useState(quantityText(sample?.volumeValue));
   const [volumeUnit, setVolumeUnit] = useState(sample?.volumeUnit ?? '');
-  const [massValue, setMassValue] = useState(
-    sample?.massValue === undefined ? '' : String(sample.massValue),
-  );
+  const [massValue, setMassValue] = useState(quantityText(sample?.massValue));
   const [massUnit, setMassUnit] = useState(sample?.massUnit ?? '');
   const [parentSampleId, setParentSampleId] = useState(sample?.parentSampleId ?? '');
 
@@ -308,6 +343,15 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
     if (itemTypeId === '') {
       messages.itemTypeId = { ns: 'sample-detail', key: 'validation.required' };
     }
+    for (const [field, value] of [
+      [FIELD.volumeValue, volumeValue],
+      [FIELD.massValue, massValue],
+    ] as const) {
+      if (value === '') continue;
+      if (!isExactWholeQuantity(value)) {
+        messages[field] = { ns: 'sample-detail', key: 'validation.quantityWhole' };
+      }
+    }
     for (const error of mirror) {
       messages[error.key] = { ns: 'sample-detail', key: error.messageKey };
     }
@@ -457,7 +501,9 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
         <TextField
           label={t('form.volumeValue')}
           type="number"
-          step={STEP_ANY}
+          min={0}
+          step={STEP_INTEGER}
+          hint={t('form.quantityHint')}
           value={volumeValue}
           onChange={(event) => {
             setVolumeValue(event.target.value);
@@ -479,7 +525,9 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
         <TextField
           label={t('form.massValue')}
           type="number"
-          step={STEP_ANY}
+          min={0}
+          step={STEP_INTEGER}
+          hint={t('form.quantityHint')}
           value={massValue}
           onChange={(event) => {
             setMassValue(event.target.value);
