@@ -47,6 +47,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -822,12 +823,12 @@ namespace fmgr::test {
       const auto before = stored_samples_and_audit();
       for (const std::string value : {"0.5", "-1", "10000000000000000000", "NaN", "+inf"}) {
         for (const std::string field : {"volume", "mass"}) {
-          SCOPED_TRACE(field + "=" + value);
-          const std::string csv = "name,item_type_id," + field + "_value," + field +
-                                  "_unit\nimported," + kItemType + "," + value + "," +
-                                  (field == "volume" ? "µL" : "mg") + "\n";
+          SCOPED_TRACE(::testing::Message() << field << "=" << value);
+          std::ostringstream csv;
+          csv << "name,item_type_id," << field << "_value," << field << "_unit\nimported,"
+              << kItemType << "," << value << "," << (field == "volume" ? "µL" : "mg") << "\n";
           fmgr::v1::ImportSamplesResponse resp;
-          ASSERT_TRUE(import_csv(token, false, csv, &resp).ok());
+          ASSERT_TRUE(import_csv(token, false, csv.str(), &resp).ok());
           EXPECT_FALSE(resp.committed());
           ASSERT_EQ(resp.rows_size(), 1);
           EXPECT_FALSE(resp.rows(0).ok());

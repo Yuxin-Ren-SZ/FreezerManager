@@ -501,7 +501,7 @@ namespace fmgr::cli {
     TEST(SampleImportTest, RejectsInvalidQuantityTextForVolumeAndMass) {
       for (const std::string value : {"0.5", "-1", "10000000000000000000", "NaN", "+inf"}) {
         for (const std::string field : {"volume", "mass"}) {
-          SCOPED_TRACE(field + "=" + value);
+          SCOPED_TRACE(::testing::Message() << field << "=" << value);
           const std::vector<std::vector<std::string>> records = {
               {"name", "item_type_id", field + "_value", field + "_unit"},
               {"S1", item_type_uuid(), value, field == "volume" ? "µL" : "mg"}};
