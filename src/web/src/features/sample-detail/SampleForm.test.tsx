@@ -4,7 +4,7 @@ import { fireEvent, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { Route, Routes } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import sampleDetailCopy from '../../../locales/en/sample-detail.json';
 import { apiRoutes } from '../../api/routes';
 import { SessionProvider } from '../../app/session';
@@ -111,6 +111,8 @@ describe('SampleCreateScreen', () => {
     ]) {
       expect(byLabel(label), label).toBeInTheDocument();
     }
+    expect(byLabel(sampleDetailCopy.form.volumeValue)).toHaveAttribute('step', '1');
+    expect(byLabel(sampleDetailCopy.form.massValue)).toHaveAttribute('step', '1');
   });
 
   it('lists the lab item types and nothing from another lab', async () => {
@@ -277,6 +279,29 @@ describe('SampleCreateScreen', () => {
     await submit();
 
     expect(await screen.findByText(sampleDetailCopy.validation.aboveMax)).toBeInTheDocument();
+    expect(screen.queryByText('detail screen')).not.toBeInTheDocument();
+  });
+
+  it('rejects a fractional sample quantity before sending a create request', async () => {
+    const { demo } = renderCreate();
+    const originalCount = demo.samples.length;
+    await chooseItemType('it-serum');
+    await userEvent.type(byLabel(sampleDetailCopy.form.name), 'Serum C');
+    fireEvent.change(byLabel(sampleDetailCopy.form.volumeValue), { target: { value: '0.5' } });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await submit();
+
+    expect(await screen.findByText(sampleDetailCopy.validation.quantityWhole)).toBeInTheDocument();
+    expect(demo.samples).toHaveLength(originalCount);
+    expect(
+      fetchSpy.mock.calls.some(([input]) => {
+        const url =
+          input instanceof Request ? input.url : input instanceof URL ? input.href : input;
+        return url.includes('/api/v1/sample/create');
+      }),
+    ).toBe(false);
+    fetchSpy.mockRestore();
     expect(screen.queryByText('detail screen')).not.toBeInTheDocument();
   });
 

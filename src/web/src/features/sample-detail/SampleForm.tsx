@@ -75,8 +75,8 @@ export interface SampleFormProps {
 /** `mL`/`µL` and `mg`/`g` are the only units `core::parse_*_unit` accepts. */
 const VOLUME_UNITS = ['', 'mL', '\u00b5L'];
 /** HTML `step` values: attributes, not copy. */
-const STEP_ANY = 'any';
 const STEP_INTEGER = '1';
+const MAX_INT64_EXCLUSIVE = 2 ** 63;
 const MASS_UNITS = ['', 'mg', 'g'];
 
 const defaultRaw = (cfd: CustomFieldDefinition): RawValue =>
@@ -308,6 +308,21 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
     if (itemTypeId === '') {
       messages.itemTypeId = { ns: 'sample-detail', key: 'validation.required' };
     }
+    for (const [field, value] of [
+      [FIELD.volumeValue, volumeValue],
+      [FIELD.massValue, massValue],
+    ] as const) {
+      if (value === '') continue;
+      const quantity = Number(value);
+      if (
+        !Number.isFinite(quantity) ||
+        !Number.isInteger(quantity) ||
+        quantity < 0 ||
+        quantity >= MAX_INT64_EXCLUSIVE
+      ) {
+        messages[field] = { ns: 'sample-detail', key: 'validation.quantityWhole' };
+      }
+    }
     for (const error of mirror) {
       messages[error.key] = { ns: 'sample-detail', key: error.messageKey };
     }
@@ -457,7 +472,9 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
         <TextField
           label={t('form.volumeValue')}
           type="number"
-          step={STEP_ANY}
+          min={0}
+          step={STEP_INTEGER}
+          hint={t('form.quantityHint')}
           value={volumeValue}
           onChange={(event) => {
             setVolumeValue(event.target.value);
@@ -479,7 +496,9 @@ export function SampleForm({ labId, sample, reference, onSaved, onCancel }: Samp
         <TextField
           label={t('form.massValue')}
           type="number"
-          step={STEP_ANY}
+          min={0}
+          step={STEP_INTEGER}
+          hint={t('form.quantityHint')}
           value={massValue}
           onChange={(event) => {
             setMassValue(event.target.value);
