@@ -9,6 +9,7 @@ add_library(freezermanager_rest STATIC
   BrowserSession.cc
   JsonProtoMapping.cc
   RestGateway.cc
+  StaticAssets.cc
 )
 add_library(FreezerManager::rest ALIAS freezermanager_rest)
 
