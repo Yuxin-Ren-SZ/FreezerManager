@@ -61,8 +61,7 @@ namespace fmgr::fuzz {
       double min_interval_start = 0.0;
 
       const auto check_request = [&] {
-        const double refill =
-            std::chrono::duration<double>(clock - start).count() * kRefillPerSec;
+        const double refill = std::chrono::duration<double>(clock - start).count() * kRefillPerSec;
         min_interval_start = std::min(min_interval_start, allowed_total - refill);
         if (limiter.try_acquire("fuzz-key", clock)) {
           ++allowed_total;
