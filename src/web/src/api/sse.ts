@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { fromJson, type DescMessage, type JsonValue, type MessageShape } from '@bufbuild/protobuf';
-import { ApiError, isGrpcCode, type GrpcCode } from './errors';
+import { ApiError, isGrpcCode, MFA_REQUIRED_ENVELOPE_CODE, type GrpcCode } from './errors';
+import { reportSessionExpired } from './client';
+import { getSessionChangeVersion } from '../app/sessionChange';
 import { beginLiveStream, endLiveStream, setLiveStreamState } from './liveConnection';
 
 /**
@@ -209,32 +211,44 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
     }
   };
 
-  const onError = (event: Event) => {
+  const onError = (event: Event, requestSessionVersion: number) => {
     if (stopped) return;
     const data = (event as MessageEvent<string>).data;
 
     if (typeof data === 'string' && data !== '') {
       // A server-sent `event: error` frame: an ApiError, and permanent for the
       // codes that describe the caller rather than the connection.
-      let body: { code?: unknown; message?: unknown } = {};
+      let body: { code?: unknown; message?: unknown } | null = {};
       try {
         body = JSON.parse(data) as typeof body;
       } catch {
         // Fall through to the INTERNAL default below.
       }
-      const code = isGrpcCode(body.code) ? body.code : 'INTERNAL';
-      fail(new ApiError(code, typeof body.message === 'string' ? body.message : ''));
+      const mfaRequired = body?.code === MFA_REQUIRED_ENVELOPE_CODE;
+      const code = mfaRequired
+        ? 'UNAUTHENTICATED'
+        : isGrpcCode(body?.code)
+          ? body.code
+          : 'INTERNAL';
+      const error = new ApiError(code, typeof body?.message === 'string' ? body.message : '', {
+        mfaRequired,
+      });
       if (TERMINAL_CODES.has(code)) {
+        // Finish the transport before notifying listeners: session expiry can
+        // synchronously unmount the screen and unsubscribe this stream.
         stopped = true;
         closeSource();
-        // Nothing will reconnect: "offline", not "reconnecting".
         setLiveStreamState(stream, 'offline');
+        reportSessionExpired(error, requestSessionVersion);
+        fail(error);
         return;
       }
+      fail(error);
     } else {
       fail(new ApiError('UNAVAILABLE', 'the live connection was lost'));
     }
 
+    if (stopped) return;
     closeSource();
     // The stream is not gone, only waiting out the backoff. Reporting
     // "offline" here would make the indicator say the feature is unavailable
@@ -245,6 +259,7 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
 
   const connect = () => {
     if (stopped) return;
+    const requestSessionVersion = getSessionChangeVersion();
     const created = factory(buildUrl(name, params, lastEventId));
     source = created;
     created.addEventListener('open', () => {
@@ -256,7 +271,10 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
       options.onOpen?.();
     });
     created.addEventListener('message', onMessage);
-    created.addEventListener('error', onError);
+    created.addEventListener('error', (event) => {
+      if (source !== created) return;
+      onError(event, requestSessionVersion);
+    });
   };
 
   try {

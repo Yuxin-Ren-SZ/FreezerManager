@@ -121,15 +121,10 @@ export function resetSessionExpiredListeners(): void {
   sessionExpiredListeners.clear();
 }
 
-function notifySessionExpired(error: ApiError): void {
-  for (const listener of sessionExpiredListeners) {
-    listener(error);
-  }
-}
-
 /**
- * Throw an `ApiError` and, first, tell the session-expired listeners if the
- * session is gone.
+ * Report a terminal authentication refusal from either unary HTTP or SSE.
+ * The request epoch prevents a reply for an older cookie from ending a newer
+ * session. SSE supplies the epoch from when its connection was opened.
  *
  * The trigger is **the session being over**, not one particular body. The
  * gateway pairs 401 with `UNAUTHENTICATED`, but a reverse proxy or load
@@ -138,13 +133,19 @@ function notifySessionExpired(error: ApiError): void {
  * makes G-arch 7's "any 401 clears the query cache" true rather than usually
  * true — otherwise the SPA keeps rendering cached data as if still signed in.
  */
-function fail(error: ApiError, requestSessionVersion?: number): never {
+export function reportSessionExpired(error: ApiError, requestSessionVersion?: number): void {
   if (
     (error.code === 'UNAUTHENTICATED' || error.httpStatus === 401) &&
     (requestSessionVersion === undefined || requestSessionVersion === getSessionChangeVersion())
   ) {
-    notifySessionExpired(error);
+    for (const listener of sessionExpiredListeners) {
+      listener(error);
+    }
   }
+}
+
+function fail(error: ApiError, requestSessionVersion?: number): never {
+  reportSessionExpired(error, requestSessionVersion);
   throw error;
 }
 

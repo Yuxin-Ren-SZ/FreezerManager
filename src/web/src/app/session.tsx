@@ -236,6 +236,10 @@ export function SessionProvider({ loadSession, children }: SessionProviderProps)
   const signOut = useCallback(async () => {
     // Anything already in flight belongs to the session being ended.
     runId.current += 1;
+    // End protected UI and cached payloads before a slow or hanging request
+    // can leave LoginScreen seeing the old authenticated state.
+    queryClient?.clear();
+    setState(signedOutState());
     try {
       await signOutOfBrowserSession();
     } catch {
@@ -243,8 +247,6 @@ export function SessionProvider({ loadSession, children }: SessionProviderProps)
       // next request that uses it gets a 401 and `expire()` finishes the job —
       // leaving the user apparently signed in would be worse.
     }
-    queryClient?.clear();
-    setState(signedOutState());
   }, [queryClient]);
 
   const expire = useCallback(

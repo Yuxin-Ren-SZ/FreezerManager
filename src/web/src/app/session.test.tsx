@@ -169,6 +169,64 @@ describe('SessionProvider', () => {
     expect(result.current.status).toBe('unauthenticated');
   });
 
+  it.each(['success', 'failure'])(
+    'ends local state before a pending logout resolves with %s and ignores an old identity reply',
+    async (outcome) => {
+      let finishLogout: (() => void) | undefined;
+      const logoutPending = new Promise<void>((resolve) => {
+        finishLogout = resolve;
+      });
+      let logoutCalls = 0;
+      server.use(
+        http.post('/api/v1/auth/browser/logout', async () => {
+          logoutCalls += 1;
+          await logoutPending;
+          return outcome === 'success' ? HttpResponse.json({}) : HttpResponse.error();
+        }),
+      );
+      const user = currentUserWith(['sample.read']);
+      let resolveOld: ((value: typeof user) => void) | undefined;
+      const loader = vi
+        .fn<SessionLoader>()
+        .mockResolvedValueOnce(user)
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              resolveOld = resolve;
+            }),
+        );
+      const { result, queryClient } = renderSession(loader);
+      await waitFor(() => {
+        expect(result.current.status).toBe('authenticated');
+      });
+      seedCache(queryClient);
+      let refresh: Promise<unknown> | undefined;
+      let logout: Promise<void> | undefined;
+      act(() => {
+        refresh = result.current.refresh();
+        logout = result.current.signOut();
+      });
+
+      expect(result.current.status).toBe('unauthenticated');
+      expect(result.current.user).toBeNull();
+      expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
+      await waitFor(() => {
+        expect(logoutCalls).toBe(1);
+      });
+      await act(async () => {
+        resolveOld?.(user);
+        await refresh;
+      });
+      expect(result.current.status).toBe('unauthenticated');
+      await act(async () => {
+        finishLogout?.();
+        await logout;
+      });
+      expect(result.current.status).toBe('unauthenticated');
+      expect(result.current.expired).toBe(false);
+    },
+  );
+
   it('re-runs the loader on refresh and reports what it found', async () => {
     let answer: Awaited<ReturnType<SessionLoader>> = null;
     const { result } = renderSession(() => Promise.resolve(answer));

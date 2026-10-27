@@ -3,7 +3,9 @@ import { create } from '@bufbuild/protobuf';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SampleSchema } from '../gen/fmgr/v1/sample_pb';
 import { FakeEventSource, fakeEventSource } from '../test/fakeEventSource';
-import { ApiError } from './errors';
+import { ApiError, isMfaRequired } from './errors';
+import { onSessionExpired, resetSessionExpiredListeners } from './client';
+import { announceSessionChange } from '../app/sessionChange';
 import {
   getLiveConnectionState,
   resetLiveConnectionForTests,
@@ -27,6 +29,7 @@ const current = (): FakeEventSource => FakeEventSource.current();
 beforeEach(() => {
   FakeEventSource.reset();
   resetLiveConnectionForTests();
+  resetSessionExpiredListeners();
   vi.useFakeTimers();
 });
 
@@ -151,6 +154,74 @@ describe('subscribeSse', () => {
     expect(FakeEventSource.all()).toHaveLength(1);
     expect(current().closed).toBe(true);
   });
+
+  it.each(['UNAUTHENTICATED', 'MFA_REQUIRED'])(
+    'reports terminal %s through the shared session listener without reconnecting',
+    (code) => {
+      const expired = vi.fn();
+      const onError = vi.fn();
+      onSessionExpired(expired);
+      const unsubscribe = subscribeSse('sample/watch', {
+        schema: SampleSchema,
+        onFrame: vi.fn(),
+        onError,
+        eventSourceFactory: factory,
+      });
+
+      current().serverError({ code, message: 'authentication needed' });
+      vi.advanceTimersByTime(60_000);
+
+      expect(expired).toHaveBeenCalledOnce();
+      const error = expired.mock.calls[0]?.[0] as ApiError;
+      expect(error.code).toBe('UNAUTHENTICATED');
+      expect(error.httpStatus).toBeNull();
+      expect(isMfaRequired(error)).toBe(code === 'MFA_REQUIRED');
+      expect(onError).toHaveBeenCalledWith(error);
+      expect(current().closed).toBe(true);
+      expect(FakeEventSource.all()).toHaveLength(1);
+      unsubscribe();
+    },
+  );
+
+  it('ignores expiry from a stream opened before the shared cookie changed', () => {
+    const expired = vi.fn();
+    onSessionExpired(expired);
+    const unsubscribe = subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      onFrame: vi.fn(),
+      eventSourceFactory: factory,
+    });
+    announceSessionChange();
+
+    current().serverError({ code: 'UNAUTHENTICATED', message: 'old session' });
+    vi.advanceTimersByTime(60_000);
+
+    expect(expired).not.toHaveBeenCalled();
+    expect(current().closed).toBe(true);
+    expect(FakeEventSource.all()).toHaveLength(1);
+    unsubscribe();
+  });
+
+  it.each(['UNAUTHENTICATED', 'UNAVAILABLE'])(
+    'does not resurrect a stream synchronously closed by its %s error callback',
+    (code) => {
+      const unsubscribe = subscribeSse('sample/watch', {
+        schema: SampleSchema,
+        onFrame: vi.fn(),
+        onError: () => {
+          unsubscribe();
+        },
+        eventSourceFactory: factory,
+      });
+      current().open();
+      current().serverError({ code, message: 'closed by subscriber' });
+      vi.advanceTimersByTime(60_000);
+
+      expect(current().closed).toBe(true);
+      expect(FakeEventSource.all()).toHaveLength(1);
+      expect(getLiveConnectionState()).toBe('offline');
+    },
+  );
 
   it('reconnects after a transient error frame', () => {
     subscribeSse('sample/watch', {
