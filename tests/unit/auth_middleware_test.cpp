@@ -882,6 +882,7 @@ namespace fmgr::rpc {
       std::atomic<int> successes{0};
       std::atomic<int> failures{0};
       std::vector<std::thread> readers;
+      readers.reserve(4);
       for (int i = 0; i < 4; ++i) {
         readers.emplace_back([&] {
           start.arrive_and_wait();

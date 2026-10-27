@@ -150,3 +150,24 @@ No local npm check was needed for this server-only change; CI's web job runs.
 No proto, schema, dependency, CI, TTL, web, cleanup or WhoAmI changes. No lock
 needed. Rebased onto `origin/main` (`f5611b7`) before final full dev validation.
 Only #194 is closed by the PR. The lead owns review, merge and roadmap updates.
+
+## CI lint follow-up
+
+Linux matrix jobs passed at `fbeed09`; the actual
+[clang-tidy job](https://github.com/Yuxin-Ren-SZ/FreezerManager/actions/runs/40578055649/job/122450054051)
+reported only two `performance-inefficient-vector-operation` errors on the
+four-thread `readers.emplace_back` loops. Each test now calls
+`readers.reserve(4)` before that loop. This changes test setup only; no production
+code or assertions changed.
+
+```sh
+cmake --build --preset dev
+ctest --preset dev -R 'RevalidationDoesNotRenewActivityOrWriteWithConcurrentReaders|RevalidationDoesNotChargeEitherAdmissionGateConcurrently' --output-on-failure
+clang-format --dry-run --Werror tests/unit/local_auth_provider_test.cpp tests/unit/auth_middleware_test.cpp
+git diff --check
+```
+
+Result: build passed; 2 selected, 2 passed, 0 skipped/failed (0.26 s). Formatting
+and diff checks pass. Prior full dev/TSan evidence above remains recorded; the
+lead will require the complete matching-head Linux matrix and actual clang-tidy
+before merging the lint follow-up.
