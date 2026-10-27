@@ -33,6 +33,9 @@ namespace fmgr::cli {
       if (errc != std::errc{} || ptr != end) {
         throw RowError{std::string(field) + ": not an integer: '" + std::string(text) + "'"};
       }
+      if (value < 0) {
+        throw RowError{std::string(field) + ": must not be negative"};
+      }
       return value;
     }
 

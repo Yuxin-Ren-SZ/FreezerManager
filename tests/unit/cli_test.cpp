@@ -51,6 +51,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -495,6 +496,37 @@ namespace fmgr::cli {
 
     std::string item_type_uuid() {
       return id_from_low<core::ItemTypeId>(20).to_string();
+    }
+
+    TEST(SampleImportTest, RejectsInvalidQuantityTextForVolumeAndMass) {
+      for (const std::string value : {"0.5", "-1", "10000000000000000000", "NaN", "+inf"}) {
+        for (const std::string field : {"volume", "mass"}) {
+          SCOPED_TRACE(::testing::Message() << field << "=" << value);
+          const std::vector<std::vector<std::string>> records = {
+              {"name", "item_type_id", field + "_value", field + "_unit"},
+              {"S1", item_type_uuid(), value, field == "volume" ? "µL" : "mg"}};
+          const auto report = build_import(records, import_ctx());
+          ASSERT_EQ(report.rows.size(), 1U);
+          EXPECT_FALSE(report.rows.at(0).ok);
+          EXPECT_NE(report.rows.at(0).error.find(field + "_value"), std::string::npos);
+          EXPECT_FALSE(report.rows.at(0).sample.has_value());
+        }
+      }
+    }
+
+    TEST(SampleImportTest, PreservesZeroAndInt64MaximumQuantitiesExactly) {
+      for (const std::string value : {"0", "9223372036854775807"}) {
+        const std::vector<std::vector<std::string>> records = {
+            {"name", "item_type_id", "volume_value", "volume_unit", "mass_value", "mass_unit"},
+            {"S1", item_type_uuid(), value, "µL", value, "mg"}};
+        const auto report = build_import(records, import_ctx());
+        ASSERT_EQ(report.rows.size(), 1U);
+        ASSERT_TRUE(report.rows.at(0).ok) << report.rows.at(0).error;
+        ASSERT_TRUE(report.rows.at(0).sample.has_value());
+        const auto expected = value == "0" ? 0 : std::numeric_limits<std::int64_t>::max();
+        EXPECT_EQ(report.rows.at(0).sample->volume_value, expected);
+        EXPECT_EQ(report.rows.at(0).sample->mass_value, expected);
+      }
     }
 
     TEST(SampleImportTest, BuildsValidRowWithServerControlledFields) {

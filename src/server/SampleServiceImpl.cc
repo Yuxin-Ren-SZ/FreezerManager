@@ -33,7 +33,6 @@
 #include <cstdio>
 #include <ctime>
 #include <exception>
-#include <limits>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -147,33 +146,28 @@ namespace fmgr::server {
       }
     }
 
-    // The optional (volume_used, volume_unit) pair of a checkout request.
-    //
-    // Volume and unit travel together, as they do in the CSV importer
-    // (`SampleImport.cc`): a `core::Volume` has no unitless state, so half a pair
-    // is a malformed request rather than a value to drop. The previous
-    // `has_volume_used() && has_volume_unit()` answered a lone `volume_used`
-    // with `std::nullopt`, which is how the web check-in could lose a typed
-    // volume while the screen still reported success (#100).
-    //
-    // The wire type is a `double` and the domain type is an integer count of a
-    // unit, so this is also where a value that means nothing to the operation is
-    // refused instead of coerced into one: `volume_used` is a *consumption*, and
-    // a negative one is not a smaller consumption but the inverse operation —
-    // left alone it flips the subtraction in `storage::apply_checkout` and adds
-    // stock (#112). The sign is checked on the raw `double` because the cast
-    // below truncates toward zero, so `-0.5` would otherwise reach storage as a
-    // well-formed `0` and be accepted as a no-op.
-    //
-    // The same truncation is how a *positive* value the domain cannot represent
-    // becomes a smaller one: `0.04 mL` truncates to raw `0`, so the check-in
-    // answered OK and subtracted nothing (#111). A `double` cannot say what a
-    // fraction was meant to be — `1.001 mL` is 1001 µL, but its nearest double
-    // is not — so a fractional count is refused rather than rounded: the
-    // rounding policy is a separate decision, and this is the wrong layer to
-    // invent one in. A whole number of the *stated* unit is representable at
-    // this layer; whether the sample's unit can hold it is settled by
-    // `storage::apply_checkout`.
+    // Wire quantities are whole counts of their stated unit. Check the double
+    // before conversion: truncation would silently lose stock, and nonfinite or
+    // out-of-range floating-to-integer conversions have undefined behavior.
+    [[nodiscard]] std::int64_t parse_quantity(double amount, std::string_view field) {
+      if (!std::isfinite(amount)) {
+        throw storage::ConstraintViolation(std::string(field) + ": must be finite");
+      }
+      if (amount < 0) {
+        throw storage::ConstraintViolation(std::string(field) + ": must not be negative");
+      }
+      if (amount != std::trunc(amount)) {
+        throw storage::ConstraintViolation(std::string(field) + ": must be a whole number");
+      }
+      // int64 max rounds UP to 2^63 as a double. Use the exact exclusive bound
+      // rather than allowing that rounded value through a <= max comparison.
+      if (amount >= 0x1p63) {
+        throw storage::ConstraintViolation(std::string(field) + ": is too large to represent");
+      }
+      return static_cast<std::int64_t>(amount);
+    }
+
+    // A unitless Volume cannot be represented; both optional fields travel together.
     [[nodiscard]] std::optional<core::Volume>
     parse_volume_used(const fmgr::v1::CheckoutSampleRequest& req) {
       if (req.has_volume_used() != req.has_volume_unit()) {
@@ -183,28 +177,9 @@ namespace fmgr::server {
       if (!req.has_volume_used()) {
         return std::nullopt;
       }
-      if (req.volume_used() < 0) {
-        throw storage::ConstraintViolation("volume_used: must not be negative");
-      }
-      // `std::trunc` on the wire value, not on the cast: comparing the double
-      // with its own truncation is exact, so a value the caller stated as a
-      // whole number is never refused by floating-point drift.
-      const double amount = req.volume_used();
-      if (amount != std::trunc(amount)) {
-        std::ostringstream message;
-        message << "volume_used: must be a whole number of " << req.volume_unit() << " (got "
-                << amount << ")";
-        throw storage::ConstraintViolation(message.str());
-      }
-      // The cast below is undefined for a value outside the raw count's range,
-      // so the range is part of what "representable" means here. It is a
-      // different failure from the truncation above and says so.
-      if (amount >= static_cast<double>(std::numeric_limits<std::int64_t>::max())) {
-        throw storage::ConstraintViolation("volume_used: is too large to represent");
-      }
+      const auto amount = parse_quantity(req.volume_used(), "volume_used");
       try {
-        return core::Volume::from_raw(static_cast<std::int64_t>(amount),
-                                      core::parse_volume_unit(req.volume_unit()));
+        return core::Volume::from_raw(amount, core::parse_volume_unit(req.volume_unit()));
       } catch (const std::exception&) {
         // A unit this build does not know is the caller's error. Without this
         // the parser's std::invalid_argument reached the generic handler and
@@ -291,7 +266,7 @@ namespace fmgr::server {
     // The wire -> domain half of UpdateSample: copy every optional field of the
     // request onto the stored row, clearing the ones the request does not carry
     // (the RPC sends the whole sample, so an absent field is a removal). Mechanical
-    // by design — no PHI, no validation, no transaction — and it exists as a
+    // by design — no PHI or transaction — and it exists as a
     // function for the reason the cognitive-complexity check kept pointing at:
     // UpdateSample is where five PHI fixes have landed (#71, #79, #82, #83, #87),
     // which left a sequence of unrelated concerns in one body. `name` and
@@ -313,7 +288,7 @@ namespace fmgr::server {
                                     : std::nullopt;
       existing.volume_value =
           wire.has_volume_value()
-              ? std::optional<std::int64_t>{static_cast<std::int64_t>(wire.volume_value())}
+              ? std::optional<std::int64_t>{parse_quantity(wire.volume_value(), "volume_value")}
               : std::nullopt;
       existing.volume_unit =
           wire.has_volume_unit()
@@ -321,7 +296,7 @@ namespace fmgr::server {
               : std::nullopt;
       existing.mass_value =
           wire.has_mass_value()
-              ? std::optional<std::int64_t>{static_cast<std::int64_t>(wire.mass_value())}
+              ? std::optional<std::int64_t>{parse_quantity(wire.mass_value(), "mass_value")}
               : std::nullopt;
       existing.mass_unit =
           wire.has_mass_unit()
@@ -689,7 +664,7 @@ namespace fmgr::server {
                                 : std::nullopt,
           .volume_value =
               req->has_volume_value()
-                  ? std::optional<std::int64_t>{static_cast<std::int64_t>(req->volume_value())}
+                  ? std::optional<std::int64_t>{parse_quantity(req->volume_value(), "volume_value")}
                   : std::nullopt,
           .volume_unit =
               req->has_volume_unit()
@@ -697,7 +672,7 @@ namespace fmgr::server {
                   : std::nullopt,
           .mass_value =
               req->has_mass_value()
-                  ? std::optional<std::int64_t>{static_cast<std::int64_t>(req->mass_value())}
+                  ? std::optional<std::int64_t>{parse_quantity(req->mass_value(), "mass_value")}
                   : std::nullopt,
           .mass_unit = req->has_mass_unit()
                            ? std::optional<core::MassUnit>{core::parse_mass_unit(req->mass_unit())}
