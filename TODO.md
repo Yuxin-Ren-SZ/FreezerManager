@@ -804,7 +804,12 @@ real `freezerd` safely until G0.1–G0.3 land.
     SystemAdmin, `UNAUTHENTICATED` without a session, and the MFA-pending
     case; `RpcRegistryHoldsExactlyTheServedRpcs` passes.
 
-- [ ] **G0.3. Serve the SPA from `freezerd`, with browser security headers.**
+- [x] **G0.3. Serve the SPA from `freezerd`, with browser security headers.**
+  Delivered by #44 / PR #168 (`41d3cf3`). The owner review's CORS reflection,
+  cwd file serving and plaintext request-body spill findings are fixed; Linux
+  LSan and clang-tidy passed. TSan retains pure path/config tests and excludes
+  the three upstream Drogon HTTP integration binaries. Bare `/api` handling
+  (#186) and configured-root dotfile hardening (#196) remain separate P2s.
   - When `FMGR_WEB_ROOT=<dir>` is set, the REST listener serves the built SPA.
     Files are served as they are. Any other `GET` outside `/api/`,
     `/healthz` and `/metrics` returns `index.html` for client-side routing.
@@ -1238,7 +1243,7 @@ its own server item before a G task can be written:
   `parent_sample_id` filter);
 - the SQLite amber banner (PRD §20; no server signal exists).
 
-### Order of the remaining work (revised 2026-10-22)
+### Order of the remaining work (revised 2026-10-26)
 
 The original nine-wave table no longer described the project: the screens
 (G3.1–G3.6, G3.9) ran ahead of G0.2, G0.3 and G2.1, and a demo-readiness
@@ -1249,16 +1254,34 @@ workers at a time; lock and file conflicts are checked per wave.
 | Wave | Tasks | Done when |
 |---|---|---|
 | **A — complete** — a demo you can start and sign into | G2.1 (#145), #139/#141, #138/#143 and #142 are merged; #164/#167 supplies the shared demo KEK and records the re-verification. | One command from #142 starts a seeded demo. A user signs in with TOTP, reloads without losing the session, and completes lookup → detail → check-out → box view. |
-| **B** — deployable, with a real landing page | G0.3 (#44, PR #168 requires sanitizer/lint and security fixes); G4.1 (#133, `lock:proto`) → G4.2 (#134); #128 (MFA brute force) is merged, while #148 part 1 (open watch streams), #178 (limiter coverage) and #179 (MFA replay/backoff) remain required before non-loopback deployment; G3.7 (CSV import wizard) | `freezerd` alone serves the SPA with its security headers, `/` is the dashboard, and the deployment auth gates are closed. |
+| **B** — deployable, with a real landing page | G0.3 (#44 / #168) and limiter coverage (#178 / #190) are merged; G4.1 (#133, `lock:proto`) → G4.2 (#134); #128 (MFA brute force) is merged, while #148 part 1 (#194, open watch streams) and #179 (MFA replay/backoff) remain required before non-loopback deployment; G3.7 (CSV import wizard) | `freezerd` alone serves the SPA with its security headers, `/` is the dashboard, and the deployment auth gates are closed. |
 | **C** — admin parity, then the gates | G3.8, G3.10, G3.11 → G3.12, G3.13 → G5.1 (`lock:ci`) → G5.2, G5.3 | M4 exit: every G item ticked except the blocked G2.2/G2.3. |
 
 **P2 correctness backlog:** one item per wave when a worker frees up, oldest
-first, starting with #144. #111/#135 is merged as `53cbe15`; the draft/ESLint
+first; #144 is merged as PR #195 (`d7b8c57`), so #130 is next. #111/#135 is
+merged as `53cbe15`; the draft/ESLint
 blocker is resolved. The 2026-10-22 review fixes (#169–#172, #187) are merged.
-The owner resumed implementation in small sections: #44, #178 and #181 first
-(#181 merged as PR #189), then a bounded #180 correctness slice. #133 still
-follows #44. **New findings** are filed, not fixed in the current wave, unless they
+The carry-over section is merged: #44 / #168 (`41d3cf3`), #178 / #190
+(`fee540b`) and #181 / #189 (`0dbad1b`). The sprint started on 2026-10-26 and
+resumed on 2026-10-27 plans nine
+smaller-model subagents across bounded waves, at most three active: independent
+carry-over reviews and #144, then #180's server (#192) and web (#193) modules,
+then the watch revalidation ADR (#198), implementation (#194, #148 part 1)
+and paired client #182. #133 is
+unblocked by #44 but remains outside this sprint. **New findings** are filed,
+not fixed in the current wave, unless they
 are P0 or the owner explicitly changes the scope.
+
+The #180 web module (#193 / #200, `fc251ec`) is merged, including a review
+revision that refuses decimal input rounded by JavaScript Number conversion.
+Its server module #192 remains required before closing the parent. New P2s
+#196 (dotfiles) and #202 (an invalid-enum fixture under strict UBSan) are queued
+separately.
+
+The watch protocol ADR (#198 / #201, `a526645`) and client stream/session fix
+(#182 / #203, `337f9b6`) are merged. Server watch revalidation #194 remains
+required. Cookie-response ordering across overlapping logout/login calls is a
+separate P2 (#204).
 
 ---
 
