@@ -165,7 +165,10 @@ redesign are separate work.
 
 The existing bridge has already committed HTTP 200 for an open SSE stream. A
 non-OK gRPC finish produces `event: error` with the existing RESTerror JSON
-envelope in `data:`, then closes the stream. Revocation/expiry uses
+envelope in `data:`, then closes the HTTP response body. For HTTP/1.1 chunked
+responses, EOF is the zero-size chunk followed by the terminated trailer section;
+the keepalive TCP connection may remain open. Drogon's async streaming does not
+support a request with `Connection: close`. Revocation/expiry uses
 `{"code":"UNAUTHENTICATED","message":"..."}`; permission loss uses
 `PERMISSION_DENIED`. Preserve the special `MFA_REQUIRED` envelope code and avoid
 client parsing of message text. Disconnect/cancellation may permit closure only.
@@ -229,9 +232,11 @@ use synthetic data and bounded waits; no PHI or credential values enter logs.
 6. Extend [rest_gateway_integration_test.cpp](../../tests/integration/rest_gateway_integration_test.cpp)
    raw-socket SSE tests: receive an initial payload, log out/revoke the opening
    browser session, then assert a terminal error frame with RESTerror
-   UNAUTHENTICATED and EOF. The existing helper returns on a needle; extend the
-   test helper to distinguish a terminal frame, peer EOF and timeout. A timeout
-   does not prove closure. Include permission failure and preserve positive feed
+   UNAUTHENTICATED and HTTP response-body EOF. Parse the chunk framing and require
+   the zero-size chunk plus terminated trailers after the terminal JSON frame.
+   Distinguish body EOF, peer TCP EOF and timeout; a timeout, socket reset or
+   client close does not prove body closure. This clarification was accepted in
+   [#194](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/194#issuecomment-6452607712). Include permission failure and preserve positive feed
    behavior; generic client disconnect can be tested as closure-only.
 7. Exercise shared provider cache/gate logic concurrently in unit tests using
    synchronized starts and joined threads; keep limiter installation lifetime

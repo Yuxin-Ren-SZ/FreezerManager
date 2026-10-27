@@ -15,6 +15,7 @@
 #include "rest/RestGateway.h"
 #include "server/FreezerServer.h"
 #include "storage/IdentityTraits.h"
+#include "storage/RoleTraits.h"
 #include "storage/sqlite/AuditRepositories.h"
 #include "storage/sqlite/BoxGeometryRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
@@ -42,6 +43,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -173,6 +175,26 @@ namespace fmgr::test {
         provider_.reset();
         backend_.reset();
         remove_db();
+      }
+
+      void remove_watch_permission(core::Permission permission) {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::RolePermission>().soft_delete(
+            core::RolePermissionId{.role_id = core::builtin_role_id(core::RoleKind::SystemAdmin),
+                                   .permission = permission},
+            storage::MutationContext{.request_id = "sse-permission-loss",
+                                     .reason = "synthetic watch regression"});
+        txn->commit();
+      }
+
+      void restore_watch_permission(core::Permission permission) {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::RolePermission>().insert(
+            core::RolePermission{.role_id = core::builtin_role_id(core::RoleKind::SystemAdmin),
+                                 .permission = permission},
+            storage::MutationContext{.request_id = "sse-permission-restore",
+                                     .reason = "restore synthetic watch regression grant"});
+        txn->commit();
       }
 
     private:
@@ -1277,6 +1299,205 @@ namespace fmgr::test {
       trig.join();
       ::close(fd);
       return acc;
+    }
+
+    struct SseTerminalResult {
+      std::string bytes;
+      bool received_opening_marker{false};
+      bool body_eof{false};
+      bool peer_eof{false};
+      std::string body;
+    };
+
+    // Decode complete chunks only. HTTP body EOF requires the zero chunk and
+    // complete trailer terminator; a socket timeout or reset cannot supply it.
+    void decode_sse_chunks(SseTerminalResult& result) {
+      result.body.clear();
+      const auto headers_end = result.bytes.find("\r\n\r\n");
+      if (headers_end == std::string::npos) {
+        return;
+      }
+      auto pos = headers_end + 4;
+      while (pos < result.bytes.size()) {
+        const auto line_end = result.bytes.find("\r\n", pos);
+        if (line_end == std::string::npos) {
+          return;
+        }
+        std::size_t chunk_size = 0;
+        const auto size = std::from_chars(result.bytes.data() + pos, result.bytes.data() + line_end,
+                                          chunk_size, 16);
+        if (size.ec != std::errc{} || size.ptr != result.bytes.data() + line_end) {
+          return;
+        }
+        pos = line_end + 2;
+        if (chunk_size == 0) {
+          result.body_eof = result.bytes.compare(pos, 2, "\r\n") == 0 ||
+                            result.bytes.find("\r\n\r\n", pos) != std::string::npos;
+          return;
+        }
+        if (chunk_size > result.bytes.size() - pos || result.bytes.size() - pos - chunk_size < 2) {
+          return;
+        }
+        if (result.bytes.compare(pos + chunk_size, 2, "\r\n") != 0) {
+          return;
+        }
+        result.body.append(result.bytes, pos, chunk_size);
+        pos += chunk_size + 2;
+      }
+    }
+
+    struct SseTerminalActions {
+      std::function<void()> append_marker;
+      std::function<void()> invalidate;
+    };
+
+    // Phased raw client: mutate only after HTTP admission, invalidate only after
+    // a payload is received, and read through the error frame to HTTP body EOF.
+    // Keepalive may retain the socket after the terminal chunk. Drogon refuses
+    // async streaming for Connection: close, so TCP EOF is recorded separately.
+    [[nodiscard]] SseTerminalResult sse_read_to_eof(const std::string& path, const Headers& headers,
+                                                    const std::string& opening_marker,
+                                                    const SseTerminalActions& actions) {
+      SseTerminalResult result;
+      const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+      if (fd < 0) {
+        return result;
+      }
+      sockaddr_in addr{};
+      addr.sin_family = AF_INET;
+      addr.sin_port = htons(RestGatewayEnv::instance->port());
+      addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+        ::close(fd);
+        return result;
+      }
+      std::string request = "GET " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n";
+      for (const auto& [name, value] : headers) {
+        request += name + ": " + value + "\r\n";
+      }
+      request += "Accept: text/event-stream\r\nConnection: keep-alive\r\n\r\n";
+      (void)::send(fd, request.data(), request.size(), 0);
+      timeval timeout{.tv_sec = 0, .tv_usec = 200000};
+      (void)::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+      const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+      bool appended = false;
+      std::array<char, 4096> buffer{};
+      while (std::chrono::steady_clock::now() < deadline) {
+        const auto size = ::recv(fd, buffer.data(), buffer.size(), 0);
+        if (size == 0) {
+          result.peer_eof = true;
+          break;
+        }
+        if (size < 0) {
+          continue; // A receive timeout is never evidence of EOF.
+        }
+        result.bytes.append(buffer.data(), static_cast<std::size_t>(size));
+        decode_sse_chunks(result);
+        if (!appended && result.bytes.find("\r\n\r\n") != std::string::npos) {
+          appended = true;
+          actions.append_marker();
+        }
+        if (!result.received_opening_marker &&
+            result.body.find(opening_marker) != std::string::npos) {
+          result.received_opening_marker = true;
+          actions.invalidate();
+        }
+        if (result.body_eof) {
+          break;
+        }
+      }
+      ::close(fd);
+      return result;
+    }
+
+    enum class SseFeed { Sample, Audit };
+    enum class SseInvalidation { Logout, PermissionLoss };
+
+    void expect_sse_terminal(SseFeed feed, SseInvalidation change) {
+      const bool sample = feed == SseFeed::Sample;
+      const bool permission_loss = change == SseInvalidation::PermissionLoss;
+      auto* env = RestGatewayEnv::instance;
+      const auto session = browser_login(env->kAdminEmail, env->kPassword);
+      ASSERT_EQ(session.login.status, 200);
+      const std::string test_name = ::testing::UnitTest::GetInstance()->current_test_info()->name();
+      std::string item_type;
+      if (sample) {
+        const auto response = post_with(
+            "/api/v1/item-type/create",
+            nlohmann::json{{"lab_id", env->kLabId}, {"name", "terminal-watch-type-" + test_name}}
+                .dump(),
+            session.headers());
+        ASSERT_EQ(response.status, 200);
+        item_type = response.body.at("item_type").at("id").get<std::string>();
+      }
+      const std::string marker = "terminal-watch-marker-" + test_name;
+      const auto append = [&] {
+        const nlohmann::json mutation =
+            sample ? nlohmann::json{{"lab_id", env->kLabId},
+                                    {"item_type_id", item_type},
+                                    {"name", marker}}
+                   : nlohmann::json{{"name", marker}, {"contact", "synthetic@example.com"}};
+        const auto response = post_with(sample ? "/api/v1/sample/create" : "/api/v1/lab/create",
+                                        mutation.dump(), session.headers());
+        EXPECT_EQ(response.status, 200);
+      };
+      struct PermissionRestore {
+        RestGatewayEnv& env;
+        std::optional<core::Permission> removed;
+        ~PermissionRestore() {
+          if (removed.has_value()) {
+            try {
+              env.restore_watch_permission(*removed);
+            } catch (...) {
+              ADD_FAILURE() << "failed to restore synthetic watch permission";
+            }
+          }
+        }
+      } restore{.env = *env, .removed = std::nullopt};
+      const auto invalidate = [&] {
+        if (permission_loss) {
+          const auto permission =
+              sample ? core::Permission::SampleRead : core::Permission::LabProvision;
+          env->remove_watch_permission(permission);
+          restore.removed = permission;
+        } else {
+          EXPECT_EQ(post_with("/api/v1/auth/browser/logout", "{}", session.headers()).status, 200);
+        }
+      };
+      // Pin the cursor before appending: the gRPC opening read can race the HTTP
+      // response headers, but it must still include our uniquely named marker.
+      const auto since = std::chrono::duration_cast<std::chrono::microseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+      const std::string path = sample ? "/api/v1/sample/watch?lab_id=" + env->kLabId + "&since="
+                                      : "/api/v1/audit/watch?since=";
+      const auto result =
+          sse_read_to_eof(path + std::to_string(since), session.cookie_only(), marker,
+                          SseTerminalActions{.append_marker = append, .invalidate = invalidate});
+      ASSERT_TRUE(result.received_opening_marker);
+      EXPECT_NE(result.body.find("event: error\ndata: "), std::string::npos);
+      const auto error_start = result.body.find("event: error\ndata: ");
+      ASSERT_NE(error_start, std::string::npos);
+      const auto json_start = result.body.find("data: ", error_start) + 6;
+      const auto json_end = result.body.find('\n', json_start);
+      const auto error =
+          nlohmann::json::parse(result.body.substr(json_start, json_end - json_start));
+      EXPECT_EQ(error.at("code"), permission_loss ? "PERMISSION_DENIED" : "UNAUTHENTICATED");
+      EXPECT_TRUE(result.body_eof)
+          << "terminal frame without HTTP body EOF before bounded deadline";
+    }
+
+    TEST(RestGatewaySse, SampleWatchLogoutEmitsTerminalUnauthenticatedAndBodyEof) {
+      expect_sse_terminal(SseFeed::Sample, SseInvalidation::Logout);
+    }
+    TEST(RestGatewaySse, AuditWatchLogoutEmitsTerminalUnauthenticatedAndBodyEof) {
+      expect_sse_terminal(SseFeed::Audit, SseInvalidation::Logout);
+    }
+    TEST(RestGatewaySse, SampleWatchPermissionLossEmitsTerminalPermissionDeniedAndBodyEof) {
+      expect_sse_terminal(SseFeed::Sample, SseInvalidation::PermissionLoss);
+    }
+    TEST(RestGatewaySse, AuditWatchAdminLossEmitsTerminalPermissionDeniedAndBodyEof) {
+      expect_sse_terminal(SseFeed::Audit, SseInvalidation::PermissionLoss);
     }
 
     // Bearer variant kept for the tests that predate the browser session.
