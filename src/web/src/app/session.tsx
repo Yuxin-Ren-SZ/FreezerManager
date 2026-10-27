@@ -100,8 +100,8 @@ export interface SessionValue {
    */
   refresh: () => Promise<SessionReload>;
   /**
-   * Ends the session: revokes it server-side, drops the query cache and returns
-   * the app to the signed-out state. The server call is best-effort — a network
+   * Ends local state and clears the query cache immediately, then asks the
+   * server to revoke the session. The server call is best-effort — a network
    * failure must not leave the user apparently signed in.
    */
   signOut: () => Promise<void>;
@@ -236,15 +236,17 @@ export function SessionProvider({ loadSession, children }: SessionProviderProps)
   const signOut = useCallback(async () => {
     // Anything already in flight belongs to the session being ended.
     runId.current += 1;
+    // End protected UI and cached payloads before a slow or hanging request
+    // can leave LoginScreen seeing the old authenticated state.
+    queryClient?.clear();
+    setState(signedOutState());
     try {
       await signOutOfBrowserSession();
     } catch {
-      // The local session still ends. The cookie may outlive this call, but the
-      // next request that uses it gets a 401 and `expire()` finishes the job —
-      // leaving the user apparently signed in would be worse.
+      // Local state stays signed out even when the server is unreachable.
+      // The cookie/server session may remain until revocation succeeds or it
+      // expires; a failed request does not prove that revocation happened.
     }
-    queryClient?.clear();
-    setState(signedOutState());
   }, [queryClient]);
 
   const expire = useCallback(

@@ -55,7 +55,9 @@ export function UserMenu() {
               // navigation, and `signOut()` ends the local state even when the
               // server cannot be reached.
               void signOut();
-              void navigate(LOGIN_PATH);
+              // Commit this explicit destination with the local state change,
+              // before the protected-route guard can add an interrupted URL.
+              void navigate(LOGIN_PATH, { replace: true, flushSync: true });
             }}
           >
             {t('userMenu.signOut')}

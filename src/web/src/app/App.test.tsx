@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { act, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, RouterProvider, createMemoryRouter } from 'react-router-dom';
+import { useQueryClient, type QueryClient } from '@tanstack/react-query';
+import { createAppRoutes } from './router';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -565,6 +567,99 @@ describe('session lifecycle (G2.1)', () => {
       await screen.findByRole('heading', { level: 1, name: authCopy.title }),
     ).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Something went wrong' })).not.toBeInTheDocument();
+  });
+
+  it.each(['UNAUTHENTICATED', 'MFA_REQUIRED'])(
+    'clears protected data and routes a terminal SSE %s without reconnecting',
+    async (code) => {
+      let queryClient: QueryClient | undefined;
+      function CacheProbe() {
+        queryClient = useQueryClient();
+        return null;
+      }
+      const path = `/labs/${LAB_ID}/samples`;
+      const router = createMemoryRouter(createAppRoutes(), { initialEntries: [path] });
+      render(
+        <AppProviders loadSession={() => Promise.resolve(user(ALL_PERMISSIONS))}>
+          <CacheProbe />
+          <RouterProvider router={router} />
+        </AppProviders>,
+      );
+      await screen.findByRole('heading', { name: samplesCopy.title });
+      await waitFor(() => {
+        expect(queryClient?.getQueryCache().getAll().length).toBeGreaterThan(0);
+      });
+      const source = FakeEventSource.current();
+      const count = FakeEventSource.all().length;
+
+      act(() => {
+        source.serverError({ code, message: 'authentication needed' });
+      });
+
+      const destination = code === 'MFA_REQUIRED' ? '/login/mfa' : '/login';
+      await waitFor(() => {
+        expect(router.state.location.pathname).toBe(destination);
+      });
+      expect(router.state.location.search).toBe(
+        `?next=${encodeURIComponent(path)}${code === 'UNAUTHENTICATED' ? '&expired=1' : ''}`,
+      );
+      expect(queryClient?.getQueryCache().getAll()).toHaveLength(0);
+      expect(source.closed).toBe(true);
+      vi.useFakeTimers();
+      try {
+        act(() => {
+          vi.advanceTimersByTime(60_000);
+        });
+        expect(FakeEventSource.all()).toHaveLength(count);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it('signs out before a delayed logout reply without rendering Home or retaining next', async () => {
+    let finishLogout: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      finishLogout = resolve;
+    });
+    let logoutCalls = 0;
+    server.use(
+      http.post('/api/v1/auth/browser/logout', async () => {
+        logoutCalls += 1;
+        await pending;
+        return HttpResponse.json({});
+      }),
+    );
+    const { router, container } = renderApp({
+      path: `/labs/${LAB_ID}/samples`,
+      user: user(ALL_PERMISSIONS),
+    });
+    await screen.findByRole('heading', { name: samplesCopy.title });
+    let sawHome = false;
+    const observer = new MutationObserver(() => {
+      if (screen.queryByRole('heading', { name: homeCopy.title })) sawHome = true;
+    });
+    observer.observe(container, { childList: true, subtree: true });
+    try {
+      await userEvent.click(await screen.findByRole('button', { name: 'Ada Lovelace' }));
+      await userEvent.click(await screen.findByRole('menuitem', { name: 'Sign out' }));
+      await waitFor(() => {
+        expect(logoutCalls).toBe(1);
+      });
+      expect(router.state.location.pathname).toBe('/login');
+      expect(router.state.location.search).toBe('');
+      await screen.findByRole('heading', { name: authCopy.title });
+      expect(sawHome).toBe(false);
+      act(() => {
+        finishLogout?.();
+      });
+      expect(router.state.location.pathname).toBe('/login');
+      expect(router.state.location.search).toBe('');
+      expect(sawHome).toBe(false);
+    } finally {
+      finishLogout?.();
+      observer.disconnect();
+    }
   });
 
   it('marks the session expired when a mutation returns 401', async () => {
