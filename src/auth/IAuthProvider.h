@@ -39,9 +39,15 @@ namespace fmgr::auth {
     virtual AuthToken authenticate(const AuthCredentials& creds, const ClientInfo& client) = 0;
 
     // Resolve a bearer token to a per-request SessionContext.
-    // This call is read-only and must not open a write transaction.
+    // Counts as user activity; implementations may update session last_seen_at.
     // Throws: TokenExpired, TokenRevoked, InvalidCredentials.
     virtual SessionContext validate_token(std::string_view bearer_token) = 0;
+
+    // Validate current credentials, MFA and grants without recording activity or
+    // opening a write transaction. Background polling must use this operation so
+    // it cannot renew idle expiry. In-memory permission caching is permitted.
+    // Throws the same credential errors as validate_token().
+    virtual SessionContext revalidate_token(std::string_view bearer_token) = 0;
 
     // Verify a TOTP code for the given session.
     // On success, sets the session's mfa_complete flag in storage.

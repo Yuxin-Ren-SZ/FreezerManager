@@ -38,8 +38,6 @@
 #include <array>
 #include <atomic>
 #include <barrier>
-#include <thread>
-#include <vector>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -47,8 +45,10 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace fmgr::rpc {
   namespace {
@@ -880,19 +880,24 @@ namespace fmgr::rpc {
       ASSERT_NO_THROW((void)middleware_->authenticate(audit, CredentialRule::TokenAndMfa));
       std::barrier start(5);
       std::atomic<int> successes{0};
+      std::atomic<int> failures{0};
       std::vector<std::thread> readers;
       for (int i = 0; i < 4; ++i) {
         readers.emplace_back([&] {
           start.arrive_and_wait();
           for (int tick = 0; tick < 10; ++tick) {
             try {
-              const auto sample_ctx = middleware_->reauthorize(sample, core::Permission::SampleRead, kLabA);
-              const auto audit_ctx = middleware_->reauthenticate(audit, CredentialRule::TokenAndMfa);
+              const auto sample_ctx =
+                  middleware_->reauthorize(sample, core::Permission::SampleRead, kLabA);
+              const auto audit_ctx =
+                  middleware_->reauthenticate(audit, CredentialRule::TokenAndMfa);
               if (sample_ctx.has_for_lab(kLabA, core::Permission::SampleRead) &&
                   audit_ctx.has_global(core::Permission::LabProvision)) {
                 ++successes;
               }
-            } catch (...) {} // Assert the joined success count below.
+            } catch (...) {
+              ++failures;
+            }
           }
         });
       }
@@ -901,8 +906,11 @@ namespace fmgr::rpc {
         reader.join();
       }
       EXPECT_EQ(successes, 40);
-      EXPECT_THROW((void)middleware_->authorize(sample, core::Permission::SampleRead, kLabA), auth::RateLimited);
-      EXPECT_THROW((void)middleware_->authenticate(audit, CredentialRule::TokenAndMfa), auth::RateLimited);
+      EXPECT_EQ(failures, 0);
+      EXPECT_THROW((void)middleware_->authorize(sample, core::Permission::SampleRead, kLabA),
+                   auth::RateLimited);
+      EXPECT_THROW((void)middleware_->authenticate(audit, CredentialRule::TokenAndMfa),
+                   auth::RateLimited);
     }
 
     TEST_F(AuthMiddlewareTest, RevalidationChecksRegistryBeforeInvalidCredentialsOrLimiter) {
@@ -912,13 +920,24 @@ namespace fmgr::rpc {
       AuthMiddleware::register_rpc("revalidation.Credential", RpcGate::token_and_mfa());
       const RpcCall permission{.bearer_token = "invalid", .method = "revalidation.Permission"};
       const RpcCall credential{.bearer_token = "invalid", .method = "revalidation.Credential"};
-      EXPECT_THROW((void)middleware_->reauthorize(permission, core::Permission::AuditRead), RpcRegistryMismatch);
-      EXPECT_THROW((void)middleware_->reauthorize(credential, core::Permission::SampleRead), RpcRegistryMismatch);
-      EXPECT_THROW((void)middleware_->reauthenticate(permission, CredentialRule::TokenAndMfa), RpcRegistryMismatch);
-      EXPECT_THROW((void)middleware_->reauthenticate(credential, CredentialRule::TokenOnly), RpcRegistryMismatch);
-      EXPECT_THROW((void)middleware_->reauthorize(RpcCall{.bearer_token = "invalid", .method = "revalidation.Missing"}, core::Permission::SampleRead), RpcRegistryMismatch);
-      EXPECT_THROW((void)middleware_->reauthenticate(RpcCall{.bearer_token = "invalid", .method = "revalidation.Missing"}, CredentialRule::TokenAndMfa), RpcRegistryMismatch);
-      EXPECT_THROW((void)middleware_->reauthenticate(RpcCall{}, CredentialRule::None), std::logic_error);
+      EXPECT_THROW((void)middleware_->reauthorize(permission, core::Permission::AuditRead),
+                   RpcRegistryMismatch);
+      EXPECT_THROW((void)middleware_->reauthorize(credential, core::Permission::SampleRead),
+                   RpcRegistryMismatch);
+      EXPECT_THROW((void)middleware_->reauthenticate(permission, CredentialRule::TokenAndMfa),
+                   RpcRegistryMismatch);
+      EXPECT_THROW((void)middleware_->reauthenticate(credential, CredentialRule::TokenOnly),
+                   RpcRegistryMismatch);
+      EXPECT_THROW((void)middleware_->reauthorize(
+                       RpcCall{.bearer_token = "invalid", .method = "revalidation.Missing"},
+                       core::Permission::SampleRead),
+                   RpcRegistryMismatch);
+      EXPECT_THROW((void)middleware_->reauthenticate(
+                       RpcCall{.bearer_token = "invalid", .method = "revalidation.Missing"},
+                       CredentialRule::TokenAndMfa),
+                   RpcRegistryMismatch);
+      EXPECT_THROW((void)middleware_->reauthenticate(RpcCall{}, CredentialRule::None),
+                   std::logic_error);
     }
 
     TEST_F(AuthMiddlewareTest, RevalidationEnforcesLiveMfaAndTokenOnlyException) {
@@ -931,8 +950,10 @@ namespace fmgr::rpc {
         txn->repo<core::Session>().update(session, test_ctx());
         txn->commit();
       }
-      EXPECT_THROW((void)middleware_->reauthorize(call, core::Permission::SampleRead, kLabA), auth::MfaRequired);
-      EXPECT_THROW((void)middleware_->reauthenticate(call, CredentialRule::TokenAndMfa), auth::MfaRequired);
+      EXPECT_THROW((void)middleware_->reauthorize(call, core::Permission::SampleRead, kLabA),
+                   auth::MfaRequired);
+      EXPECT_THROW((void)middleware_->reauthenticate(call, CredentialRule::TokenAndMfa),
+                   auth::MfaRequired);
       EXPECT_FALSE(middleware_->reauthenticate(call, CredentialRule::TokenOnly).mfa_complete);
     }
 
@@ -942,26 +963,36 @@ namespace fmgr::rpc {
       CapturingTransaction initial;
       AuthMiddleware::inject_rls_vars(initial, opening);
       EXPECT_EQ(initial.captured.at("current_lab_ids"), kLabA.to_string());
-      EXPECT_THROW((void)middleware_->reauthorize(call, core::Permission::SampleRead, kLabB), auth::PermissionDenied);
-      EXPECT_THROW((void)middleware_->reauthorize(call, core::Permission::SampleRead), auth::PermissionDenied);
+      EXPECT_THROW((void)middleware_->reauthorize(call, core::Permission::SampleRead, kLabB),
+                   auth::PermissionDenied);
+      EXPECT_THROW((void)middleware_->reauthorize(call, core::Permission::SampleRead),
+                   auth::PermissionDenied);
       {
         auto txn = backend_->begin(storage::IsolationLevel::Serializable);
-        txn->repo<core::LabMembership>().soft_delete(core::LabMembershipId{.user_id = kMemberId, .lab_id = kLabA}, test_ctx());
+        txn->repo<core::LabMembership>().soft_delete(
+            core::LabMembershipId{.user_id = kMemberId, .lab_id = kLabA}, test_ctx());
         txn->commit();
       }
-      EXPECT_THROW((void)middleware_->reauthorize(call, core::Permission::SampleRead, kLabA), auth::PermissionDenied);
+      EXPECT_THROW((void)middleware_->reauthorize(call, core::Permission::SampleRead, kLabA),
+                   auth::PermissionDenied);
       CapturingTransaction fresh;
-      AuthMiddleware::inject_rls_vars(fresh, middleware_->reauthenticate(call, CredentialRule::TokenAndMfa));
+      AuthMiddleware::inject_rls_vars(
+          fresh, middleware_->reauthenticate(call, CredentialRule::TokenAndMfa));
       EXPECT_EQ(fresh.captured.at("current_user_id"), kMemberId.to_string());
       EXPECT_TRUE(fresh.captured.at("current_lab_ids").empty());
       const RpcCall admin{.bearer_token = sysadmin_token_.plaintext_token, .method = ""};
-      ASSERT_TRUE(middleware_->reauthorize(admin, core::Permission::LabProvision).has_global(core::Permission::LabProvision));
+      ASSERT_TRUE(middleware_->reauthorize(admin, core::Permission::LabProvision)
+                      .has_global(core::Permission::LabProvision));
       {
         auto txn = backend_->begin(storage::IsolationLevel::Serializable);
-        txn->repo<core::RolePermission>().soft_delete(core::RolePermissionId{.role_id = core::builtin_role_id(core::RoleKind::SystemAdmin), .permission = core::Permission::LabProvision}, test_ctx());
+        txn->repo<core::RolePermission>().soft_delete(
+            core::RolePermissionId{.role_id = core::builtin_role_id(core::RoleKind::SystemAdmin),
+                                   .permission = core::Permission::LabProvision},
+            test_ctx());
         txn->commit();
       }
-      EXPECT_THROW((void)middleware_->reauthorize(admin, core::Permission::LabProvision), auth::PermissionDenied);
+      EXPECT_THROW((void)middleware_->reauthorize(admin, core::Permission::LabProvision),
+                   auth::PermissionDenied);
     }
 
   } // namespace

@@ -228,10 +228,19 @@ namespace fmgr::auth {
   // ---- Public: validate_token ----
 
   SessionContext LocalAuthProvider::validate_token(std::string_view bearer_token) {
+    return validate_token_impl(bearer_token, ActivityMode::Record);
+  }
+
+  SessionContext LocalAuthProvider::revalidate_token(std::string_view bearer_token) {
+    return validate_token_impl(bearer_token, ActivityMode::Preserve);
+  }
+
+  SessionContext LocalAuthProvider::validate_token_impl(std::string_view bearer_token,
+                                                        ActivityMode activity) {
     if (bearer_token.starts_with("fmgr_pat_")) {
       return validate_api_token(bearer_token);
     }
-    return validate_session_token(bearer_token);
+    return validate_session_token(bearer_token, activity);
   }
 
   // ---- Public: verify_totp ----
@@ -440,7 +449,8 @@ namespace fmgr::auth {
 
   // ---- Private: validate_session_token ----
 
-  SessionContext LocalAuthProvider::validate_session_token(std::string_view bearer_token) {
+  SessionContext LocalAuthProvider::validate_session_token(std::string_view bearer_token,
+                                                           ActivityMode activity) {
     if (bearer_token.size() < config_.token_prefix_len) {
       throw InvalidCredentials("invalid token");
     }
@@ -478,7 +488,9 @@ namespace fmgr::auth {
 
       const auto now = now_ts();
       check_session_expiry(session, now); // throws TokenExpired on violation
-      update_last_seen_if_needed(session, now);
+      if (activity == ActivityMode::Record) {
+        update_last_seen_if_needed(session, now);
+      }
       return lookup_or_build_context(session, authz_version);
     }
 

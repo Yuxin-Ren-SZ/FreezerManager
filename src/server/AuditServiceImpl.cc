@@ -398,22 +398,25 @@ namespace fmgr::server {
                                                 const fmgr::v1::WatchAuditFeedRequest* req,
                                                 grpc::ServerWriter<fmgr::v1::AuditEvent>* writer) {
     try {
-      // Authorize once, at stream-open, with the same gating as ListAuditEvents:
+      // Preserve the admission and scope gates used by ListAuditEvents:
       // a lab-scoped feed needs AuditRead for that lab; an unscoped feed spans
       // every lab and is system-admin only.
       std::optional<core::LabId> lab_filter;
       if (req->has_lab_id()) {
         lab_filter = core::LabId::parse(req->lab_id());
       }
-      const auto sctx =
-          middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
-      if (lab_filter.has_value()) {
-        if (!sctx.has_for_lab(*lab_filter, core::Permission::AuditRead)) {
-          throw auth::PermissionDenied("caller lacks required permission for target lab");
+      const auto call = extract_bearer(*ctx);
+      const auto require_scope = [&](const auth::SessionContext& sctx) {
+        if (lab_filter.has_value()) {
+          if (!sctx.has_for_lab(*lab_filter, core::Permission::AuditRead)) {
+            throw auth::PermissionDenied("caller lacks required permission for target lab");
+          }
+        } else if (!is_system_admin(sctx)) {
+          throw auth::PermissionDenied(
+              "deployment-wide audit feed requires a system administrator");
         }
-      } else if (!is_system_admin(sctx)) {
-        throw auth::PermissionDenied("deployment-wide audit feed requires a system administrator");
-      }
+      };
+      require_scope(middleware_.authenticate(call, rpc::CredentialRule::TokenAndMfa));
 
       // Poll-tail cursor. We re-query rows with at >= cursor each cycle (>= not >
       // so newly-appended rows sharing the cursor microsecond are not missed) and
@@ -424,6 +427,8 @@ namespace fmgr::server {
       std::unordered_set<std::string> sent_at_cursor;
 
       while (!ctx->IsCancelled()) {
+        const auto sctx = middleware_.reauthenticate(call, rpc::CredentialRule::TokenAndMfa);
+        require_scope(sctx);
         auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
         rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
         const auto events =

@@ -230,8 +230,8 @@ namespace fmgr::auth {
       }
 
       SessionContext revalidate_token(std::string_view /*bearer*/) override {
-        return SessionContext{.session_id = session_id_1(), .user_id = user_id_1(),
-                              .mfa_complete = false};
+        return SessionContext{
+            .session_id = session_id_1(), .user_id = user_id_1(), .mfa_complete = false};
       }
 
       void verify_totp(const core::SessionId& /*session_id*/,

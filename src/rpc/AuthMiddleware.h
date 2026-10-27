@@ -231,6 +231,14 @@ namespace fmgr::rpc {
     //         subclass (InvalidCredentials, TokenExpired, MfaRequired, RateLimited, …)
     [[nodiscard]] auth::SessionContext authenticate(const RpcCall& call, CredentialRule rule) const;
 
+    // Background equivalents: identical registry, credential, MFA and scope
+    // checks, using non-renewing provider validation and no admission charge.
+    [[nodiscard]] auth::SessionContext
+    reauthorize(const RpcCall& call, core::Permission required_perm,
+                std::optional<core::LabId> lab_id = std::nullopt) const;
+    [[nodiscard]] auth::SessionContext reauthenticate(const RpcCall& call,
+                                                      CredentialRule rule) const;
+
     // The CredentialRule::None half of the credential gate: admits a call that
     // presents no credential at all, and refuses one whose RPC declares any other
     // rule. `call`'s bearer token is deliberately unread — a caller of Login need
@@ -295,6 +303,14 @@ namespace fmgr::rpc {
     static void verify_registry_covers(std::span<const std::string> served_rpc_names);
 
   private:
+    enum class GateMode { Admission, Revalidation };
+    [[nodiscard]] auth::SessionContext authorize_impl(const RpcCall& call,
+                                                      core::Permission required_perm,
+                                                      std::optional<core::LabId> lab_id,
+                                                      GateMode mode) const;
+    [[nodiscard]] auth::SessionContext authenticate_impl(const RpcCall& call, CredentialRule rule,
+                                                         GateMode mode) const;
+
     // Step 0 of authorize(): throws RpcRegistryMismatch unless call's RPC is
     // registered with a Permission gate whose permission is `enforced` — any
     // Credential entry is a disagreement too, so registering an authorize()-gated

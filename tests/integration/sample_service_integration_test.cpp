@@ -31,6 +31,7 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
+#include "watch_auth_test_helpers.h"
 
 #include <fmgr/v1/auth.grpc.pb.h>
 #include <fmgr/v1/sample.grpc.pb.h>
@@ -96,8 +97,9 @@ namespace fmgr::test {
         provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_config());
         seed();
 
+        watch_auth_ = std::make_unique<WatchAuthBarrier>(*provider_);
         server_opts_.listen_address = "localhost:0";
-        server_ = std::make_unique<server::FreezerServer>(*backend_, *provider_, server_opts_);
+        server_ = std::make_unique<server::FreezerServer>(*backend_, *watch_auth_, server_opts_);
         server_->build();
         server_thread_ = std::thread([this] { server_->wait(); });
 
@@ -115,6 +117,7 @@ namespace fmgr::test {
           server_thread_.join();
         }
         server_.reset();
+        watch_auth_.reset();
         provider_.reset();
         backend_.reset();
         remove_sqlite_files(db_path_);
@@ -480,6 +483,38 @@ namespace fmgr::test {
         return std::pair{samples, audit};
       }
 
+      void expect_watch_invalidation(WatchInvalidation change, grpc::StatusCode expected) {
+        const auto token = login(kMemberEmail, kPassword);
+        const auto admin = login(kAdminEmail, kPassword);
+        ASSERT_FALSE(token.empty());
+        ASSERT_FALSE(admin.empty());
+        const auto session = provider_->revalidate_token(token);
+        std::string opening_id;
+        ASSERT_TRUE(create_sample({.token = admin, .name = "opening-marker"}, &opening_id).ok());
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(8));
+        fmgr::v1::WatchSampleListRequest req;
+        req.set_lab_id(kLab1);
+        req.mutable_since()->set_unix_micros(0);
+        auto reader = sample_stub_->WatchSampleList(&ctx, req);
+        fmgr::v1::Sample sample;
+        ASSERT_TRUE(reader->Read(&sample));
+        ASSERT_EQ(sample.id(), opening_id);
+        watch_auth_->arm();
+        ASSERT_TRUE(watch_auth_->wait_for_check());
+        invalidate_watch_authority(*backend_, *provider_, session, core::LabId::parse(kLab1),
+                                   core::RoleKind::Member, core::Permission::SampleRead, change);
+        std::string forbidden_id;
+        ASSERT_TRUE(
+            create_sample({.token = admin, .name = "after-invalidation"}, &forbidden_id).ok());
+        watch_auth_->release();
+        while (reader->Read(&sample)) {
+          EXPECT_NE(sample.id(), forbidden_id);
+        }
+        EXPECT_EQ(reader->Finish().error_code(), expected);
+      }
+
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kMemberEmail{"member@example.com"};
       const std::string kReadonlyEmail{"readonly@example.com"};
@@ -495,6 +530,7 @@ namespace fmgr::test {
       std::filesystem::path db_path_;
       std::unique_ptr<storage::SqliteBackend> backend_;
       std::unique_ptr<auth::LocalAuthProvider> provider_;
+      std::unique_ptr<WatchAuthBarrier> watch_auth_;
       server::FreezerServerOptions server_opts_;
       std::unique_ptr<server::FreezerServer> server_;
       std::thread server_thread_;
@@ -2832,6 +2868,61 @@ namespace fmgr::test {
     // A Member (holds sample.read, not audit.read) can open the feed; a sample
     // created after the stream opens is streamed live. This is the property the
     // audit feed cannot provide for ordinary members.
+    TEST_F(SampleServiceTest, WatchSampleListStopsAfterRevokedBeforeNextBatch) {
+      expect_watch_invalidation(WatchInvalidation::Revocation, grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(SampleServiceTest, WatchSampleListStopsAfterIdleExpiry) {
+      expect_watch_invalidation(WatchInvalidation::IdleExpiry, grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(SampleServiceTest, WatchSampleListStopsAfterAbsoluteExpiry) {
+      expect_watch_invalidation(WatchInvalidation::AbsoluteExpiry,
+                                grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(SampleServiceTest, WatchSampleListStopsAfterMembershipLoss) {
+      expect_watch_invalidation(WatchInvalidation::Membership, grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    TEST_F(SampleServiceTest, WatchSampleListStopsAfterReadPermissionLoss) {
+      expect_watch_invalidation(WatchInvalidation::Permission, grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    TEST_F(SampleServiceTest, WatchSampleListStopsAfterMfaReset) {
+      expect_watch_invalidation(WatchInvalidation::Mfa, grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(SampleServiceTest, WatchSampleListStopsAfterDisabledUser) {
+      expect_watch_invalidation(WatchInvalidation::DisabledUser, grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(SampleServiceTest, WatchSampleListRemainsAuthorizedAcrossMultiplePollingBatches) {
+      const auto token = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      std::string opening_id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "poll-0"}, &opening_id).ok());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(8));
+      fmgr::v1::WatchSampleListRequest req;
+      req.set_lab_id(kLab1);
+      req.mutable_since()->set_unix_micros(0);
+      auto reader = sample_stub_->WatchSampleList(&ctx, req);
+      fmgr::v1::Sample sample;
+      ASSERT_TRUE(reader->Read(&sample));
+      ASSERT_EQ(sample.id(), opening_id);
+      for (int poll = 1; poll <= 2; ++poll) {
+        std::string next_id;
+        ASSERT_TRUE(
+            create_sample({.token = token, .name = "poll-" + std::to_string(poll)}, &next_id).ok());
+        ASSERT_TRUE(reader->Read(&sample));
+        EXPECT_EQ(sample.id(), next_id);
+      }
+      ctx.TryCancel();
+      reader->Finish();
+    }
+
     TEST_F(SampleServiceTest, WatchSampleListStopsAfterOpeningSessionIsRevoked) {
       const auto token = login(kMemberEmail, kPassword);
       ASSERT_FALSE(token.empty());
@@ -2849,7 +2940,8 @@ namespace fmgr::test {
       ASSERT_EQ(sample.id(), id);
       const auto session = provider_->validate_token(token);
       provider_->revoke_session(session.session_id, storage::MutationContext{});
-      while (reader->Read(&sample)) {}
+      while (reader->Read(&sample)) {
+      }
       EXPECT_EQ(reader->Finish().error_code(), grpc::StatusCode::UNAUTHENTICATED);
     }
 

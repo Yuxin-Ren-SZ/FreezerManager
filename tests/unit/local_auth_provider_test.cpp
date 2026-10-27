@@ -30,7 +30,6 @@
 #include <array>
 #include <atomic>
 #include <barrier>
-#include <vector>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -39,6 +38,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace fmgr::auth {
   namespace {
@@ -1321,7 +1321,8 @@ namespace fmgr::auth {
       EXPECT_THROW((void)provider_->hash_password("1234567"), storage::ConstraintViolation);
     }
 
-    TEST_F(LocalAuthProviderTest, RevalidationValidateTokenThrowsTokenExpiredWhenIdleTimeoutExceeded) {
+    TEST_F(LocalAuthProviderTest,
+           RevalidationValidateTokenThrowsTokenExpiredWhenIdleTimeoutExceeded) {
       auto prov = make_expiry_provider();
       const AuthToken token = prov.authenticate(
           PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
@@ -1332,7 +1333,8 @@ namespace fmgr::auth {
       EXPECT_THROW(prov.revalidate_token(token.plaintext_token), TokenExpired);
     }
 
-    TEST_F(LocalAuthProviderTest, RevalidationValidateTokenThrowsTokenExpiredWhenAbsoluteTtlExceeded) {
+    TEST_F(LocalAuthProviderTest,
+           RevalidationValidateTokenThrowsTokenExpiredWhenAbsoluteTtlExceeded) {
       LocalAuthProviderConfig cfg = fast_config();
       cfg.max_session_idle_seconds = 7LL * 24 * 3600; // large idle limit
       cfg.max_session_abs_seconds = 3600;             // 1 h absolute limit
@@ -1380,7 +1382,8 @@ namespace fmgr::auth {
       EXPECT_THROW(prov.revalidate_token(token.plaintext_token), TokenExpired);
     }
 
-    TEST_F(LocalAuthProviderTest, RevalidationRevokeSessionPreventsFutureValidateTokenDespiteCache) {
+    TEST_F(LocalAuthProviderTest,
+           RevalidationRevokeSessionPreventsFutureValidateTokenDespiteCache) {
       // Populate the permission cache by calling validate_token once.
       const AuthToken token = provider_->authenticate(
           PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
@@ -1393,7 +1396,8 @@ namespace fmgr::auth {
       EXPECT_THROW(provider_->revalidate_token(token.plaintext_token), InvalidCredentials);
     }
 
-    TEST_F(LocalAuthProviderTest, RevalidationRevokingMembershipInvalidatesCachedLabAccessBeforeTtl) {
+    TEST_F(LocalAuthProviderTest,
+           RevalidationRevokingMembershipInvalidatesCachedLabAccessBeforeTtl) {
       const AuthToken token = provider_->authenticate(
           PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
 
@@ -1472,7 +1476,8 @@ namespace fmgr::auth {
       EXPECT_THROW(provider_->revalidate_token(pat.full_token), InvalidCredentials);
     }
 
-    TEST_F(LocalAuthProviderTest, RevalidationValidateApiTokenScopeMalformedJsonGrantsNoPermissions) {
+    TEST_F(LocalAuthProviderTest,
+           RevalidationValidateApiTokenScopeMalformedJsonGrantsNoPermissions) {
       const auto pat = prepare_api_token(kUserNoTotpId, 200);
       // Valid JSON but not an array — passes DB CHECK(json_valid) yet is rejected
       // by permissions_from_scope_json as structurally invalid → fail-closed.
@@ -1584,7 +1589,8 @@ namespace fmgr::auth {
       EXPECT_FALSE(ctx.can_see_lab(kLabId2));
     }
 
-    TEST_F(LocalAuthProviderTest, RevalidationValidateApiTokenDisabledUserThrowsInvalidCredentials) {
+    TEST_F(LocalAuthProviderTest,
+           RevalidationValidateApiTokenDisabledUserThrowsInvalidCredentials) {
       const auto pat = prepare_api_token(kUserNoTotpId, 210);
       const core::ApiToken api_token{
           .id = pat.id,
@@ -1614,6 +1620,57 @@ namespace fmgr::auth {
       EXPECT_THROW(provider_->revalidate_token(pat.full_token), InvalidCredentials);
     }
 
+    TEST_F(LocalAuthProviderTest, RevalidationApiTokenDoesNotCreateSessionOrWriteAndSeesGrantLoss) {
+      const auto token =
+          provider_->create_api_token(kUserNoTotpId, "synthetic revalidation token",
+                                      R"(["sample.read"])", kLabId, std::nullopt, test_ctx());
+      const auto read_session_count = [&] {
+        auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        const auto rows = txn->repo<core::Session>().query(storage::Query<core::Session>::all());
+        txn->commit();
+        return rows.size();
+      };
+      const auto sessions = read_session_count();
+      const auto audits = backend_->audit_event_count_for_tests();
+      for (int i = 0; i < 10; ++i) {
+        const auto ctx = provider_->revalidate_token(token.plaintext_token);
+        EXPECT_TRUE(ctx.mfa_complete);
+        EXPECT_TRUE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
+        EXPECT_FALSE(ctx.has_for_lab(kLabId, core::Permission::SampleWrite));
+        EXPECT_TRUE(ctx.global_permissions.empty());
+      }
+      EXPECT_EQ(read_session_count(), sessions);
+      EXPECT_EQ(backend_->audit_event_count_for_tests(), audits);
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::RolePermission>().soft_delete(
+            core::RolePermissionId{.role_id = core::builtin_role_id(core::RoleKind::Member),
+                                   .permission = core::Permission::SampleRead},
+            test_ctx());
+        txn->commit();
+      }
+      EXPECT_FALSE(provider_->revalidate_token(token.plaintext_token)
+                       .has_for_lab(kLabId, core::Permission::SampleRead));
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationApiTokenChecksCurrentHashAndCommittedExpiry) {
+      const auto token =
+          provider_->create_api_token(kUserNoTotpId, "synthetic expiry token", R"(["*"])",
+                                      std::nullopt, std::nullopt, test_ctx());
+      ASSERT_NO_THROW(provider_->revalidate_token(token.plaintext_token));
+      auto wrong_hash = token.plaintext_token;
+      wrong_hash.back() = wrong_hash.back() == 'a' ? 'b' : 'a';
+      EXPECT_THROW(provider_->revalidate_token(wrong_hash), InvalidCredentials);
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto row = txn->repo<core::ApiToken>().find_by_id(token.api_token_id).value();
+        row.expires_at = core::Timestamp::from_unix_micros(1);
+        txn->repo<core::ApiToken>().update(row, test_ctx());
+        txn->commit();
+      }
+      EXPECT_THROW(provider_->revalidate_token(token.plaintext_token), TokenExpired);
+    }
+
     TEST_F(LocalAuthProviderTest, RevalidationDoesNotRenewActivityOrWriteWithConcurrentReaders) {
       auto prov = make_expiry_provider();
       const auto token = prov.authenticate(
@@ -1629,6 +1686,7 @@ namespace fmgr::auth {
       const auto audits = backend_->audit_event_count_for_tests();
       std::barrier start(5);
       std::atomic<int> successes{0};
+      std::atomic<int> failures{0};
       std::vector<std::thread> readers;
       for (int i = 0; i < 4; ++i) {
         readers.emplace_back([&] {
@@ -1639,7 +1697,9 @@ namespace fmgr::auth {
               if (ctx.has_for_lab(kLabId, core::Permission::SampleRead)) {
                 ++successes;
               }
-            } catch (...) {} // Count failures after joining all readers.
+            } catch (...) {
+              ++failures;
+            }
           }
         });
       }
@@ -1648,6 +1708,7 @@ namespace fmgr::auth {
         reader.join();
       }
       EXPECT_EQ(successes, 40);
+      EXPECT_EQ(failures, 0);
       const auto after = read_session();
       EXPECT_EQ(after.created_at, before.created_at);
       EXPECT_EQ(after.last_seen_at, before.last_seen_at);
