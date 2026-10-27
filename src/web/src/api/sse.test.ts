@@ -223,6 +223,46 @@ describe('subscribeSse', () => {
     },
   );
 
+  it('closes before session listeners run and stays closed when they unsubscribe', () => {
+    const unsubscribe = subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      onFrame: vi.fn(),
+      eventSourceFactory: factory,
+    });
+    onSessionExpired(() => {
+      expect(current().closed).toBe(true);
+      expect(getLiveConnectionState()).toBe('offline');
+      unsubscribe();
+    });
+    current().open();
+
+    current().serverError({ code: 'UNAUTHENTICATED', message: 'expired' });
+    vi.advanceTimersByTime(60_000);
+
+    expect(FakeEventSource.all()).toHaveLength(1);
+    expect(getLiveConnectionState()).toBe('offline');
+  });
+
+  it('reports a null error envelope as INTERNAL and retries', () => {
+    const onError = vi.fn();
+    const expired = vi.fn();
+    onSessionExpired(expired);
+    const unsubscribe = subscribeSse('sample/watch', {
+      schema: SampleSchema,
+      onFrame: vi.fn(),
+      onError,
+      eventSourceFactory: factory,
+    });
+
+    current().serverError('null');
+    vi.advanceTimersByTime(1_000);
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ code: 'INTERNAL' }));
+    expect(expired).not.toHaveBeenCalled();
+    expect(FakeEventSource.all()).toHaveLength(2);
+    unsubscribe();
+  });
+
   it('reconnects after a transient error frame', () => {
     subscribeSse('sample/watch', {
       schema: SampleSchema,

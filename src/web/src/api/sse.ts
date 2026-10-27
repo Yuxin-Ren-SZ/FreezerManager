@@ -218,19 +218,18 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
     if (typeof data === 'string' && data !== '') {
       // A server-sent `event: error` frame: an ApiError, and permanent for the
       // codes that describe the caller rather than the connection.
-      let body: { code?: unknown; message?: unknown } | null = {};
+      let body: { code?: unknown; message?: unknown } = {};
       try {
-        body = JSON.parse(data) as typeof body;
+        const parsed: unknown = JSON.parse(data);
+        if (typeof parsed === 'object' && parsed !== null) {
+          body = parsed;
+        }
       } catch {
         // Fall through to the INTERNAL default below.
       }
-      const mfaRequired = body?.code === MFA_REQUIRED_ENVELOPE_CODE;
-      const code = mfaRequired
-        ? 'UNAUTHENTICATED'
-        : isGrpcCode(body?.code)
-          ? body.code
-          : 'INTERNAL';
-      const error = new ApiError(code, typeof body?.message === 'string' ? body.message : '', {
+      const mfaRequired = body.code === MFA_REQUIRED_ENVELOPE_CODE;
+      const code = mfaRequired ? 'UNAUTHENTICATED' : isGrpcCode(body.code) ? body.code : 'INTERNAL';
+      const error = new ApiError(code, typeof body.message === 'string' ? body.message : '', {
         mfaRequired,
       });
       if (TERMINAL_CODES.has(code)) {
@@ -248,7 +247,7 @@ export function subscribeSse<Desc extends DescMessage, N extends SseRouteName>(
       fail(new ApiError('UNAVAILABLE', 'the live connection was lost'));
     }
 
-    if (stopped) return;
+    if (source === null) return;
     closeSource();
     // The stream is not gone, only waiting out the backoff. Reporting
     // "offline" here would make the indicator say the feature is unavailable

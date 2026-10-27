@@ -650,7 +650,7 @@ describe('session lifecycle (G2.1)', () => {
       expect(router.state.location.search).toBe('');
       await screen.findByRole('heading', { name: authCopy.title });
       expect(sawHome).toBe(false);
-      await act(async () => {
+      act(() => {
         finishLogout?.();
       });
       expect(router.state.location.pathname).toBe('/login');
