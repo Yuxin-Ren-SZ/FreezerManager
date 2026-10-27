@@ -33,11 +33,14 @@ environment:
   section. The temporary checker is not a repository change.
 - `git diff --cached --check`: passes; zero whitespace errors.
 - `git diff --cached --name-only`: exactly this handoff and the ADR.
+- Final `python3 /private/tmp/fmgr-198-check-docs.py` and
+  `git diff origin/main --check`: pass after the EventSource wording correction.
 
 Local C++/npm builds and tests are waived by the #198 assignment for this
 documentation-only slice and were not run. No sanitizer result is claimed.
-Applicable documentation-only CI is reported in the PR; C++ matrix/clang-tidy
-skips must not be described as implementation coverage.
+Initial-head documentation-only CI passed (changes, lint, web, CLA); C++ matrix
+and clang-tidy skipped by the docs path gate. Lead monitors CI on the final
+wording-only head; skipped jobs are not implementation coverage.
 
 ## Next owner
 

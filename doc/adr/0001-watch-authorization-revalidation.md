@@ -174,8 +174,11 @@ client parsing of message text. Disconnect/cancellation may permit closure only.
 terminal code on an established stream: UNAUTHENTICATED ends the client session,
 clears its state and stops reconnecting; PERMISSION_DENIED ends that feed and
 shows lost access without declaring unrelated credentials expired. Preserve the
-client's existing MFA flow for MFA_REQUIRED. The client must also handle a
-reconnect refusal through the existing HTTP/REST error path. A server that closes
+client's existing MFA flow for MFA_REQUIRED. Ordinary unary HTTP 401 responses
+already end the client session. Native EventSource hides HTTP status on transport
+errors, so this slice relies on the terminal SSE envelope and closure, including
+when the current bridge rejects invalid opening credentials after committing
+HTTP 200. Status-opaque transport errors remain retryable. A server that closes
 an established stream cannot replace its already-sent status with HTTP 401.
 
 ## Implementation test plan
