@@ -2832,6 +2832,27 @@ namespace fmgr::test {
     // A Member (holds sample.read, not audit.read) can open the feed; a sample
     // created after the stream opens is streamed live. This is the property the
     // audit feed cannot provide for ordinary members.
+    TEST_F(SampleServiceTest, WatchSampleListStopsAfterOpeningSessionIsRevoked) {
+      const auto token = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      std::string id;
+      ASSERT_TRUE(create_sample({.token = token, .name = "opening-marker"}, &id).ok());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+      fmgr::v1::WatchSampleListRequest req;
+      req.set_lab_id(kLab1);
+      req.mutable_since()->set_unix_micros(0);
+      auto reader = sample_stub_->WatchSampleList(&ctx, req);
+      fmgr::v1::Sample sample;
+      ASSERT_TRUE(reader->Read(&sample));
+      ASSERT_EQ(sample.id(), id);
+      const auto session = provider_->validate_token(token);
+      provider_->revoke_session(session.session_id, storage::MutationContext{});
+      while (reader->Read(&sample)) {}
+      EXPECT_EQ(reader->Finish().error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
     TEST_F(SampleServiceTest, WatchSampleListStreamsNewSampleForMember) {
       const auto token = login(kMemberEmail, kPassword);
       ASSERT_FALSE(token.empty());

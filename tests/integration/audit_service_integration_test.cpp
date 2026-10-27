@@ -473,6 +473,27 @@ namespace fmgr::test {
     // The lab-scoped feed tails newly-appended rows. Open the stream from "now",
     // append a lab1-scoped audit row, and the reader must receive exactly that
     // event (poll cadence is ~1s, so a generous client deadline covers it).
+    TEST_F(AuditServiceTest, WatchAuditFeedStopsAfterOpeningSessionIsRevoked) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      const auto since = now_micros();
+      append_lab1_event("opening-marker");
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+      fmgr::v1::WatchAuditFeedRequest req;
+      req.set_lab_id(kLab1);
+      req.mutable_since()->set_unix_micros(since);
+      auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+      fmgr::v1::AuditEvent event;
+      ASSERT_TRUE(reader->Read(&event));
+      ASSERT_EQ(event.request_id(), "opening-marker");
+      const auto session = provider_->validate_token(token);
+      provider_->revoke_session(session.session_id, storage::MutationContext{});
+      while (reader->Read(&event)) {}
+      EXPECT_EQ(reader->Finish().error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
     TEST_F(AuditServiceTest, WatchAuditFeedStreamsNewLabScopedEvent) {
       const auto token = login(kAdminEmail, kPassword);
       ASSERT_FALSE(token.empty());

@@ -28,6 +28,9 @@
 #include <sodium.h>
 
 #include <array>
+#include <atomic>
+#include <barrier>
+#include <vector>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -1316,6 +1319,361 @@ namespace fmgr::auth {
       // Policy floor is 8 — testing exactly at the boundary.
       EXPECT_NO_THROW((void)provider_->hash_password("12345678"));
       EXPECT_THROW((void)provider_->hash_password("1234567"), storage::ConstraintViolation);
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateTokenThrowsTokenExpiredWhenIdleTimeoutExceeded) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+
+      // Set last_seen_at to 2 hours ago (exceeds 1 h idle limit).
+      backdate_session(token.session_id, 0, -2LL * 3600 * 1'000'000);
+
+      EXPECT_THROW(prov.revalidate_token(token.plaintext_token), TokenExpired);
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateTokenThrowsTokenExpiredWhenAbsoluteTtlExceeded) {
+      LocalAuthProviderConfig cfg = fast_config();
+      cfg.max_session_idle_seconds = 7LL * 24 * 3600; // large idle limit
+      cfg.max_session_abs_seconds = 3600;             // 1 h absolute limit
+      cfg.last_seen_update_interval_seconds = 60;
+      auto prov = LocalAuthProvider(*backend_, cfg);
+
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+
+      // Set created_at to 2 hours ago (exceeds 1 h absolute limit).
+      // Set last_seen_at to now (so idle limit is not triggered).
+      backdate_session(token.session_id, -2LL * 3600 * 1'000'000, 0);
+
+      EXPECT_THROW(prov.revalidate_token(token.plaintext_token), TokenExpired);
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateTokenSucceedsWithinBothLimits) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+
+      // Timestamps are current → both limits satisfied.
+      EXPECT_NO_THROW(prov.revalidate_token(token.plaintext_token));
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateTokenSucceedsOneSecondBeforeIdleLimit) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+
+      // One second before the 1 h idle limit — must succeed.
+      backdate_session(token.session_id, 0, -(3600LL - 1) * 1'000'000);
+
+      EXPECT_NO_THROW(prov.revalidate_token(token.plaintext_token));
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateTokenThrowsOneSecondPastIdleLimit) {
+      auto prov = make_expiry_provider();
+      const AuthToken token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+
+      // One second past the 1 h idle limit — must expire.
+      backdate_session(token.session_id, 0, -(3600LL + 1) * 1'000'000);
+
+      EXPECT_THROW(prov.revalidate_token(token.plaintext_token), TokenExpired);
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationRevokeSessionPreventsFutureValidateTokenDespiteCache) {
+      // Populate the permission cache by calling validate_token once.
+      const AuthToken token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+      EXPECT_NO_THROW(provider_->revalidate_token(token.plaintext_token));
+
+      // Revoke session — cache entry should be invalidated.
+      provider_->revoke_session(token.session_id, test_ctx());
+
+      // Validation must fail despite the session having been cached.
+      EXPECT_THROW(provider_->revalidate_token(token.plaintext_token), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationRevokingMembershipInvalidatesCachedLabAccessBeforeTtl) {
+      const AuthToken token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+
+      // First validation caches a context that can see the lab.
+      const SessionContext before = provider_->revalidate_token(token.plaintext_token);
+      ASSERT_TRUE(before.can_see_lab(kLabId));
+      ASSERT_TRUE(before.has_for_lab(kLabId, core::Permission::SampleRead));
+
+      // Revoke the membership in its own committed transaction (bumps authz_version).
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::LabMembership>().soft_delete(
+            core::LabMembershipId{.user_id = kUserNoTotpId, .lab_id = kLabId}, test_ctx());
+        txn->commit();
+      }
+
+      // Next validation must reflect the downgrade immediately, despite the warm
+      // cache and unexpired TTL.
+      const SessionContext after = provider_->revalidate_token(token.plaintext_token);
+      EXPECT_FALSE(after.can_see_lab(kLabId));
+      EXPECT_FALSE(after.has_for_lab(kLabId, core::Permission::SampleRead));
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationRemovingRolePermissionInvalidatesCacheBeforeTtl) {
+      const AuthToken token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+
+      const SessionContext before = provider_->revalidate_token(token.plaintext_token);
+      ASSERT_TRUE(before.has_for_lab(kLabId, core::Permission::SampleRead));
+
+      // Strip SampleRead from the built-in Member role (bumps every holder).
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::RolePermission>().soft_delete(
+            core::RolePermissionId{.role_id = core::builtin_role_id(core::RoleKind::Member),
+                                   .permission = core::Permission::SampleRead},
+            test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext after = provider_->revalidate_token(token.plaintext_token);
+      EXPECT_FALSE(after.has_for_lab(kLabId, core::Permission::SampleRead));
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateApiTokenRevoked) {
+      const auto pat = prepare_api_token(kUserNoTotpId, 102);
+
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .name = "revoked token",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      // Authenticate once to confirm the token works.
+      const AuthToken auth_token =
+          provider_->authenticate(ApiTokenCredentials{.token = pat.full_token}, ClientInfo{});
+      const SessionContext ctx = provider_->revalidate_token(auth_token.plaintext_token);
+      EXPECT_EQ(ctx.user_id, kUserNoTotpId);
+
+      // Revoke the API token.
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().soft_delete(pat.id, test_ctx());
+        txn->commit();
+      }
+
+      // Validation must now fail.
+      EXPECT_THROW(provider_->revalidate_token(pat.full_token), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateApiTokenScopeMalformedJsonGrantsNoPermissions) {
+      const auto pat = prepare_api_token(kUserNoTotpId, 200);
+      // Valid JSON but not an array — passes DB CHECK(json_valid) yet is rejected
+      // by permissions_from_scope_json as structurally invalid → fail-closed.
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .name = "malformed scope token",
+          .scope_json = R"("not-an-array")",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext ctx = provider_->revalidate_token(pat.full_token);
+      EXPECT_TRUE(ctx.permissions_by_lab.empty());
+      EXPECT_TRUE(ctx.global_permissions.empty());
+      EXPECT_FALSE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateApiTokenScopeEmptyArrayGrantsNoPermissions) {
+      const auto pat = prepare_api_token(kUserNoTotpId, 201);
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .name = "empty scope token",
+          .scope_json = "[]",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext ctx = provider_->revalidate_token(pat.full_token);
+      EXPECT_FALSE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
+      EXPECT_TRUE(ctx.global_permissions.empty());
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateApiTokenScopeRestrictsToSpecifiedPermission) {
+      const auto pat = prepare_api_token(kUserNoTotpId, 202);
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .name = "scoped token",
+          .scope_json = R"(["sample.read"])",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext ctx = provider_->revalidate_token(pat.full_token);
+      EXPECT_TRUE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
+      EXPECT_FALSE(ctx.has_for_lab(kLabId, core::Permission::SampleWrite));
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateApiTokenLabIdRestrictsToSpecifiedLab) {
+      // Insert a second lab and a membership for kUserNoTotpId.
+      const core::LabId kLabId2{id_from_low<core::LabId>(2)};
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::Lab>().insert(core::Lab{.id = kLabId2,
+                                                .name = "Lab 2",
+                                                .contact = "l2@example.com",
+                                                .created_at = ts(2'000)},
+                                      test_ctx());
+        txn->repo<core::LabMembership>().insert(
+            core::LabMembership{.user_id = kUserNoTotpId,
+                                .lab_id = kLabId2,
+                                .role_id = core::builtin_role_id(core::RoleKind::Member),
+                                .joined_at = ts(2'001)},
+            test_ctx());
+        txn->commit();
+      }
+
+      const auto pat = prepare_api_token(kUserNoTotpId, 203);
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .lab_id = kLabId, // scoped to kLabId only
+          .name = "lab-scoped token",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      const SessionContext ctx = provider_->revalidate_token(pat.full_token);
+      // Lab 1 permissions present.
+      EXPECT_TRUE(ctx.can_see_lab(kLabId));
+      EXPECT_TRUE(ctx.has_for_lab(kLabId, core::Permission::SampleRead));
+      // Lab 2 permissions absent even though user is a member there.
+      EXPECT_FALSE(ctx.can_see_lab(kLabId2));
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationValidateApiTokenDisabledUserThrowsInvalidCredentials) {
+      const auto pat = prepare_api_token(kUserNoTotpId, 210);
+      const core::ApiToken api_token{
+          .id = pat.id,
+          .user_id = kUserNoTotpId,
+          .name = "disabled-user token",
+          .token_hash = pat.token_hash,
+          .token_prefix = pat.token_prefix,
+          .created_at = ts(5'000),
+      };
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::ApiToken>().insert(api_token, test_ctx());
+        txn->commit();
+      }
+
+      // Token works while user is active.
+      EXPECT_NO_THROW(provider_->revalidate_token(pat.full_token));
+
+      // Disable the user.
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        txn->repo<core::User>().soft_delete(kUserNoTotpId, test_ctx());
+        txn->commit();
+      }
+
+      // Token must now be rejected.
+      EXPECT_THROW(provider_->revalidate_token(pat.full_token), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationDoesNotRenewActivityOrWriteWithConcurrentReaders) {
+      auto prov = make_expiry_provider();
+      const auto token = prov.authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+      backdate_session(token.session_id, -180'000'000, -120'000'000);
+      auto read_session = [&] {
+        auto txn = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        auto session = txn->repo<core::Session>().find_by_id(token.session_id).value();
+        txn->commit();
+        return session;
+      };
+      const auto before = read_session();
+      const auto audits = backend_->audit_event_count_for_tests();
+      std::barrier start(5);
+      std::atomic<int> successes{0};
+      std::vector<std::thread> readers;
+      for (int i = 0; i < 4; ++i) {
+        readers.emplace_back([&] {
+          start.arrive_and_wait();
+          for (int tick = 0; tick < 10; ++tick) {
+            try {
+              const auto ctx = prov.revalidate_token(token.plaintext_token);
+              if (ctx.has_for_lab(kLabId, core::Permission::SampleRead)) {
+                ++successes;
+              }
+            } catch (...) {} // Count failures after joining all readers.
+          }
+        });
+      }
+      start.arrive_and_wait();
+      for (auto& reader : readers) {
+        reader.join();
+      }
+      EXPECT_EQ(successes, 40);
+      const auto after = read_session();
+      EXPECT_EQ(after.created_at, before.created_at);
+      EXPECT_EQ(after.last_seen_at, before.last_seen_at);
+      EXPECT_EQ(backend_->audit_event_count_for_tests(), audits);
+    }
+
+    TEST_F(LocalAuthProviderTest, RevalidationReturnsLiveMfaAndRejectsDisabledUserWithWarmCache) {
+      const auto token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+      ASSERT_TRUE(provider_->validate_token(token.plaintext_token).mfa_complete);
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto session = txn->repo<core::Session>().find_by_id(token.session_id).value();
+        session.mfa_complete = false;
+        txn->repo<core::Session>().update(session, test_ctx());
+        txn->commit();
+      }
+      EXPECT_FALSE(provider_->revalidate_token(token.plaintext_token).mfa_complete);
+      {
+        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto user = txn->repo<core::User>().find_by_id(token.user_id).value();
+        user.status = core::UserStatus::Disabled;
+        txn->repo<core::User>().update(user, test_ctx());
+        txn->commit();
+      }
+      EXPECT_THROW(provider_->revalidate_token(token.plaintext_token), InvalidCredentials);
     }
 
   } // namespace
