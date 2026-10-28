@@ -8,7 +8,7 @@ Two catalogued models, each as a full page and a clean page: the CryoCube F740 (
 This is a standalone, interactive figure of the **CryoCube F740 series ULT
 freezer**. It is the first catalogued model for the 3D Layout page proposed in
 [#215](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/215) and
-[ADR 0002](../../adr/0002-freezer-3d-layout-api.md).
+[ADR 0003](../../adr/0003-freezer-3d-layout-api.md).
 
 Open `cryocube-f740.html` in a browser. It is one self-contained file with no
 network access.
@@ -49,7 +49,7 @@ URL parameters for screenshots: `?door=1`, `?inner=0|1|2`, `?rack=1..6`,
 | Compartments | 3, about 45.7 high, separated by 2 shelves |
 | Racks | 6 per compartment, 13.5 x 56 x 43, 8 tiers x 4 boxes deep (576 two-inch boxes) |
 
-These match the `FreezerModel` / `CompartmentSpec` seed entry in the ADR.
+These match the built-in `FreezerModel` catalogue entry in ADR 0003.
 
 ## TSX Universal TSX40086A
 
