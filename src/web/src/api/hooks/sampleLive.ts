@@ -6,6 +6,7 @@ import type { ApiError } from '../errors';
 import { useLiveConnectionState, type LiveConnectionState } from '../liveConnection';
 import type { ResponseOf } from '../routes';
 import { subscribeSse, type EventSourceLike, type SseParamsOf, type SseRetryPolicy } from '../sse';
+import { layoutKeys } from './layout';
 import { sampleKeys, type SampleListFilters } from './samples';
 
 /**
@@ -157,6 +158,9 @@ export function applySampleFrame(queryClient: QueryClient, labId: string, sample
     queryKey: sampleKeys.detail(labId, sample.id),
     exact: true,
   });
+  // A placed, moved or removed sample changes a box's count in the 3D view
+  // (ADR 0003 §3). The scene carries counts only, so it is refetched, not patched.
+  void queryClient.invalidateQueries({ queryKey: layoutKeys.scenes(labId) });
 }
 
 /** The feed's query parameters: only the ones the route understands. */

@@ -25,6 +25,10 @@ export const layoutKeys = {
   storageContainers: (labId: string) => [...layoutKeys.all(labId), 'storage-containers'] as const,
   boxTypes: (labId: string) => [...layoutKeys.all(labId), 'box-types'] as const,
   boxes: (labId: string) => [...layoutKeys.all(labId), 'boxes'] as const,
+  /** Every freezer scene of one lab: what a sample-watch frame invalidates. */
+  scenes: (labId: string) => [...layoutKeys.all(labId), 'scene'] as const,
+  scene: (labId: string, freezerId: string) => [...layoutKeys.scenes(labId), freezerId] as const,
+  models: (labId: string) => [...layoutKeys.all(labId), 'freezer-models'] as const,
 };
 
 /** Every freezer of one lab, archived ones included. */
@@ -60,5 +64,31 @@ export function useBoxes(labId: string) {
     queryKey: layoutKeys.boxes(labId),
     queryFn: () => call('box/list', { labId }),
     enabled: labId !== '',
+  });
+}
+
+/**
+ * One freezer drawn in 3D (ADR 0003 §3): the freezer, its model and the live
+ * layout under it, parents first, with box counts but no sample data.
+ *
+ * Keyed under the lab, so `sample/watch` frames can invalidate every scene of
+ * the lab at once (a move changes a box's count) and a lab switch is a miss.
+ */
+export function useFreezerScene(labId: string, freezerId: string) {
+  return useQuery({
+    queryKey: layoutKeys.scene(labId, freezerId),
+    queryFn: () => call('freezer/scene', { freezerId }),
+    enabled: labId !== '' && freezerId !== '',
+  });
+}
+
+/** The built-in freezer models; `labId` is the lab the caller reads for. */
+export function useFreezerModels(labId: string) {
+  return useQuery({
+    queryKey: layoutKeys.models(labId),
+    queryFn: () => call('freezer-model/list', { labId }),
+    enabled: labId !== '',
+    // The catalogue ships with the server; it does not change under a session.
+    staleTime: Infinity,
   });
 }

@@ -1,0 +1,266 @@
+/* SPDX-License-Identifier: AGPL-3.0-or-later */
+
+/*
+ * The 3D freezer view (ADR 0003 §5): flat three-band shading whose colours all
+ * derive from the design tokens, so the light and dark themes need no code.
+ * Each face carries data-material and data-tone; the fill is picked here.
+ */
+
+.scene {
+  display: grid;
+  gap: var(--fmgr-space-4);
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (min-width: 64rem) {
+  .scene {
+    grid-template-columns: minmax(0, 3fr) minmax(16rem, 2fr);
+    align-items: start;
+  }
+}
+
+.picker {
+  max-width: 24rem;
+}
+
+.figure {
+  /* Shading bands: the base colour, then two steps towards shadow. */
+  --scene-shadow: color-mix(in srgb, var(--fmgr-color-text) 22%, transparent);
+  --scene-body: var(--fmgr-color-surface-raised);
+  --scene-body-mid: color-mix(
+    in srgb,
+    var(--fmgr-color-surface-raised) 86%,
+    var(--fmgr-color-text)
+  );
+  --scene-body-dark: color-mix(
+    in srgb,
+    var(--fmgr-color-surface-raised) 70%,
+    var(--fmgr-color-text)
+  );
+  --scene-steel: var(--fmgr-color-neutral-subtle);
+  --scene-inside: var(--fmgr-color-surface);
+  --scene-accent: var(--fmgr-color-accent);
+  --scene-accent-subtle: var(--fmgr-color-accent-subtle);
+  --scene-ink: var(--fmgr-color-border);
+
+  position: relative;
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-lg);
+  background: var(--fmgr-color-bg);
+  touch-action: none;
+  cursor: grab;
+}
+
+.figure:focus-visible {
+  outline: var(--fmgr-focus-ring-width) solid var(--fmgr-color-focus-ring);
+  outline-offset: var(--fmgr-focus-ring-offset);
+}
+
+.figure[data-dragging='true'] {
+  cursor: grabbing;
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 70vh;
+}
+
+.floor {
+  fill: var(--scene-shadow);
+}
+
+.face {
+  stroke: var(--scene-ink);
+  stroke-width: 0.75;
+  stroke-linejoin: round;
+}
+
+.face[data-clickable='true'] {
+  cursor: pointer;
+}
+
+/* ---- materials × tones ---- */
+
+.face[data-material='body'][data-tone='light'],
+.face[data-material='door'][data-tone='light'] {
+  fill: var(--scene-body);
+}
+
+.face[data-material='body'][data-tone='mid'],
+.face[data-material='door'][data-tone='mid'] {
+  fill: var(--scene-body-mid);
+}
+
+.face[data-material='body'][data-tone='dark'],
+.face[data-material='door'][data-tone='dark'] {
+  fill: var(--scene-body-dark);
+}
+
+.face[data-material='plinth'] {
+  fill: color-mix(in srgb, var(--scene-body-dark) 85%, var(--fmgr-color-text));
+}
+
+.face[data-material='grille'],
+.face[data-material='handle'] {
+  fill: color-mix(in srgb, var(--fmgr-color-text) 60%, var(--scene-body));
+}
+
+.face[data-material='panel'] {
+  fill: var(--fmgr-color-neutral);
+}
+
+.face[data-material='gasket'] {
+  fill: color-mix(in srgb, var(--fmgr-color-text) 45%, var(--scene-body));
+}
+
+.face[data-material='interior'][data-tone='light'] {
+  fill: var(--scene-inside);
+}
+
+.face[data-material='interior'][data-tone='mid'] {
+  fill: color-mix(in srgb, var(--scene-inside) 88%, var(--fmgr-color-text));
+}
+
+.face[data-material='interior'][data-tone='dark'] {
+  fill: color-mix(in srgb, var(--scene-inside) 78%, var(--fmgr-color-text));
+}
+
+.face[data-material='shelf'],
+.face[data-material='rack'][data-tone='light'] {
+  fill: var(--scene-steel);
+}
+
+.face[data-material='rack'][data-tone='mid'] {
+  fill: color-mix(in srgb, var(--scene-steel) 85%, var(--fmgr-color-text));
+}
+
+.face[data-material='rack'][data-tone='dark'] {
+  fill: color-mix(in srgb, var(--scene-steel) 70%, var(--fmgr-color-text));
+}
+
+.face[data-material='rackActive'] {
+  fill: color-mix(in srgb, var(--scene-accent-subtle) 80%, var(--scene-steel));
+}
+
+.face[data-material='innerDoor'][data-tone='light'] {
+  fill: color-mix(in srgb, var(--scene-inside) 70%, var(--scene-body));
+}
+
+.face[data-material='innerDoor'][data-tone='mid'] {
+  fill: color-mix(in srgb, var(--scene-inside) 80%, var(--fmgr-color-text) 8%);
+}
+
+.face[data-material='innerDoor'][data-tone='dark'] {
+  fill: color-mix(in srgb, var(--scene-inside) 65%, var(--fmgr-color-text) 18%);
+}
+
+.face[data-material='boxEmpty'] {
+  fill: var(--fmgr-color-bg);
+}
+
+.face[data-material='boxPartial'] {
+  fill: var(--scene-accent-subtle);
+}
+
+.face[data-material='boxFull'],
+.face[data-material='drawer'] {
+  fill: color-mix(in srgb, var(--scene-accent) 75%, var(--fmgr-color-bg));
+}
+
+.face[data-material^='box'][data-tone='dark'],
+.face[data-material='drawer'][data-tone='dark'] {
+  filter: brightness(0.82);
+}
+
+.face[data-material^='box'][data-tone='mid'],
+.face[data-material='drawer'][data-tone='mid'] {
+  filter: brightness(0.92);
+}
+
+/* ---- the panel beside the figure ---- */
+
+.side {
+  display: grid;
+  gap: var(--fmgr-space-4);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--fmgr-space-2) var(--fmgr-space-3);
+  align-items: end;
+}
+
+.status {
+  margin: 0;
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.section {
+  display: grid;
+  gap: var(--fmgr-space-2);
+  padding: var(--fmgr-space-3) var(--fmgr-space-4);
+  border: 1px solid var(--fmgr-color-border-subtle);
+  border-radius: var(--fmgr-radius-md);
+  background: var(--fmgr-color-surface-raised);
+}
+
+.section h2,
+.section h3 {
+  margin: 0;
+  font-size: var(--fmgr-font-size-base);
+}
+
+.list {
+  display: grid;
+  gap: var(--fmgr-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.row {
+  display: flex;
+  gap: var(--fmgr-space-2);
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.muted {
+  color: var(--fmgr-color-text-muted);
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--fmgr-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fmgr-font-size-sm);
+}
+
+.swatch {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-inline-end: var(--fmgr-space-1);
+  border: 1px solid var(--fmgr-color-border);
+  vertical-align: -0.1em;
+}
+
+.swatch[data-fill='empty'] {
+  background: var(--fmgr-color-bg);
+}
+
+.swatch[data-fill='partial'] {
+  background: var(--fmgr-color-accent-subtle);
+}
+
+.swatch[data-fill='full'] {
+  background: color-mix(in srgb, var(--fmgr-color-accent) 75%, var(--fmgr-color-bg));
+}
