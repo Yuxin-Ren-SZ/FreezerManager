@@ -4,12 +4,14 @@
 
 #include <openssl/evp.h>
 #include <openssl/params.h>
+#include <sodium.h>
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 
@@ -105,6 +107,43 @@ namespace fmgr::auth {
       return code;
     }
 
+    [[nodiscard]] bool valid_base32_length(std::size_t data_size, std::size_t padding_size) {
+      const auto remainder = data_size % 8;
+      if (remainder == 1 || remainder == 3 || remainder == 6) {
+        return false;
+      }
+      return padding_size == 0 || (remainder != 0 && padding_size == 8 - remainder);
+    }
+
+    [[nodiscard]] std::vector<std::uint8_t> decode_mfa_secret(std::string_view encoded) {
+      const auto padding_start = encoded.find('=');
+      const auto data_size =
+          padding_start == std::string_view::npos ? encoded.size() : padding_start;
+      if (data_size == 0 || !valid_base32_length(data_size, encoded.size() - data_size)) {
+        throw std::invalid_argument("invalid stored TOTP secret");
+      }
+      std::size_t last_value = 0;
+      for (std::size_t index = 0; index < encoded.size(); ++index) {
+        const auto raw = encoded[index];
+        if (index >= data_size) {
+          if (raw != '=') {
+            throw std::invalid_argument("invalid stored TOTP secret");
+          }
+          continue;
+        }
+        const auto upper = raw >= 'a' && raw <= 'z' ? static_cast<char>(raw - 'a' + 'A') : raw;
+        last_value = k_base32_alphabet.find(upper);
+        if (last_value == std::string_view::npos) {
+          throw std::invalid_argument("invalid stored TOTP secret");
+        }
+      }
+      const auto unused_bits = ((data_size % 8) * 5) % 8;
+      if ((last_value & ((std::size_t{1} << unused_bits) - 1)) != 0) {
+        throw std::invalid_argument("invalid stored TOTP secret");
+      }
+      return base32_decode(encoded.substr(0, data_size));
+    }
+
   } // namespace
 
   std::vector<std::uint8_t> base32_decode(std::string_view encoded) {
@@ -163,6 +202,45 @@ namespace fmgr::auth {
       }
     }
     return false;
+  }
+
+  void validate_local_mfa_profile(const TotpConfig& config) {
+    if (config.step_seconds != 30 || config.window_steps != 1 || config.digits != 6) {
+      throw std::invalid_argument("unsupported local MFA TOTP profile");
+    }
+  }
+
+  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): secret and code are distinct inputs.
+  std::vector<std::int64_t> totp_matching_counters(std::string_view base32_secret,
+                                                   std::string_view code,
+                                                   std::int64_t now_unix_seconds,
+                                                   const TotpConfig& config) {
+    validate_local_mfa_profile(config);
+    if (now_unix_seconds < 0) {
+      throw std::invalid_argument("invalid TOTP wall time");
+    }
+    const auto key = decode_mfa_secret(base32_secret);
+    if (code.size() != 6 ||
+        !std::ranges::all_of(code, [](char digit) { return digit >= '0' && digit <= '9'; })) {
+      return {};
+    }
+    const auto base_counter = now_unix_seconds / config.step_seconds;
+    if (base_counter == std::numeric_limits<std::int64_t>::max()) {
+      throw std::overflow_error("TOTP counter is not representable");
+    }
+    std::vector<std::int64_t> matches;
+    matches.reserve(3);
+    for (const std::int64_t delta : {-1, 0, 1}) {
+      if (base_counter == 0 && delta < 0) {
+        continue;
+      }
+      const auto counter = base_counter + delta;
+      const auto expected = hotp(key, counter, config.digits);
+      if (sodium_memcmp(expected.data(), code.data(), expected.size()) == 0) {
+        matches.push_back(counter);
+      }
+    }
+    return matches;
   }
 
 } // namespace fmgr::auth

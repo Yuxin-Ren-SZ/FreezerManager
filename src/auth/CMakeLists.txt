@@ -7,6 +7,7 @@ add_library(
   freezermanager_auth
   STATIC
     LocalAuthProvider.cc
+    MfaPolicy.cc
     Totp.cc
 )
 add_library(FreezerManager::auth ALIAS freezermanager_auth)

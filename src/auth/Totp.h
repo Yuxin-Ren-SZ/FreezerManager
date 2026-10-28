@@ -42,6 +42,20 @@ namespace fmgr::auth {
   [[nodiscard]] bool totp_verify(std::string_view base32_secret, std::string_view code,
                                  std::int64_t now_unix_seconds, const TotpConfig& config = {});
 
+  // The local MFA security policy supports exactly 30-second steps, +/-1 step
+  // and six ASCII digits. Exposed for later startup validation; unsupported
+  // profiles throw std::invalid_argument rather than weaken replay guarantees.
+  void validate_local_mfa_profile(const TotpConfig& config);
+
+  // Evaluate the complete accepted window, returning all matching counters in
+  // ascending order. Malformed submitted codes return no matches. Invalid
+  // stored secrets/profile/negative time throw std::invalid_argument; crypto and
+  // arithmetic failures throw runtime/overflow errors. No input is trimmed.
+  [[nodiscard]] std::vector<std::int64_t> totp_matching_counters(std::string_view base32_secret,
+                                                                 std::string_view code,
+                                                                 std::int64_t now_unix_seconds,
+                                                                 const TotpConfig& config = {});
+
 } // namespace fmgr::auth
 
 #endif // FMGR_AUTH_TOTP_H
