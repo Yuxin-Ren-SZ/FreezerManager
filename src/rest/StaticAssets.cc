@@ -62,8 +62,9 @@ namespace fmgr::rest {
     // `path` is already percent-decoded by Drogon, so `%2e%2e` has become `..`
     // here. Refusing the dangerous shapes before touching the filesystem keeps
     // the canonical check below a second line of defence rather than the only
-    // one. A backslash is not a POSIX separator, but rejecting it keeps the
-    // rule portable.
+    // one. Dot-prefixed names (including .well-known) are private in this
+    // SPA-only root. A backslash is not a POSIX separator, but rejecting it
+    // keeps the rule portable.
     [[nodiscard]] bool has_unsafe_segment(std::string_view path) {
       if (path.empty() || path.front() != '/') {
         return true;
@@ -75,7 +76,7 @@ namespace fmgr::rest {
       while (true) {
         const auto slash = rest.find('/');
         const auto segment = rest.substr(0, slash);
-        if (segment == ".." || segment == "." || segment.find('\\') != std::string_view::npos) {
+        if (segment.starts_with('.') || segment.find('\\') != std::string_view::npos) {
           return true;
         }
         if (slash == std::string_view::npos) {
@@ -87,7 +88,9 @@ namespace fmgr::rest {
 
     // Resolve `candidate` and refuse it unless it stays inside the canonical
     // `root`. weakly_canonical resolves symlinks, so a link inside the root
-    // that points outside it is refused too.
+    // that points outside it is refused too. Check hidden target components
+    // relative to the root, so visible symlink aliases cannot expose them and
+    // hidden directories above the configured root remain valid.
     [[nodiscard]] std::optional<std::filesystem::path>
     // Candidate comes first so the call reads as "keep this path within this root".
     canonical_within(
@@ -105,6 +108,12 @@ namespace fmgr::rest {
       const auto first = relative.begin();
       if (first != relative.end() && *first == "..") {
         return std::nullopt;
+      }
+      for (const auto& component : relative) {
+        // "." denotes the root itself, not a hidden child.
+        if (component != "." && component.string().starts_with('.')) {
+          return std::nullopt;
+        }
       }
       return resolved;
     }
@@ -239,7 +248,7 @@ namespace fmgr::rest {
     if (!relative.empty()) {
       auto candidate = canonical_within(root / relative, root);
       if (!candidate.has_value()) {
-        // The path escaped the root (a symlink, or a canonicalisation error).
+        // The target is hidden, escaped the root, or could not be resolved.
         // Refuse it; falling back to index.html would hide the attempt.
         return std::nullopt;
       }
@@ -249,8 +258,8 @@ namespace fmgr::rest {
       }
     }
     // Not a file: a client-side route. index.html is resolved through the same
-    // containment check, so a web root whose index is a symlink outside the
-    // root is refused rather than served.
+    // containment and hidden-component checks, so an index symlink cannot
+    // expose a hidden target or a file outside the root.
     return canonical_within(root / "index.html", root);
   }
 

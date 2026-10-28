@@ -21,6 +21,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <thread>
@@ -52,6 +53,16 @@ namespace fmgr::test {
         ::unsetenv("FMGR_WEB_ROOT");
         ::unsetenv("FMGR_REST_MAX_BODY_BYTES");
         web_ = WebRoot::create("plaintext");
+        std::filesystem::create_directories(web_.root / "nested" / ".git");
+        std::filesystem::create_directories(web_.root / ".well-known");
+        std::filesystem::create_directories(web_.root / "release.v1");
+        std::ofstream(web_.root / ".env") << static_assets::kSecret;
+        std::ofstream(web_.root / "nested" / ".git" / "config") << static_assets::kSecret;
+        std::ofstream(web_.root / ".well-known" / "config") << static_assets::kSecret;
+        std::ofstream(web_.root / "release.v1" / "app.min.js") << kHashedAsset;
+        std::filesystem::create_symlink(web_.root / ".env", web_.root / "config.txt");
+        std::filesystem::create_directory_symlink(web_.root / "nested" / ".git",
+                                                  web_.root / "public");
         ::setenv("FMGR_WEB_ROOT", web_.root.string().c_str(), 1);
 
         const auto config = rest::StaticAssetsConfig::from_env(/*tls=*/false);
@@ -242,6 +253,40 @@ namespace fmgr::test {
       EXPECT_TRUE(result.status == 403 || result.status == 404) << path << ": " << result.status;
       EXPECT_EQ(result.body.find(static_assets::kSecret), std::string::npos) << path;
       EXPECT_EQ(result.body.find("spa-index"), std::string::npos) << path;
+    }
+
+    TEST(RestStaticAssets, RefusesRawAndPercentEncodedHiddenPathSegments) {
+      for (const char* path :
+           {"/.env", "/nested/.git/config", "/.well-known/config", "/assets/.missing.js",
+            "/nested/.missing/route", "/%2eenv", "/%2Eenv", "/nested/%2egit/config",
+            "/nested%2f.git%2fconfig", "/%2ewell-known/config", "/assets/%2emissing.js"}) {
+        const auto result = fetch(path);
+        ASSERT_TRUE(result.ok()) << path;
+        expect_refused(result, path);
+        EXPECT_EQ(result.csp, kExpectedCsp) << path;
+        EXPECT_EQ(result.nosniff, "nosniff") << path;
+        EXPECT_EQ(result.referrer_policy, "no-referrer") << path;
+        EXPECT_EQ(result.cache_control, "no-cache") << path;
+      }
+    }
+
+    TEST(RestStaticAssets, RefusesVisibleSymlinksToHiddenTargetsInsideTheWebRoot) {
+      for (const char* path : {"/config.txt", "/public/config", "/public/missing"}) {
+        const auto result = fetch(path);
+        ASSERT_TRUE(result.ok()) << path;
+        expect_refused(result, path);
+      }
+    }
+
+    TEST(RestStaticAssets, ServesVisiblePathsWithInteriorDots) {
+      const auto file = fetch("/release.v1/app.min.js");
+      ASSERT_TRUE(file.ok());
+      EXPECT_EQ(file.status, 200);
+      EXPECT_EQ(file.body, kHashedAsset);
+      const auto route = fetch("/labs/release.v1");
+      ASSERT_TRUE(route.ok());
+      EXPECT_EQ(route.status, 200);
+      EXPECT_EQ(route.body, kIndexHtml);
     }
 
     TEST(RestStaticAssets, RefusesDotDotTraversal) {

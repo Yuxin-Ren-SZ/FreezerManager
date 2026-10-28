@@ -808,8 +808,9 @@ real `freezerd` safely until G0.1–G0.3 land.
   Delivered by #44 / PR #168 (`41d3cf3`). The owner review's CORS reflection,
   cwd file serving and plaintext request-body spill findings are fixed; Linux
   LSan and clang-tidy passed. TSan retains pure path/config tests and excludes
-  the three upstream Drogon HTTP integration binaries. Bare `/api` handling
-  (#186) and configured-root dotfile hardening (#196) remain separate P2s.
+  the three upstream Drogon HTTP integration binaries. Dotfile hardening
+  #196 / #210 (`1ae4d23`) now blocks dot-prefixed paths (including .well-known)
+  and hidden canonical targets. Bare `/api` handling remains P2 #186.
   - When `FMGR_WEB_ROOT=<dir>` is set, the REST listener serves the built SPA.
     Files are served as they are. Any other `GET` outside `/api/`,
     `/healthz` and `/metrics` returns `index.html` for client-side routing.
@@ -1243,7 +1244,7 @@ its own server item before a G task can be written:
   `parent_sample_id` filter);
 - the SQLite amber banner (PRD §20; no server signal exists).
 
-### Order of the remaining work (revised 2026-10-27)
+### Order of the remaining work (revised 2026-10-28)
 
 The original nine-wave table no longer described the project: the screens
 (G3.1–G3.6, G3.9) ran ahead of G0.2, G0.3 and G2.1, and a demo-readiness
@@ -1273,16 +1274,28 @@ separately unless they are P0 or the owner explicitly changes the scope.
 Both #180 modules are merged and the parent is closed: server #192 / #199
 (`f5611b7`) validates wire/CSV quantities, while web #193 / #200 (`fc251ec`)
 includes a review revision that refuses decimal input rounded by JavaScript
-Number conversion. New P2s #196 (dotfiles) and #202 (an invalid-enum fixture
-under strict UBSan) are queued separately.
+Number conversion. The smaller follow-up sprint used five agents across
+implementation and independent review: #196 / #210 (`1ae4d23`) closes the
+dotfile/symlink exposure, and #202 / #213 (`ac9ccbd`) replaces undefined enum
+construction while preserving the HTTP 500 / INTERNAL fallback. Both merged
+with all applicable C++/sanitizer/actual clang-tidy PR checks green.
 
 The watch protocol ADR (#198 / #201, `a526645`) and client stream/session fix
 (#182 / #203, `337f9b6`) are merged. Server watch revalidation #194 / #206
 (`45c5c8d`) completes P1 part 1 of #148; parts 2/3 remain P2. Cookie-response
 ordering across overlapping logout/login calls is a separate P2 (#204).
 P1 #207 investigates an allocator abort after a successful mTLS-rejection
-test; its cause and
-baseline reproducibility are unknown, and a CI retry is not a fix.
+test; its cause and baseline reproducibility remain unknown. A green retry
+is not a fix.
+
+MFA design #208 / #212 (`120039e`) is accepted as
+[ADR0002](doc/adr/0002-mfa-replay-backoff.md), after independent review and
+revision of audit-append safety, TOTP proof and state-initialization auditing.
+Its dependent runtime phases remain open under #179, coordinated with the
+stale session-writer source finding #211 (deterministic reproduction pending).
+No runtime MFA protection or deployment gate is marked complete by the ADR.
+Migration 15 remains free on main; the owner's separate 3D integration branch
+uses a provisional version and renumbers at integration if necessary.
 
 ---
 
