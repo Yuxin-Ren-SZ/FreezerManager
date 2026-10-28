@@ -3,6 +3,7 @@
 #ifndef FMGR_STORAGE_POSTGRES_POSTGRESREPOSUPPORT_H
 #define FMGR_STORAGE_POSTGRES_POSTGRESREPOSUPPORT_H
 
+#include "core/placement.h"
 #include "core/timestamp.h"
 #include "storage/IStorageBackend.h"
 
@@ -128,6 +129,50 @@ namespace fmgr::storage::detail {
       return std::nullopt;
     }
     return core::Timestamp::from_unix_micros(field.as<std::int64_t>());
+  }
+
+  // Read the nullable placement_level/_column/_depth triple (ADR 0003). The schema
+  // CHECK keeps it all-null or all-set, so the level decides.
+  [[nodiscard]] inline std::optional<core::Placement> pg_optional_placement(pqxx::row_ref row) {
+    const auto level = row.at("placement_level");
+    if (level.is_null()) {
+      return std::nullopt;
+    }
+    return core::Placement{
+        .level = level.as<std::int32_t>(),
+        .column = row.at("placement_column").as<std::int32_t>(),
+        .depth = row.at("placement_depth").as<std::int32_t>(),
+    };
+  }
+
+  // Read the nullable grid_levels/_columns/_depths triple.
+  [[nodiscard]] inline std::optional<core::GridSpec> pg_optional_grid(pqxx::row_ref row) {
+    const auto levels = row.at("grid_levels");
+    if (levels.is_null()) {
+      return std::nullopt;
+    }
+    return core::GridSpec{
+        .levels = levels.as<std::int32_t>(),
+        .columns = row.at("grid_columns").as<std::int32_t>(),
+        .depths = row.at("grid_depths").as<std::int32_t>(),
+    };
+  }
+
+  // Append a placement as three parameters (three NULLs when unset).
+  inline void pg_append_placement(pqxx::params& params,
+                                  const std::optional<core::Placement>& placement) {
+    const auto unset = std::optional<std::int32_t>{};
+    params.append(placement.has_value() ? std::optional{placement->level} : unset);
+    params.append(placement.has_value() ? std::optional{placement->column} : unset);
+    params.append(placement.has_value() ? std::optional{placement->depth} : unset);
+  }
+
+  // Append a grid as three parameters (three NULLs when unset).
+  inline void pg_append_grid(pqxx::params& params, const std::optional<core::GridSpec>& grid) {
+    const auto unset = std::optional<std::int32_t>{};
+    params.append(grid.has_value() ? std::optional{grid->levels} : unset);
+    params.append(grid.has_value() ? std::optional{grid->columns} : unset);
+    params.append(grid.has_value() ? std::optional{grid->depths} : unset);
   }
 
   // Convert an optional timestamp to its microsecond value for binding (NULL if empty).

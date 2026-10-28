@@ -27,9 +27,8 @@ namespace fmgr::core {
                        .has_value());
       EXPECT_TRUE(grid_error(GridSpec{.levels = 0, .columns = 1, .depths = 1}).has_value());
       EXPECT_TRUE(grid_error(GridSpec{.levels = 1, .columns = -1, .depths = 1}).has_value());
-      EXPECT_TRUE(
-          grid_error(GridSpec{.levels = 1, .columns = 1, .depths = k_max_grid_extent + 1})
-              .has_value());
+      EXPECT_TRUE(grid_error(GridSpec{.levels = 1, .columns = 1, .depths = k_max_grid_extent + 1})
+                      .has_value());
     }
 
     TEST(PlacementTest, RectangularGridBoundsContainOnlyCellsInsideTheGrid) {

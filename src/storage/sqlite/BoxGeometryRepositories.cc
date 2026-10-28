@@ -5,6 +5,7 @@
 #include "core/box.h"
 #include "storage/BoxGeometryTraits.h"
 #include "storage/detail/BoxGeometryColumns.h"
+#include "storage/detail/PlacementColumns.h"
 #include "storage/detail/QuerySqlBuilder.h"
 
 #include <sqlite3.h>
@@ -668,7 +669,33 @@ namespace fmgr::storage {
 
     constexpr std::string_view k_box_columns =
         "id, lab_id, box_type_id, storage_container_id, label, serial, barcode, "
-        "created_at_micros, archived_at_micros";
+        "created_at_micros, archived_at_micros, placement_level, placement_column, "
+        "placement_depth";
+
+    // The schema CHECK keeps the placement triple all-null or all-set.
+    [[nodiscard]] std::optional<core::Placement> column_optional_placement(sqlite3_stmt* statement,
+                                                                           int first_column) {
+      const auto level = column_optional_int(statement, first_column);
+      if (!level.has_value()) {
+        return std::nullopt;
+      }
+      return core::Placement{
+          .level = level.value(),
+          .column = column_optional_int(statement, first_column + 1).value_or(0),
+          .depth = column_optional_int(statement, first_column + 2).value_or(0),
+      };
+    }
+
+    void bind_optional_placement(sqlite3_stmt* statement, int first_index,
+                                 const std::optional<core::Placement>& placement) {
+      const auto coordinate = [&](std::int32_t core::Placement::*member) {
+        return placement.has_value() ? std::optional<std::int32_t>{placement.value().*member}
+                                     : std::optional<std::int32_t>{};
+      };
+      bind_optional_int64(statement, first_index, coordinate(&core::Placement::level));
+      bind_optional_int64(statement, first_index + 1, coordinate(&core::Placement::column));
+      bind_optional_int64(statement, first_index + 2, coordinate(&core::Placement::depth));
+    }
 
     [[nodiscard]] core::Box read_box(sqlite3_stmt* statement) {
       return core::Box{
@@ -681,6 +708,7 @@ namespace fmgr::storage {
           .barcode = column_optional_string(statement, 6),
           .created_at = core::Timestamp::from_unix_micros(sqlite3_column_int64(statement, 7)),
           .archived_at = column_optional_timestamp(statement, 8),
+          .placement = column_optional_placement(statement, 9),
       };
     }
 
@@ -688,6 +716,7 @@ namespace fmgr::storage {
       if (box.label.empty()) {
         throw ConstraintViolation("box label is required");
       }
+      detail::validate_placement_column(box.placement);
       // box_type_id must reference a live BoxType in the same lab
       {
         Statement statement(transaction.handle(),
@@ -806,13 +835,15 @@ namespace fmgr::storage {
         bind_optional_string(statement, 7, entity.barcode);
         bind_int64(statement, 8, entity.created_at.unix_micros());
         bind_optional_timestamp(statement, 9, entity.archived_at);
+        bind_optional_placement(statement, 10, entity.placement);
       }
 
       static void insert_pending(sqlite3* handle, const core::Box& entity) {
         Statement statement(handle, "INSERT INTO boxes "
                                     "(id, lab_id, box_type_id, storage_container_id, label, "
-                                    "serial, barcode, created_at_micros, archived_at_micros) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                                    "serial, barcode, created_at_micros, archived_at_micros, "
+                                    "placement_level, placement_column, placement_depth) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         bind_entity(statement.get(), entity);
         statement.step_done();
       }
@@ -820,9 +851,11 @@ namespace fmgr::storage {
       static void update_pending(sqlite3* handle, const core::Box& entity) {
         Statement statement(handle, "UPDATE boxes SET id = ?, lab_id = ?, box_type_id = ?, "
                                     "storage_container_id = ?, label = ?, serial = ?, barcode = ?, "
-                                    "created_at_micros = ?, archived_at_micros = ? WHERE id = ?");
+                                    "created_at_micros = ?, archived_at_micros = ?, "
+                                    "placement_level = ?, placement_column = ?, "
+                                    "placement_depth = ? WHERE id = ?");
         bind_entity(statement.get(), entity);
-        bind_text(statement.get(), 10, entity.id.to_string());
+        bind_text(statement.get(), 13, entity.id.to_string());
         statement.step_done();
       }
     };

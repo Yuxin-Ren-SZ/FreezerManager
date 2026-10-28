@@ -64,10 +64,10 @@ namespace fmgr::core {
     FreezerForm form{FreezerForm::Upright};
     Dimensions exterior_mm;
     Dimensions interior_mm;
-    HingeSide hinge{HingeSide::Right}; // as seen from the front
-    std::vector<InnerDoorSpec> inner_doors;   // bottom -> top; empty = none
+    HingeSide hinge{HingeSide::Right};         // as seen from the front
+    std::vector<InnerDoorSpec> inner_doors;    // bottom -> top; empty = none
     std::vector<CompartmentSpec> compartments; // bottom -> top
-    std::string render_key;                   // hand-built renderer; "" = generic cabinet
+    std::string render_key;                    // hand-built renderer; "" = generic cabinet
 
     friend bool operator==(const FreezerModel&, const FreezerModel&) = default;
   };
@@ -217,8 +217,7 @@ namespace fmgr::core {
       if (!detail::positive(compartment.rack_slot_mm)) {
         errors.push_back(where + ": rack slot dimensions must be positive");
       }
-      if (compartment.rack_slots * compartment.rack_slot_mm.width_mm >
-              model.interior_mm.width_mm ||
+      if (compartment.rack_slots * compartment.rack_slot_mm.width_mm > model.interior_mm.width_mm ||
           compartment.rack_slot_mm.depth_mm > model.interior_mm.depth_mm ||
           compartment.rack_slot_mm.height_mm > compartment.height_mm) {
         errors.push_back(where + ": racks do not fit in the compartment");

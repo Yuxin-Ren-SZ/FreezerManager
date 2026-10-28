@@ -5,6 +5,7 @@
 
 #include "core/freezer.h"
 #include "storage/IStorageBackend.h"
+#include "storage/detail/PlacementColumns.h"
 
 #include <string>
 
@@ -78,6 +79,8 @@ namespace fmgr::storage::detail {
     if (container.parent_id.has_value() && container.parent_id.value() == container.id) {
       throw ConstraintViolation("storage container cannot be its own parent");
     }
+    validate_placement_column(container.placement);
+    validate_grid_column(container.grid);
   }
 
 } // namespace fmgr::storage::detail

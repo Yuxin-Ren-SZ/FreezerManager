@@ -720,6 +720,46 @@ INSERT INTO role_permissions (role_id, permission_key) VALUES
   ('00000000-0000-0000-0000-000000000001', 'lab.provision');
 )sql",
           },
+          {
+              .version = 15,
+              .name = "0015_layout_placement",
+              .up_sql = R"sql(
+-- 3D layout (ADR 0003): a freezer names a built-in model (core/freezer_models.h,
+-- '' = none); containers and boxes carry an optional typed placement in their
+-- parent's grid, and containers an optional grid for their children. Each
+-- triple is all-null or all-set; SQLite cannot add a table CHECK, so the
+-- cross-column rule sits on the triple's last column.
+ALTER TABLE freezers ADD COLUMN freezer_model_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE storage_containers ADD COLUMN placement_level INTEGER CHECK (placement_level >= 0);
+ALTER TABLE storage_containers ADD COLUMN placement_column INTEGER CHECK (placement_column >= 0);
+ALTER TABLE storage_containers ADD COLUMN placement_depth INTEGER CHECK (
+  placement_depth >= 0
+  AND (placement_level IS NULL) = (placement_column IS NULL)
+  AND (placement_level IS NULL) = (placement_depth IS NULL));
+ALTER TABLE storage_containers ADD COLUMN grid_levels INTEGER CHECK (grid_levels BETWEEN 1 AND 64);
+ALTER TABLE storage_containers ADD COLUMN grid_columns INTEGER CHECK (grid_columns BETWEEN 1 AND 64);
+ALTER TABLE storage_containers ADD COLUMN grid_depths INTEGER CHECK (
+  grid_depths BETWEEN 1 AND 64
+  AND (grid_levels IS NULL) = (grid_columns IS NULL)
+  AND (grid_levels IS NULL) = (grid_depths IS NULL));
+
+ALTER TABLE boxes ADD COLUMN placement_level INTEGER CHECK (placement_level >= 0);
+ALTER TABLE boxes ADD COLUMN placement_column INTEGER CHECK (placement_column >= 0);
+ALTER TABLE boxes ADD COLUMN placement_depth INTEGER CHECK (
+  placement_depth >= 0
+  AND (placement_level IS NULL) = (placement_column IS NULL)
+  AND (placement_level IS NULL) = (placement_depth IS NULL));
+
+-- Two live siblings never share a cell.
+CREATE UNIQUE INDEX IF NOT EXISTS storage_containers_live_placement_unique
+  ON storage_containers(parent_id, placement_level, placement_column, placement_depth)
+  WHERE archived_at_micros IS NULL AND placement_level IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
+  ON boxes(storage_container_id, placement_level, placement_column, placement_depth)
+  WHERE archived_at_micros IS NULL AND placement_level IS NOT NULL;
+)sql",
+          },
       };
     }
 

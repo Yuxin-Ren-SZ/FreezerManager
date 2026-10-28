@@ -96,9 +96,8 @@ namespace fmgr::core {
 
   [[nodiscard]] inline PlacementBounds bounds_of(const GridSpec& grid) {
     return PlacementBounds{
-        .columns_per_level =
-            std::vector<std::int32_t>(static_cast<std::size_t>(std::max(grid.levels, 0)),
-                                      grid.columns),
+        .columns_per_level = std::vector<std::int32_t>(
+            static_cast<std::size_t>(std::max(grid.levels, 0)), grid.columns),
         .depths = grid.depths,
     };
   }
@@ -117,8 +116,7 @@ namespace fmgr::core {
   // Why `placement` cannot go under a parent with `parent_bounds`, or nullopt
   // when it can. A parent without a grid accepts no placed children.
   [[nodiscard]] inline std::optional<std::string>
-  placement_error(const std::optional<PlacementBounds>& parent_bounds,
-                  const Placement& placement) {
+  placement_error(const std::optional<PlacementBounds>& parent_bounds, const Placement& placement) {
     if (!parent_bounds.has_value()) {
       return "placement requires a parent with a grid";
     }
