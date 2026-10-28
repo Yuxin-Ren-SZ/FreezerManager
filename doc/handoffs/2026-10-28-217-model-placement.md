@@ -47,8 +47,8 @@ Integration branch: `feat/215-layout-3d`. Design: [ADR 0003](../adr/0003-freezer
 | Command | Result |
 |---|---|
 | `cmake --build --preset dev && ctest --preset dev` | 1831/1831 passed. The Postgres-parameterised cases skip locally: no `FMGR_TEST_POSTGRES_URL`, no container runtime. |
-| `ctest --preset asan -LE 'grpc_integration\|e2e'` | see PR |
-| `ctest --preset ubsan -LE 'grpc_integration\|e2e'` | see PR |
+| `ctest --preset asan -LE 'grpc_integration\|e2e'` | 1357/1357 passed (macOS, Apple clang) |
+| `ctest --preset ubsan -LE 'grpc_integration\|e2e'` | 1357/1357 passed (macOS, Apple clang) |
 | `clang-format-17 --dry-run --Werror` on changed files | clean (`.venv` clang-format 17.0.6) |
 | `tools/check-spdx-headers.sh` | clean |
 | clang-tidy | not run locally. The CI `clang-tidy` job covers it. |
@@ -70,6 +70,10 @@ Integration branch: `feat/215-layout-3d`. Design: [ADR 0003](../adr/0003-freezer
 The issue named `tests/backend_conformance/`. Those suites cover a synthetic sample entity only. The layout and box entities have always been checked across backends by the parameterised repository tests, so the new cases went there.
 
 ## Notes for #218
+
+- **Update semantics** (ADR 0003 §2): on Update, an absent `placement`, `grid` or `freezer_model_id` means unchanged.
+  - `clear_placement` / `clear_grid` remove them, and `freezer_model_id = ""` clears the model.
+  - Old clients send whole messages without these fields, so they must not wipe them.
 
 - **Placement errors:** the service validates parent bounds with `core::placement_error`. A layout root's bounds come from `core::cabinet_bounds(model)`; any other container's bounds come from `bounds_of(*grid)`.
 - **Collisions:** a sibling collision surfaces as `UniqueViolation`. On SQLite this happens at commit, because writes are staged; on Postgres it happens at insert. Map it to `ALREADY_EXISTS`.
