@@ -55,10 +55,7 @@ export const initialSceneState: SceneState = {
 };
 
 /** The inner door whose range covers `level`, or `null` when none does. */
-export function innerDoorIndexFor(
-  doors: readonly InnerDoorRange[],
-  level: number,
-): number | null {
+export function innerDoorIndexFor(doors: readonly InnerDoorRange[], level: number): number | null {
   const index = doors.findIndex((door) => door.firstLevel <= level && level <= door.lastLevel);
   return index === -1 ? null : index;
 }
@@ -96,7 +93,11 @@ export function reduceScene(
     }
 
     case 'closeInnerDoor':
-      return { ...state, innerDoor: null, pulledRack: doors.length === 0 ? state.pulledRack : null };
+      return {
+        ...state,
+        innerDoor: null,
+        pulledRack: doors.length === 0 ? state.pulledRack : null,
+      };
 
     case 'pullRack': {
       const rack = { level: action.level, column: action.column };

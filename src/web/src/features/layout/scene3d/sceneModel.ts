@@ -210,10 +210,6 @@ export function buildRenderModel(scene: GetFreezerSceneResponse): RenderModel {
 }
 
 /** The rack in a slot, if one is placed there. */
-export function rackAt(
-  render: RenderModel,
-  level: number,
-  column: number,
-): RackModel | undefined {
+export function rackAt(render: RenderModel, level: number, column: number): RackModel | undefined {
   return render.racks.find((rack) => rack.level === level && rack.column === column);
 }

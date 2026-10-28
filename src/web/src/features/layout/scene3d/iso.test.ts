@@ -75,7 +75,15 @@ describe('faces', () => {
   it('turns a rotated block with its axes, so its normals follow the swing', () => {
     // A door slab hinged at x = 100 and swung 90° open: its outer face now
     // looks along +x instead of -y.
-    const door = rotatedBlock('door', [100, 0, 0], [100, 0, 0], [0, 20, 0], [0, 0, 200], 90, 'door');
+    const door = rotatedBlock(
+      'door',
+      [100, 0, 0],
+      [100, 0, 0],
+      [0, 20, 0],
+      [0, 0, 200],
+      90,
+      'door',
+    );
     const front = blockFaces(door, { yaw: 60, pitch: 0 });
     expect(front.some((face) => face.normal[0] > 0.9)).toBe(true);
   });

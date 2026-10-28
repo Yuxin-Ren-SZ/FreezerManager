@@ -16,7 +16,7 @@ import { buildRenderModel, fillLevel } from './sceneModel';
  * honest "Unplaced" list for everything without a cell.
  */
 
-type NodeInit = {
+interface NodeInit {
   id: string;
   parentId?: string;
   box?: boolean;
@@ -25,14 +25,24 @@ type NodeInit = {
   grid?: [number, number, number];
   occupied?: number;
   total?: number;
-};
+}
 
 function scene(model: typeof F740_MODEL | undefined, nodes: NodeInit[]): GetFreezerSceneResponse {
   return create(GetFreezerSceneResponseSchema, {
-    freezer: { id: 'fz-1', name: 'Minus 80 A', layoutRootId: 'root', freezerModelId: model?.id ?? '' },
+    freezer: {
+      id: 'fz-1',
+      name: 'Minus 80 A',
+      layoutRootId: 'root',
+      freezerModelId: model?.id ?? '',
+    },
     model,
     nodes: [
-      { id: 'root', kind: SceneNodeKind.CONTAINER, containerKind: ContainerKind.GENERIC, label: 'Root' },
+      {
+        id: 'root',
+        kind: SceneNodeKind.CONTAINER,
+        containerKind: ContainerKind.GENERIC,
+        label: 'Root',
+      },
       ...nodes.map((node) => ({
         id: node.id,
         parentId: node.parentId ?? 'root',
@@ -59,8 +69,24 @@ describe('buildRenderModel', () => {
     const model = buildRenderModel(
       scene(F740_MODEL, [
         { id: 'rack-4', label: 'Rack 4', placement: [1, 3, 0], grid: [8, 1, 4] },
-        { id: 'b-top', parentId: 'rack-4', box: true, label: 'Top back', placement: [7, 0, 3], occupied: 81, total: 81 },
-        { id: 'b-low', parentId: 'rack-4', box: true, label: 'Low front', placement: [0, 0, 0], occupied: 10, total: 81 },
+        {
+          id: 'b-top',
+          parentId: 'rack-4',
+          box: true,
+          label: 'Top back',
+          placement: [7, 0, 3],
+          occupied: 81,
+          total: 81,
+        },
+        {
+          id: 'b-low',
+          parentId: 'rack-4',
+          box: true,
+          label: 'Low front',
+          placement: [0, 0, 0],
+          occupied: 10,
+          total: 81,
+        },
       ]),
     );
 
@@ -94,9 +120,31 @@ describe('buildRenderModel', () => {
     const model = buildRenderModel(
       scene(TSX_MODEL, [
         { id: 'rack-l4r2', label: 'L4 R2', placement: [3, 1, 0], grid: [5, 1, 1] },
-        { id: 'drawer-2', parentId: 'rack-l4r2', label: 'Drawer 2', placement: [1, 0, 0], grid: [1, 1, 5] },
-        { id: 'b1', parentId: 'drawer-2', box: true, label: 'D2 B1', placement: [0, 0, 0], occupied: 3, total: 81 },
-        { id: 'b2', parentId: 'drawer-2', box: true, label: 'D2 B2', placement: [0, 0, 1], occupied: 0, total: 81 },
+        {
+          id: 'drawer-2',
+          parentId: 'rack-l4r2',
+          label: 'Drawer 2',
+          placement: [1, 0, 0],
+          grid: [1, 1, 5],
+        },
+        {
+          id: 'b1',
+          parentId: 'drawer-2',
+          box: true,
+          label: 'D2 B1',
+          placement: [0, 0, 0],
+          occupied: 3,
+          total: 81,
+        },
+        {
+          id: 'b2',
+          parentId: 'drawer-2',
+          box: true,
+          label: 'D2 B2',
+          placement: [0, 0, 1],
+          occupied: 0,
+          total: 81,
+        },
       ]),
     );
     const [rack] = model.racks;
@@ -116,7 +164,9 @@ describe('buildRenderModel', () => {
     );
     expect(model.model).toBeNull();
     expect(model.racks).toEqual([]);
-    expect(model.unplaced).toEqual([{ id: 'rack-a', kind: 'container', label: 'Rack A', boxes: 1 }]);
+    expect(model.unplaced).toEqual([
+      { id: 'rack-a', kind: 'container', label: 'Rack A', boxes: 1 },
+    ]);
   });
 
   it('lists a rack whose slot the model does not have as unplaced rather than drawing it', () => {
@@ -128,8 +178,12 @@ describe('buildRenderModel', () => {
   });
 
   it('lists a box standing directly in the cabinet as unplaced', () => {
-    const model = buildRenderModel(scene(F740_MODEL, [{ id: 'b-floor', box: true, label: 'On the floor' }]));
-    expect(model.unplaced).toEqual([{ id: 'b-floor', kind: 'box', label: 'On the floor', boxes: 1 }]);
+    const model = buildRenderModel(
+      scene(F740_MODEL, [{ id: 'b-floor', box: true, label: 'On the floor' }]),
+    );
+    expect(model.unplaced).toEqual([
+      { id: 'b-floor', kind: 'box', label: 'On the floor', boxes: 1 },
+    ]);
   });
 
   it('survives an empty response', () => {

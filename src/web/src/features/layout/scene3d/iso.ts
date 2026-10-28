@@ -68,6 +68,8 @@ export type BlockTarget =
   | { readonly kind: 'rack'; readonly level: number; readonly column: number }
   | { readonly kind: 'box'; readonly id: string };
 
+export type FaceName = 'front' | 'back' | 'left' | 'right' | 'bottom' | 'top';
+
 export interface Block {
   readonly id: string;
   readonly origin: Vec3;
@@ -81,6 +83,11 @@ export interface Block {
   /** Lower layers are painted first, whatever their depth. */
   readonly layer: number;
   readonly target?: BlockTarget;
+  /**
+   * Draw only these faces. A cabinet's outer shell is drawn from outside only,
+   * so its inner faces never cover what is inside; the liner draws those.
+   */
+  readonly only?: readonly FaceName[];
 }
 
 export interface Face {
@@ -159,7 +166,7 @@ export function boxBlock(
   min: Vec3,
   max: Vec3,
   material: Material,
-  options: { layer?: number; target?: BlockTarget } = {},
+  options: { layer?: number; target?: BlockTarget; only?: readonly FaceName[] } = {},
 ): Block {
   return {
     id,
@@ -170,6 +177,7 @@ export function boxBlock(
     material,
     layer: options.layer ?? 1,
     target: options.target,
+    only: options.only,
   };
 }
 
@@ -209,7 +217,7 @@ export function rotatedBlock(
 }
 
 interface FaceSpec {
-  readonly name: string;
+  readonly name: FaceName;
   readonly corners: readonly Vec3[];
   readonly normal: Vec3;
 }
@@ -236,6 +244,7 @@ function faceSpecs(block: Block): FaceSpec[] {
 /** The faces of `block` the camera can see, projected. */
 export function blockFaces(block: Block, camera: Camera): Face[] {
   return faceSpecs(block)
+    .filter((spec) => block.only === undefined || block.only.includes(spec.name))
     .filter((spec) => faceVisible(spec.normal, camera))
     .map((spec) => ({
       key: `${block.id}:${spec.name}`,
