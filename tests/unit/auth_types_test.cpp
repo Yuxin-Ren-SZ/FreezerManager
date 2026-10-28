@@ -229,6 +229,11 @@ namespace fmgr::auth {
         return SessionContext{.session_id = session_id_1(), .user_id = user_id_1()};
       }
 
+      SessionContext revalidate_token(std::string_view /*bearer*/) override {
+        return SessionContext{
+            .session_id = session_id_1(), .user_id = user_id_1(), .mfa_complete = false};
+      }
+
       void verify_totp(const core::SessionId& /*session_id*/,
                        std::string_view /*totp_code*/) override {}
 
@@ -262,6 +267,8 @@ namespace fmgr::auth {
 
       const SessionContext ctx = provider.validate_token("tok");
       EXPECT_EQ(ctx.user_id, user_id_1());
+      IAuthProvider& interface = provider;
+      EXPECT_FALSE(interface.revalidate_token("tok").mfa_complete);
     }
 
   } // namespace

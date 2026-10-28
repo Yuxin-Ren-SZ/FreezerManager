@@ -1019,7 +1019,7 @@ namespace fmgr::server {
       // missing/invalid token surfaces as UNAUTHENTICATED before parsing lab_id.
       const auto bearer = extract_bearer(*ctx);
       const auto lab_id = core::LabId::parse(req->lab_id());
-      const auto sctx = middleware_.authorize(bearer, core::Permission::SampleRead, lab_id);
+      (void)middleware_.authorize(bearer, core::Permission::SampleRead, lab_id);
 
       // Poll-tail cursor on last_modified_at. Re-query rows with
       // last_modified_at >= cursor each cycle (>= not > so newly-changed rows
@@ -1031,6 +1031,7 @@ namespace fmgr::server {
       std::unordered_set<std::string> sent_at_cursor;
 
       while (!ctx->IsCancelled()) {
+        const auto sctx = middleware_.reauthorize(bearer, core::Permission::SampleRead, lab_id);
         auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
         rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
         const auto samples =

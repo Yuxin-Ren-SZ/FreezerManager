@@ -103,6 +103,7 @@ namespace fmgr::auth {
 
     AuthToken authenticate(const AuthCredentials& creds, const ClientInfo& client) override;
     SessionContext validate_token(std::string_view bearer_token) override;
+    SessionContext revalidate_token(std::string_view bearer_token) override;
     void verify_totp(const core::SessionId& session_id, std::string_view totp_code) override;
     void revoke_session(const core::SessionId& session_id,
                         const storage::MutationContext& ctx) override;
@@ -162,7 +163,9 @@ namespace fmgr::auth {
     AuthToken do_password_auth(const PasswordCredentials& creds, const ClientInfo& client);
     AuthToken do_api_token_auth(const ApiTokenCredentials& creds, const ClientInfo& client);
 
-    SessionContext validate_session_token(std::string_view bearer_token);
+    enum class ActivityMode { Record, Preserve };
+    SessionContext validate_token_impl(std::string_view bearer_token, ActivityMode activity);
+    SessionContext validate_session_token(std::string_view bearer_token, ActivityMode activity);
     SessionContext validate_api_token(std::string_view bearer_token);
 
     [[nodiscard]] SessionContext build_session_context(const core::Session& session) const;

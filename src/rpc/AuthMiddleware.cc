@@ -171,6 +171,19 @@ namespace fmgr::rpc {
   auth::SessionContext AuthMiddleware::authorize(const RpcCall& call,
                                                  core::Permission required_perm,
                                                  std::optional<core::LabId> lab_id) const {
+    return authorize_impl(call, required_perm, lab_id, GateMode::Admission);
+  }
+
+  auth::SessionContext AuthMiddleware::reauthorize(const RpcCall& call,
+                                                   core::Permission required_perm,
+                                                   std::optional<core::LabId> lab_id) const {
+    return authorize_impl(call, required_perm, lab_id, GateMode::Revalidation);
+  }
+
+  auth::SessionContext AuthMiddleware::authorize_impl(const RpcCall& call,
+                                                      core::Permission required_perm,
+                                                      std::optional<core::LabId> lab_id,
+                                                      GateMode mode) const {
     // Step 0: the RPC's registration must agree with the permission this handler
     // is asking for (#60). Checked before any work — a disagreement is a code
     // defect, not something the caller can fix by presenting different
@@ -179,13 +192,16 @@ namespace fmgr::rpc {
 
     const std::string_view bearer_token = call.bearer_token;
 
-    // Step 1: data-tier rate limit, keyed by the bearer token, before any work
+    // Admission only: data-tier rate limit, keyed by the bearer token, before any work
     // (notably token validation). Throttles authenticated request floods across
     // every service (audit C-10). Skipped when no gate is installed.
-    apply_data_tier_limit(bearer_token);
+    if (mode == GateMode::Admission) {
+      apply_data_tier_limit(bearer_token);
+    }
 
-    // Step 2: validate token (may throw InvalidCredentials, TokenExpired, etc.)
-    auth::SessionContext ctx = auth_.validate_token(bearer_token);
+    // Validate current authority; background checks preserve user activity.
+    auth::SessionContext ctx = mode == GateMode::Admission ? auth_.validate_token(bearer_token)
+                                                           : auth_.revalidate_token(bearer_token);
 
     // Step 3: MFA gate
     if (!ctx.mfa_complete) {
@@ -206,6 +222,16 @@ namespace fmgr::rpc {
 
   auth::SessionContext AuthMiddleware::authenticate(const RpcCall& call,
                                                     CredentialRule rule) const {
+    return authenticate_impl(call, rule, GateMode::Admission);
+  }
+
+  auth::SessionContext AuthMiddleware::reauthenticate(const RpcCall& call,
+                                                      CredentialRule rule) const {
+    return authenticate_impl(call, rule, GateMode::Revalidation);
+  }
+
+  auth::SessionContext AuthMiddleware::authenticate_impl(const RpcCall& call, CredentialRule rule,
+                                                         GateMode mode) const {
     if (rule == CredentialRule::None) {
       // A rule that requires no credential has no session to hand back, so it is
       // declared with admit_no_credential() instead. Refusing here rather than
@@ -221,8 +247,10 @@ namespace fmgr::rpc {
     // presenting different credentials.
     require_credential_agreement(call, rule);
 
-    // Step 1: validate token (may throw InvalidCredentials, TokenExpired, etc.)
-    auth::SessionContext ctx = auth_.validate_token(call.bearer_token);
+    // Validate current authority; background checks preserve user activity.
+    auth::SessionContext ctx = mode == GateMode::Admission
+                                   ? auth_.validate_token(call.bearer_token)
+                                   : auth_.revalidate_token(call.bearer_token);
 
     // Step 2: the MFA half of the rule. TokenOnly skips it deliberately — that is
     // the whole of the #62 exception, and the reason the rule is named rather
@@ -232,13 +260,13 @@ namespace fmgr::rpc {
       throw auth::MfaRequired("MFA required before this operation");
     }
 
-    // Step 3: the data-tier rate limit, for TokenAndMfa only (#128). These are
+    // Admission only: the data-tier rate limit, for TokenAndMfa (#128). These are
     // authenticated data endpoints whose handlers never call authorize(), so
     // before this they were the one authenticated class outside the process gate.
     // TokenOnly is deliberately exempt: SubmitMfa has its own per-user brute-force
     // limiter and Logout only removes authority, so a data-traffic budget must not
     // make giving up a credential fail.
-    if (rule == CredentialRule::TokenAndMfa) {
+    if (mode == GateMode::Admission && rule == CredentialRule::TokenAndMfa) {
       apply_data_tier_limit(call.bearer_token);
     }
 

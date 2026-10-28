@@ -17,6 +17,7 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/ShareRequestRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
+#include "watch_auth_test_helpers.h"
 
 #include <fmgr/v1/audit.grpc.pb.h>
 #include <fmgr/v1/auth.grpc.pb.h>
@@ -76,8 +77,9 @@ namespace fmgr::test {
         provider_ = std::make_unique<auth::LocalAuthProvider>(*backend_, fast_config());
         seed();
 
+        watch_auth_ = std::make_unique<WatchAuthBarrier>(*provider_);
         server_opts_.listen_address = "localhost:0";
-        server_ = std::make_unique<server::FreezerServer>(*backend_, *provider_, server_opts_);
+        server_ = std::make_unique<server::FreezerServer>(*backend_, *watch_auth_, server_opts_);
         server_->build();
         server_thread_ = std::thread([this] { server_->wait(); });
 
@@ -95,6 +97,7 @@ namespace fmgr::test {
           server_thread_.join();
         }
         server_.reset();
+        watch_auth_.reset();
         provider_.reset();
         backend_.reset();
         remove_sqlite_files(db_path_);
@@ -145,6 +148,38 @@ namespace fmgr::test {
         txn->commit();
       }
 
+      void expect_watch_invalidation(WatchInvalidation change, grpc::StatusCode expected,
+                                     bool unscoped = false) {
+        const auto token = login(kAdminEmail, kPassword);
+        ASSERT_FALSE(token.empty());
+        const auto session = provider_->revalidate_token(token);
+        const auto since = now_micros();
+        append_lab1_event("opening-marker");
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(8));
+        fmgr::v1::WatchAuditFeedRequest req;
+        if (!unscoped) {
+          req.set_lab_id(kLab1);
+        }
+        req.mutable_since()->set_unix_micros(since);
+        auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+        fmgr::v1::AuditEvent event;
+        ASSERT_TRUE(reader->Read(&event));
+        ASSERT_EQ(event.request_id(), "opening-marker");
+        watch_auth_->arm();
+        ASSERT_TRUE(watch_auth_->wait_for_check());
+        invalidate_watch_authority(
+            *backend_, *provider_, session, core::LabId::parse(kLab1), core::RoleKind::SystemAdmin,
+            unscoped ? core::Permission::LabProvision : core::Permission::AuditRead, change);
+        append_lab1_event("after-invalidation");
+        watch_auth_->release();
+        while (reader->Read(&event)) {
+          EXPECT_NE(event.request_id(), "after-invalidation");
+        }
+        EXPECT_EQ(reader->Finish().error_code(), expected);
+      }
+
       const std::string kAdminEmail{"admin@example.com"};
       const std::string kMemberEmail{"member@example.com"};
       const std::string kOutsiderEmail{"outsider@example.com"};
@@ -155,6 +190,7 @@ namespace fmgr::test {
       std::filesystem::path db_path_;
       std::unique_ptr<storage::SqliteBackend> backend_;
       std::unique_ptr<auth::LocalAuthProvider> provider_;
+      std::unique_ptr<WatchAuthBarrier> watch_auth_;
       server::FreezerServerOptions server_opts_;
       std::unique_ptr<server::FreezerServer> server_;
       std::thread server_thread_;
@@ -473,6 +509,100 @@ namespace fmgr::test {
     // The lab-scoped feed tails newly-appended rows. Open the stream from "now",
     // append a lab1-scoped audit row, and the reader must receive exactly that
     // event (poll cadence is ~1s, so a generous client deadline covers it).
+    TEST_F(AuditServiceTest, WatchAuditFeedStopsAfterRevokedBeforeNextBatch) {
+      expect_watch_invalidation(WatchInvalidation::Revocation, grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(AuditServiceTest, WatchAuditFeedStopsAfterIdleExpiry) {
+      expect_watch_invalidation(WatchInvalidation::IdleExpiry, grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(AuditServiceTest, WatchAuditFeedStopsAfterAbsoluteExpiry) {
+      expect_watch_invalidation(WatchInvalidation::AbsoluteExpiry,
+                                grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(AuditServiceTest, WatchAuditFeedStopsAfterMembershipLoss) {
+      expect_watch_invalidation(WatchInvalidation::Membership, grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    TEST_F(AuditServiceTest, WatchAuditFeedStopsAfterReadPermissionLoss) {
+      expect_watch_invalidation(WatchInvalidation::Permission, grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    TEST_F(AuditServiceTest, WatchAuditFeedStopsAfterMfaReset) {
+      expect_watch_invalidation(WatchInvalidation::Mfa, grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(AuditServiceTest, WatchAuditFeedStopsAfterDisabledUser) {
+      expect_watch_invalidation(WatchInvalidation::DisabledUser, grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST_F(AuditServiceTest, WatchAuditFeedUnscopedStopsAfterGlobalAdminPermissionLoss) {
+      expect_watch_invalidation(WatchInvalidation::Permission, grpc::StatusCode::PERMISSION_DENIED,
+                                true);
+    }
+
+    TEST_F(AuditServiceTest, WatchAuditFeedUnscopedRejectsNonAdmin) {
+      const auto token = login(kMemberEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+      fmgr::v1::WatchAuditFeedRequest req;
+      auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+      fmgr::v1::AuditEvent event;
+      EXPECT_FALSE(reader->Read(&event));
+      EXPECT_EQ(reader->Finish().error_code(), grpc::StatusCode::PERMISSION_DENIED);
+    }
+
+    TEST_F(AuditServiceTest,
+           WatchAuditFeedUnscopedAdminRemainsAuthorizedAcrossMultiplePollingBatches) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      const auto since = now_micros();
+      append_lab1_event("poll-0");
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(8));
+      fmgr::v1::WatchAuditFeedRequest req;
+      req.mutable_since()->set_unix_micros(since);
+      auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+      fmgr::v1::AuditEvent event;
+      ASSERT_TRUE(reader->Read(&event));
+      ASSERT_EQ(event.request_id(), "poll-0");
+      for (int poll = 1; poll <= 2; ++poll) {
+        const auto marker = "poll-" + std::to_string(poll);
+        append_lab1_event(marker);
+        ASSERT_TRUE(reader->Read(&event));
+        EXPECT_EQ(event.request_id(), marker);
+      }
+      ctx.TryCancel();
+      reader->Finish();
+    }
+
+    TEST_F(AuditServiceTest, WatchAuditFeedStopsAfterOpeningSessionIsRevoked) {
+      const auto token = login(kAdminEmail, kPassword);
+      ASSERT_FALSE(token.empty());
+      const auto since = now_micros();
+      append_lab1_event("opening-marker");
+      grpc::ClientContext ctx;
+      set_bearer(ctx, token);
+      ctx.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(5));
+      fmgr::v1::WatchAuditFeedRequest req;
+      req.set_lab_id(kLab1);
+      req.mutable_since()->set_unix_micros(since);
+      auto reader = audit_stub_->WatchAuditFeed(&ctx, req);
+      fmgr::v1::AuditEvent event;
+      ASSERT_TRUE(reader->Read(&event));
+      ASSERT_EQ(event.request_id(), "opening-marker");
+      const auto session = provider_->validate_token(token);
+      provider_->revoke_session(session.session_id, storage::MutationContext{});
+      while (reader->Read(&event)) {
+      }
+      EXPECT_EQ(reader->Finish().error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
     TEST_F(AuditServiceTest, WatchAuditFeedStreamsNewLabScopedEvent) {
       const auto token = login(kAdminEmail, kPassword);
       ASSERT_FALSE(token.empty());
