@@ -1,0 +1,547 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CryoCube F740 ULT freezer</title></head><body>
+<script src="core.js"></script>
+<script>
+/* CryoCube F740 series ULT freezer: an upright -86 °C freezer, the demo model for the FreezerManager 3D layout (#215).
+
+   How the real thing works (each button is one of these steps):
+   1. The outer door (insulated, magnetic gasket) closes on a heated frame. Opening it lets warm room air in.
+   2. Behind it, three insulated inner doors close off the three compartments. The two shelves and the floor split
+      the cabinet into those compartments. Opening one inner door warms only that compartment.
+   3. Each compartment holds six stainless side-access racks side by side, 8 tiers x 4 boxes deep (2-inch boxes).
+      576 boxes in total. A rack slides out toward you on the shelf, and its boxes slide out sideways.
+   4. Cooling is a two-stage cascade. The high stage (R290 propane) compresses, rejects heat in the air-cooled
+      condenser behind the front grille, passes a filter drier and boils in the cascade heat exchanger. That boiling
+      condenses the low stage (R170 ethane), which goes through its drier and capillary into evaporator coils bonded
+      to the stainless liner. It boils there at about -90 °C and returns to the low-stage compressor. Both
+      compressors run while the cabinet is above set point. Vacuum insulation panels sit in the walls and the door.
+
+   Real sizes (Eppendorf data sheet): outside 1099 W x 980 D x 1973 H mm, inside 865 x 622 x 1390 mm, 740 L.
+   Coordinates in cm: x = depth (door face at x = 98), y = width (+y is the handle side, viewer-left), z = up.
+
+   Parts
+   CASE        cabinet shell . outer door + gasket + door plug . grey plinth with front intake grille, service panel,
+               rear exhaust louvres . leveling feet . two hinges (offset pivot) . handle housing, lever, lock cylinder
+               . control bezel with touchscreen and alarm button . access port and pressure relief valve (left side)
+               . rating plate . power cord
+   INTERIOR    stainless liner . 2 shelves on side rails . 3 inner doors (hinged on the outer hinge side) . 18 racks
+               . temperature probe on the back wall . door switch
+   COOLING     high-stage compressor . low-stage compressor . mounting plates . condenser (fins + copper U-bends)
+               . 2 condenser fans on struts . cascade heat exchanger with 4 ports . 2 filter driers . expansion tank
+               . capillary up the back wall . evaporator coils on both side walls and the back . suction line
+   INSULATION  vacuum insulation panels in both sides, back, top and the door . frame heater wire round the opening
+   POWER       inlet + cord . control box on the base's back wall . compressor and fan wiring . probe wire
+               . door cable via the top hinge to the control board behind the bezel */
+
+const FW = 98, FD = 110, FH = 197;                 // door face x, width, height
+const CX = 88, PLZ = 46;                           // carcass front plane (door slab 88..98), plinth top
+const IX0 = 26, IX1 = 88, IY0 = 11.75, IY1 = 98.25, IZ0 = 52, IZ1 = 191;   // interior (62 x 86.5 x 139)
+const CH = (IZ1 - IZ0) / 3, SHT = 1.2;             // compartment pitch, shelf thickness
+const shelfZ = c => IZ0 + c*CH;                    // shelf centre under compartment c (c = 1, 2)
+const compFloor = c => c === 0 ? IZ0 : shelfZ(c) + SHT/2;
+const compCeil = c => c === 2 ? IZ1 : shelfZ(c + 1) - SHT/2;
+const COMP_NAMES = ['Bottom', 'Middle', 'Top'];
+const RX0 = 27.5, RLEN = 56, RW = 13.5, RPITCH = 13.9, RY0 = 14.2, RH = 43, PULL = 38;
+const BODY = { l:'#f8f7f2', m:'#e6e4dc', d:'#bdbaaf' };
+const GREY = { l:'#c9ccce', m:'#abafb2', d:'#7f8487' };
+const GREYL = { l:'#e3e5e6', m:'#cbced0', d:'#9ea3a6' };
+const INOX = { l:'#eceff0', m:'#cdd3d6', d:'#a3abaf' };
+const RACKM = { l:'#d9dee0', m:'#b2b9bd', d:'#868e92' };
+const RUBBER = { l:'#8a8e91', m:'#6c7073', d:'#4b4f52' };
+const PLASTIC = { l:'#f3f2ec', m:'#deddd5', d:'#b4b1a7' };
+const COPPER = { l:'#f0b07a', m:'#d08a52', d:'#9a5a2c' };
+const DARKC = { l:'#62666a', m:'#43474a', d:'#27292b' };
+const VIPM = { l:'#e8ebdc', m:'#d3d7c4', d:'#aeb39c' };
+const PCBM = matOf('#4f9a68');
+const BLUE = '#2b3f9c';
+const BOXC = ['#e9c992', '#86b6e8', '#93d3a6', '#f3d36f', '#f1a7b8', '#ece8df'];
+const CELLM = Object.fromEntries(BOXC.map(c => [c, matOf(c)]));
+const SANS = 'font-family="Helvetica Neue,Arial,sans-serif"';
+// clean mode (window.CF_CLEAN, or ?clean=1): only the freezer and its door / inner door / rack buttons. No wobble,
+// see-through, labels, readouts, notices or page controls.
+const CF_CLEAN = window.CF_CLEAN === true || new URLSearchParams(location.search).get('clean') === '1';
+
+/* ---------- helpers ---------- */
+// a box in any local frame: map(a, b, c) -> world point; all six faces, each drawn only when it faces the viewer
+function slab(map, a0, a1, b0, b1, c0, c1, mat, shade = tone, iw = .9){
+  const pts = []; for (let i = 0; i < 8; i++) pts.push(map(i & 1 ? a1 : a0, i & 2 ? b1 : b0, i & 4 ? c1 : c0));
+  const ctr = avg(pts); let s = '';
+  for (const ix of [[0,2,6,4], [1,3,7,5], [0,1,5,4], [2,3,7,6], [0,1,3,2], [4,5,7,6]]){
+    const q = ix.map(i => pts[i]); let n = norm(cross(sub(q[1], q[0]), sub(q[3], q[0])));
+    if (dot(n, sub(avg(q), ctr)) < 0) n = n.map(v => -v);
+    if (vis(n)) s += shape(q, shade(n, mat), iw);
+  }
+  return { svg: s, pts };
+}
+const aabb = (pts, minX = -1e9) => [[Math.max(minX, Math.min(...pts.map(p => p[0]))), Math.min(...pts.map(p => p[1])), Math.min(...pts.map(p => p[2]))],
+  [Math.max(...pts.map(p => p[0])), Math.max(...pts.map(p => p[1])), Math.max(...pts.map(p => p[2]))]];
+const quadX = (x, y0, z0, y1, z1) => [[x, y0, z0], [x, y1, z0], [x, y1, z1], [x, y0, z1]];
+const quadY = (y, x0, z0, x1, z1) => [[x0, y, z0], [x1, y, z0], [x1, y, z1], [x0, y, z1]];
+const quadZ = (z, x0, y0, x1, y1) => [[x0, y0, z], [x1, y0, z], [x1, y1, z], [x0, y1, z]];
+// text on any vertical face: U3 = reading direction in the world, hidden when the face turns away (txM)
+const txAt = (p3, U3, str, size, col, extra = '') => `<text transform="${txM(P(...p3), Dv(...U3), Dv(0, 0, -1))}" font-size="${size}" fill="${col}" text-anchor="middle" ${extra}>${str}</text>`;
+// ink a quad's edges except the ones where a part was cut in two (no ink on joins)
+const edgeInk = (q, skipB, skipD, w = .8) => { let d = pd([q[0], q[1]], false) + pd([q[2], q[3]], false);
+  if (!skipB) d += pd([q[1], q[2]], false); if (!skipD) d += pd([q[3], q[0]], false); return ink(d, w); };
+// a tube or wire as short straight pieces, so each piece sorts with the solids beside it
+const cfTube = (pts, col, r = .7, flow = null) => { const out = [];
+  for (let i = 0; i + 1 < pts.length; i++){ const a = pts[i], b = pts[i + 1], d = pd([a, b], false);
+    out.push({ box: [[0, 1, 2].map(k => Math.min(a[k], b[k]) - r), [0, 1, 2].map(k => Math.max(a[k], b[k]) + r)],
+      svg: `<path d="${d}" fill="none" stroke="${INK}" stroke-width="${f(2*r + .9)}" stroke-linecap="round"/><path d="${d}" fill="none" stroke="${col}" stroke-width="${f(2*r)}" stroke-linecap="round"/>`
+        + (flow != null ? `<path d="${d}" fill="none" stroke="#ffffff" stroke-width="${f(r*.7)}" stroke-dasharray="1.6 5" stroke-dashoffset="${f(-flow)}" opacity=".85" stroke-linecap="round"/>` : '') }); }
+  return out; };
+const cfRnd = s => { const v = Math.sin(s*12.9898) * 43758.5453; return v - Math.floor(v); };
+const cellCol = (c, r, j, i) => { const v = cfRnd(c*61 + r*17 + j*7.3 + i*3.1 + 1); return v < .17 ? null : BOXC[Math.floor(cfRnd(v*991)*BOXC.length)]; };
+
+/* ---------- the doors' local frames ---------- */
+// outer door: pivots on an offset hinge at (88, -1); local w along the width from the hinge side, t into the cabinet
+// from the door face (0) to its rear face (10) and the plug (12). Closed: (w, t) -> (98 - t, w).
+function doorMap(st){
+  const a = ease(st.door) * Math.PI/2, ca = Math.cos(a), sa = Math.sin(a);
+  const DM = (w, t, z) => { const vx = 10 - t, vy = w + 1; return [CX + vx*ca + vy*sa, -1 - vx*sa + vy*ca, z]; };
+  DM.nF = [ca, -sa, 0]; DM.nR = [-ca, sa, 0]; DM.nS = [sa, ca, 0]; DM.U = [-sa, -ca, 0];   // nS: the handle-side edge
+  return DM;
+}
+// inner door c: pivots at the jamb (86, IY0); t from its face (0, at x = 86) to its back (2). Closed: (86 - t, IY0 + w)
+function innerMap(st, c){
+  const b = ease(st.inner[c]) * Math.PI/2, cb = Math.cos(b), sb = Math.sin(b);
+  const IM = (w, t, z) => [86 - t*cb + w*sb, IY0 + t*sb + w*cb, z];
+  IM.nF = [cb, -sb, 0]; IM.U = [-sb, -cb, 0];
+  return IM;
+}
+
+/* ---------- racks ---------- */
+const pulledRack = st => st.pull > 0 ? st.rk : null;
+function rackGeo(st, c, r){
+  const pr = pulledRack(st), dx = pr && pr.c === c && pr.r === r ? ease(st.pull)*PULL : 0;
+  const x0 = RX0 + dx, y0 = RY0 + r*RPITCH, z0 = compFloor(c) + .05;
+  return { x0, x1: x0 + RLEN, y0, y1: y0 + RW, z0, z1: z0 + RH };
+}
+// the part of rack (c, r) between x = lo and x = hi (a pulled rack is drawn in two pieces either side of the opening)
+function rackPiece(st, m, c, r, lo, hi){
+  const g = rackGeo(st, c, r), xa = Math.max(lo, g.x0), xb = Math.min(hi, g.x1);
+  if (xb - xa < .05) return null;
+  const cutA = xa > g.x0 + 1e-6, cutB = xb < g.x1 - 1e-6, pr = pulledRack(st), sel = pr && pr.c === c && pr.r === r;
+  let s = '';
+  for (const [yy, ny] of [[g.y1, 1], [g.y0, -1]]){ const n = [0, ny, 0]; if (!vis(n)) continue;
+    const q = quadY(yy, xa, g.z0, xb, g.z1);
+    s += fill(pd(q), toneI(n, RACKM));
+    const byCol = {};
+    for (let i = 0; i < 4; i++) for (let j = 0; j < 8; j++){
+      const cx0 = Math.max(xa, g.x0 + i*14 + .6), cx1 = Math.min(xb, g.x0 + (i + 1)*14 - .6); if (cx1 - cx0 < .1) continue;
+      const cz0 = g.z0 + 1 + j*5.25 + .35, cz1 = cz0 + 4.55, key = cellCol(c, r, j, i) || 'empty';
+      (byCol[key] = byCol[key] || []).push(pd(quadY(yy + ny*.03, cx0, cz0, cx1, cz1)));
+      // the end label of each box, on the rack that is out
+      if (sel && key !== 'empty' && cx1 - cx0 > 6) (byCol.lbl = byCol.lbl || []).push(pd(quadY(yy + ny*.06, (cx0 + cx1)/2 - 3, cz0 + 1.3, (cx0 + cx1)/2 + 3, cz1 - 1.3)));
+    }
+    for (const [key, ds] of Object.entries(byCol)) s += `<path d="${ds.join('')}" fill="${key === 'empty' ? '#3b4043' : key === 'lbl' ? '#fbfaf6' : toneI(n, CELLM[key])}" stroke="${INK}" stroke-width="${key === 'lbl' ? .25 : .35}"/>`;
+    s += edgeInk(q, cutB, cutA);
+  }
+  if (vis([0, 0, 1])){ const q = quadZ(g.z1, xa, g.y0, xb, g.y1); s += fill(pd(q), toneI([0, 0, 1], RACKM)) + edgeInk(q, cutB, cutA); }
+  if (!cutA && vis([-1, 0, 0])) s += shape(quadX(g.x0, g.y0, g.z0, g.y1, g.z1), toneI([-1, 0, 0], RACKM), .8);
+  if (!cutB && vis([1, 0, 0])){
+    s += shape(quadX(g.x1, g.y0, g.z0, g.y1, g.z1), sel ? m.l : toneI([1, 0, 0], RACKM), .9);
+    s += shape(quadX(g.x1 + .03, g.y0 + 3, g.z1 - 9.5, g.y1 - 3, g.z1 - 4.5), '#fbfaf6', .5);
+    s += tx(g.x1 + .06, (g.y0 + g.y1)/2, g.z1 - 6, String(r + 1), 3.4, INK, 800);
+    s += box(g.x1, g.y0 + 3, g.z1 - 2.6, g.x1 + .4, g.y1 - 3, g.z1 - 1.4, METAL, toneI, .6);
+  }
+  return { box: [[xa, g.y0, g.z0], [xb + (cutB ? 0 : .4), g.y1, g.z1]], svg: act('rack', s, `data-c="${c}" data-r="${r}"`) };
+}
+
+/* ---------- inner doors ---------- */
+function innerDoor(st, c){
+  const IM = innerMap(st, c), z0 = compFloor(c) + .3, z1 = compCeil(c) - .3, W = IY1 - IY0, zm = (z0 + z1)/2;
+  const sl = slab(IM, 0, W, 0, 2, z0, z1, PLASTIC, toneI, 1);
+  let s = sl.svg;
+  if (vis(IM.nF)){
+    const q = (w0, zz0, w1, zz1, t) => [IM(w0, t, zz0), IM(w1, t, zz0), IM(w1, t, zz1), IM(w0, t, zz1)];
+    s += shape(q(W - 9, zm - 6, W - 4, zm + 6, -.05), '#8d9296', .7) + shape(q(W - 8, zm - 4.8, W - 5, zm + 4.8, -.08), '#5d6266', .5);
+    s += txAt(IM(10, -.06, z1 - 7), IM.U, String(c + 1), 4.2, '#9a988f', `${SANS} font-weight="700"`);
+  }
+  return { box: aabb(sl.pts, st.inner[c] > 0 ? CX : -1e9), svg: act('inner', s, `data-c="${c}"`) };
+}
+
+/* ---------- interior (seen through the opening, clipped to it) ---------- */
+function interior(st, m){
+  let s = '';
+  s += shape(quadX(IX0, IY0, IZ0, IY1, IZ1), toneI([1, 0, 0], INOX), .8);
+  let br = ''; for (let y = IY0 + 7; y < IY1; y += 7) br += pd([[IX0 + .05, y, IZ0 + 2], [IX0 + .05, y, IZ1 - 2]], false);
+  s += `<path d="${br}" fill="none" stroke="#ffffff" stroke-width=".5" opacity=".45"/>`;
+  if (vis([0, 1, 0])) s += shape(quadY(IY0, IX0, IZ0, IX1, IZ1), toneI([0, 1, 0], INOX), .8);
+  if (vis([0, -1, 0])) s += shape(quadY(IY1, IX0, IZ0, IX1, IZ1), toneI([0, -1, 0], INOX), .8);
+  if (vis([0, 0, 1])) s += shape(quadZ(IZ0, IX0, IY0, IX1, IY1), toneI([0, 0, 1], INOX), .8);
+  if (vis([0, 0, -1])) s += shape(quadZ(IZ1, IX0, IY0, IX1, IY1), toneI([0, 0, -1], INOX), .8);
+  // Drawn in horizontal layers, bottom to top: compartment 0, shelf 1, compartment 1, shelf 2, compartment 2. The camera
+  // always looks down (pitch >= 6), so a lower layer never covers a higher one. One byDepth over everything is not safe
+  // here: pairs that overlap on every axis (a rail beside an inner door) fall back to centre depth, the comparator stops
+  // being consistent and the sort can put a shelf after the racks standing on it.
+  const pr = pulledRack(st);
+  for (let c = 0; c < 3; c++){
+    if (c > 0){ const z = shelfZ(c); s += box(27, IY0 + 1, z - SHT/2, 86, IY1 - 1, z + SHT/2, INOX, toneI, .8); }
+    const parts = [];
+    for (let r = 0; r < 6; r++){ const it = rackPiece(st, m, c, r, 0, pr && pr.c === c && pr.r === r ? CX : 1e9); if (it) parts.push(it); }
+    if (st.inner[c] <= 0) parts.push(innerDoor(st, c));
+    // the side rails carrying the shelf above this compartment, short of the inner door so they sort apart from it
+    if (c < 2){ const z = shelfZ(c + 1);
+      for (const [ya, yb] of [[IY0, IY0 + 1], [IY1 - 1, IY1]])
+        parts.push({ box: [[28, ya, z - 2.4], [83.5, yb, z - SHT/2]], svg: box(28, ya, z - 2.4, 83.5, yb, z - SHT/2, RACKM, toneI, .6) }); }
+    // temperature probe on the back wall, above the top racks (rack tops are at 188.3)
+    if (c === 2) parts.push({ box: [[26.1, 54, 189.1], [31.5, 56, 190.3]], svg: rod([26.1, 55, 189.7], [31, 55, 189.7], .55, METAL, toneI, .6) });
+    s += byDepth(parts);
+  }
+  return clipTo(quadX(CX, IY0, IZ0, IY1, IZ1), s);
+}
+
+/* ---------- cabinet (carcass) ---------- */
+function carcass(st, m){
+  let s = '';
+  const FRONT = vis([1, 0, 0]), z0 = PLZ, z1 = FH;
+  if (vis([-1, 0, 0])){ const n = [-1, 0, 0];
+    s += shape(quadX(0, 0, z0, FD, z1), tone(n, BODY), 1.2);
+    s += shape(quadX(-.05, 72, 152, 96, 170), '#fbfaf4', .8);
+    let hl = ''; for (let z = 155; z < 166; z += 2.6) hl += pd([[-.08, 75, z], [-.08, 93, z]], false);
+    s += ink(hl, .5) + txAt([-.1, 84, 166.4], [0, 1, 0], 'F740hi', 2.4, INK, 'font-family="ui-monospace,Menlo,monospace" font-weight="800"');
+    for (const y of [6, 104]) for (const z of [52, 191]) s += shape(on(PX(-.05), ellUV(y, z, .7, .7, 8)), GREY.m, .4);
+  }
+  if (vis([0, -1, 0])) s += shape(quadY(0, 0, z0, CX, z1), tone([0, -1, 0], BODY), 1.2)
+    + [[52, 66], [178, 192]].map(([za, zb]) => shape(quadY(-.05, CX - 7, za, CX, zb), tone([0, -1, 0], GREY), .7)).join('');
+  if (vis([0, 1, 0])){ const n = [0, 1, 0];
+    s += shape(quadY(FD, 0, z0, CX, z1), tone(n, BODY), 1.2);
+    s += shape(quadY(FD + .05, 70, 125, 84, 140), '#fbfaf4', .7);
+    let hl = ''; for (let z = 128; z < 138; z += 2) hl += pd([[72, FD + .08, z], [82, FD + .08, z]], false);
+    s += ink(hl, .45);
+    s += rod([50, FD, 172], [50, FD + 3.2, 172], 3.4, GREYL, tone, 1) + shape(on(PY(FD + 3.25), ellUV(50, 172, 1.8, 1.8, 14)), GREY.d, .5);
+    s += rod([66, FD, 158], [66, FD + 2.4, 158], 2.1, GREYL, tone, .9);
+  }
+  if (vis([0, 0, 1])) s += shape(quadZ(z1, 0, 0, CX, FD), tone([0, 0, 1], BODY), 1.2);
+  if (FRONT){ const n = [1, 0, 0], col = tone(n, BODY);
+    if (st.door <= .002) s += fill(pd(quadX(CX, 0, z0, FD, z1)), col);
+    else {
+      s += fill(pd(quadX(CX, 0, z0, IY0, z1)), col) + fill(pd(quadX(CX, IY1, z0, FD, z1)), col)
+        + fill(pd(quadX(CX, IY0, z0, IY1, IZ0)), col) + fill(pd(quadX(CX, IY0, IZ1, IY1, z1)), col);
+      s += interior(st, m);
+      s += ink(pd(quadX(CX, 0, z0, FD, z1)), 1.2) + ink(pd(quadX(CX, IY0, IZ0, IY1, IZ1)), 1.3);
+      s += box(CX, 52, 192.5, CX + 1, 58, 195, GREY, toneI, .6);
+    }
+  }
+  // hinge knuckles on the offset pivot (88, -1): the cabinet half of each hinge
+  if (vis([0, -1, 0]) || FRONT) for (const [za, zb] of [[52, 66], [178, 192]]) s += cyl(CX, -1, za, zb, 1.8, GREYL, tone, .9, 14);
+  s += hullInk([[0, 0, z0], [CX, 0, z0], [CX, FD, z0], [0, FD, z0], [0, 0, z1], [CX, 0, z1], [CX, FD, z1], [0, FD, z1]], 2.6);
+  return { box: [[0, -3, z0], [CX, FD, z1]], svg: s };
+}
+
+/* ---------- outer door ---------- */
+function door(st, m){
+  const DM = doorMap(st), FR = vis(DM.nF), RR = vis(DM.nR), U = DM.U;
+  const q = (w0, z0, w1, z1, t) => [DM(w0, t, z0), DM(w1, t, z0), DM(w1, t, z1), DM(w0, t, z1)];
+  const ringAt = (uv, t) => uv.map(([w, z]) => DM(w, t, z));
+  const body = slab(DM, 0, FD, 0, 10, 47, FH, BODY, tone, 1.2);
+  // front: grey band, wordmark, then the bezel and the handle standing on it
+  let front = '';
+  if (FR){ front += shape(q(0, 150, FD, 158, -.05), tone(DM.nF, GREY), .9);
+    front += txAt(DM(18, -.06, 126), U, 'CryoCube', 6.4, BLUE, `${SANS} font-style="italic" font-weight="500"`); }
+  const bez = rrUV(22, 139, 66, 163, 4, 5), bA = ringAt(bez, 0), bB = ringAt(bez, -3);
+  let bezel = loft(bA, bB, n => tone(n, GREYL));
+  if (FR){ const scr = st.temp > -70 ? '#5a1f1b' : '#1d2a26', txc = st.temp > -70 ? '#ffb3a8' : '#8af0ae';
+    bezel += fill(pd(bB), tone(DM.nF, GREYL)) + ink(pd(bB), 1);
+    bezel += shape(q(25, 143, 48, 159, -3.05), scr, .8);
+    bezel += txAt(DM(36.5, -3.1, 149), U, `${Math.round(st.temp)}`, 7.5, txc, 'font-family="ui-monospace,Menlo,monospace" font-weight="800"');
+    bezel += txAt(DM(36.5, -3.1, 145), U, st.temp > -70 ? 'ALARM' : st.door > 0 ? 'DOOR OPEN' : 'SET -80', 1.9, txc, 'font-family="ui-monospace,Menlo,monospace" font-weight="700"');
+    bezel += rod(DM(59, -3, 151), DM(59, -3.9, 151), 2.8, GREYL, tone, .8);
+    bezel += shape(ringAt(ellUV(59, 158.5, .9, .9, 10), -3.1), st.temp > -70 && Math.floor(st.clock*3) % 2 ? '#e2483d' : '#43c25c', .4); }
+  bezel += hullInk([...bA, ...bB], 1.3);
+  // the latch: a housing on the door's free side edge (w = FD), its lock cylinder low toward the front, and the lever
+  // rising from its top along the edge, as on the real door
+  const SR = vis(DM.nS), hq = (t0, z0, t1, z1, w) => [DM(w, t0, z0), DM(w, t1, z0), DM(w, t1, z1), DM(w, t0, z1)];
+  let handle = slab(DM, FD, FD + 4.5, .5, 9.5, 118, 131, GREY, tone, 1).svg;
+  if (SR) handle += shape(hq(1.8, 120.2, 8.2, 129.4, FD + 4.55), tone(DM.nS, GREYL), .6) + rod(DM(FD + 4.5, 2.4, 120.4), DM(FD + 5.4, 2.4, 120.4), 1, METAL, toneI, .6);
+  handle += rod(DM(FD + 2.2, 5, 131), DM(FD + 4.2, 5, 137), 1.7, GREY, tone, 1) + rod(DM(FD + 4.2, 5, 137), DM(FD + 4.7, 5, 151), 1.7, GREY, tone, 1, 1.4);
+  handle = act('door', handle);
+  // rear: gasket ring and the plug that fills the opening
+  const plug = slab(DM, 13, 97, 10, 12, 53, 190, PLASTIC, tone, 1);
+  let rear = '';
+  if (RR) rear += shape(q(6.5, 49, 103.5, 195, 10.05), RUBBER.m, 1) + fill(pd(q(9, 51.5, 101, 192.5, 10.08)), tone(DM.nR, BODY));
+  // each mounted part goes before the body while its face is turned away (the body hides it), after it while facing
+  let s = (FR ? '' : bezel) + (SR ? '' : handle) + (RR ? '' : plug.svg) + body.svg;
+  if (FR) s += front + bezel;
+  if (RR) s += rear + plug.svg;
+  if (SR) s += handle;
+  s += hullInk(body.pts, 2.6);
+  const all = [...body.pts, DM(FD + 6.5, 0, 152), DM(FD + 6.5, 10, 118), DM(0, 12, 47), DM(FD, 12, FH)];
+  return { box: aabb(all, CX), svg: s };
+}
+
+/* ---------- plinth (machine compartment housing) ---------- */
+function plinth(st){
+  let s = '';
+  const feet = [[8, 7], [8, 103], [92, 7], [92, 103]].map(([x, y]) => cyl(x, y, 0, 4.2, 2.5, DARKC, toneI, .9, 14)).join('');
+  const cordPts = [[.6, 99, 33], [-3, 99.5, 30], [-6, 100, 6], [-8, 101, 1], [-24, 103, 1], [-40, 100, 1.2]], cd = pd(cordPts, false);
+  const cord = `<path d="${cd}" fill="none" stroke="${INK}" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><path d="${cd}" fill="none" stroke="${DARKC.m}" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>`
+    + box(-44, 97, 0, -39, 103, 4, DARKC, toneI, .9);
+  const BACK = vis([-1, 0, 0]);
+  s += feet + (BACK ? '' : cord);
+  const x0 = 1, x1 = 96, y0 = 1, y1 = 109, z0 = 4.2, z1 = PLZ;
+  if (vis([-1, 0, 0])){ s += shape(quadX(x0, y0, z0, y1, z1), tone([-1, 0, 0], GREY), 1.1);
+    let lv = ''; for (let z = 12; z <= 38; z += 4) lv += pd(quadX(x0 - .05, 14, z, 88, z + 1.8));
+    s += fill(lv, GREY.d) + ink(lv, .4) + shape(quadX(x0 - .08, 96, 30, 102, 36), DARKC.m, .7); }
+  if (vis([0, -1, 0])) s += shape(quadY(y0, x0, z0, x1, z1), tone([0, -1, 0], GREY), 1.1);
+  if (vis([0, 1, 0])) s += shape(quadY(y1, x0, z0, x1, z1), tone([0, 1, 0], GREY), 1.1);
+  if (vis([0, 0, 1])) s += shape(quadZ(z1, x0, y0, x1, y1), tone([0, 0, 1], GREY), 1);
+  if (vis([1, 0, 0])){ const n = [1, 0, 0];
+    s += shape(quadX(x1, y0, z0, y1, z1), tone(n, GREY), 1.1);
+    s += shape(quadX(x1 + .05, 9, 5.6, 101, 11.4), '#3a3e41', .8);
+    let sl = ''; for (let y = 11; y < 100; y += 2.4) sl += pd([[x1 + .08, y, 6.2], [x1 + .08, y, 10.8]], false);
+    s += `<path d="${sl}" fill="none" stroke="${GREY.m}" stroke-width=".7"/>`;
+    s += shape(quadX(x1 + .05, 12, 14, 40, 40), mix(tone(n, GREY), '#ffffff', .12), .8); }
+  if (BACK) s += cord;
+  s += hullInk([[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], 2.2);
+  return { box: [[-44, 1, 0], [96, 109, PLZ]], svg: s };
+}
+
+/* ---------- see-through: the cascade refrigeration system, insulation and wiring ---------- */
+let MECH_LABELS = '';
+function mechParts(st, k){
+  const parts = [], put = (b, svg) => parts.push({ box: b, svg }), add = list => parts.push(...list);
+  const run = st.run, fl = run ? st.flow*14 : null, DM = doorMap(st);
+  const HOT = run ? '#e5793a' : COPPER.m, COLD = run ? '#a9d8ee' : COPPER.m, LIQ = run ? '#d79a62' : COPPER.m;
+  const bx = (x0, y0, z0, x1, y1, z1, mat, w = .8) => put([[x0, y0, z0], [x1, y1, z1]], box(x0, y0, z0, x1, y1, z1, mat, toneI, w));
+  // base pan and the two compressors on their plates (dome, body, terminal box on the -x side)
+  bx(3, 3, 5, 95, 107, 6.4, METAL, .8);
+  for (const y of [30, 62]){
+    const x = 40, ring = (z, r) => on(PZ(z), ellUV(x, y, r, r, 22));
+    let c = box(x - 11, y - 11, 6.4, x + 11, y + 11, 7, GREY, toneI, .6);
+    const term = box(x - 10.5, y - 3, 15, x - 8.6, y + 3, 21, DARKC, toneI, .6);
+    if (CAM_V[0] < 0) c += cyl(x, y, 7, 26, 9, DARKC, toneI, 1.1, 22); else c += term + cyl(x, y, 7, 26, 9, DARKC, toneI, 1.1, 22);
+    c += loft(ring(26, 9), ring(30, 7), n => toneI(n, DARKC)) + loft(ring(30, 7), ring(32.5, 3.5), n => toneI(n, DARKC)) + fill(pd(ring(32.5, 3.5)), DARKC.l) + hullInk([...ring(26, 9), ...ring(32.5, 3.5)], 1);
+    if (CAM_V[0] < 0) c += term;
+    if (run) c += fill(pd(ring(32.6, 2.4)), '#ff8a3d', 'opacity=".8"');
+    put([[x - 11, y - 11, 6.4], [x + 11, y + 11, 32.5]], c);
+  }
+  // condenser behind the front grille: fins on the faces, copper U-bends on the ends
+  { let c = box(84, 12, 8, 92, 98, 40, METAL, toneI, .9), fins = '';
+    const fx = vis([1, 0, 0]) ? 92.05 : vis([-1, 0, 0]) ? 83.95 : null;
+    if (fx != null) for (let y = 13.5; y < 97; y += 1.6) fins += pd([[fx, y, 8.6], [fx, y, 39.4]], false);
+    c += `<path d="${fins}" fill="none" stroke="${METAL.d}" stroke-width=".35"/>`;
+    for (const ye of [12, 98]) if (vis([0, ye < 50 ? -1 : 1, 0])) for (let z = 12; z < 38; z += 6)
+      c += `<path d="${pd([[85.5, ye, z], [88, ye + (ye < 50 ? -1.4 : 1.4), z + 1.5], [90.5, ye, z + 3]], false)}" fill="none" stroke="${COPPER.d}" stroke-width="1.1" stroke-linecap="round"/>`;
+    put([[84, 10.5, 8], [92, 99.5, 40]], c); }
+  // two condenser fans, each on four struts to the condenser frame
+  for (const y of [32, 72]){ const z = 24;
+    let c = '';
+    for (const [dy, dz] of [[-9, -9], [9, -9], [-9, 9], [9, 9]]) c += rod([78, y + dy, z + dz], [84, y + dy, z + dz], .5, METAL, toneI, .4);
+    c += cylX(74, 78, y, z, 12.4, DARKC, toneI, 1, 24);
+    const fxe = vis([1, 0, 0]) ? 78.05 : vis([-1, 0, 0]) ? 73.95 : null;
+    if (fxe != null){ c += fill(pd(on(PX(fxe), ellUV(y, z, 11.2, 11.2, 24))), '#2a2d2f');
+      for (let i = 0; i < 5; i++){ const a0 = st.fanA + i*2*Math.PI/5, bl = [];
+        for (let t = 0; t <= 6; t++){ const a = a0 + t*.11, rr = 2.6 + t*1.35; bl.push([y + rr*Math.cos(a), z + rr*Math.sin(a)]); }
+        for (let t = 6; t >= 0; t--){ const a = a0 + .55 + t*.05, rr = 2.6 + t*1.35; bl.push([y + rr*Math.cos(a), z + rr*Math.sin(a)]); }
+        c += shape(on(PX(fxe + (fxe > 76 ? .05 : -.05)), bl), '#9aa1a6', .4); }
+      c += shape(on(PX(fxe + (fxe > 76 ? .1 : -.1)), ellUV(y, z, 2.6, 2.6, 12)), GREY.l, .5); }
+    put([[74, y - 12.4, z - 12.4], [84, y + 12.4, z + 12.4]], c); }
+  // cascade heat exchanger (insulated brazed-plate block) with its four ports on top
+  { let c = box(14, 80, 10, 24, 96, 34, DARKC, toneI, 1);
+    for (const [px, py] of [[17, 84], [21, 84], [17, 92], [21, 92]]) c += rod([px, py, 34], [px, py, 36], .8, COPPER, toneI, .5);
+    put([[14, 80, 10], [24, 96, 36]], c); }
+  // expansion tank (low stage) and the two filter driers
+  put([[9, 9, 7], [19, 19, 30]], cyl(14, 14, 7, 30, 5, GREYL, toneI, 1, 18));
+  put([[68.2, 100.2, 12], [71.8, 103.8, 26]], rod([70, 102, 12], [70, 102, 26], 1.7, COPPER, toneI, .7));
+  put([[6.2, 97.2, 18], [9.8, 100.8, 32]], rod([8, 99, 18], [8, 99, 32], 1.7, COPPER, toneI, .7));
+  // control box on the base's back wall
+  { let c = box(4, 44, 30, 14, 64, 44, GREY, toneI, .9);
+    if (vis([1, 0, 0])) c += shape(quadX(14.05, 47, 33, 61, 41), '#e8e4da', .5) + shape(on(PX(14.1), ellUV(58, 38.5, .8, .8, 8)), run ? '#43c25c' : '#7d8285', .3);
+    put([[4, 44, 30], [14, 64, 44]], c); }
+  // refrigerant circuit: high stage (discharge -> condenser -> drier -> HX, HX -> suction), low stage, capillary, suction
+  add(cfTube([[40, 30, 32.5], [40, 30, 42], [88, 30, 42], [88, 30, 40]], HOT, .8, fl));
+  add(cfTube([[88, 98, 10], [88, 102, 10], [70, 102, 10], [70, 102, 12]], LIQ, .6, fl));
+  add(cfTube([[70, 102, 26], [70, 102, 40], [17, 102, 40], [17, 92, 40], [17, 92, 36]], LIQ, .5, fl));
+  add(cfTube([[21, 84, 36], [21, 84, 39], [28, 84, 39], [28, 30, 39], [28, 30, 16], [31, 30, 16]], COLD, .8, fl));
+  add(cfTube([[40, 62, 32.5], [40, 62, 37], [17, 62, 37], [17, 84, 37], [17, 84, 36]], HOT, .8, fl));
+  add(cfTube([[21, 92, 36], [21, 92, 38], [21, 99, 38], [8, 99, 38], [8, 99, 32]], LIQ, .5, fl));
+  add(cfTube([[8, 99, 18], [5, 99, 18], [5, 99, 188], [5, 74, 188], [25.5, 74, 188]], COLD, .35, fl));
+  add(cfTube([[25.5, 40, 56], [10, 40, 56], [10, 40, 11], [10, 62, 11], [31, 62, 11]], COLD, .9, fl));
+  add(cfTube([[14, 14, 30], [14, 14, 33], [10, 14, 33], [10, 38, 33], [10, 38, 12]], COLD, .5));
+  // evaporator coils bonded to the liner: both side walls and the back
+  for (const yw of [IY0 - .5, IY1 + .5]){ const pts = [[25.5, yw, 186]];
+    for (let i = 0, z = 186; z >= 60; i++, z -= 9){ const xa = i % 2 ? 84 : 30, xb = i % 2 ? 30 : 84; pts.push([xa, yw, z], [xb, yw, z]); }
+    pts.push([25.5, yw, pts[pts.length - 1][2]]);
+    const d = pd(pts, false);
+    put([[25.5, yw - .7, 55], [84.7, yw + .7, 187]], `<path d="${d}" fill="none" stroke="${INK}" stroke-width="2.1" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="${COLD}" stroke-width="1.2" stroke-linejoin="round"/>`
+      + (fl != null ? `<path d="${d}" fill="none" stroke="#ffffff" stroke-width=".5" stroke-dasharray="1.6 5" stroke-dashoffset="${f(-fl)}" opacity=".85"/>` : '')); }
+  { const pts = [[25.5, 74, 188]];
+    for (let i = 0, z = 186; z >= 58; i++, z -= 11){ const ya = i % 2 ? 94 : 16, yb = i % 2 ? 16 : 94; pts.push([25.5, ya, z], [25.5, yb, z]); }
+    pts.push([25.5, 40, 56]); const d = pd(pts, false);
+    put([[25, 15.3, 55], [26, 94.7, 189]], `<path d="${d}" fill="none" stroke="${INK}" stroke-width="2.1" stroke-linejoin="round"/><path d="${d}" fill="none" stroke="${COLD}" stroke-width="1.2" stroke-linejoin="round"/>`
+      + (fl != null ? `<path d="${d}" fill="none" stroke="#ffffff" stroke-width=".5" stroke-dasharray="1.6 5" stroke-dashoffset="${f(-fl)}" opacity=".85"/>` : '')); }
+  // vacuum insulation panels (drawn see-through so the coils behind them still read)
+  const vip = (x0, y0, z0, x1, y1, z1) => put([[x0, y0, z0], [x1, y1, z1]], `<g opacity=".42">${box(x0, y0, z0, x1, y1, z1, VIPM, toneI, .7)}</g>`);
+  vip(3, 102, 49, 85, 106, 194); vip(3, 4, 49, 85, 8, 194); vip(13, 9, 49, 17, 101, 190); vip(3, 3, 192, 85, 107, 195);
+  { const sl = slab(DM, 6, 104, 3, 7, 51, 193, VIPM, toneI, .7); put(aabb(sl.pts, CX), `<g opacity=".42">${sl.svg}</g>`); }
+  // frame heater: a wire loop round the opening, just behind the frame face
+  { const hx = CX - .4, lp = [[hx, 7, 48.5], [hx, 103, 48.5], [hx, 103, 194.5], [hx, 7, 194.5], [hx, 7, 48.5]];
+    add(cfTube(lp, '#f07a3a', .35)); }
+  // temperature probe (on the back wall) and its wire down to the control box
+  put([[26.1, 54, 189.1], [31.5, 56, 190.3]], rod([26.1, 55, 189.7], [31, 55, 189.7], .55, METAL, toneI, .6));
+  add(cfTube([[26.1, 55, 189.7], [12, 55, 189.7], [12, 55, 44]], '#3a3632', .3));
+  // compressor and fan wiring from the control box
+  add(cfTube([[14, 48, 33], [26, 48, 33], [26, 30, 33], [26, 30, 18], [29.4, 30, 18]], '#3a3632', .3));
+  add(cfTube([[14, 58, 33], [24, 58, 33], [24, 62, 33], [24, 62, 18], [29.4, 62, 18]], '#3a3632', .3));
+  add(cfTube([[14, 60, 40], [76, 60, 40], [76, 72, 40], [76, 72, 36.4]], '#3a3632', .3));
+  add(cfTube([[76, 60, 40], [76, 32, 40], [76, 32, 36.4]], '#3a3632', .3));
+  add(cfTube([[1.5, 99, 35], [3, 99, 35], [3, 70, 35], [9, 70, 35], [9, 64, 35]], '#3a3632', .45));
+  // door cable: control box -> back wall -> top -> top hinge -> along the door to the control board
+  add(cfTube([[9, 50, 44], [9, 50, 194], [9, 2, 194], [84, 2, 194], [CX, -1, 192]], '#3a3632', .35));
+  { const pcb = slab(DM, 26, 50, 1, 2.2, 142, 160, PCBM, toneI, .7); let c = pcb.svg;
+    if (vis(DM.nR)) for (const [w0, z0] of [[30, 150], [38, 146], [44, 153]]) c += shape([DM(w0, 2.25, z0), DM(w0 + 4, 2.25, z0), DM(w0 + 4, 2.25, z0 + 3), DM(w0, 2.25, z0 + 3)], '#222', .3);
+    put(aabb(pcb.pts, CX), c); }
+  add(cfTube([DM(-.5, 9, 192), DM(2, 5, 192), DM(2, 5, 163), DM(30, 5, 163), DM(30, 2.2, 160)], '#3a3632', .3).map(p => ({ ...p, box: [[Math.max(CX, p.box[0][0]), p.box[0][1], p.box[0][2]], p.box[1]] })));
+  // the access port and pressure relief valve run through the left wall
+  put([[47, IY1, 169], [53, FD, 175]], rod([50, IY1, 172], [50, FD, 172], 2.6, GREYL, toneI, .7));
+  put([[64.5, IY1, 156.5], [67.5, FD, 159.5]], rod([66, IY1, 158], [66, FD, 158], 1.3, COPPER, toneI, .6));
+  const sb = byDepth(parts);
+  const items = [
+    { at: [40, 30, 26], text: 'HIGH-STAGE COMPRESSOR', on: run }, { at: [40, 62, 26], text: 'LOW-STAGE COMPRESSOR', on: run },
+    { at: [92, 40, 34], text: 'CONDENSER', on: run }, { at: [76, 72, 32], text: 'CONDENSER FANS', on: run },
+    { at: [19, 96, 28], text: 'CASCADE HEAT EXCHANGER', on: run }, { at: [70, 103.7, 20], text: 'FILTER DRIER', on: run },
+    { at: [14, 9, 24], text: 'EXPANSION TANK', on: false }, { at: [9, 64, 40], text: 'CONTROL BOX', on: run },
+    { at: [57, IY1 + .5, 132], text: 'EVAPORATOR COIL', on: run }, { at: [40, 106, 180], text: 'VACUUM INSULATION', on: false },
+    { at: [31, 55, 189.7], text: 'TEMPERATURE PROBE', on: st.temp > -79 }, { at: [CX - .4, 103, 120], text: 'FRAME HEATER', on: st.door > 0 },
+    { at: [50, FD, 172], text: 'ACCESS PORT', on: false } ];
+  if (vis(DM.nR) || vis(DM.nF)) items.push({ at: DM(38, 1.6, 151), text: 'CONTROL BOARD', on: st.temp > -70 });
+  MECH_LABELS = k > .6 ? xrCallouts(items, [0, FW, 0, FD, 0, FH]) : '';
+  return sb;
+}
+
+/* ---------- scene ---------- */
+function scene(st, m){
+  const k = ease(st.xr || 0), DM = doorMap(st);
+  let s = castShadow([[0, 0, 0], [96, 0, 0], [96, FD, 0], [0, FD, 0], [0, 0, FH], [CX, 0, FH], [CX, FD, FH], [0, FD, FH],
+    DM(0, 0, FH), DM(FD, 0, FH), DM(0, 10, FH), DM(FD, 10, FH), DM(FD, 0, 47), DM(0, 0, 47)]);
+  const items = [plinth(st), carcass(st, m), door(st, m)];
+  for (let c = 0; c < 3; c++) if (st.inner[c] > 0) items.push(innerDoor(st, c));
+  const pr = pulledRack(st); if (pr){ const it = rackPiece(st, m, pr.c, pr.r, CX, 1e9); if (it) items.push(it); }
+  let body = byDepth(items);
+  if (k > 0) body = `<g opacity="${f(1 - .78*k)}">${body}</g><g opacity="${f(k)}">${mechParts(st, k)}</g>`;
+  s += body;
+  if (CF_CLEAN) {}
+  else if (k > .6) s += MECH_LABELS;
+  else {
+    const lab = [];
+    if (vis(DM.nF)) lab.push({ at: DM(36, -3, 158), text: 'TOUCHSCREEN', on: st.temp > -70 });
+    if (vis(DM.nF) || vis(DM.nS)) lab.push({ at: DM(FD + 4.7, 5, 150), text: 'DOOR HANDLE', on: st.door > 0 && st.door < 1 });
+    if (vis([1, 0, 0])) lab.push({ at: [96, 70, 9], text: 'AIR INTAKE', on: st.run });
+    if (vis([0, 1, 0])) lab.push({ at: [50, FD + 3, 172], text: 'ACCESS PORT', on: false });
+    if (st.door > .9 && vis([1, 0, 0])){
+      lab.push({ at: [86, 30, shelfZ(2)], text: 'SHELF', on: false });
+      const oc = st.inner.findIndex(v => v > .9);
+      if (oc >= 0){ const IM = innerMap(st, oc); lab.push({ at: IM(60, 2, compCeil(oc) - 4), text: 'INNER DOOR', on: true }); }
+      if (pr && st.pull > .9){ const g = rackGeo(st, pr.c, pr.r); lab.push({ at: [g.x1 - 10, g.y1, g.z1 - 4], text: `RACK ${pr.r + 1}`, on: true }); }
+      if (vis(DM.nR)) lab.push({ at: DM(102.4, 10.1, 120), text: 'GASKET', on: false });
+    }
+    s += xrCallouts(lab, [0, FW, 0, FD, 0, FH]);
+  }
+  return s;
+}
+
+/* ---------- behaviour: one state object, one clock ---------- */
+let ui, loopOn = false;
+const DOOR_S = 1.1, INNER_S = .7, PULL_S = .9;
+function step(dt){
+  const st = ui.st, anyInner = st.inner.some(v => v > 0);
+  st.clock += dt;
+  // outer door: it only closes once every inner door is shut
+  if (st.doorT > st.door) st.door = Math.min(1, st.door + dt/DOOR_S);
+  else if (st.doorT < st.door && !anyInner) st.door = Math.max(0, st.door - dt/DOOR_S);
+  // pull: a rack slides back in before another one (or nothing) is chosen
+  const same = st.rk && st.sel && st.rk.c === st.sel.c && st.rk.r === st.sel.r, want = same ? st.pullT : 0;
+  if (want > st.pull){ if (st.inner[st.rk.c] >= 1) st.pull = Math.min(1, st.pull + dt/PULL_S); }
+  else if (want < st.pull) st.pull = Math.max(0, st.pull - dt/PULL_S);
+  if (st.pull === 0 && st.sel) st.rk = st.sel;
+  // inner doors: one at a time, only with the outer door fully open, never on a rack that is out
+  for (let c = 0; c < 3; c++){
+    const tgt = st.innerT[c];
+    if (tgt > st.inner[c]){ if (st.door >= 1 && st.inner.every((v, i) => i === c || v === 0)) st.inner[c] = Math.min(1, st.inner[c] + dt/INNER_S); }
+    else if (tgt < st.inner[c] && !(st.pull > 0 && st.rk && st.rk.c === c)) st.inner[c] = Math.max(0, st.inner[c] - dt/INNER_S);
+  }
+  // cabinet temperature (demo speed): room air comes in through an open door, much faster with an inner door open
+  const inn = Math.max(...st.inner);
+  if (st.temp > -79) st.run = true; else if (st.temp <= -80) st.run = false;
+  const t0 = st.temp;
+  st.temp += dt*(1.9*st.door + 2.2*inn - (st.run ? 1.5 : 0));
+  st.temp = Math.max(-80, Math.min(-35, st.temp));
+  if (st.run){ st.fanA += dt*9; st.flow += dt; }
+  const moving = st.door !== st.doorT || st.inner.some((v, i) => v !== st.innerT[i]) || st.pull !== (same ? st.pullT : 0) || (st.sel && st.rk !== st.sel);
+  // idle (nothing moving, temperature steady) the loop stops; the fans only need frames while they are on show
+  return moving || Math.abs(st.temp - t0) > 1e-6 || (st.run && st.xr > 0);
+}
+function runLoop(){ if (loopOn) return; loopOn = true; ui.animate(dt => { const go = step(dt); if (!go) loopOn = false; return go; }); }
+function toggleDoor(st){
+  if (st.doorT >= 1){ st.pullT = 0; st.innerT = [0, 0, 0]; st.doorT = 0; if (st.pull > 0 || st.inner.some(v => v > 0)) ui.flash('Rack in, inner door shut, then the outer door'); }
+  else st.doorT = 1;
+  runLoop();
+}
+function openInner(st, c){
+  if (st.doorT < 1){ st.doorT = 1; ui.flash('Opening the outer door first'); }
+  st.innerT = [0, 1, 2].map(i => i === c ? 1 : 0);
+  if (st.pull > 0 && st.rk.c !== c) st.pullT = 0;
+  runLoop();
+}
+function closeInner(st){ st.pullT = 0; st.innerT = [0, 0, 0]; runLoop(); }
+function pickRack(st, r){
+  let c = st.innerT.findIndex(v => v === 1);
+  if (c < 0){ c = 1; ui.flash('Opening the middle compartment first'); }
+  if (st.doorT < 1) st.doorT = 1;
+  st.innerT = [0, 1, 2].map(i => i === c ? 1 : 0);
+  st.sel = { c, r }; st.pullT = 1; if (!st.rk) st.rk = st.sel;
+  runLoop();
+}
+function pushBack(st){ if (st.pull <= 0) return ui.flash('No rack is out'); st.pullT = 0; runLoop(); }
+
+ui = mountFigure({
+  fig:'F740', title:'CryoCube F740 ULT freezer', credit: !CF_CLEAN, turn:'full',
+  size:[190, FD, FH + 4], center:[52, FD/2], palette:'cobalt',
+  // door / inner[c] / pull: 0 = shut, 1 = open (eased when drawn); rk = rack that is (or can be) out, sel = rack wanted
+  state:{ door:0, doorT:0, inner:[0, 0, 0], innerT:[0, 0, 0], pull:0, pullT:0, rk:null, sel:null, temp:-80, run:false, fanA:0, flow:0, clock:0 },
+  scene,
+  stats: CF_CLEAN ? undefined : st => { const pr = st.pull > .5 ? st.rk : null;
+    return [{ label:'Cabinet', value:`${Math.round(st.temp)} °C` }, { label:'Rack out', value: pr ? `${COMP_NAMES[pr.c]} · ${pr.r + 1}` : '—', small:true }]; },
+  buttons:[
+    { label:'Open door', onClick:(st) => toggleDoor(st) },
+    { label:'Inner door', choices: st => [...[2, 1, 0].map(c => ({ label: COMP_NAMES[c], current: st.innerT[c] === 1, onClick:(st) => openInner(st, c) })),
+        { label:'Shut', disabled: st.innerT.every(v => v === 0), why:'All inner doors are shut', onClick:(st) => closeInner(st) }] },
+    { label:'Pull rack', choices: st => [...[0, 1, 2, 3, 4, 5].map(r => ({ label:`Rack ${r + 1}`, current: st.pullT === 1 && st.sel && st.sel.r === r && st.innerT[st.sel.c] === 1, onClick:(st) => pickRack(st, r) })),
+        { label:'Push back', disabled: st.pullT === 0, why:'No rack is out', onClick:(st) => pushBack(st) }] },
+  ],
+  acts:{
+    door:(st) => toggleDoor(st),
+    inner:(st, el) => { const c = +el.dataset.c; if (st.innerT[c] === 1) closeInner(st); else openInner(st, c); },
+    rack:(st, el) => { const c = +el.dataset.c, r = +el.dataset.r;
+      if (st.innerT[c] !== 1) return openInner(st, c);
+      if (st.pullT === 1 && st.sel && st.sel.c === c && st.sel.r === r) return pushBack(st);
+      pickRack(st, r); },
+  },
+  params:(st, q) => {
+    if (q.get('door') === '1') st.door = st.doorT = 1;
+    if (q.has('inner')){ const c = +q.get('inner'); st.inner[c] = st.innerT[c] = 1; st.door = st.doorT = 1; }
+    if (q.has('rack')){ const c = q.has('inner') ? +q.get('inner') : 1, r = +q.get('rack') - 1;
+      st.door = st.doorT = 1; st.inner = [0, 1, 2].map(i => i === c ? 1 : 0); st.innerT = st.inner.slice();
+      st.rk = st.sel = { c, r }; st.pull = st.pullT = q.has('pull') ? +q.get('pull') : 1; }
+    if (q.has('temp')) st.temp = +q.get('temp');
+    if (q.has('run')) st.run = q.get('run') === '1';
+  },
+});
+// the first button names what it will do
+{ const b = document.querySelector('.act'), r0 = ui.render;
+  ui.render = () => { r0(); if (b) b.textContent = ui.st.doorT >= 1 ? 'Close door' : 'Open door'; }; }
+if (CF_CLEAN){
+  // wobble 0 (the slider's own setting), and everything but the figure and its action buttons hidden
+  document.getElementById('wob').setAttribute('scale', '0');
+  const css = document.createElement('style');
+  css.textContent = 'html body > header, html body .controls, html body .made-with, html body #readout, html body .toast, html body .zchip, html body .lgd { display: none !important }';
+  document.head.appendChild(css);
+} else {
+  xrMount(() => ui, () => '');
+  const xb = document.getElementById('xrb'); if (xb) xb.addEventListener('click', () => runLoop());
+}
+if (ui.st.door > 0 || ui.st.temp > -80) runLoop();
+</script></body></html>
