@@ -70,6 +70,7 @@ target_include_directories(
 add_executable(
   freezermanager_auth_unit_tests
   auth_types_test.cpp
+  mfa_policy_test.cpp
   totp_test.cpp
   local_auth_provider_test.cpp
 )
