@@ -147,15 +147,27 @@ describe('paint', () => {
     expect(at('handle')).toBeLessThan(at('door'));
   });
 
+  // Three sticks along x, y and z, each lying over the next on screen: b over
+  // a, c over b, a over c. No order of whole blocks draws them right.
+  const triBar = (layer: number) => [
+    boxBlock('a', [0, 30, 130], [300, 70, 170], 'rack', { layer }),
+    boxBlock('b', [120, 0, 190], [160, 300, 230], 'rack', { layer }),
+    boxBlock('c', [170, 70, 0], [210, 110, 300], 'rack', { layer }),
+  ];
+
   it('still paints every block once when no order can satisfy them all', () => {
-    // Three bars that each cover the next, as in the classic painter's cycle.
-    const bars = [
-      boxBlock('a', [0, 0, 0], [300, 40, 40], 'rack'),
-      boxBlock('b', [260, -40, 0], [300, 260, 80], 'rack'),
-      boxBlock('c', [-40, 220, 40], [300, 260, 120], 'rack'),
-    ];
-    const ids = new Set(paint(bars, RIGHT_FRONT_ABOVE).map((face) => face.blockId));
-    expect([...ids].sort()).toEqual(['a', 'b', 'c']);
+    const faces = paint(triBar(1), RIGHT_FRONT_ABOVE).map((face) => face.blockId);
+    expect(faces).toHaveLength(9);
+    expect([...new Set(faces)].sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('breaks such a cycle inside its layer, never by painting the next layer early', () => {
+    // The shell is free to go from the start; the sticks never are.
+    const shell = boxBlock('shell', [400, 400, 0], [500, 500, 100], 'body', { layer: 2 });
+    const order = paint([...triBar(1), shell], RIGHT_FRONT_ABOVE).map((face) => face.blockId);
+    expect(order.indexOf('shell')).toBeGreaterThan(
+      Math.max(order.lastIndexOf('a'), order.lastIndexOf('b'), order.lastIndexOf('c')),
+    );
   });
 });
 

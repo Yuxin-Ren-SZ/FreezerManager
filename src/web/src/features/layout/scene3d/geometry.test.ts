@@ -9,7 +9,7 @@ import {
 import { F740_MODEL, TSX_MODEL } from '../../../test/freezerModels';
 import { cabinetFor, slotBounds } from './cabinet';
 import { buildBlocks, CLOSED_FRAME, sceneEnvelope, type SceneFrame } from './geometry';
-import { blockFaces, type Block, type Vec3 } from './iso';
+import { blockFaces, paint, type Block, type Vec3 } from './iso';
 import { buildRenderModel } from './sceneModel';
 
 /**
@@ -211,7 +211,9 @@ describe('buildBlocks geometry', () => {
   it.each(cases)('stands the open $name door clear of the opening, beside its wall', (c) => {
     const blocks = buildBlocks(c.cabinet, c.scene, frame({ door: 1 }));
     for (const block of targets(blocks, 'door')) {
-      expect(Math.min(...along(0, block))).toBeGreaterThanOrEqual(c.cabinet.exterior.w - 0.5);
+      expect(Math.min(...along(0, block))).toBeGreaterThanOrEqual(
+        c.cabinet.interior.x0 + c.cabinet.interior.w,
+      );
     }
   });
 
@@ -317,7 +319,7 @@ describe('buildBlocks geometry', () => {
       frame({ door: 1, innerDoor: 1, inner: 1, pulled: { level: 1, column: 3 }, pull: 1 }),
     );
     const plates = blocks.filter((block) => block.material === 'rackActive');
-    const side = byId(blocks, 'rack-rack-4-side');
+    const side = byId(blocks, 'rack-rack-4-side:out');
     const centre = (block: Block) => block.origin[0] + block.u[0] / 2;
     const rackCentre =
       (Math.min(...plates.flatMap((block) => along(0, block))) +
@@ -359,6 +361,60 @@ describe('buildBlocks geometry', () => {
         }
       }
       expect(clashes).toEqual([]);
+    },
+  );
+});
+
+describe('painting a full TSX', () => {
+  // Every slot filled, the upper inner door (levels 2 and 3) open: two levels
+  // of racks with a shelf between them, all in one layer.
+  const tsx = cabinetFor(TSX_MODEL);
+  const full = buildRenderModel(
+    create(GetFreezerSceneResponseSchema, {
+      freezer: { id: 'fz', name: 'TSX', layoutRootId: 'root', freezerModelId: TSX_MODEL.id },
+      model: TSX_MODEL,
+      nodes: [
+        {
+          id: 'root',
+          kind: SceneNodeKind.CONTAINER,
+          containerKind: ContainerKind.GENERIC,
+          label: 'Root',
+        },
+        ...[0, 1, 2, 3].flatMap((level) =>
+          [0, 1, 2, 3].map((column) => ({
+            id: `r${String(level)}${String(column)}`,
+            parentId: 'root',
+            kind: SceneNodeKind.CONTAINER,
+            containerKind: ContainerKind.RACK,
+            label: 'Rack',
+            placement: { level, column, depth: 0 },
+          })),
+        ),
+      ],
+    }),
+  );
+
+  it.each([
+    { yaw: -28, pitch: 24 },
+    { yaw: -60, pitch: 50 },
+    { yaw: 15, pitch: 10 },
+  ])(
+    'paints each rack between the shelf under it and the shelf over it (yaw $yaw, pitch $pitch)',
+    (camera) => {
+      const order = paint(
+        buildBlocks(tsx, full, frame({ door: 1, innerDoor: 1, inner: 1 })),
+        camera,
+      )
+        .map((face) => face.blockId)
+        .filter((id, index, ids) => ids.indexOf(id) === index);
+      const at = (id: string) => order.indexOf(id);
+      for (const level of [2, 3]) {
+        for (const column of [0, 1, 2, 3]) {
+          const rack = at(`rack-r${String(level)}${String(column)}`);
+          expect(rack).toBeGreaterThan(at(`shelf-${String(level)}`));
+          if (level < 3) expect(rack).toBeLessThan(at(`shelf-${String(level + 1)}`));
+        }
+      }
     },
   );
 });
