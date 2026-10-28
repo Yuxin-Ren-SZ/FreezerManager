@@ -33,6 +33,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <optional>
 #include <set>
@@ -84,6 +85,60 @@ namespace fmgr::auth {
       cfg.lockout_duration_seconds = 1; // short lockout for timeout tests
       return cfg;
     }
+
+    // Pauses only the next write transaction of the wrapped provider. Its
+    // ordinary session/user reads have completed, but the write owns no DB
+    // resources yet, so a second provider can deterministically commit first.
+    class PausedActivityBackend final : public storage::IStorageBackend {
+    public:
+      explicit PausedActivityBackend(storage::IStorageBackend& backend) : backend_(backend) {}
+
+      ~PausedActivityBackend() override {
+        release();
+      }
+
+      void migrate_to_latest() override {
+        backend_.migrate_to_latest();
+      }
+
+      [[nodiscard]] storage::SchemaVersion current_version() const override {
+        return backend_.current_version();
+      }
+
+      [[nodiscard]] std::unique_ptr<storage::ITransaction>
+      begin(storage::IsolationLevel isolation) override {
+        if (isolation == storage::IsolationLevel::Serializable && armed_.exchange(false)) {
+          reached_.set_value();
+          if (resume_future_.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
+            throw storage::Unavailable("timed out waiting for activity test release");
+          }
+        }
+        return backend_.begin(isolation);
+      }
+
+      [[nodiscard]] storage::Capabilities caps() const override {
+        return backend_.caps();
+      }
+
+      [[nodiscard]] bool wait_until_paused() {
+        return reached_future_.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+      }
+
+      void release() {
+        if (!released_.exchange(true)) {
+          resume_.set_value();
+        }
+      }
+
+    private:
+      storage::IStorageBackend& backend_;
+      std::atomic<bool> armed_{true};
+      std::atomic<bool> released_{false};
+      std::promise<void> reached_;
+      std::future<void> reached_future_{reached_.get_future()};
+      std::promise<void> resume_;
+      std::future<void> resume_future_{resume_.get_future()};
+    };
 
     // ---- Fixture ----
 
@@ -979,6 +1034,128 @@ namespace fmgr::auth {
       const std::size_t before = backend_->audit_event_count_for_tests();
       prov.validate_token(token.plaintext_token);
       EXPECT_EQ(backend_->audit_event_count_for_tests(), before);
+    }
+
+    TEST_F(LocalAuthProviderTest, DelayedActivityRefreshCannotRestoreRevokedSession) {
+      const auto token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+      backdate_session(token.session_id, -180'000'000, -120'000'000);
+      PausedActivityBackend paused_backend(*backend_);
+      LocalAuthProvider delayed_provider(paused_backend, fast_config());
+      auto validation = std::async(std::launch::async, [&] {
+        return delayed_provider.validate_token(token.plaintext_token);
+      });
+      const bool paused = paused_backend.wait_until_paused();
+      if (paused) {
+        EXPECT_NO_THROW(provider_->revoke_session(token.session_id, test_ctx()));
+      }
+      paused_backend.release();
+      EXPECT_NO_THROW((void)validation.get());
+      ASSERT_TRUE(paused) << "validation did not reach the controlled activity-write boundary";
+
+      auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto row = read->repo<core::Session>().find_by_id(token.session_id).value();
+      read->commit();
+      EXPECT_TRUE(row.revoked_at.has_value());
+      EXPECT_THROW(provider_->validate_token(token.plaintext_token), InvalidCredentials);
+      EXPECT_THROW(provider_->revalidate_token(token.plaintext_token), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, DelayedActivityRefreshCannotUndoCommittedMfaCompletion) {
+      const auto token = provider_->authenticate(
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
+      ASSERT_FALSE(token.mfa_complete);
+      backdate_session(token.session_id, -180'000'000, -120'000'000);
+      PausedActivityBackend paused_backend(*backend_);
+      LocalAuthProvider delayed_provider(paused_backend, fast_config());
+      auto validation = std::async(std::launch::async, [&] {
+        return delayed_provider.validate_token(token.plaintext_token);
+      });
+      const bool paused = paused_backend.wait_until_paused();
+      if (paused) {
+        const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count();
+        EXPECT_NO_THROW(provider_->verify_totp(
+            token.session_id, totp_generate(kTotpSecret, now_seconds, fast_config().totp)));
+      }
+      paused_backend.release();
+      EXPECT_NO_THROW((void)validation.get());
+      ASSERT_TRUE(paused) << "validation did not reach the controlled activity-write boundary";
+
+      auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto row = read->repo<core::Session>().find_by_id(token.session_id).value();
+      read->commit();
+      EXPECT_TRUE(row.mfa_complete);
+      EXPECT_TRUE(provider_->validate_token(token.plaintext_token).mfa_complete);
+      EXPECT_TRUE(provider_->revalidate_token(token.plaintext_token).mfa_complete);
+    }
+
+    TEST_F(LocalAuthProviderTest, DelayedActivityRefreshCannotMoveActivityBackwards) {
+      const auto token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+      backdate_session(token.session_id, -180'000'000, -120'000'000);
+      PausedActivityBackend paused_backend(*backend_);
+      LocalAuthProvider delayed_provider(paused_backend, fast_config());
+      auto validation = std::async(std::launch::async, [&] {
+        return delayed_provider.validate_token(token.plaintext_token);
+      });
+      const bool paused = paused_backend.wait_until_paused();
+      const auto newer_activity =
+          core::Timestamp::from_unix_micros(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                std::chrono::system_clock::now().time_since_epoch())
+                                                .count() +
+                                            1'000'000);
+      if (paused) {
+        auto write = backend_->begin(storage::IsolationLevel::Serializable);
+        auto row = write->repo<core::Session>().find_by_id(token.session_id).value();
+        row.last_seen_at = newer_activity;
+        write->repo<core::Session>().update(row, test_ctx());
+        write->commit();
+      }
+      paused_backend.release();
+      EXPECT_NO_THROW((void)validation.get());
+      ASSERT_TRUE(paused) << "validation did not reach the controlled activity-write boundary";
+
+      auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto row = read->repo<core::Session>().find_by_id(token.session_id).value();
+      read->commit();
+      EXPECT_GE(row.last_seen_at, newer_activity);
+    }
+
+    TEST_F(LocalAuthProviderTest, DelayedActivityAuditFailurePreservesCommittedMfaState) {
+      const auto token = provider_->authenticate(
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
+      backdate_session(token.session_id, -180'000'000, -120'000'000);
+      PausedActivityBackend paused_backend(*backend_);
+      LocalAuthProvider delayed_provider(paused_backend, fast_config());
+      auto validation = std::async(std::launch::async, [&] {
+        return delayed_provider.validate_token(token.plaintext_token);
+      });
+      const bool paused = paused_backend.wait_until_paused();
+      if (paused) {
+        const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count();
+        EXPECT_NO_THROW(provider_->verify_totp(
+            token.session_id, totp_generate(kTotpSecret, now_seconds, fast_config().totp)));
+      }
+      auto before_read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto before = before_read->repo<core::Session>().find_by_id(token.session_id).value();
+      before_read->commit();
+      const auto audits_before = backend_->audit_event_count_for_tests();
+      backend_->fail_next_audit_append_for_tests();
+      paused_backend.release();
+      EXPECT_NO_THROW((void)validation.get());
+      ASSERT_TRUE(paused) << "validation did not reach the controlled activity-write boundary";
+
+      auto after_read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto after = after_read->repo<core::Session>().find_by_id(token.session_id).value();
+      after_read->commit();
+      EXPECT_TRUE(after.mfa_complete);
+      EXPECT_EQ(after.last_seen_at, before.last_seen_at);
+      EXPECT_EQ(after.revoked_at, before.revoked_at);
+      EXPECT_EQ(backend_->audit_event_count_for_tests(), audits_before);
     }
 
     // ---- Permission caching ----
