@@ -605,6 +605,138 @@ namespace fmgr::server {
   // 3D layout reads (ADR 0003 §3)
   // =====================================================================
 
+  namespace {
+
+    // The tree view's order: containers by ordering_index, then name, then id.
+    [[nodiscard]] bool container_order(const core::StorageContainer* left,
+                                       const core::StorageContainer* right) {
+      if (left->ordering_index != right->ordering_index) {
+        return left->ordering_index < right->ordering_index;
+      }
+      if (left->name != right->name) {
+        return left->name < right->name;
+      }
+      return left->id.to_string() < right->id.to_string();
+    }
+
+    // Boxes by label, then id.
+    [[nodiscard]] bool box_order(const core::Box* left, const core::Box* right) {
+      if (left->label != right->label) {
+        return left->label < right->label;
+      }
+      return left->id.to_string() < right->id.to_string();
+    }
+
+    struct SceneLayout {
+      std::vector<const core::StorageContainer*> containers;
+      std::vector<const core::Box*> boxes;
+    };
+
+    // Walk the tree from the layout root, breadth first, so parents come before
+    // their children. `visited` is the cycle guard; a container whose parent is
+    // not reachable from the root is never visited (the orphan guard).
+    [[nodiscard]] SceneLayout walk_scene(const core::StorageContainerId& root_id,
+                                         const std::vector<core::StorageContainer>& containers,
+                                         const std::vector<core::Box>& boxes) {
+      std::unordered_map<std::string, std::vector<const core::StorageContainer*>> child_containers;
+      for (const auto& container : containers) {
+        if (container.parent_id.has_value()) {
+          child_containers[container.parent_id->to_string()].push_back(&container);
+        }
+      }
+      std::unordered_map<std::string, std::vector<const core::Box*>> child_boxes;
+      for (const auto& box : boxes) {
+        child_boxes[box.storage_container_id.to_string()].push_back(&box);
+      }
+
+      SceneLayout layout;
+      std::unordered_set<std::string> visited;
+      std::vector<const core::StorageContainer*> frontier;
+      const auto root =
+          std::find_if(containers.begin(), containers.end(),
+                       [&](const auto& container) { return container.id == root_id; });
+      if (root != containers.end()) {
+        frontier.push_back(&*root);
+        visited.insert(root->id.to_string());
+      }
+      while (!frontier.empty()) {
+        std::vector<const core::StorageContainer*> next;
+        for (const auto* const container : frontier) {
+          layout.containers.push_back(container);
+          auto kids = child_containers[container->id.to_string()];
+          std::sort(kids.begin(), kids.end(), container_order);
+          for (const auto* const kid : kids) {
+            if (visited.insert(kid->id.to_string()).second) {
+              next.push_back(kid);
+            }
+          }
+          auto held = child_boxes[container->id.to_string()];
+          std::sort(held.begin(), held.end(), box_order);
+          layout.boxes.insert(layout.boxes.end(), held.begin(), held.end());
+        }
+        frontier = std::move(next);
+      }
+      return layout;
+    }
+
+    // Occupied positions per box id. Counts only: the sample rows never leave
+    // this function (no PHI on the wire, no phi.read).
+    [[nodiscard]] std::unordered_map<std::string, int>
+    count_occupied(storage::ITransaction& txn, const std::vector<const core::Box*>& boxes) {
+      std::unordered_map<std::string, int> occupied;
+      if (boxes.empty()) {
+        return occupied;
+      }
+      std::vector<std::string> box_ids;
+      box_ids.reserve(boxes.size());
+      for (const auto* const box : boxes) {
+        box_ids.push_back(box->id.to_string());
+      }
+      const auto samples = txn.repo<core::Sample>().query(storage::Query<core::Sample>::where(
+          storage::field<core::Sample, std::string>(core::Sample::Field::BoxId).in(box_ids)));
+      for (const auto& sample : samples) {
+        // The statuses that hold a position, as samples_position_unique counts them.
+        const bool holds = sample.status == core::SampleStatus::Active ||
+                           sample.status == core::SampleStatus::CheckedOut;
+        if (holds && sample.box_id.has_value()) {
+          ++occupied[sample.box_id->to_string()];
+        }
+      }
+      return occupied;
+    }
+
+    void fill_container_node(fmgr::v1::SceneNode* node, const core::StorageContainer& container,
+                             bool is_root) {
+      node->set_id(container.id.to_string());
+      if (!is_root && container.parent_id.has_value()) {
+        node->set_parent_id(container.parent_id->to_string());
+      }
+      node->set_kind(fmgr::v1::SCENE_NODE_KIND_CONTAINER);
+      node->set_container_kind(to_proto_kind(container.kind));
+      node->set_label(container.label.empty() ? container.name : container.label);
+      if (container.placement.has_value()) {
+        fill_placement(node->mutable_placement(), *container.placement);
+      }
+      if (container.grid.has_value()) {
+        fill_grid(node->mutable_grid(), *container.grid);
+      }
+    }
+
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): named at the one call site
+    void fill_box_node(fmgr::v1::SceneNode* node, const core::Box& box, int occupied, int total) {
+      node->set_id(box.id.to_string());
+      node->set_parent_id(box.storage_container_id.to_string());
+      node->set_kind(fmgr::v1::SCENE_NODE_KIND_BOX);
+      node->set_label(box.label);
+      if (box.placement.has_value()) {
+        fill_placement(node->mutable_placement(), *box.placement);
+      }
+      node->set_occupied_positions(occupied);
+      node->set_total_positions(total);
+    }
+
+  } // namespace
+
   grpc::Status BoxServiceImpl::GetFreezerScene(grpc::ServerContext* ctx,
                                                const fmgr::v1::GetFreezerSceneRequest* req,
                                                fmgr::v1::GetFreezerSceneResponse* resp) {
@@ -635,85 +767,13 @@ namespace fmgr::server {
           storage::Query<core::BoxType>::where(
               storage::field<core::BoxType, std::string>(core::BoxType::Field::LabId) == lab)
               .include_tombstoned());
-
-      std::unordered_map<std::string, std::vector<const core::StorageContainer*>> child_containers;
-      for (const auto& container : containers) {
-        if (container.parent_id.has_value()) {
-          child_containers[container.parent_id->to_string()].push_back(&container);
-        }
-      }
-      std::unordered_map<std::string, std::vector<const core::Box*>> child_boxes;
-      for (const auto& box : boxes) {
-        child_boxes[box.storage_container_id.to_string()].push_back(&box);
-      }
       std::unordered_map<std::string, int> positions_per_type;
       for (const auto& box_type : box_types) {
         positions_per_type[box_type.id.to_string()] = static_cast<int>(box_type.positions.size());
       }
 
-      // Walk the tree from the layout root, parents first, in the order the tree
-      // view uses. `visited` is the cycle guard; a container whose parent is not
-      // reachable from the root is simply never visited (the orphan guard).
-      std::vector<const core::StorageContainer*> ordered_containers;
-      std::vector<const core::Box*> ordered_boxes;
-      std::unordered_set<std::string> visited;
-      const auto root = std::find_if(containers.begin(), containers.end(), [&](const auto& c) {
-        return c.id == freezer->layout_root_id;
-      });
-      std::vector<const core::StorageContainer*> frontier;
-      if (root != containers.end()) {
-        frontier.push_back(&*root);
-        visited.insert(root->id.to_string());
-      }
-      while (!frontier.empty()) {
-        std::vector<const core::StorageContainer*> next;
-        for (const auto* const container : frontier) {
-          ordered_containers.push_back(container);
-          auto kids = child_containers[container->id.to_string()];
-          std::sort(kids.begin(), kids.end(), [](const auto* left, const auto* right) {
-            if (left->ordering_index != right->ordering_index) {
-              return left->ordering_index < right->ordering_index;
-            }
-            if (left->name != right->name) {
-              return left->name < right->name;
-            }
-            return left->id.to_string() < right->id.to_string();
-          });
-          for (const auto* const kid : kids) {
-            if (visited.insert(kid->id.to_string()).second) {
-              next.push_back(kid);
-            }
-          }
-          auto held = child_boxes[container->id.to_string()];
-          std::sort(held.begin(), held.end(), [](const auto* left, const auto* right) {
-            if (left->label != right->label) {
-              return left->label < right->label;
-            }
-            return left->id.to_string() < right->id.to_string();
-          });
-          ordered_boxes.insert(ordered_boxes.end(), held.begin(), held.end());
-        }
-        frontier = std::move(next);
-      }
-
-      // Counts only: the sample rows never leave this function (no PHI, no phi.read).
-      std::unordered_map<std::string, int> occupied;
-      if (!ordered_boxes.empty()) {
-        std::vector<std::string> box_ids;
-        box_ids.reserve(ordered_boxes.size());
-        for (const auto* const box : ordered_boxes) {
-          box_ids.push_back(box->id.to_string());
-        }
-        const auto samples = txn->repo<core::Sample>().query(storage::Query<core::Sample>::where(
-            storage::field<core::Sample, std::string>(core::Sample::Field::BoxId).in(box_ids)));
-        for (const auto& sample : samples) {
-          // The statuses that hold a position, as samples_position_unique counts them.
-          if (sample.box_id.has_value() && (sample.status == core::SampleStatus::Active ||
-                                            sample.status == core::SampleStatus::CheckedOut)) {
-            ++occupied[sample.box_id->to_string()];
-          }
-        }
-      }
+      const auto layout = walk_scene(freezer->layout_root_id, containers, boxes);
+      auto occupied = count_occupied(*txn, layout.boxes);
       txn->commit();
 
       fill_freezer(resp->mutable_freezer(), *freezer);
@@ -721,33 +781,13 @@ namespace fmgr::server {
           model != nullptr) {
         fill_freezer_model(resp->mutable_model(), *model);
       }
-      for (const auto* const container : ordered_containers) {
-        auto* const node = resp->add_nodes();
-        node->set_id(container->id.to_string());
-        if (container->id != freezer->layout_root_id && container->parent_id.has_value()) {
-          node->set_parent_id(container->parent_id->to_string());
-        }
-        node->set_kind(fmgr::v1::SCENE_NODE_KIND_CONTAINER);
-        node->set_container_kind(to_proto_kind(container->kind));
-        node->set_label(container->label.empty() ? container->name : container->label);
-        if (container->placement.has_value()) {
-          fill_placement(node->mutable_placement(), *container->placement);
-        }
-        if (container->grid.has_value()) {
-          fill_grid(node->mutable_grid(), *container->grid);
-        }
+      for (const auto* const container : layout.containers) {
+        fill_container_node(resp->add_nodes(), *container,
+                            container->id == freezer->layout_root_id);
       }
-      for (const auto* const box : ordered_boxes) {
-        auto* const node = resp->add_nodes();
-        node->set_id(box->id.to_string());
-        node->set_parent_id(box->storage_container_id.to_string());
-        node->set_kind(fmgr::v1::SCENE_NODE_KIND_BOX);
-        node->set_label(box->label);
-        if (box->placement.has_value()) {
-          fill_placement(node->mutable_placement(), *box->placement);
-        }
-        node->set_occupied_positions(occupied[box->id.to_string()]);
-        node->set_total_positions(positions_per_type[box->box_type_id.to_string()]);
+      for (const auto* const box : layout.boxes) {
+        fill_box_node(resp->add_nodes(), *box, occupied[box->id.to_string()],
+                      positions_per_type[box->box_type_id.to_string()]);
       }
       return grpc::Status::OK;
     } catch (...) {

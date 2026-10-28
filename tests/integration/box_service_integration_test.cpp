@@ -1307,6 +1307,7 @@ namespace fmgr::test {
         out->set_depth(cell[2]);
       }
 
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       fmgr::v1::StorageContainer get_container(const std::string& token, const std::string& id) {
         grpc::ClientContext ctx;
         set_bearer(ctx, token);
@@ -1323,6 +1324,7 @@ namespace fmgr::test {
         return {};
       }
 
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       fmgr::v1::Freezer get_freezer(const std::string& token, const std::string& id) {
         grpc::ClientContext ctx;
         set_bearer(ctx, token);
@@ -1333,6 +1335,7 @@ namespace fmgr::test {
         return resp.freezer();
       }
 
+      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
       grpc::Status get_scene(const std::string& token, const std::string& freezer_id,
                              fmgr::v1::GetFreezerSceneResponse* resp) {
         grpc::ClientContext ctx;
