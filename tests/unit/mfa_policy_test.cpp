@@ -137,7 +137,7 @@ namespace fmgr::auth {
       constexpr std::array<std::int64_t, 18> delays{0,     0,     0,      0,      0,      30,
                                                     60,    120,   240,    480,    960,    1'920,
                                                     3'840, 7'680, 15'360, 30'720, 61'440, 86'400};
-      MfaPolicyState state{.last_accepted_step = 42};
+      MfaPolicyState state{.last_accepted_step = 42, .observed_at = at_seconds(1'000)};
       auto now = at_seconds(1'000);
       for (std::uint8_t count = 1; count <= 19; ++count) {
         state = mfa_record_failure(state, now);
@@ -265,6 +265,16 @@ namespace fmgr::auth {
         EXPECT_THROW((void)mfa_record_failure(state, at_seconds(100)), std::invalid_argument);
         EXPECT_THROW((void)mfa_unlock(state, at_seconds(100)), std::invalid_argument);
       }
+    }
+
+    TEST(MfaBackoffPolicyTest, RejectsConsumedFloorWithoutItsObservedTimeAtEveryEntryPoint) {
+      const MfaPolicyState state{.last_accepted_step = 100};
+      const auto wall_now = core::Timestamp::from_unix_micros(1);
+      EXPECT_THROW((void)mfa_effective_now(state, wall_now), std::invalid_argument);
+      EXPECT_THROW((void)mfa_backoff_active(state, wall_now), std::invalid_argument);
+      EXPECT_THROW((void)mfa_record_failure(state, wall_now), std::invalid_argument);
+      EXPECT_THROW((void)mfa_record_success(state, {101}, wall_now), std::invalid_argument);
+      EXPECT_THROW((void)mfa_unlock(state, wall_now), std::invalid_argument);
     }
 
   } // namespace

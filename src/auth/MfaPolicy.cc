@@ -27,6 +27,7 @@ namespace fmgr::auth {
       if (state.failure_count > k_max_failure_count || state.last_accepted_step.value_or(0) < 0 ||
           (state.next_allowed_at.has_value() && state.next_allowed_at->unix_micros() < 0) ||
           (state.observed_at.has_value() && state.observed_at->unix_micros() < 0) ||
+          (state.last_accepted_step.has_value() && !state.observed_at.has_value()) ||
           (state.failure_count > 0 && !state.observed_at.has_value())) {
         throw std::invalid_argument("invalid MFA policy state");
       }
