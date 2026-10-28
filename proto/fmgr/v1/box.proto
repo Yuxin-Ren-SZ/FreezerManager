@@ -48,8 +48,10 @@ message Freezer {
   string layout_root_id = 7;
   fmgr.v1.common.Timestamp created_at = 8;
   optional fmgr.v1.common.Timestamp archived_at = 9;
-  // Built-in FreezerModel.id the 3D layout draws; "" = no model (ADR 0003).
-  string freezer_model_id = 10;
+  // Built-in FreezerModel.id the 3D layout draws (ADR 0003). Responses always
+  // set it ("" = no model). On UpdateFreezer, absent = unchanged and "" clears,
+  // so a client that predates the field never wipes a model by editing a name.
+  optional string freezer_model_id = 10;
 }
 
 enum ContainerKind {
@@ -270,8 +272,13 @@ message CreateStorageContainerRequest {
 message CreateStorageContainerResponse {
   StorageContainer container = 1;
 }
+// `placement` and `grid` inside `container` are applied when present and left
+// unchanged when absent, so a client that predates them never wipes them; the
+// clear_* flags remove them explicitly (ADR 0003).
 message UpdateStorageContainerRequest {
   StorageContainer container = 1;
+  bool clear_placement = 2;
+  bool clear_grid = 3;
 }
 message UpdateStorageContainerResponse {
   StorageContainer container = 1;
@@ -347,8 +354,11 @@ message CreateBoxRequest {
 message CreateBoxResponse {
   Box box = 1;
 }
+// `placement` inside `box` is applied when present and left unchanged when
+// absent; clear_placement removes it explicitly (ADR 0003).
 message UpdateBoxRequest {
   Box box = 1;
+  bool clear_placement = 2;
 }
 message UpdateBoxResponse {
   Box box = 1;
