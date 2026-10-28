@@ -27,11 +27,11 @@ interface Held {
 }
 
 function hold(): Held {
-  let release = () => {};
+  let resolveHeld: (() => void) | undefined;
   const promise = new Promise<void>((resolve) => {
-    release = resolve;
+    resolveHeld = resolve;
   });
-  return { promise, release };
+  return { promise, release: () => resolveHeld?.() };
 }
 
 function browserCookieGateway() {

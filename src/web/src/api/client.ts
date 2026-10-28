@@ -182,16 +182,24 @@ function toApiError(json: unknown, response: Response, fallbackRequestId: string
   );
 }
 
+export interface CallOptions {
+  readonly signal?: AbortSignal;
+}
+
 /**
  * Call one unary RPC and get its typed response.
  *
  * `call('sample/list', { labId })` is typed end to end from the generated
  * schemas in `routes.ts`: the argument is the request message's init shape and
  * the result is the response message.
+ *
+ * `options.signal` aborts the request; an aborted call fails as `UNAVAILABLE`
+ * like any other request that never got a whole answer.
  */
 export async function call<K extends RpcName>(
   rpc: K,
   request: RequestInitOf<K> = {} as RequestInitOf<K>,
+  options: CallOptions = {},
 ): Promise<ResponseOf<K>> {
   const requestSessionVersion = getSessionChangeVersion();
   const route: ApiRoutes[K] = apiRoutes[rpc];
@@ -229,12 +237,23 @@ export async function call<K extends RpcName>(
       // Same-origin only (G-arch 5); the session cookie rides along because the
       // SPA is served by the same origin as the gateway.
       credentials: 'same-origin',
+      signal: options.signal,
     });
   } catch (cause) {
     throw new ApiError('UNAVAILABLE', 'the server could not be reached', { requestId, cause });
   }
 
-  const text = await response.text();
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (cause) {
+    // The connection dropped, or `options.signal` fired, after the headers.
+    throw new ApiError('UNAVAILABLE', 'the response was interrupted', {
+      httpStatus: response.status,
+      requestId: response.headers.get(REQUEST_ID_HEADER_NAME) ?? requestId,
+      cause,
+    });
+  }
   let json: JsonValue = {};
   if (text !== '') {
     try {
