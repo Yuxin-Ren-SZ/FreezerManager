@@ -115,7 +115,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 
 ### Security & Authentication
 
-- ✅ `IAuthProvider` interface — `authenticate`, `validate_token`, `verify_totp`, `revoke_session`, `revoke_all_sessions`; 5 pure-virtual methods; mock compiles
+- ✅ `IAuthProvider` interface — authentication, request and background token validation, TOTP, session revocation and API-token management; background validation preserves idle expiry; concrete mock compiles
 - ✅ `LocalAuthProvider` — Argon2id (64 MiB / 3 iter / 4 parallelism); BLAKE2b-256 session-token hashing; TOTP (RFC 6238 + RFC 4226 HMAC-SHA1 via OpenSSL EVP_MAC); in-memory account lockout (configurable threshold + duration); API-token validation path
 - ✅ Local password enrolment — `freezerctl user set-password` (reads the password from stdin, never argv) writes the `{provider:local, hash}` binding `authenticate` consumes; a password-only user (no TOTP secret) logs straight in. TOTP enrolment 🔲
 - ✅ TOTP helper (`Totp.h`) — `base32_decode`, `totp_generate`, `totp_verify`; ±1-step window; RFC 6238 known-answer test vectors
@@ -191,8 +191,8 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅, freezer/box/item-type `list` + `inspect` ✅, CLI `create` nouns (6 entities) ✅, non-sample CSV import (item-type/box/custom-field-def/user) ✅ | ✅ Complete |
 | **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots | ✅ Complete |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
-| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, `SampleService.ImportSamples` RPC (transactional CSV import + dry-run) ✅, SSE streaming — live audit feed ✅ (sample list + import progress 🔲), Qt 6 desktop client — login + tree + sample browser + box grid + barcode + CSV export ✅ + CSV import wizard ✅ | ⚙️ In progress |
-| **M4 — Web UI** | React / TypeScript SPA ✅, sign-in + MFA + session lifecycle ✅, sample/layout/box/scan screens ✅, live sample updates via SSE ✅; SPA hosting, dashboard, remaining admin flows and end-to-end gates 🔲 (see TODO.md Section G) | ⚙️ In progress |
+| **M3 — gRPC + Qt client** | Proto definitions ✅, gRPC server (9 services) ✅, REST gateway — all 9 services over Drogon ✅, `SampleService.ImportSamples` RPC (transactional CSV import + dry-run) ✅, SSE streaming — live sample list + audit feeds ✅ (import progress 🔲), Qt 6 desktop client — login + tree + sample browser + box grid + barcode + CSV export ✅ + CSV import wizard ✅ | ⚙️ In progress |
+| **M4 — Web UI** | React / TypeScript SPA ✅, sign-in + MFA ✅, sample/layout/box/scan screens ✅, live sample updates via SSE ✅, same-origin SPA hosting + browser security headers ✅, watch authorization revalidation + terminal session handling ✅; dashboard, remaining admin flows and end-to-end gates 🔲 (see TODO.md Section G) | ⚙️ In progress |
 | **M5 — PHI + KMS + Backups** | Sample PHI field-level encryption ✅, `IKmsProvider` + `EnvVarKms` + `OsKeyringKms` (keyring) ✅, PHI-read audit kind ✅, key rotation (`freezerctl key rotate`) ✅, separate backup KEK ✅, encrypted SQLite backup/restore + restore-drill verify (`freezerctl backup`) ✅, in-server scheduled backups + GFS retention + weekly restore drill (`BackupScheduler`, `freezerctl backup run | list`) ✅; `VaultKms`, Postgres backup 🔲 | ⚙️ In progress |
 | **M6 — Public API & Sharing** | API tokens, `freezerctl-py`, cross-lab share-request workflow | 🔲 Planned |
 | **M7 — Polish & 1.0** | OIDC + LDAP auth, `.deb` / `.rpm` / Docker packaging, external security review | 🔲 Planned |
