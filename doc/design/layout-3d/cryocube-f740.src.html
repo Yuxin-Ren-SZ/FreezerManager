@@ -97,7 +97,7 @@ const cellCol = (c, r, j, i) => { const v = cfRnd(c*61 + r*17 + j*7.3 + i*3.1 + 
 function doorMap(st){
   const a = ease(st.door) * Math.PI/2, ca = Math.cos(a), sa = Math.sin(a);
   const DM = (w, t, z) => { const vx = 10 - t, vy = w + 1; return [CX + vx*ca + vy*sa, -1 - vx*sa + vy*ca, z]; };
-  DM.nF = [ca, -sa, 0]; DM.nR = [-ca, sa, 0]; DM.U = [-sa, -ca, 0];
+  DM.nF = [ca, -sa, 0]; DM.nR = [-ca, sa, 0]; DM.nS = [sa, ca, 0]; DM.U = [-sa, -ca, 0];   // nS: the handle-side edge
   return DM;
 }
 // inner door c: pivots at the jamb (86, IY0); t from its face (0, at x = 86) to its back (2). Closed: (86 - t, IY0 + w)
@@ -248,21 +248,24 @@ function door(st, m){
     bezel += rod(DM(59, -3, 151), DM(59, -3.9, 151), 2.8, GREYL, tone, .8);
     bezel += shape(ringAt(ellUV(59, 158.5, .9, .9, 10), -3.1), st.temp > -70 && Math.floor(st.clock*3) % 2 ? '#e2483d' : '#43c25c', .4); }
   bezel += hullInk([...bA, ...bB], 1.3);
-  let handle = slab(DM, 99, 109, -4, 0, 118, 131, GREY, tone, 1).svg;
-  if (FR) handle += shape(q(100.6, 120.2, 107.4, 129.4, -4.05), tone(DM.nF, GREYL), .6) + rod(DM(106.4, -4, 120.6), DM(106.4, -4.9, 120.6), 1, METAL, toneI, .6);
-  handle += rod(DM(104, -2.4, 131), DM(104, -5, 137), 1.7, GREY, tone, 1) + rod(DM(104, -5, 137), DM(104, -5.6, 151), 1.7, GREY, tone, 1, 1.4);
-  const mounted = byDepth([{ box: aabb([...bA, ...bB]), svg: bezel }, { box: aabb([DM(99, -6, 118), DM(109, 0, 152)]), svg: act('door', handle) }]);
+  // the latch: a housing on the door's free side edge (w = FD), its lock cylinder low toward the front, and the lever
+  // rising from its top along the edge, as on the real door
+  const SR = vis(DM.nS), hq = (t0, z0, t1, z1, w) => [DM(w, t0, z0), DM(w, t1, z0), DM(w, t1, z1), DM(w, t0, z1)];
+  let handle = slab(DM, FD, FD + 4.5, .5, 9.5, 118, 131, GREY, tone, 1).svg;
+  if (SR) handle += shape(hq(1.8, 120.2, 8.2, 129.4, FD + 4.55), tone(DM.nS, GREYL), .6) + rod(DM(FD + 4.5, 2.4, 120.4), DM(FD + 5.4, 2.4, 120.4), 1, METAL, toneI, .6);
+  handle += rod(DM(FD + 2.2, 5, 131), DM(FD + 4.2, 5, 137), 1.7, GREY, tone, 1) + rod(DM(FD + 4.2, 5, 137), DM(FD + 4.7, 5, 151), 1.7, GREY, tone, 1, 1.4);
+  handle = act('door', handle);
   // rear: gasket ring and the plug that fills the opening
   const plug = slab(DM, 13, 97, 10, 12, 53, 190, PLASTIC, tone, 1);
   let rear = '';
   if (RR) rear += shape(q(6.5, 49, 103.5, 195, 10.05), RUBBER.m, 1) + fill(pd(q(9, 51.5, 101, 192.5, 10.08)), tone(DM.nR, BODY));
-  let s = '';
-  if (FR) s = body.svg + front + mounted;
-  else if (RR) s = mounted + body.svg + rear + plug.svg;
-  else s = mounted + plug.svg + body.svg;
-  if (FR && RR) s += rear + plug.svg;
+  // each mounted part goes before the body while its face is turned away (the body hides it), after it while facing
+  let s = (FR ? '' : bezel) + (SR ? '' : handle) + (RR ? '' : plug.svg) + body.svg;
+  if (FR) s += front + bezel;
+  if (RR) s += rear + plug.svg;
+  if (SR) s += handle;
   s += hullInk(body.pts, 2.6);
-  const all = [...body.pts, DM(104, -6, 151), DM(0, 12, 47), DM(FD, 12, FH)];
+  const all = [...body.pts, DM(FD + 6.5, 0, 152), DM(FD + 6.5, 10, 118), DM(0, 12, 47), DM(FD, 12, FH)];
   return { box: aabb(all, CX), svg: s };
 }
 
@@ -420,7 +423,8 @@ function scene(st, m){
   if (k > .6) s += MECH_LABELS;
   else {
     const lab = [];
-    if (vis(DM.nF)) lab.push({ at: DM(36, -3, 158), text: 'TOUCHSCREEN', on: st.temp > -70 }, { at: DM(104, -5.6, 150), text: 'DOOR HANDLE', on: st.door > 0 && st.door < 1 });
+    if (vis(DM.nF)) lab.push({ at: DM(36, -3, 158), text: 'TOUCHSCREEN', on: st.temp > -70 });
+    if (vis(DM.nF) || vis(DM.nS)) lab.push({ at: DM(FD + 4.7, 5, 150), text: 'DOOR HANDLE', on: st.door > 0 && st.door < 1 });
     if (vis([1, 0, 0])) lab.push({ at: [96, 70, 9], text: 'AIR INTAKE', on: st.run });
     if (vis([0, 1, 0])) lab.push({ at: [50, FD + 3, 172], text: 'ACCESS PORT', on: false });
     if (st.door > .9 && vis([1, 0, 0])){
