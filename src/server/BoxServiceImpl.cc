@@ -6,17 +6,22 @@
 #include "core/box.h"
 #include "core/enums.h"
 #include "core/freezer.h"
+#include "core/freezer_models.h"
 #include "core/permissions.h"
+#include "core/placement.h"
+#include "core/sample.h"
 #include "core/uuid.h"
 #include "server/GrpcErrorTranslation.h"
 #include "storage/BoxGeometryTraits.h"
 #include "storage/FreezerTraits.h"
 #include "storage/IStorageBackend.h"
+#include "storage/SampleTraits.h"
 
 #include <fmgr/v1/box.grpc.pb.h>
 #include <grpcpp/grpcpp.h>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -24,6 +29,9 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace fmgr::server {
   namespace {
@@ -108,6 +116,159 @@ namespace fmgr::server {
       if (freezer.archived_at.has_value()) {
         out->mutable_archived_at()->set_unix_micros(freezer.archived_at->unix_micros());
       }
+      // Always present on the wire ("" = no model), so a reader can tell the
+      // field is known even when it is empty (ADR 0003 §1).
+      out->set_freezer_model_id(freezer.freezer_model_id);
+    }
+
+    // ---- 3D layout marshalling (ADR 0003) ----
+
+    void fill_placement(fmgr::v1::Placement* out, const core::Placement& placement) {
+      out->set_level(placement.level);
+      out->set_column(placement.column);
+      out->set_depth(placement.depth);
+    }
+
+    void fill_grid(fmgr::v1::GridSpec* out, const core::GridSpec& grid) {
+      out->set_levels(grid.levels);
+      out->set_columns(grid.columns);
+      out->set_depths(grid.depths);
+    }
+
+    [[nodiscard]] core::Placement placement_from_proto(const fmgr::v1::Placement& wire) {
+      return core::Placement{.level = wire.level(), .column = wire.column(), .depth = wire.depth()};
+    }
+
+    [[nodiscard]] core::GridSpec grid_from_proto(const fmgr::v1::GridSpec& wire) {
+      return core::GridSpec{
+          .levels = wire.levels(), .columns = wire.columns(), .depths = wire.depths()};
+    }
+
+    void fill_dimensions(fmgr::v1::Dimensions* out, const core::Dimensions& dimensions) {
+      out->set_width_mm(dimensions.width_mm);
+      out->set_depth_mm(dimensions.depth_mm);
+      out->set_height_mm(dimensions.height_mm);
+    }
+
+    void fill_freezer_model(fmgr::v1::FreezerModel* out, const core::FreezerModel& model) {
+      out->set_id(model.id);
+      out->set_manufacturer(model.manufacturer);
+      out->set_model_code(model.model_code);
+      out->set_display_name(model.display_name);
+      out->set_form(model.form == core::FreezerForm::Chest ? fmgr::v1::FREEZER_FORM_CHEST
+                                                           : fmgr::v1::FREEZER_FORM_UPRIGHT);
+      fill_dimensions(out->mutable_exterior_mm(), model.exterior_mm);
+      fill_dimensions(out->mutable_interior_mm(), model.interior_mm);
+      out->set_hinge(model.hinge == core::HingeSide::Left ? fmgr::v1::HINGE_SIDE_LEFT
+                                                          : fmgr::v1::HINGE_SIDE_RIGHT);
+      for (const auto& door : model.inner_doors) {
+        auto* const wire = out->add_inner_doors();
+        wire->set_first_level(door.first_level);
+        wire->set_last_level(door.last_level);
+      }
+      for (const auto& compartment : model.compartments) {
+        auto* const wire = out->add_compartments();
+        wire->set_level(compartment.level);
+        wire->set_floor_mm(compartment.floor_mm);
+        wire->set_height_mm(compartment.height_mm);
+        wire->set_rack_slots(compartment.rack_slots);
+        fill_dimensions(wire->mutable_rack_slot_mm(), compartment.rack_slot_mm);
+      }
+      out->set_render_key(model.render_key);
+    }
+
+    // `""` (no model) or a catalogue id; anything else is a client error.
+    void require_known_model(const std::string& model_id) {
+      if (!model_id.empty() && core::find_freezer_model(model_id) == nullptr) {
+        throw storage::ConstraintViolation("unknown freezer model");
+      }
+    }
+
+    // The freezer whose layout root is `container_id`, if any.
+    [[nodiscard]] std::optional<core::Freezer>
+    freezer_rooted_at(storage::ITransaction& txn, const core::StorageContainerId& container_id) {
+      const auto freezers = txn.repo<core::Freezer>().query(storage::Query<core::Freezer>::where(
+          storage::field<core::Freezer, std::string>(core::Freezer::Field::LayoutRootId) ==
+          container_id.to_string()));
+      if (freezers.empty()) {
+        return std::nullopt;
+      }
+      return freezers.front();
+    }
+
+    // The cells a cabinet with this model offers its layout root's children.
+    [[nodiscard]] std::optional<core::PlacementBounds>
+    cabinet_bounds_for(const std::string& model_id) {
+      const auto* const model = core::find_freezer_model(model_id);
+      if (model == nullptr) {
+        return std::nullopt;
+      }
+      return core::cabinet_bounds(*model);
+    }
+
+    // The cells `parent` offers its children: its own grid, or — for a layout
+    // root, which never stores a grid — the cells of its freezer's model.
+    [[nodiscard]] std::optional<core::PlacementBounds>
+    bounds_of_parent(storage::ITransaction& txn, const core::StorageContainer& parent) {
+      if (parent.grid.has_value()) {
+        return core::bounds_of(*parent.grid);
+      }
+      if (const auto freezer = freezer_rooted_at(txn, parent.id); freezer.has_value()) {
+        return cabinet_bounds_for(freezer->freezer_model_id);
+      }
+      return std::nullopt;
+    }
+
+    // A placement must fit the live parent container's cells (ADR 0003 §2).
+    // Collisions with a sibling are left to the partial unique index.
+    void require_placement_fits(storage::ITransaction& txn, const core::LabId& lab_id,
+                                const std::optional<core::StorageContainerId>& parent_id,
+                                const core::Placement& placement) {
+      std::optional<core::PlacementBounds> bounds;
+      if (parent_id.has_value()) {
+        const auto parent = txn.repo<core::StorageContainer>().find_by_id(*parent_id);
+        if (parent.has_value() && parent->lab_id == lab_id && !parent->archived_at.has_value()) {
+          bounds = bounds_of_parent(txn, *parent);
+        }
+      }
+      if (const auto error = core::placement_error(bounds, placement); error.has_value()) {
+        throw storage::ConstraintViolation(*error);
+      }
+    }
+
+    // Every placement of a live child (container or box) of `container_id`.
+    [[nodiscard]] std::vector<core::Placement>
+    placed_children(storage::ITransaction& txn, const core::StorageContainerId& container_id) {
+      std::vector<core::Placement> placements;
+      const auto containers =
+          txn.repo<core::StorageContainer>().query(storage::Query<core::StorageContainer>::where(
+              storage::field<core::StorageContainer, std::string>(
+                  core::StorageContainer::Field::ParentId) == container_id.to_string()));
+      for (const auto& child : containers) {
+        if (child.placement.has_value()) {
+          placements.push_back(*child.placement);
+        }
+      }
+      const auto boxes = txn.repo<core::Box>().query(storage::Query<core::Box>::where(
+          storage::field<core::Box, std::string>(core::Box::Field::StorageContainerId) ==
+          container_id.to_string()));
+      for (const auto& box : boxes) {
+        if (box.placement.has_value()) {
+          placements.push_back(*box.placement);
+        }
+      }
+      return placements;
+    }
+
+    // A grid or model change must not leave a placed child outside the new cells.
+    [[nodiscard]] bool strands_children(storage::ITransaction& txn,
+                                        const core::StorageContainerId& container_id,
+                                        const std::optional<core::PlacementBounds>& new_bounds) {
+      const auto children = placed_children(txn, container_id);
+      if (!new_bounds.has_value()) {
+        return !children.empty();
+      }
+      return !core::stranded_placements(*new_bounds, children).empty();
     }
 
     void fill_storage_container(fmgr::v1::StorageContainer* out,
@@ -127,6 +288,12 @@ namespace fmgr::server {
       out->mutable_created_at()->set_unix_micros(container.created_at.unix_micros());
       if (container.archived_at.has_value()) {
         out->mutable_archived_at()->set_unix_micros(container.archived_at->unix_micros());
+      }
+      if (container.placement.has_value()) {
+        fill_placement(out->mutable_placement(), *container.placement);
+      }
+      if (container.grid.has_value()) {
+        fill_grid(out->mutable_grid(), *container.grid);
       }
     }
 
@@ -186,6 +353,9 @@ namespace fmgr::server {
       if (box.archived_at.has_value()) {
         out->mutable_archived_at()->set_unix_micros(box.archived_at->unix_micros());
       }
+      if (box.placement.has_value()) {
+        fill_placement(out->mutable_placement(), *box.placement);
+      }
     }
 
     [[nodiscard]] std::vector<core::Position>
@@ -223,6 +393,13 @@ namespace fmgr::server {
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListFreezers", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetFreezer",
                                       rpc::RpcGate::token_and_mfa());
+    // GetFreezerScene is an entity-id read like GetFreezer: TokenAndMfa admission,
+    // then a manual sample.read check on the freezer's lab (the layout-read
+    // permission, #54) once the row is loaded (ADR 0003 §3).
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/GetFreezerScene",
+                                      rpc::RpcGate::token_and_mfa());
+    // The catalogue is global; lab_id is there so the gate has a lab to check.
+    rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ListFreezerModels", P::SampleRead);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/CreateFreezer", P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/UpdateFreezer", P::FreezerConfigure);
     rpc::AuthMiddleware::register_rpc("/fmgr.v1.BoxService/ArchiveFreezer",
@@ -307,6 +484,7 @@ namespace fmgr::server {
       const auto lab_id = core::LabId::parse(req->lab_id());
       const auto sctx =
           middleware_.authorize(extract_bearer(*ctx), core::Permission::FreezerConfigure, lab_id);
+      require_known_model(req->freezer_model_id());
 
       // The interior layout is a tree of StorageContainers rooted at
       // layout_root_id. Per the Freezer invariant the root node is created in the
@@ -334,6 +512,7 @@ namespace fmgr::server {
               req->has_temp_target_c() ? std::optional<double>{req->temp_target_c()} : std::nullopt,
           .layout_root_id = root.id,
           .created_at = created_at,
+          .freezer_model_id = req->freezer_model_id(),
       };
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
@@ -373,6 +552,18 @@ namespace fmgr::server {
       existing->temp_target_c = req->freezer().has_temp_target_c()
                                     ? std::optional<double>{req->freezer().temp_target_c()}
                                     : std::nullopt;
+      // Absent = unchanged, "" = clear (ADR 0003 §2): a client that predates the
+      // field must not wipe the model by renaming the freezer.
+      if (req->freezer().has_freezer_model_id() &&
+          req->freezer().freezer_model_id() != existing->freezer_model_id) {
+        require_known_model(req->freezer().freezer_model_id());
+        if (strands_children(*txn, existing->layout_root_id,
+                             cabinet_bounds_for(req->freezer().freezer_model_id()))) {
+          return {grpc::StatusCode::FAILED_PRECONDITION,
+                  "a placed rack would fall outside the new model's compartments"};
+        }
+        existing->freezer_model_id = req->freezer().freezer_model_id();
+      }
       txn->repo<core::Freezer>().update(*existing, make_ctx(*ctx, sctx, "update_freezer"));
       txn->commit();
 
@@ -404,6 +595,215 @@ namespace fmgr::server {
       txn->repo<core::Freezer>().soft_delete(freezer_id, mut);
       txn->repo<core::StorageContainer>().soft_delete(existing->layout_root_id, mut);
       txn->commit();
+      return grpc::Status::OK;
+    } catch (...) {
+      return current_exception_to_grpc_status();
+    }
+  }
+
+  // =====================================================================
+  // 3D layout reads (ADR 0003 §3)
+  // =====================================================================
+
+  namespace {
+
+    // The tree view's order: containers by ordering_index, then name, then id.
+    [[nodiscard]] bool container_order(const core::StorageContainer* left,
+                                       const core::StorageContainer* right) {
+      if (left->ordering_index != right->ordering_index) {
+        return left->ordering_index < right->ordering_index;
+      }
+      if (left->name != right->name) {
+        return left->name < right->name;
+      }
+      return left->id.to_string() < right->id.to_string();
+    }
+
+    // Boxes by label, then id.
+    [[nodiscard]] bool box_order(const core::Box* left, const core::Box* right) {
+      if (left->label != right->label) {
+        return left->label < right->label;
+      }
+      return left->id.to_string() < right->id.to_string();
+    }
+
+    struct SceneLayout {
+      std::vector<const core::StorageContainer*> containers;
+      std::vector<const core::Box*> boxes;
+    };
+
+    // Walk the tree from the layout root, breadth first, so parents come before
+    // their children. `visited` is the cycle guard; a container whose parent is
+    // not reachable from the root is never visited (the orphan guard).
+    [[nodiscard]] SceneLayout walk_scene(const core::StorageContainerId& root_id,
+                                         const std::vector<core::StorageContainer>& containers,
+                                         const std::vector<core::Box>& boxes) {
+      std::unordered_map<std::string, std::vector<const core::StorageContainer*>> child_containers;
+      for (const auto& container : containers) {
+        if (container.parent_id.has_value()) {
+          child_containers[container.parent_id->to_string()].push_back(&container);
+        }
+      }
+      std::unordered_map<std::string, std::vector<const core::Box*>> child_boxes;
+      for (const auto& box : boxes) {
+        child_boxes[box.storage_container_id.to_string()].push_back(&box);
+      }
+
+      SceneLayout layout;
+      std::unordered_set<std::string> visited;
+      std::vector<const core::StorageContainer*> frontier;
+      const auto root =
+          std::find_if(containers.begin(), containers.end(),
+                       [&](const auto& container) { return container.id == root_id; });
+      if (root != containers.end()) {
+        frontier.push_back(&*root);
+        visited.insert(root->id.to_string());
+      }
+      while (!frontier.empty()) {
+        std::vector<const core::StorageContainer*> next;
+        for (const auto* const container : frontier) {
+          layout.containers.push_back(container);
+          auto kids = child_containers[container->id.to_string()];
+          std::sort(kids.begin(), kids.end(), container_order);
+          for (const auto* const kid : kids) {
+            if (visited.insert(kid->id.to_string()).second) {
+              next.push_back(kid);
+            }
+          }
+          auto held = child_boxes[container->id.to_string()];
+          std::sort(held.begin(), held.end(), box_order);
+          layout.boxes.insert(layout.boxes.end(), held.begin(), held.end());
+        }
+        frontier = std::move(next);
+      }
+      return layout;
+    }
+
+    // Occupied positions per box id. Counts only: the sample rows never leave
+    // this function (no PHI on the wire, no phi.read).
+    [[nodiscard]] std::unordered_map<std::string, int>
+    count_occupied(storage::ITransaction& txn, const std::vector<const core::Box*>& boxes) {
+      std::unordered_map<std::string, int> occupied;
+      if (boxes.empty()) {
+        return occupied;
+      }
+      std::vector<std::string> box_ids;
+      box_ids.reserve(boxes.size());
+      for (const auto* const box : boxes) {
+        box_ids.push_back(box->id.to_string());
+      }
+      const auto samples = txn.repo<core::Sample>().query(storage::Query<core::Sample>::where(
+          storage::field<core::Sample, std::string>(core::Sample::Field::BoxId).in(box_ids)));
+      for (const auto& sample : samples) {
+        // The statuses that hold a position, as samples_position_unique counts them.
+        const bool holds = sample.status == core::SampleStatus::Active ||
+                           sample.status == core::SampleStatus::CheckedOut;
+        if (holds && sample.box_id.has_value()) {
+          ++occupied[sample.box_id->to_string()];
+        }
+      }
+      return occupied;
+    }
+
+    void fill_container_node(fmgr::v1::SceneNode* node, const core::StorageContainer& container,
+                             bool is_root) {
+      node->set_id(container.id.to_string());
+      if (!is_root && container.parent_id.has_value()) {
+        node->set_parent_id(container.parent_id->to_string());
+      }
+      node->set_kind(fmgr::v1::SCENE_NODE_KIND_CONTAINER);
+      node->set_container_kind(to_proto_kind(container.kind));
+      node->set_label(container.label.empty() ? container.name : container.label);
+      if (container.placement.has_value()) {
+        fill_placement(node->mutable_placement(), *container.placement);
+      }
+      if (container.grid.has_value()) {
+        fill_grid(node->mutable_grid(), *container.grid);
+      }
+    }
+
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): named at the one call site
+    void fill_box_node(fmgr::v1::SceneNode* node, const core::Box& box, int occupied, int total) {
+      node->set_id(box.id.to_string());
+      node->set_parent_id(box.storage_container_id.to_string());
+      node->set_kind(fmgr::v1::SCENE_NODE_KIND_BOX);
+      node->set_label(box.label);
+      if (box.placement.has_value()) {
+        fill_placement(node->mutable_placement(), *box.placement);
+      }
+      node->set_occupied_positions(occupied);
+      node->set_total_positions(total);
+    }
+
+  } // namespace
+
+  grpc::Status BoxServiceImpl::GetFreezerScene(grpc::ServerContext* ctx,
+                                               const fmgr::v1::GetFreezerSceneRequest* req,
+                                               fmgr::v1::GetFreezerSceneResponse* resp) {
+    try {
+      const auto freezer_id = core::FreezerId::parse(req->freezer_id());
+      auto sctx = middleware_.authenticate(extract_bearer(*ctx), rpc::CredentialRule::TokenAndMfa);
+
+      auto txn = backend_.begin(storage::IsolationLevel::ReadCommitted);
+      rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+      const auto freezer = txn->repo<core::Freezer>().find_by_id(freezer_id);
+      if (!freezer.has_value() || freezer->archived_at.has_value()) {
+        return {grpc::StatusCode::NOT_FOUND, "freezer not found"};
+      }
+      // The scene is the layout drawn in 3D, so it reads like the layout: sample.read.
+      if (!sctx.has_for_lab(freezer->lab_id, core::Permission::SampleRead)) {
+        throw auth::PermissionDenied("sample.read required for this lab");
+      }
+
+      const auto lab = freezer->lab_id.to_string();
+      const auto containers =
+          txn->repo<core::StorageContainer>().query(storage::Query<core::StorageContainer>::where(
+              storage::field<core::StorageContainer, std::string>(
+                  core::StorageContainer::Field::LabId) == lab));
+      const auto boxes = txn->repo<core::Box>().query(storage::Query<core::Box>::where(
+          storage::field<core::Box, std::string>(core::Box::Field::LabId) == lab));
+      // Archived box types still describe the boxes that use them.
+      const auto box_types = txn->repo<core::BoxType>().query(
+          storage::Query<core::BoxType>::where(
+              storage::field<core::BoxType, std::string>(core::BoxType::Field::LabId) == lab)
+              .include_tombstoned());
+      std::unordered_map<std::string, int> positions_per_type;
+      for (const auto& box_type : box_types) {
+        positions_per_type[box_type.id.to_string()] = static_cast<int>(box_type.positions.size());
+      }
+
+      const auto layout = walk_scene(freezer->layout_root_id, containers, boxes);
+      auto occupied = count_occupied(*txn, layout.boxes);
+      txn->commit();
+
+      fill_freezer(resp->mutable_freezer(), *freezer);
+      if (const auto* const model = core::find_freezer_model(freezer->freezer_model_id);
+          model != nullptr) {
+        fill_freezer_model(resp->mutable_model(), *model);
+      }
+      for (const auto* const container : layout.containers) {
+        fill_container_node(resp->add_nodes(), *container,
+                            container->id == freezer->layout_root_id);
+      }
+      for (const auto* const box : layout.boxes) {
+        fill_box_node(resp->add_nodes(), *box, occupied[box->id.to_string()],
+                      positions_per_type[box->box_type_id.to_string()]);
+      }
+      return grpc::Status::OK;
+    } catch (...) {
+      return current_exception_to_grpc_status();
+    }
+  }
+
+  grpc::Status BoxServiceImpl::ListFreezerModels(grpc::ServerContext* ctx,
+                                                 const fmgr::v1::ListFreezerModelsRequest* req,
+                                                 fmgr::v1::ListFreezerModelsResponse* resp) {
+    try {
+      const auto lab_id = core::LabId::parse(req->lab_id());
+      (void)middleware_.authorize(extract_bearer(*ctx), core::Permission::SampleRead, lab_id);
+      for (const auto& model : core::builtin_freezer_models()) {
+        fill_freezer_model(resp->add_models(), model);
+      }
       return grpc::Status::OK;
     } catch (...) {
       return current_exception_to_grpc_status();
@@ -469,10 +869,18 @@ namespace fmgr::server {
           .ordering_index = req->ordering_index(),
           .capacity_hint = std::nullopt,
           .created_at = now_timestamp(),
+          .placement = req->has_placement()
+                           ? std::optional<core::Placement>{placement_from_proto(req->placement())}
+                           : std::nullopt,
+          .grid = req->has_grid() ? std::optional<core::GridSpec>{grid_from_proto(req->grid())}
+                                  : std::nullopt,
       };
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+      if (container.placement.has_value()) {
+        require_placement_fits(*txn, lab_id, container.parent_id, *container.placement);
+      }
       txn->repo<core::StorageContainer>().insert(container,
                                                  make_ctx(*ctx, sctx, "create_container"));
       txn->commit();
@@ -512,6 +920,42 @@ namespace fmgr::server {
       if (!req->container().capacity_hint_json().empty()) {
         existing->capacity_hint =
             nlohmann::json::parse(req->container().capacity_hint_json()).get<core::CapacityHint>();
+      }
+      // Layout fields: present = set, absent = unchanged, clear_* = remove (ADR 0003 §2).
+      const auto previous_grid = existing->grid;
+      if (req->clear_placement()) {
+        existing->placement.reset();
+      } else if (req->container().has_placement()) {
+        existing->placement = placement_from_proto(req->container().placement());
+      }
+      if (req->clear_grid()) {
+        existing->grid.reset();
+      } else if (req->container().has_grid()) {
+        existing->grid = grid_from_proto(req->container().grid());
+      }
+      if (existing->grid.has_value()) {
+        if (const auto error = core::grid_error(*existing->grid); error.has_value()) {
+          return {grpc::StatusCode::INVALID_ARGUMENT, *error};
+        }
+      }
+      const auto rooted = freezer_rooted_at(*txn, existing->id);
+      if (rooted.has_value() && existing->grid.has_value()) {
+        return {grpc::StatusCode::INVALID_ARGUMENT,
+                "a layout root takes its cells from the freezer model, not from a grid"};
+      }
+      if (existing->placement.has_value()) {
+        require_placement_fits(*txn, lab_id, existing->parent_id, *existing->placement);
+      }
+      if (existing->grid != previous_grid) {
+        const auto new_bounds =
+            existing->grid.has_value()
+                ? std::optional<core::PlacementBounds>{core::bounds_of(*existing->grid)}
+                : (rooted.has_value() ? cabinet_bounds_for(rooted->freezer_model_id)
+                                      : std::nullopt);
+        if (strands_children(*txn, existing->id, new_bounds)) {
+          return {grpc::StatusCode::FAILED_PRECONDITION,
+                  "a placed child would fall outside the new grid"};
+        }
       }
       txn->repo<core::StorageContainer>().update(*existing,
                                                  make_ctx(*ctx, sctx, "update_container"));
@@ -748,10 +1192,16 @@ namespace fmgr::server {
           .serial = req->has_serial() ? std::optional<std::string>{req->serial()} : std::nullopt,
           .barcode = req->has_barcode() ? std::optional<std::string>{req->barcode()} : std::nullopt,
           .created_at = now_timestamp(),
+          .placement = req->has_placement()
+                           ? std::optional<core::Placement>{placement_from_proto(req->placement())}
+                           : std::nullopt,
       };
 
       auto txn = backend_.begin(storage::IsolationLevel::Serializable);
       rpc::AuthMiddleware::inject_rls_vars(*txn, sctx);
+      if (box.placement.has_value()) {
+        require_placement_fits(*txn, lab_id, box.storage_container_id, *box.placement);
+      }
       txn->repo<core::Box>().insert(box, make_ctx(*ctx, sctx, "create_box"));
       txn->commit();
 
@@ -786,6 +1236,15 @@ namespace fmgr::server {
       existing->barcode = req->box().has_barcode()
                               ? std::optional<std::string>{req->box().barcode()}
                               : std::nullopt;
+      // Present = set, absent = unchanged, clear_placement = remove (ADR 0003 §2).
+      if (req->clear_placement()) {
+        existing->placement.reset();
+      } else if (req->box().has_placement()) {
+        existing->placement = placement_from_proto(req->box().placement());
+      }
+      if (existing->placement.has_value()) {
+        require_placement_fits(*txn, lab_id, existing->storage_container_id, *existing->placement);
+      }
       txn->repo<core::Box>().update(*existing, make_ctx(*ctx, sctx, "update_box"));
       txn->commit();
 

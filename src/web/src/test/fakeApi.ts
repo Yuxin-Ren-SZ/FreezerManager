@@ -16,6 +16,7 @@ import {
   type GrpcCode,
 } from '../api/errors';
 import { apiRoutes, type RpcName } from '../api/routes';
+import { BUILTIN_FREEZER_MODELS } from './freezerModels';
 import { AuditEventSchema, type AuditEvent } from '../gen/fmgr/v1/audit_pb';
 import {
   BoxPositionSchema,
@@ -24,6 +25,7 @@ import {
   ContainerKind,
   ContainerTypeSchema,
   FreezerSchema,
+  SceneNodeKind,
   StorageContainerSchema,
   type Box,
   type BoxPosition,
@@ -285,6 +287,9 @@ function seedLayout(createdAt: ReturnType<typeof seedTimestamp>) {
         name: 'Freezer A',
         location: 'Room 101',
         layoutRootId: 'ct-rack-1',
+        // Drawn in 3D as a CryoCube F740 (ADR 0003); Freezer B has no model,
+        // so its contents are the "unplaced" case.
+        freezerModelId: 'eppendorf-cryocube-f740hi',
         createdAt,
       }),
       create(FreezerSchema, {
@@ -327,6 +332,9 @@ function seedLayout(createdAt: ReturnType<typeof seedTimestamp>) {
         name: 'Drawer 1',
         label: 'Top drawer',
         orderingIndex: 0,
+        // Middle compartment, slot 3; eight tiers, four boxes deep.
+        placement: { level: 1, column: 2, depth: 0 },
+        grid: { levels: 8, columns: 1, depths: 4 },
         createdAt,
       }),
       create(StorageContainerSchema, {
@@ -336,6 +344,8 @@ function seedLayout(createdAt: ReturnType<typeof seedTimestamp>) {
         kind: ContainerKind.DRAWER,
         name: 'Drawer 2',
         orderingIndex: 1,
+        placement: { level: 1, column: 3, depth: 0 },
+        grid: { levels: 8, columns: 1, depths: 4 },
         createdAt,
       }),
       create(StorageContainerSchema, {
@@ -430,6 +440,7 @@ function seedLayout(createdAt: ReturnType<typeof seedTimestamp>) {
         storageContainerId: 'ct-drawer-1',
         label: 'Box A',
         barcode: 'BOX-0001',
+        placement: { level: 0, column: 0, depth: 0 },
         createdAt,
       }),
       create(BoxSchema, {
@@ -438,6 +449,7 @@ function seedLayout(createdAt: ReturnType<typeof seedTimestamp>) {
         boxTypeId: 'bt-96',
         storageContainerId: 'ct-drawer-1',
         label: 'Box B',
+        placement: { level: 1, column: 0, depth: 0 },
         createdAt,
       }),
       create(BoxSchema, {
@@ -1527,6 +1539,91 @@ const resolvers: Partial<Record<RpcName, Resolver>> = {
         return true;
       }),
     };
+  },
+
+  // ---- BoxService: the 3D layout reads (ADR 0003) ----
+  //
+  // `freezer/scene` mirrors `BoxServiceImpl::GetFreezerScene`: the live layout
+  // under the freezer's root, parents first, boxes after the containers of
+  // each level, with counts of the samples that hold a position. An archived
+  // or unknown freezer is NOT_FOUND, as on the server.
+  'freezer/scene': (lab, message) => {
+    const { freezerId } = fields(message) as { freezerId: string };
+    requireId(freezerId, 'freezer');
+    const freezer = lab.freezers.find(
+      (candidate) => candidate.id === freezerId && candidate.archivedAt === undefined,
+    );
+    if (freezer === undefined) throw new FakeRpcError('NOT_FOUND', 'freezer not found');
+
+    const containers = lab.storageContainers.filter(
+      (container) => container.labId === freezer.labId && container.archivedAt === undefined,
+    );
+    const boxes = lab.boxes.filter(
+      (box) => box.labId === freezer.labId && box.archivedAt === undefined,
+    );
+    const positions = new Map(lab.boxTypes.map((type) => [type.id, type.positions.length]));
+    const occupied = new Map<string, number>();
+    for (const sample of lab.samples) {
+      const holds =
+        sample.status === SampleStatus.ACTIVE || sample.status === SampleStatus.CHECKED_OUT;
+      if (holds && sample.boxId !== undefined && sample.boxId !== '') {
+        occupied.set(sample.boxId, (occupied.get(sample.boxId) ?? 0) + 1);
+      }
+    }
+
+    const nodes: MessageInitShape<DescMessage>[] = [];
+    const visited = new Set<string>();
+    let frontier = containers.filter((container) => container.id === freezer.layoutRootId);
+    frontier.forEach((container) => visited.add(container.id));
+    const containerNodes: MessageInitShape<DescMessage>[] = [];
+    const boxNodes: MessageInitShape<DescMessage>[] = [];
+    while (frontier.length > 0) {
+      const next: StorageContainer[] = [];
+      for (const container of frontier) {
+        containerNodes.push({
+          id: container.id,
+          parentId: container.id === freezer.layoutRootId ? undefined : container.parentId,
+          kind: SceneNodeKind.CONTAINER,
+          containerKind: container.kind,
+          label: container.label === '' ? container.name : container.label,
+          placement: container.placement,
+          grid: container.grid,
+        });
+        for (const child of containers
+          .filter((candidate) => candidate.parentId === container.id && !visited.has(candidate.id))
+          .sort((a, b) => a.orderingIndex - b.orderingIndex || a.name.localeCompare(b.name))) {
+          visited.add(child.id);
+          next.push(child);
+        }
+        for (const box of boxes
+          .filter((candidate) => candidate.storageContainerId === container.id)
+          .sort((a, b) => a.label.localeCompare(b.label))) {
+          boxNodes.push({
+            id: box.id,
+            parentId: box.storageContainerId,
+            kind: SceneNodeKind.BOX,
+            label: box.label,
+            placement: box.placement,
+            occupiedPositions: occupied.get(box.id) ?? 0,
+            totalPositions: positions.get(box.boxTypeId) ?? 0,
+          });
+        }
+      }
+      frontier = next;
+    }
+    nodes.push(...containerNodes, ...boxNodes);
+
+    return {
+      freezer,
+      model: BUILTIN_FREEZER_MODELS.find((model) => model.id === freezer.freezerModelId),
+      nodes,
+    };
+  },
+
+  'freezer-model/list': (_lab, message) => {
+    const { labId } = fields(message) as { labId: string };
+    requireId(labId, 'lab');
+    return { models: [...BUILTIN_FREEZER_MODELS] };
   },
 
   'item-type/list': (lab, message) => {

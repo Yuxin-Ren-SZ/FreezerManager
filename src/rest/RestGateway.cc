@@ -245,6 +245,10 @@ namespace fmgr::rest {
                UpdateFreezerResponse);
     FMGR_ROUTE("/api/v1/freezer/archive", box, ArchiveFreezer, ArchiveFreezerRequest,
                ArchiveFreezerResponse);
+    FMGR_ROUTE("/api/v1/freezer/scene", box, GetFreezerScene, GetFreezerSceneRequest,
+               GetFreezerSceneResponse);
+    FMGR_ROUTE("/api/v1/freezer-model/list", box, ListFreezerModels, ListFreezerModelsRequest,
+               ListFreezerModelsResponse);
     FMGR_ROUTE("/api/v1/storage-container/list", box, ListStorageContainers,
                ListStorageContainersRequest, ListStorageContainersResponse);
     FMGR_ROUTE("/api/v1/storage-container/create", box, CreateStorageContainer,

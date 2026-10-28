@@ -10,6 +10,7 @@
 
 #include "core/ids.h"
 #include "core/json_helpers.h"
+#include "core/placement.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -190,6 +191,8 @@ namespace fmgr::core {
     std::optional<std::string> barcode;
     Timestamp created_at;
     std::optional<Timestamp> archived_at;
+    // Tier/column/depth inside the storage container's grid; unset = unplaced.
+    std::optional<Placement> placement;
 
     friend bool operator==(const Box&, const Box&) = default;
   };
@@ -231,6 +234,7 @@ namespace fmgr::core {
         {"barcode", json_helpers::opt_to_json(box.barcode)},
         {"created_at", box.created_at},
         {"archived_at", json_helpers::opt_to_json(box.archived_at)},
+        {"placement", json_helpers::opt_to_json(box.placement)},
     };
   }
 
@@ -245,6 +249,7 @@ namespace fmgr::core {
         .barcode = json_helpers::opt_from_json<std::string>(json.at("barcode")),
         .created_at = json.at("created_at").get<Timestamp>(),
         .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
+        .placement = json_helpers::opt_from_json_key<Placement>(json, "placement"),
     };
   }
 

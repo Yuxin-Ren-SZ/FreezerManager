@@ -12,6 +12,7 @@
 #include "core/enums.h"
 #include "core/ids.h"
 #include "core/json_helpers.h"
+#include "core/placement.h"
 #include "core/timestamp.h"
 
 #include <nlohmann/json.hpp>
@@ -75,6 +76,9 @@ namespace fmgr::core {
     StorageContainerId layout_root_id;
     Timestamp created_at;
     std::optional<Timestamp> archived_at;
+    // Built-in catalogue entry (core/freezer_models.h) the 3D layout draws;
+    // "" = no model. An id the catalogue no longer knows still reads back.
+    std::string freezer_model_id;
 
     friend bool operator==(const Freezer&, const Freezer&) = default;
   };
@@ -109,6 +113,12 @@ namespace fmgr::core {
     std::optional<core::CapacityHint> capacity_hint;
     Timestamp created_at;
     std::optional<Timestamp> archived_at;
+    // Where this container sits in its parent's grid; unset = unplaced. Siblings
+    // that are not archived never share a placement (ADR 0003 §2).
+    std::optional<Placement> placement;
+    // The grid this container offers its children. Never set on a layout root,
+    // whose bounds come from the freezer model.
+    std::optional<GridSpec> grid;
 
     friend bool operator==(const StorageContainer&, const StorageContainer&) = default;
   };
@@ -124,6 +134,7 @@ namespace fmgr::core {
         {"layout_root_id", freezer.layout_root_id},
         {"created_at", freezer.created_at},
         {"archived_at", json_helpers::opt_to_json(freezer.archived_at)},
+        {"freezer_model_id", freezer.freezer_model_id},
     };
   }
 
@@ -138,6 +149,7 @@ namespace fmgr::core {
         .layout_root_id = json.at("layout_root_id").get<StorageContainerId>(),
         .created_at = json.at("created_at").get<Timestamp>(),
         .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
+        .freezer_model_id = json.value("freezer_model_id", std::string()),
     };
   }
 
@@ -153,6 +165,8 @@ namespace fmgr::core {
         {"capacity_hint", json_helpers::opt_to_json(container.capacity_hint)},
         {"created_at", container.created_at},
         {"archived_at", json_helpers::opt_to_json(container.archived_at)},
+        {"placement", json_helpers::opt_to_json(container.placement)},
+        {"grid", json_helpers::opt_to_json(container.grid)},
     };
   }
 
@@ -168,6 +182,8 @@ namespace fmgr::core {
         .capacity_hint = json_helpers::opt_from_json<CapacityHint>(json.at("capacity_hint")),
         .created_at = json.at("created_at").get<Timestamp>(),
         .archived_at = json_helpers::opt_from_json<Timestamp>(json.at("archived_at")),
+        .placement = json_helpers::opt_from_json_key<Placement>(json, "placement"),
+        .grid = json_helpers::opt_from_json_key<GridSpec>(json, "grid"),
     };
   }
 

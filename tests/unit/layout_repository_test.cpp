@@ -333,6 +333,171 @@ namespace fmgr::storage {
       }
     }
 
+    // ---- 3D layout columns (ADR 0003, migration 15) ----
+
+    TEST_P(LayoutRepositoryTest, FreezerModelIdRoundTripsThroughInsertAndUpdate) {
+      const auto lab_entity = make_lab(20, "Lab Model");
+      seed_lab(lab_entity);
+      const auto root =
+          make_container(200, lab_entity.id, std::nullopt, core::ContainerKind::Custom, "Root");
+      auto freezer = make_freezer(201, lab_entity.id, root.id, "F740 #1");
+      freezer.freezer_model_id = "eppendorf-cryocube-f740hi";
+
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      transaction->repo<core::StorageContainer>().insert(root, mutation_context());
+      transaction->repo<core::Freezer>().insert(freezer, mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      auto stored = transaction->repo<core::Freezer>().find_by_id(freezer.id);
+      ASSERT_TRUE(stored.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      EXPECT_EQ(stored.value(), freezer);
+
+      freezer.freezer_model_id = "thermo-tsx40086a";
+      transaction->repo<core::Freezer>().update(freezer, mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      stored = transaction->repo<core::Freezer>().find_by_id(freezer.id);
+      ASSERT_TRUE(stored.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      EXPECT_EQ(stored.value().freezer_model_id, "thermo-tsx40086a");
+    }
+
+    TEST_P(LayoutRepositoryTest, ContainerPlacementAndGridRoundTripAndClear) {
+      const auto lab_entity = make_lab(21, "Lab Placement");
+      seed_lab(lab_entity);
+      const auto root = make_container(210, lab_entity.id, std::nullopt);
+      auto rack = make_container(211, lab_entity.id, root.id, core::ContainerKind::Rack, "Rack 4");
+      rack.placement = core::Placement{.level = 1, .column = 3, .depth = 0};
+      rack.grid = core::GridSpec{.levels = 8, .columns = 1, .depths = 4};
+
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      transaction->repo<core::StorageContainer>().insert(root, mutation_context());
+      transaction->repo<core::StorageContainer>().insert(rack, mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      auto stored = transaction->repo<core::StorageContainer>().find_by_id(rack.id);
+      ASSERT_TRUE(stored.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      EXPECT_EQ(stored.value(), rack);
+
+      rack.placement.reset();
+      rack.grid.reset();
+      transaction->repo<core::StorageContainer>().update(rack, mutation_context());
+      transaction->commit();
+
+      transaction = backend().begin(IsolationLevel::Serializable);
+      stored = transaction->repo<core::StorageContainer>().find_by_id(rack.id);
+      ASSERT_TRUE(stored.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      EXPECT_FALSE(stored.value().placement.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      EXPECT_FALSE(stored.value().grid.has_value());
+    }
+
+    TEST_P(LayoutRepositoryTest, DuplicateLiveSiblingPlacementIsRefused) {
+      const auto lab_entity = make_lab(22, "Lab Collide");
+      seed_lab(lab_entity);
+      const auto root = make_container(220, lab_entity.id, std::nullopt);
+      auto first = make_container(221, lab_entity.id, root.id, core::ContainerKind::Rack, "R1");
+      auto second = make_container(222, lab_entity.id, root.id, core::ContainerKind::Rack, "R2");
+      first.placement = core::Placement{.level = 0, .column = 2, .depth = 0};
+      second.placement = first.placement;
+
+      {
+        auto transaction = backend().begin(IsolationLevel::Serializable);
+        transaction->repo<core::StorageContainer>().insert(root, mutation_context());
+        transaction->repo<core::StorageContainer>().insert(first, mutation_context());
+        transaction->commit();
+      }
+      // SQLite stages writes until commit, Postgres writes at insert: the
+      // violation may surface at either point, but it must be a UniqueViolation.
+      EXPECT_THROW(
+          {
+            auto transaction = backend().begin(IsolationLevel::Serializable);
+            transaction->repo<core::StorageContainer>().insert(second, mutation_context());
+            transaction->commit();
+          },
+          UniqueViolation);
+    }
+
+    TEST_P(LayoutRepositoryTest, SamePlacementUnderDifferentParentsIsAllowed) {
+      const auto lab_entity = make_lab(23, "Lab Parents");
+      seed_lab(lab_entity);
+      const auto root = make_container(230, lab_entity.id, std::nullopt);
+      auto left = make_container(231, lab_entity.id, root.id, core::ContainerKind::Rack, "Left");
+      auto right = make_container(232, lab_entity.id, root.id, core::ContainerKind::Rack, "Right");
+      left.placement = core::Placement{.level = 0, .column = 0, .depth = 0};
+      right.placement = core::Placement{.level = 0, .column = 1, .depth = 0};
+      auto left_drawer =
+          make_container(233, lab_entity.id, left.id, core::ContainerKind::Drawer, "D");
+      auto right_drawer =
+          make_container(234, lab_entity.id, right.id, core::ContainerKind::Drawer, "D");
+      left_drawer.placement = core::Placement{.level = 2, .column = 0, .depth = 0};
+      right_drawer.placement = left_drawer.placement;
+
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      auto& repo = transaction->repo<core::StorageContainer>();
+      repo.insert(root, mutation_context());
+      repo.insert(left, mutation_context());
+      repo.insert(right, mutation_context());
+      repo.insert(left_drawer, mutation_context());
+      repo.insert(right_drawer, mutation_context());
+      EXPECT_NO_THROW(transaction->commit());
+    }
+
+    TEST_P(LayoutRepositoryTest, PlacementOfAnArchivedSiblingCanBeReused) {
+      const auto lab_entity = make_lab(24, "Lab Reuse");
+      seed_lab(lab_entity);
+      const auto root = make_container(240, lab_entity.id, std::nullopt);
+      auto old_rack = make_container(241, lab_entity.id, root.id, core::ContainerKind::Rack, "Old");
+      auto new_rack = make_container(242, lab_entity.id, root.id, core::ContainerKind::Rack, "New");
+      old_rack.placement = core::Placement{.level = 2, .column = 5, .depth = 0};
+      new_rack.placement = old_rack.placement;
+
+      {
+        auto transaction = backend().begin(IsolationLevel::Serializable);
+        transaction->repo<core::StorageContainer>().insert(root, mutation_context());
+        transaction->repo<core::StorageContainer>().insert(old_rack, mutation_context());
+        transaction->commit();
+      }
+      {
+        auto transaction = backend().begin(IsolationLevel::Serializable);
+        transaction->repo<core::StorageContainer>().soft_delete(old_rack.id, mutation_context());
+        transaction->commit();
+      }
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      transaction->repo<core::StorageContainer>().insert(new_rack, mutation_context());
+      EXPECT_NO_THROW(transaction->commit());
+    }
+
+    TEST_P(LayoutRepositoryTest, NegativePlacementIsRefused) {
+      const auto lab_entity = make_lab(25, "Lab Negative");
+      seed_lab(lab_entity);
+      const auto root = make_container(250, lab_entity.id, std::nullopt);
+      auto rack = make_container(251, lab_entity.id, root.id, core::ContainerKind::Rack, "R");
+      rack.placement = core::Placement{.level = 0, .column = -1, .depth = 0};
+
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      transaction->repo<core::StorageContainer>().insert(root, mutation_context());
+      EXPECT_THROW(transaction->repo<core::StorageContainer>().insert(rack, mutation_context()),
+                   ConstraintViolation);
+    }
+
+    TEST_P(LayoutRepositoryTest, OutOfRangeGridIsRefused) {
+      const auto lab_entity = make_lab(26, "Lab Grid");
+      seed_lab(lab_entity);
+      auto rack = make_container(260, lab_entity.id, std::nullopt, core::ContainerKind::Rack, "R");
+      rack.grid = core::GridSpec{.levels = 0, .columns = 1, .depths = 1};
+
+      auto transaction = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(transaction->repo<core::StorageContainer>().insert(rack, mutation_context()),
+                   ConstraintViolation);
+    }
+
     INSTANTIATE_TEST_SUITE_P(Backends, LayoutRepositoryTest,
                              ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
                              [](const ::testing::TestParamInfo<BackendKind>& info) {

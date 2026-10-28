@@ -20,7 +20,8 @@ namespace fmgr::server {
   //
   // RPCs whose request carries the lab id directly (List*/Create*/Update*) gate
   // up-front via AuthMiddleware::authorize. RPCs that carry only an entity id
-  // (GetFreezer, ArchiveFreezer, ArchiveStorageContainer, GetBox, ArchiveBox)
+  // (GetFreezer, GetFreezerScene, ArchiveFreezer, ArchiveStorageContainer, GetBox,
+  // ArchiveBox)
   // resolve the owning lab by loading the row first, then check the per-lab
   // permission against that lab.
   class BoxServiceImpl final : public fmgr::v1::BoxService::Service {
@@ -39,6 +40,14 @@ namespace fmgr::server {
     grpc::Status ArchiveFreezer(grpc::ServerContext* ctx,
                                 const fmgr::v1::ArchiveFreezerRequest* req,
                                 fmgr::v1::ArchiveFreezerResponse* resp) override;
+
+    // ---- 3D layout reads (ADR 0003) ----
+    grpc::Status GetFreezerScene(grpc::ServerContext* ctx,
+                                 const fmgr::v1::GetFreezerSceneRequest* req,
+                                 fmgr::v1::GetFreezerSceneResponse* resp) override;
+    grpc::Status ListFreezerModels(grpc::ServerContext* ctx,
+                                   const fmgr::v1::ListFreezerModelsRequest* req,
+                                   fmgr::v1::ListFreezerModelsResponse* resp) override;
 
     // ---- StorageContainer ----
     grpc::Status ListStorageContainers(grpc::ServerContext* ctx,

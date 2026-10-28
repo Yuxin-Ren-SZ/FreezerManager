@@ -8,6 +8,7 @@ import type { Sample } from '../../gen/fmgr/v1/sample_pb';
 import { FakeEventSource, fakeEventSource } from '../../test/fakeEventSource';
 import { resetLiveConnectionForTests } from '../liveConnection';
 import { createWrapper } from '../../test/render';
+import { layoutKeys } from './layout';
 import { sampleKeys } from './samples';
 import { useSampleLive } from './sampleLive';
 
@@ -258,6 +259,19 @@ describe('useSampleLive', () => {
     // And invalidated, so the next detail render asks the server (G-arch 7:
     // the detail view's source of truth is `sample/get`).
     expect(client.getQueryState(detailKey)?.isInvalidated).toBe(true);
+  });
+
+  it("invalidates the lab's freezer scenes, whose box counts a frame can change", () => {
+    const sceneKey = layoutKeys.scene(LAB_ID, 'fz-1');
+    client.setQueryData(sceneKey, { nodes: [] });
+    const otherLab = layoutKeys.scene('lab-other', 'fz-9');
+    client.setQueryData(otherLab, { nodes: [] });
+    renderLive();
+
+    push(frame({ id: 'sample-1', name: 'Moved' }));
+
+    expect(client.getQueryState(sceneKey)?.isInvalidated).toBe(true);
+    expect(client.getQueryState(otherLab)?.isInvalidated).toBe(false);
   });
 
   it('reports live, then reconnecting, and reconnects carrying the last event id', async () => {

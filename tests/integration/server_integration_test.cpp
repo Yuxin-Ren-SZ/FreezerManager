@@ -1084,12 +1084,13 @@ namespace fmgr::test {
     // enforce the named permission after resolving the row. Their registry kind
     // must describe that gate without erasing the handler's actual permission check.
     TEST_F(ServerIntegrationTest, ManuallyAuthorizedHandlersDeclareTokenAndMfa) {
-      const std::array<std::string_view, 26> rpcs{{
+      const std::array<std::string_view, 27> rpcs{{
           "/fmgr.v1.AuditService/ListAuditEvents",
           "/fmgr.v1.AuditService/GetAuditEvent",
           "/fmgr.v1.AuditService/ExportAuditLog",
           "/fmgr.v1.AuditService/WatchAuditFeed",
           "/fmgr.v1.BoxService/GetFreezer",
+          "/fmgr.v1.BoxService/GetFreezerScene",
           "/fmgr.v1.BoxService/ArchiveFreezer",
           "/fmgr.v1.BoxService/ArchiveStorageContainer",
           "/fmgr.v1.BoxService/GetBox",

@@ -5,6 +5,7 @@
 #include "core/box.h"
 #include "storage/BoxGeometryTraits.h"
 #include "storage/detail/BoxGeometryColumns.h"
+#include "storage/detail/PlacementColumns.h"
 #include "storage/detail/QuerySqlBuilder.h"
 #include "storage/postgres/PostgresRepoSupport.h"
 
@@ -370,7 +371,8 @@ namespace fmgr::storage {
 
     constexpr const char* box_columns =
         "id, lab_id, box_type_id, storage_container_id, label, serial, barcode, "
-        "created_at_micros, archived_at_micros";
+        "created_at_micros, archived_at_micros, placement_level, placement_column, "
+        "placement_depth";
 
     [[nodiscard]] core::Box read_box(pqxx::row_ref row) {
       return core::Box{
@@ -385,6 +387,7 @@ namespace fmgr::storage {
           .created_at =
               core::Timestamp::from_unix_micros(row.at("created_at_micros").as<std::int64_t>()),
           .archived_at = pg_optional_timestamp(row, "archived_at_micros"),
+          .placement = detail::pg_optional_placement(row),
       };
     }
 
@@ -399,6 +402,7 @@ namespace fmgr::storage {
       params.append(entity.barcode);
       params.append(entity.created_at.unix_micros());
       params.append(micros_or_null(entity.archived_at));
+      detail::pg_append_placement(params, entity.placement);
       return params;
     }
 
@@ -446,8 +450,9 @@ namespace fmgr::storage {
         validate_box(entity);
         try {
           txn_.work().exec("INSERT INTO boxes (id, lab_id, box_type_id, storage_container_id, "
-                           "label, serial, barcode, created_at_micros, archived_at_micros) "
-                           "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                           "label, serial, barcode, created_at_micros, archived_at_micros, "
+                           "placement_level, placement_column, placement_depth) "
+                           "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                            bind_box(entity));
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
@@ -463,7 +468,8 @@ namespace fmgr::storage {
           const auto result = txn_.work().exec(
               "UPDATE boxes SET lab_id = $2, box_type_id = $3, storage_container_id = $4, "
               "label = $5, serial = $6, barcode = $7, created_at_micros = $8, "
-              "archived_at_micros = $9 WHERE id = $1",
+              "archived_at_micros = $9, placement_level = $10, placement_column = $11, "
+              "placement_depth = $12 WHERE id = $1",
               bind_box(entity));
           if (result.affected_rows() == 0) {
             throw NotFound("box not found");
@@ -490,6 +496,7 @@ namespace fmgr::storage {
         if (box.label.empty()) {
           throw ConstraintViolation("box label is required");
         }
+        detail::validate_placement_column(box.placement);
         const auto box_type = txn_.work().exec(
             "SELECT 1 FROM box_types WHERE id = $1 AND lab_id = $2 AND archived_at_micros IS NULL "
             "LIMIT 1",

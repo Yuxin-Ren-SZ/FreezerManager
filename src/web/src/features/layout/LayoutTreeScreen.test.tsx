@@ -2,9 +2,9 @@
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Route, Routes } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import layoutCopy from '../../../locales/en/layout.json';
-import { createDemoLab, fakeApi, type DemoLab } from '../../test/fakeApi';
+import { createDemoLab, fakeApi, type DemoLab, type FakeApiOptions } from '../../test/fakeApi';
 import { renderWithProviders } from '../../test/render';
 import { server } from '../../test/server';
 import { axe } from '../../test/setup';
@@ -23,8 +23,21 @@ import { LayoutTreeScreen } from './LayoutTreeScreen';
 const LAB_ID = 'lab-demo';
 
 /** The screen, inside the routes it links to, so a click can be observed. */
-function renderScreen(options: { labId?: string; demo?: DemoLab; latencyMs?: number } = {}) {
-  server.use(...fakeApi({ lab: options.demo ?? createDemoLab(), latencyMs: options.latencyMs }));
+function renderScreen(
+  options: {
+    labId?: string;
+    demo?: DemoLab;
+    latencyMs?: number;
+    fail?: FakeApiOptions['fail'];
+  } = {},
+) {
+  server.use(
+    ...fakeApi({
+      lab: options.demo ?? createDemoLab(),
+      latencyMs: options.latencyMs,
+      fail: options.fail,
+    }),
+  );
 
   return renderWithProviders(
     <Routes>
@@ -175,6 +188,114 @@ describe('LayoutTreeScreen', () => {
     const { container } = renderScreen();
 
     await screen.findByRole('button', { name: /^Freezer A/ });
+
+    expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+/**
+ * The 3D tab (ADR 0003 §5, issue #219). The drawing is an image whose name
+ * states what is open; everything here goes through the controls and the rack
+ * list beside it — the path a keyboard or screen-reader user takes, which is
+ * also the one jsdom can observe. Freezer A is seeded as a CryoCube F740 with two placed racks; Freezer
+ * B has no model.
+ */
+describe('LayoutTreeScreen 3D view', () => {
+  const VIEW_KEY = 'fmgr.layout.view';
+
+  afterEach(() => {
+    globalThis.localStorage.removeItem(VIEW_KEY);
+  });
+
+  const open3d = async () => {
+    await userEvent.click(await screen.findByRole('tab', { name: layoutCopy.view.scene }));
+    return screen.findByRole('img', { name: /^Freezer A in 3D\./ });
+  };
+
+  it('keeps the tree as the default view where the screen width is unknown', async () => {
+    renderScreen();
+    expect(await screen.findByRole('tab', { name: layoutCopy.view.tree })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(toggle(/^Freezer A/)).toBeInTheDocument();
+  });
+
+  it('opens the freezer, pulls a rack and follows a box into the box view', async () => {
+    renderScreen();
+    const figure = await open3d();
+    expect(figure).toHaveAccessibleName(/The door is closed\./);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open door' }));
+    expect(screen.getByText('The door is open.')).toBeInTheDocument();
+
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Rack' }),
+      'Level 2, slot 3: Top drawer',
+    );
+    expect(
+      screen.getByText('The door and the level 2 inner door are open. Top drawer is pulled out.'),
+    ).toBeInTheDocument();
+    const rack = screen.getByRole('region', { name: 'Top drawer' });
+    // Two 96-well boxes; the demo lab's samples fill three positions in them.
+    expect(within(rack).getByText(/2 boxes, 3 of 192 positions filled/)).toBeInTheDocument();
+
+    await userEvent.click(within(rack).getByRole('link', { name: 'Box A' }));
+    expect(await screen.findByText('box view')).toBeInTheDocument();
+  });
+
+  it('closes everything again with the door', async () => {
+    renderScreen();
+    await open3d();
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Rack' }),
+      'Level 2, slot 3: Top drawer',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Close door' }));
+    expect(screen.getByText('The door is closed.')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Top drawer' })).not.toBeInTheDocument();
+  });
+
+  it('lists the contents of a freezer without a model as unplaced', async () => {
+    renderScreen();
+    await open3d();
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Freezer' }), 'Freezer B');
+
+    const unplaced = await screen.findByRole('region', { name: 'Unplaced' });
+    expect(within(unplaced).getByText('Shelf 1')).toBeInTheDocument();
+    expect(within(unplaced).getByText('1 box')).toBeInTheDocument();
+    expect(screen.getByText(layoutCopy.scene.model.none)).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Rack' })).not.toBeInTheDocument();
+  });
+
+  it('shows an error, not an empty freezer, when the scene is refused', async () => {
+    renderScreen({ fail: { 'freezer/scene': 'PERMISSION_DENIED' } });
+    await userEvent.click(await screen.findByRole('tab', { name: layoutCopy.view.scene }));
+
+    expect(
+      await screen.findByRole('heading', { name: layoutCopy.scene.errorTitle }),
+    ).toBeInTheDocument();
+  });
+
+  it('remembers the chosen view for this browser', async () => {
+    globalThis.localStorage.setItem(VIEW_KEY, 'scene');
+    renderScreen();
+    expect(await screen.findByRole('tab', { name: layoutCopy.view.scene })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+
+    await userEvent.click(screen.getByRole('tab', { name: layoutCopy.view.tree }));
+    expect(globalThis.localStorage.getItem(VIEW_KEY)).toBe('tree');
+  });
+
+  it('has no accessibility violations with a rack pulled out', async () => {
+    const { container } = renderScreen();
+    await open3d();
+    await userEvent.selectOptions(
+      screen.getByRole('combobox', { name: 'Rack' }),
+      'Level 2, slot 3: Top drawer',
+    );
 
     expect(await axe(container)).toHaveNoViolations();
   });
