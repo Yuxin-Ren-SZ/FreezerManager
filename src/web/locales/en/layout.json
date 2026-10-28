@@ -10,5 +10,60 @@
     "boxCount_other": "{{count}} boxes",
     "positionCount_one": "{{count}} position",
     "positionCount_other": "{{count}} positions"
+  },
+  "view": {
+    "label": "Layout view",
+    "scene": "3D",
+    "tree": "Tree"
+  },
+  "scene": {
+    "freezer": "Freezer",
+    "errorTitle": "This freezer could not be drawn",
+    "figureLabel": "{{name}} in 3D. {{state}}",
+    "state": {
+      "closed": "The door is closed.",
+      "doorOpen": "The door is open.",
+      "innerOpen": "The door and the {{door}} inner door are open.",
+      "rackOut": "{{rack}} is pulled out."
+    },
+    "controls": {
+      "label": "Freezer controls",
+      "openDoor": "Open door",
+      "closeDoor": "Close door",
+      "innerDoor": "Inner door",
+      "innerDoorNone": "All shut",
+      "rack": "Rack",
+      "rackNone": "None pulled out",
+      "turnLeft": "Turn left",
+      "turnRight": "Turn right",
+      "frontView": "Front view"
+    },
+    "innerDoorOne": "level {{level}}",
+    "innerDoorRange": "levels {{first}}–{{last}}",
+    "rackOption": "Level {{level}}, slot {{column}}: {{label}}",
+    "rack": {
+      "summary_one": "{{count}} box, {{occupied}} of {{total}} positions filled",
+      "summary_other": "{{count}} boxes, {{occupied}} of {{total}} positions filled",
+      "empty": "No boxes in this rack yet.",
+      "tierCell": "Tier {{level}}, position {{depth}}",
+      "drawerCell": "Drawer {{level}}, position {{depth}}",
+      "loose": "Not in a cell",
+      "fill": "{{occupied}} / {{total}}"
+    },
+    "model": {
+      "none": "No freezer model is set, so this is a generic cabinet and its contents are listed as unplaced."
+    },
+    "unplaced": {
+      "title": "Unplaced",
+      "hint": "In this freezer, but not in a rack slot.",
+      "boxes_one": "{{count}} box",
+      "boxes_other": "{{count}} boxes"
+    },
+    "legend": {
+      "label": "Box fill",
+      "empty": "Empty",
+      "partial": "Partly full",
+      "full": "Full"
+    }
   }
 }
