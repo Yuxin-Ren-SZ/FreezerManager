@@ -7,9 +7,9 @@ import {
   SceneNodeKind,
 } from '../../../gen/fmgr/v1/box_pb';
 import { F740_MODEL, TSX_MODEL } from '../../../test/freezerModels';
-import { cabinetFor } from './cabinet';
+import { cabinetFor, slotBounds } from './cabinet';
 import { buildBlocks, CLOSED_FRAME, sceneEnvelope, type SceneFrame } from './geometry';
-import { blockFaces, type Block } from './iso';
+import { blockFaces, type Block, type Vec3 } from './iso';
 import { buildRenderModel } from './sceneModel';
 
 /**
@@ -139,6 +139,228 @@ describe('buildBlocks', () => {
     const twoLevels = tsx.compartments[1].z0 + tsx.compartments[1].h - tsx.compartments[0].z0;
     expect(height).toBeGreaterThan(twoLevels * 0.9);
   });
+});
+
+/**
+ * Where the parts stand, so that a paint order exists at all: parts must not
+ * pass through each other, and the layers must match what is inside the shell
+ * and what is in front of it.
+ */
+describe('buildBlocks geometry', () => {
+  const tsx = cabinetFor(TSX_MODEL);
+  const tsxScene = buildRenderModel(
+    create(GetFreezerSceneResponseSchema, {
+      freezer: { id: 'fz', name: 'TSX', layoutRootId: 'root', freezerModelId: TSX_MODEL.id },
+      model: TSX_MODEL,
+      nodes: [
+        {
+          id: 'root',
+          kind: SceneNodeKind.CONTAINER,
+          containerKind: ContainerKind.GENERIC,
+          label: 'Root',
+        },
+        {
+          id: 'rack-t',
+          parentId: 'root',
+          kind: SceneNodeKind.CONTAINER,
+          containerKind: ContainerKind.RACK,
+          label: 'Rack',
+          placement: { level: 2, column: 3, depth: 0 },
+          grid: { levels: 5, columns: 1, depths: 3 },
+        },
+        {
+          id: 'box-t',
+          parentId: 'rack-t',
+          kind: SceneNodeKind.BOX,
+          label: 'Box',
+          placement: { level: 0, column: 0, depth: 0 },
+          occupiedPositions: 1,
+          totalPositions: 81,
+        },
+      ],
+    }),
+  );
+  const cases = [
+    { name: 'F740', cabinet: f740, scene: f740Scene, level: 1, column: 3, innerDoor: 1 },
+    { name: 'TSX', cabinet: tsx, scene: tsxScene, level: 2, column: 3, innerDoor: 1 },
+  ];
+
+  const corners = (block: Block): Vec3[] => {
+    const out: Vec3[] = [];
+    for (const a of [0, 1])
+      for (const b of [0, 1])
+        for (const c of [0, 1])
+          out.push(
+            [0, 1, 2].map(
+              (axis) =>
+                block.origin[axis] + a * block.u[axis] + b * block.v[axis] + c * block.w[axis],
+            ) as unknown as Vec3,
+          );
+    return out;
+  };
+  const along = (axis: 0 | 1 | 2, block: Block) => corners(block).map((corner) => corner[axis]);
+  const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const isAxisAligned = (block: Block) =>
+    block.u[1] === 0 && block.u[2] === 0 && block.v[0] === 0 && block.v[2] === 0;
+  const byId = (blocks: readonly Block[], id: string) => {
+    const block = blocks.find((candidate) => candidate.id === id);
+    if (block === undefined) throw new Error(`no block ${id}`);
+    return block;
+  };
+
+  it.each(cases)('stands the open $name door clear of the opening, beside its wall', (c) => {
+    const blocks = buildBlocks(c.cabinet, c.scene, frame({ door: 1 }));
+    for (const block of targets(blocks, 'door')) {
+      expect(Math.min(...along(0, block))).toBeGreaterThanOrEqual(c.cabinet.exterior.w - 0.5);
+    }
+  });
+
+  it.each(cases)(
+    'swings the open $name inner door clear of the racks and of the open door',
+    (c) => {
+      const blocks = buildBlocks(
+        c.cabinet,
+        c.scene,
+        frame({ door: 1, innerDoor: c.innerDoor, inner: 1 }),
+      );
+      const inner = byId(blocks, `inner-${String(c.innerDoor)}`);
+      // The rack paths: every slot of every level the inner door covers.
+      const range = c.cabinet.innerDoors[c.innerDoor];
+      const slots = c.cabinet.compartments
+        .filter((level) => range.firstLevel <= level.level && level.level <= range.lastLevel)
+        .flatMap((level) =>
+          Array.from({ length: level.slots }, (_, column) =>
+            slotBounds(c.cabinet, level.level, column),
+          ),
+        )
+        .filter((slot) => slot !== null);
+      expect(slots.length).toBeGreaterThan(0);
+      const rackEdge = Math.max(...slots.map((slot) => slot.x0 + slot.w));
+      expect(Math.min(...along(0, inner))).toBeGreaterThanOrEqual(rackEdge);
+
+      // Every corner of the inner door is on the cabinet side of the open
+      // door's gasket, the door's innermost surface.
+      const gasket = byId(blocks, 'door-gasket');
+      const size = Math.hypot(...gasket.v);
+      const inward: Vec3 = [gasket.v[0] / size, gasket.v[1] / size, gasket.v[2] / size];
+      const surface: Vec3 = [
+        gasket.origin[0] + gasket.v[0],
+        gasket.origin[1] + gasket.v[1],
+        gasket.origin[2] + gasket.v[2],
+      ];
+      for (const corner of corners(inner)) {
+        const offset: Vec3 = [
+          corner[0] - surface[0],
+          corner[1] - surface[1],
+          corner[2] - surface[2],
+        ];
+        expect(dot(offset, inward)).toBeGreaterThan(0);
+      }
+    },
+  );
+
+  it.each(cases)(
+    'splits a $name rack being pulled at the face frame: under the shell inside, over it outside',
+    (c) => {
+      const blocks = buildBlocks(
+        c.cabinet,
+        c.scene,
+        frame({
+          door: 1,
+          innerDoor: c.innerDoor,
+          inner: 1,
+          pulled: { level: c.level, column: c.column },
+          pull: 0.5,
+        }),
+      );
+      const shellLayer = byId(blocks, 'shell').layer;
+      const face = c.cabinet.doorThickness;
+      const moving = blocks.filter(
+        (block) =>
+          block.material === 'rackActive' ||
+          block.target?.kind === 'box' ||
+          block.id.startsWith('cell-'),
+      );
+      const inside = moving.filter((block) => block.layer < shellLayer);
+      const outside = moving.filter((block) => block.layer > shellLayer);
+      expect(inside.length).toBeGreaterThan(0);
+      expect(outside.length).toBeGreaterThan(0);
+      expect(inside.length + outside.length).toBe(moving.length);
+      for (const block of inside) expect(Math.min(...along(1, block))).toBeGreaterThanOrEqual(face);
+      for (const block of outside) expect(Math.max(...along(1, block))).toBeLessThanOrEqual(face);
+    },
+  );
+
+  it.each(cases)('pulls a $name rack all the way out of the shell', (c) => {
+    const blocks = buildBlocks(
+      c.cabinet,
+      c.scene,
+      frame({
+        door: 1,
+        innerDoor: c.innerDoor,
+        inner: 1,
+        pulled: { level: c.level, column: c.column },
+        pull: 1,
+      }),
+    );
+    const plates = blocks.filter((block) => block.material === 'rackActive');
+    expect(plates.length).toBeGreaterThan(0);
+    for (const block of plates) {
+      expect(Math.max(...along(1, block))).toBeLessThanOrEqual(c.cabinet.doorThickness);
+    }
+  });
+
+  it("puts a pulled rack's side plate on the hinge side, away from the home view", () => {
+    const blocks = buildBlocks(
+      f740,
+      f740Scene,
+      frame({ door: 1, innerDoor: 1, inner: 1, pulled: { level: 1, column: 3 }, pull: 1 }),
+    );
+    const plates = blocks.filter((block) => block.material === 'rackActive');
+    const side = byId(blocks, 'rack-rack-4-side');
+    const centre = (block: Block) => block.origin[0] + block.u[0] / 2;
+    const rackCentre =
+      (Math.min(...plates.flatMap((block) => along(0, block))) +
+        Math.max(...plates.flatMap((block) => along(0, block)))) /
+      2;
+    expect(f740.hinge).toBe('right');
+    expect(centre(side)).toBeGreaterThan(rackCentre);
+  });
+
+  it.each(cases)(
+    'keeps the axis-aligned parts of an open $name from passing through each other',
+    (c) => {
+      const blocks = buildBlocks(
+        c.cabinet,
+        c.scene,
+        frame({
+          door: 1,
+          innerDoor: c.innerDoor,
+          inner: 1,
+          pulled: { level: c.level, column: c.column },
+          pull: 1,
+        }),
+      );
+      const shellLayer = byId(blocks, 'shell').layer;
+      const solid = blocks.filter((block) => block.layer !== shellLayer && isAxisAligned(block));
+      const range = (block: Block, axis: 0 | 1 | 2) => {
+        const values = along(axis, block);
+        return [Math.min(...values), Math.max(...values)];
+      };
+      const clashes: string[] = [];
+      for (let i = 0; i < solid.length; i += 1) {
+        for (let j = i + 1; j < solid.length; j += 1) {
+          const overlap = ([0, 1, 2] as const).every((axis) => {
+            const [a0, a1] = range(solid[i], axis);
+            const [b0, b1] = range(solid[j], axis);
+            return Math.min(a1, b1) - Math.max(a0, b0) > 0.5;
+          });
+          if (overlap) clashes.push(`${solid[i].id} × ${solid[j].id}`);
+        }
+      }
+      expect(clashes).toEqual([]);
+    },
+  );
 });
 
 describe('sceneEnvelope', () => {

@@ -10,6 +10,7 @@ import {
   paint,
   project,
   rotatedBlock,
+  type Vec3,
 } from './iso';
 
 /**
@@ -108,6 +109,53 @@ describe('paint', () => {
   it("keeps a block's faces together", () => {
     const order = paint([near, far], RIGHT_FRONT_ABOVE).map((face) => face.blockId);
     expect(order).toEqual(['far', 'far', 'far', 'near', 'near', 'near']);
+  });
+
+  const firstFace = (blocks: readonly Block[], camera: typeof FRONT) => {
+    const order = paint(blocks, camera).map((face) => face.blockId);
+    return (id: string) => order.indexOf(id);
+  };
+
+  it('paints a rack before the deep shelf above it, though the rack is nearer by centre', () => {
+    // Seen from above, the shelf covers the back of the rack's top. The rack's
+    // centre is nearer the viewer than the long shelf's, so a centre sort paints
+    // it over the shelf.
+    const shelf = boxBlock('shelf', [0, 0, 100], [400, 600, 112], 'shelf');
+    const rack = boxBlock('rack', [0, 0, 0], [140, 120, 90], 'rack');
+    const at = firstFace([shelf, rack], { yaw: -28, pitch: 24 });
+    expect(at('rack')).toBeLessThan(at('shelf'));
+  });
+
+  it('paints a fitting on the far face of a swung door before the door', () => {
+    // A door hinged at x = 1000 and swung 100° open, a handle on its outer face
+    // near the free edge. Seen from the left, the outer face looks away, so
+    // the handle is behind the door. Its centre is still nearer than the
+    // door's, because the free edge is the part closest to the viewer.
+    const pivot: Vec3 = [1000, 0, 0];
+    const door = rotatedBlock('door', pivot, [-1000, 0, 0], [0, 80, 0], [0, 0, 1600], 100, 'door');
+    const handle = rotatedBlock(
+      'handle',
+      pivot,
+      [36, 0, 0],
+      [0, 45, 0],
+      [0, 0, 320],
+      100,
+      'handle',
+      { originOffset: [-970, -45, 700] },
+    );
+    const at = firstFace([door, handle], { yaw: -28, pitch: 24 });
+    expect(at('handle')).toBeLessThan(at('door'));
+  });
+
+  it('still paints every block once when no order can satisfy them all', () => {
+    // Three bars that each cover the next, as in the classic painter's cycle.
+    const bars = [
+      boxBlock('a', [0, 0, 0], [300, 40, 40], 'rack'),
+      boxBlock('b', [260, -40, 0], [300, 260, 80], 'rack'),
+      boxBlock('c', [-40, 220, 40], [300, 260, 120], 'rack'),
+    ];
+    const ids = new Set(paint(bars, RIGHT_FRONT_ABOVE).map((face) => face.blockId));
+    expect([...ids].sort()).toEqual(['a', 'b', 'c']);
   });
 });
 
