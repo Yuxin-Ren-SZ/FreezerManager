@@ -635,6 +635,44 @@ namespace fmgr::test {
       EXPECT_EQ(res.status, 401) << res.raw;
     }
 
+    // 3D layout reads (ADR 0003): the gateway's POST /api/v1/<entity>/<verb> routes.
+    TEST(RestGatewayTest, ListFreezerModelsAsMemberReturnsTheCatalogue) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kMemberEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json req{{"lab_id", env->kLabId}};
+      const auto res = post("/api/v1/freezer-model/list", req.dump(), token);
+      ASSERT_EQ(res.status, 200) << res.raw;
+      ASSERT_TRUE(res.body.contains("models")) << res.raw;
+      EXPECT_EQ(res.body["models"].size(), 2U);
+    }
+
+    TEST(RestGatewayTest, FreezerSceneRoundTripsAModelledFreezer) {
+      auto* env = RestGatewayEnv::instance;
+      const auto token = login(env->kAdminEmail, env->kPassword);
+      ASSERT_FALSE(token.empty());
+      const nlohmann::json create{{"lab_id", env->kLabId},
+                                  {"name", "Scene F740"},
+                                  {"freezer_model_id", "eppendorf-cryocube-f740hi"}};
+      const auto created = post("/api/v1/freezer/create", create.dump(), token);
+      ASSERT_EQ(created.status, 200) << created.raw;
+      const auto freezer_id = created.body["freezer"].value("id", std::string{});
+      ASSERT_FALSE(freezer_id.empty());
+
+      const nlohmann::json req{{"freezer_id", freezer_id}};
+      const auto res = post("/api/v1/freezer/scene", req.dump(), token);
+      ASSERT_EQ(res.status, 200) << res.raw;
+      EXPECT_EQ(res.body["model"].value("render_key", std::string{}), "cryocube-f740") << res.raw;
+      ASSERT_TRUE(res.body.contains("nodes")) << res.raw;
+      EXPECT_EQ(res.body["nodes"].size(), 1U) << "just the layout root";
+    }
+
+    TEST(RestGatewayTest, FreezerSceneWithoutBearerReturns401) {
+      const nlohmann::json req{{"freezer_id", "30000000-0000-0000-0000-000000000001"}};
+      const auto res = post("/api/v1/freezer/scene", req.dump());
+      EXPECT_EQ(res.status, 401) << res.raw;
+    }
+
     // -- ItemTypeService --
     TEST(RestGatewayTest, ListItemTypesForAdminReturns200) {
       auto* env = RestGatewayEnv::instance;
