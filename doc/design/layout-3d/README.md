@@ -1,4 +1,9 @@
-# 3D freezer layout: CryoCube F740 demo
+# 3D freezer layout: model demos
+
+Two catalogued models, each as a full page and a clean page: the CryoCube F740 (below) and the
+[TSX Universal TSX40086A](#tsx-universal-tsx40086a).
+
+## CryoCube F740
 
 This is a standalone, interactive figure of the **CryoCube F740 series ULT
 freezer**. It is the first catalogued model for the 3D Layout page proposed in
@@ -46,11 +51,44 @@ URL parameters for screenshots: `?door=1`, `?inner=0|1|2`, `?rack=1..6`,
 
 These match the `FreezerModel` / `CompartmentSpec` seed entry in the ADR.
 
+## TSX Universal TSX40086A
+
+`tsx-40086.html` and `tsx-40086-clean.html` show a Thermo Scientific TSX Universal series ULT freezer, the 400-box
+model featured in Thermo Fisher's [TSX 3D tour](https://www.thermofisher.com/us/en/home/virtual/tsx-ultra-low-freezer-3d-tour.html).
+They use the same controls and the same full/clean split as the CryoCube.
+
+| Door open, upper inner door, level 4 rack 2 out | See-through: cascade refrigeration |
+|---|---|
+| ![Open](tsx-40086-open.png) | ![See-through](tsx-40086-see-through.png) |
+
+| Control | What it does |
+|---|---|
+| **Open door / Close door** | Swings the main door open on its three right-hand hinges. Closing reverses rack, inner door and main door. |
+| **Inner door ▾** | Opens the Upper or Lower inner door. Each covers two of the four levels. |
+| **Pull rack ▾** | `L1 R1` to `L4 R4`: level 1 to 4 from the bottom, rack 1 to 4 from the left. The drawer rack slides out with its five drawers, and its boxes show through the perforated side plates. It opens the doors first if needed. |
+
+| Item | Size (cm) |
+|---|---|
+| Outside (W x D x H) | 71.9 x 95.5 x 198.1 |
+| Inside | 58.8 x 71.9 x 130.1 |
+| Levels | 4 (3 shelves plus the floor), about 32 high, behind 2 inner doors |
+| Racks | 4 per level, 13.6 x 66.5 x 29.5, 5 drawers x 5 boxes (400 two-inch boxes) |
+
+Sources:
+- Dimensions are from Thermo Fisher's TSX40086A listing.
+- The layout comes from the tour's own text, saved from the page: 1 main door, 2 inner doors, a "4 shelf platform", sliding racks holding 25 boxes, two built-in access ports, a hinged bottom door, and R290/R600/R170 refrigerants.
+- The look follows the render in the tour's fact sheet: light grey cabinet, a blue-framed 7-inch touchscreen at eye level on the handle side, the handle on the left edge and hinges on the right.
+
+The tour's 3D model itself was not available offline, so smaller details are approximate. These include the handle shape, the hinge positions and where the access ports sit (placed on the back here).
+
+URL parameters: `?door=1`, `?inner=0|1`, `?level=1..4&rack=1..4[&pull=0..1]`, `?temp=-72`, `?xr=1&labels=1`, `?clean=1`.
+
 ## Files
 
 - `cryocube-f740.html` is the built, self-contained page to open.
 - `cryocube-f740-clean.html` is the clean build (`window.CF_CLEAN = true` set before the figure script).
-- `cryocube-f740.src.html` is the figure source for both. It expects the Colorfigures engine `core.js` beside it.
+- `tsx-40086.html`, `tsx-40086-clean.html` and `tsx-40086.src.html` are the same three files for the TSX.
+- `cryocube-f740.src.html` is the figure source for both CryoCube pages. It expects the Colorfigures engine `core.js` beside it.
   Rebuild with the Colorfigures skill's `scripts/build.py cryocube-f740.src.html cryocube-f740.html`.
   For the clean file, insert `<script>window.CF_CLEAN = true;</script>` before `<title>` in that output.
 

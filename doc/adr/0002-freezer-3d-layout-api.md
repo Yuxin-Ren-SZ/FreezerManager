@@ -41,7 +41,7 @@ message FreezerModel {
   Dimensions exterior_mm = 7;            // 1099 x 980 x 1973
   Dimensions interior_mm = 8;            //  865 x 622 x 1390
   HingeSide hinge = 9;                   // as seen from the front
-  bool inner_doors = 10;                 // one insulated inner door per compartment
+  repeated InnerDoorSpec inner_doors = 10;     // bottom -> top; empty = no inner doors
   repeated CompartmentSpec compartments = 11;   // bottom -> top
   string render_key = 12;                // hand-built renderer, "" = generic cabinet
   fmgr.v1.common.Timestamp created_at = 13;
@@ -57,6 +57,9 @@ message CompartmentSpec {
   int32 rack_slots = 4;                  // side-by-side rack positions, left -> right
   Dimensions rack_slot_mm = 5;
 }
+// One insulated inner door and the compartment levels it closes off. Doors may span several levels
+// (the TSX40086A has 2 doors over 4 levels), so this is not a flag per compartment.
+message InnerDoorSpec { int32 first_level = 1; int32 last_level = 2; }
 ```
 
 `Freezer` gains `optional string freezer_model_id = 10;`, which `CreateFreezer` and `UpdateFreezer` also accept.
@@ -66,6 +69,14 @@ The seeded **CryoCube F740hi** entry:
 - 3 inner doors, hinged on the right as seen from the front, the same side as the outer door.
 - 6 rack slots per compartment, each about 139 x 560 x 430 mm.
 - 18 side-access racks of 8 tiers x 4 deep, which is 576 two-inch boxes.
+
+A second seed entry, the **TSX Universal TSX40086A**, checks that the shape fits a different layout:
+- Outside 719 x 955 x 1981 mm, inside 588 x 719 x 1301 mm.
+- 4 levels, made by 3 shelves plus the floor, about 325 mm each, with 4 rack slots per level.
+- 2 inner doors, covering levels 0-1 and 2-3. This is why `inner_doors` is a list of level ranges.
+- 16 drawer racks of 5 drawers x 5 boxes each, which is 400 two-inch boxes.
+  A rack's `GridSpec` is `{levels: 5, columns: 1, depths: 5}`.
+- Demo: [`doc/design/layout-3d/tsx-40086.html`](../design/layout-3d/tsx-40086.html).
 
 ### 2. Typed placement
 
