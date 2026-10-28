@@ -63,8 +63,12 @@ message CompartmentSpec {
 message InnerDoorSpec { int32 first_level = 1; int32 last_level = 2; }
 ```
 
-`Freezer` gains `string freezer_model_id = 10;`, where `""` means no model. `CreateFreezerRequest` gains
-`string freezer_model_id = 7;`, and `UpdateFreezer` takes it through the `Freezer` message.
+`Freezer` gains `optional string freezer_model_id = 10;`. Responses always set it, with `""` meaning no
+model. `CreateFreezerRequest` gains `string freezer_model_id = 7;`. `UpdateFreezer` takes the field
+through the `Freezer` message:
+- absent leaves the model unchanged;
+- `""` clears it;
+- an id sets it.
 
 - The server refuses an id that isn't in the catalogue with `INVALID_ARGUMENT`.
 - An id that the catalogue later drops still reads back. The client draws a generic cabinet for it.
@@ -103,7 +107,11 @@ message GridSpec { int32 levels = 1; int32 columns = 2; int32 depths = 3; }
 - `Box` gains `optional Placement placement = 10;`.
 - `CreateStorageContainerRequest` gains `optional Placement placement = 7; optional GridSpec grid = 8;`.
 - `CreateBoxRequest` gains `optional Placement placement = 7;`.
-- The Update requests already carry the whole message.
+- **Update semantics.** The Update requests carry the whole message, but a client that predates these
+  fields would send them absent. Absence therefore means *unchanged*, never *cleared*:
+  - A present `placement` or `grid` is applied.
+  - `UpdateStorageContainerRequest.clear_placement = 2` and `clear_grid = 3`, and
+    `UpdateBoxRequest.clear_placement = 2`, remove them explicitly.
 
 **The cabinet grid.** The layout root container (`Freezer.layout_root_id`) is the cabinet. Its direct
 children take `Placement{level = compartment, column = rack slot, depth = 0}`. The bound for each
@@ -228,7 +236,7 @@ The proposal, as reviewed on `docs/215-freezer-3d-layout`, was revised as follow
 |---|---|---|
 | Catalogue in `freezer_models` / `freezer_model_compartments` tables, seeded with `lab_id = ""` | Constant data in `src/core` | Built-in rows would need RLS exceptions on lab-scoped tables, plus three tables and repos per backend. Lab-custom models have no consumer yet. |
 | `CreateFreezerModel`, `ArchiveFreezerModel` | Deferred | Nothing to create without lab-custom models. A later ADR adds them with their own table. |
-| `optional string freezer_model_id` | `string freezer_model_id`, `""` = none | This matches `layout_root_id` and the other id fields in `box.proto`. |
+| Update requests replace the whole message | Layout fields: absent = unchanged; explicit `clear_*` flags, and `""` for the model | The Qt client and today's SPA send whole messages without these fields. A plain replace would wipe every placement on the next rename. |
 | `GET /api/v1/freezers/{id}/scene` and similar | `POST /api/v1/freezer/scene`, `POST /api/v1/freezer-model/list` | The gateway maps `POST /api/v1/<entity>/<verb>` 1:1 onto gRPC. |
 | `ListFreezerModels` with no request fields | `lab_id` field, registered `sample.read` | A `Permission` registration needs a lab to check (#78). |
 | Only the F740 seeded | F740 and TSX40086A | Both demos become real views. |
