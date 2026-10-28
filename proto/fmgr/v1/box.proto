@@ -48,6 +48,10 @@ message Freezer {
   string layout_root_id = 7;
   fmgr.v1.common.Timestamp created_at = 8;
   optional fmgr.v1.common.Timestamp archived_at = 9;
+  // Built-in FreezerModel.id the 3D layout draws (ADR 0003). Responses always
+  // set it ("" = no model). On UpdateFreezer, absent = unchanged and "" clears,
+  // so a client that predates the field never wipes a model by editing a name.
+  optional string freezer_model_id = 10;
 }
 
 enum ContainerKind {
@@ -67,9 +71,15 @@ message StorageContainer {
   string name = 5;
   string label = 6;
   int32 ordering_index = 7;
-  string capacity_hint_json = 8;
+  // Deprecated by `grid` (ADR 0003); still readable. Removal needs fmgr.v2.
+  string capacity_hint_json = 8 [ deprecated = true ];
   fmgr.v1.common.Timestamp created_at = 9;
   optional fmgr.v1.common.Timestamp archived_at = 10;
+  // Where this container sits in its parent's grid; absent = unplaced.
+  optional Placement placement = 11;
+  // The grid this container offers its children. Never set on a layout root,
+  // whose cells come from the freezer's model.
+  optional GridSpec grid = 12;
 }
 
 message ContainerType {
@@ -113,6 +123,93 @@ message Box {
   optional string barcode = 7;
   fmgr.v1.common.Timestamp created_at = 8;
   optional fmgr.v1.common.Timestamp archived_at = 9;
+  // Tier/column/depth in the storage container's grid; absent = unplaced.
+  optional Placement placement = 10;
+}
+
+// ---- 3D layout (ADR 0003) ----
+
+// Where a container or box sits inside its parent's grid.
+message Placement {
+  int32 level = 1;  // vertical, 0 = bottom (compartment in a freezer, tier in a rack)
+  int32 column = 2; // left -> right as seen from the front
+  int32 depth = 3;  // front -> back, 0 = front
+}
+
+// The grid a container offers its children. Each dimension is 1..64.
+message GridSpec {
+  int32 levels = 1;
+  int32 columns = 2;
+  int32 depths = 3;
+}
+
+message Dimensions {
+  int32 width_mm = 1;
+  int32 depth_mm = 2;
+  int32 height_mm = 3;
+}
+
+enum FreezerForm {
+  FREEZER_FORM_UNSPECIFIED = 0;
+  FREEZER_FORM_UPRIGHT = 1;
+  FREEZER_FORM_CHEST = 2;
+}
+
+enum HingeSide {
+  HINGE_SIDE_UNSPECIFIED = 0;
+  HINGE_SIDE_LEFT = 1;
+  HINGE_SIDE_RIGHT = 2;
+}
+
+// One compartment between two shelves; racks stand side by side in `rack_slots`.
+message CompartmentSpec {
+  int32 level = 1;    // 0 = bottom
+  int32 floor_mm = 2; // above the interior floor
+  int32 height_mm = 3;
+  int32 rack_slots = 4; // left -> right
+  Dimensions rack_slot_mm = 5;
+}
+
+// One insulated inner door and the compartment levels it closes off.
+message InnerDoorSpec {
+  int32 first_level = 1;
+  int32 last_level = 2;
+}
+
+// A built-in freezer model: the shell and fixed interior the 3D layout draws.
+// The catalogue is defined in code (src/core/freezer_models.h), not stored per lab.
+message FreezerModel {
+  string id = 1; // e.g. "eppendorf-cryocube-f740hi"
+  string manufacturer = 2;
+  string model_code = 3;
+  string display_name = 4;
+  FreezerForm form = 5;
+  Dimensions exterior_mm = 6;
+  Dimensions interior_mm = 7;
+  HingeSide hinge = 8;                        // as seen from the front
+  repeated InnerDoorSpec inner_doors = 9;     // bottom -> top; empty = none
+  repeated CompartmentSpec compartments = 10; // bottom -> top
+  string render_key = 11;                     // hand-built renderer; "" = generic cabinet
+}
+
+enum SceneNodeKind {
+  SCENE_NODE_KIND_UNSPECIFIED = 0;
+  SCENE_NODE_KIND_CONTAINER = 1;
+  SCENE_NODE_KIND_BOX = 2;
+}
+
+// One container or box in a freezer scene. Labels, geometry and counts only:
+// no sample field ever reaches a scene.
+message SceneNode {
+  string id = 1;
+  optional string parent_id = 2; // absent only on the layout root
+  SceneNodeKind kind = 3;
+  ContainerKind container_kind = 4; // containers only
+  string label = 5;                 // container label (else name); box label
+  optional Placement placement = 6;
+  optional GridSpec grid = 7;
+  int32 occupied_positions = 8; // boxes only
+  int32 total_positions = 9;    // boxes only
 }
 
 // Stub messages for each RPC (fields omitted for brevity; filled in F2).
@@ -137,6 +234,7 @@ message CreateFreezerRequest {
   string model = 4;
   optional double temp_target_c = 5;
   string layout_root_id = 6;
+  string freezer_model_id = 7;
 }
 message CreateFreezerResponse {
   Freezer freezer = 1;
@@ -168,12 +266,19 @@ message CreateStorageContainerRequest {
   string name = 4;
   string label = 5;
   int32 ordering_index = 6;
+  optional Placement placement = 7;
+  optional GridSpec grid = 8;
 }
 message CreateStorageContainerResponse {
   StorageContainer container = 1;
 }
+// `placement` and `grid` inside `container` are applied when present and left
+// unchanged when absent, so a client that predates them never wipes them; the
+// clear_* flags remove them explicitly (ADR 0003).
 message UpdateStorageContainerRequest {
   StorageContainer container = 1;
+  bool clear_placement = 2;
+  bool clear_grid = 3;
 }
 message UpdateStorageContainerResponse {
   StorageContainer container = 1;
@@ -244,12 +349,16 @@ message CreateBoxRequest {
   string label = 4;
   optional string serial = 5;
   optional string barcode = 6;
+  optional Placement placement = 7;
 }
 message CreateBoxResponse {
   Box box = 1;
 }
+// `placement` inside `box` is applied when present and left unchanged when
+// absent; clear_placement removes it explicitly (ADR 0003).
 message UpdateBoxRequest {
   Box box = 1;
+  bool clear_placement = 2;
 }
 message UpdateBoxResponse {
   Box box = 1;
@@ -258,3 +367,21 @@ message ArchiveBoxRequest {
   string box_id = 1;
 }
 message ArchiveBoxResponse {}
+
+// ---- 3D layout reads (ADR 0003 §3). The RPCs are declared with their handlers (#218). ----
+
+message GetFreezerSceneRequest {
+  string freezer_id = 1;
+}
+message GetFreezerSceneResponse {
+  Freezer freezer = 1;
+  optional FreezerModel model = 2; // absent -> generic cabinet
+  repeated SceneNode nodes = 3;    // non-archived, under layout_root_id, parents first
+}
+
+message ListFreezerModelsRequest {
+  string lab_id = 1; // the lab the caller reads for; the catalogue itself is global
+}
+message ListFreezerModelsResponse {
+  repeated FreezerModel models = 1;
+}

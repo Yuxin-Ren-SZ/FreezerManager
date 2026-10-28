@@ -9,7 +9,9 @@
 
 #include <sqlite3.h>
 
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -149,6 +151,34 @@ namespace fmgr::storage {
       }
     }
 
+    void bind_optional_triple(sqlite3_stmt* statement, int first_index,
+                              const std::optional<std::array<std::int32_t, 3>>& triple) {
+      for (int offset = 0; offset < 3; ++offset) {
+        if (triple.has_value()) {
+          bind_int64(statement, first_index + offset, (*triple)[static_cast<std::size_t>(offset)]);
+        } else {
+          bind_null(statement, first_index + offset);
+        }
+      }
+    }
+
+    void bind_optional_placement(sqlite3_stmt* statement, int first_index,
+                                 const std::optional<core::Placement>& placement) {
+      bind_optional_triple(statement, first_index,
+                           placement.has_value()
+                               ? std::optional<std::array<std::int32_t, 3>>{std::array{
+                                     placement->level, placement->column, placement->depth}}
+                               : std::nullopt);
+    }
+
+    void bind_optional_grid(sqlite3_stmt* statement, int first_index,
+                            const std::optional<core::GridSpec>& grid) {
+      bind_optional_triple(statement, first_index,
+                           grid.has_value() ? std::optional<std::array<std::int32_t, 3>>{std::array{
+                                                  grid->levels, grid->columns, grid->depths}}
+                                            : std::nullopt);
+    }
+
     void bind_bool(sqlite3_stmt* statement, int index, bool value) {
       const auto result = sqlite3_bind_int(statement, index, value ? 1 : 0);
       if (result != SQLITE_OK) {
@@ -192,6 +222,37 @@ namespace fmgr::storage {
         return std::nullopt;
       }
       return core::Timestamp::from_unix_micros(sqlite3_column_int64(statement, column));
+    }
+
+    // A placement or grid is three adjacent nullable INTEGER columns; the schema
+    // CHECK keeps them all-null or all-set, so the first one decides.
+    [[nodiscard]] std::optional<std::array<std::int32_t, 3>>
+    column_optional_triple(sqlite3_stmt* statement, int first_column) {
+      if (sqlite3_column_type(statement, first_column) == SQLITE_NULL) {
+        return std::nullopt;
+      }
+      return std::array<std::int32_t, 3>{sqlite3_column_int(statement, first_column),
+                                         sqlite3_column_int(statement, first_column + 1),
+                                         sqlite3_column_int(statement, first_column + 2)};
+    }
+
+    [[nodiscard]] std::optional<core::Placement> column_optional_placement(sqlite3_stmt* statement,
+                                                                           int first_column) {
+      const auto triple = column_optional_triple(statement, first_column);
+      if (!triple.has_value()) {
+        return std::nullopt;
+      }
+      return core::Placement{.level = (*triple)[0], .column = (*triple)[1], .depth = (*triple)[2]};
+    }
+
+    [[nodiscard]] std::optional<core::GridSpec> column_optional_grid(sqlite3_stmt* statement,
+                                                                     int first_column) {
+      const auto triple = column_optional_triple(statement, first_column);
+      if (!triple.has_value()) {
+        return std::nullopt;
+      }
+      return core::GridSpec{
+          .levels = (*triple)[0], .columns = (*triple)[1], .depths = (*triple)[2]};
     }
 
     [[nodiscard]] core::Timestamp now_timestamp() {
@@ -335,6 +396,7 @@ namespace fmgr::storage {
           .layout_root_id = core::StorageContainerId::parse(column_text(statement, 6)),
           .created_at = core::Timestamp::from_unix_micros(sqlite3_column_int64(statement, 7)),
           .archived_at = column_optional_timestamp(statement, 8),
+          .freezer_model_id = column_text(statement, 9),
       };
     }
 
@@ -356,16 +418,20 @@ namespace fmgr::storage {
           .capacity_hint = capacity_hint,
           .created_at = core::Timestamp::from_unix_micros(sqlite3_column_int64(statement, 8)),
           .archived_at = column_optional_timestamp(statement, 9),
+          .placement = column_optional_placement(statement, 10),
+          .grid = column_optional_grid(statement, 13),
       };
     }
 
     constexpr std::string_view k_freezer_columns =
         "id, lab_id, name, location, model, temp_target_c, layout_root_id, "
-        "created_at_micros, archived_at_micros";
+        "created_at_micros, archived_at_micros, freezer_model_id";
 
     constexpr std::string_view k_container_columns =
         "id, lab_id, parent_id, kind, name, label, ordering_index, "
-        "capacity_hint_json, created_at_micros, archived_at_micros";
+        "capacity_hint_json, created_at_micros, archived_at_micros, "
+        "placement_level, placement_column, placement_depth, "
+        "grid_levels, grid_columns, grid_depths";
 
     class FreezerRepository final : public SqliteLayoutRepositoryBase<core::Freezer> {
     public:
@@ -464,13 +530,15 @@ namespace fmgr::storage {
         bind_text(statement, 7, entity.layout_root_id.to_string());
         bind_int64(statement, 8, entity.created_at.unix_micros());
         bind_optional_timestamp(statement, 9, entity.archived_at);
+        bind_text(statement, 10, entity.freezer_model_id);
       }
 
       static void insert_pending(sqlite3* handle, const core::Freezer& entity) {
         Statement statement(handle, "INSERT INTO freezers "
                                     "(id, lab_id, name, location, model, temp_target_c, "
-                                    "layout_root_id, created_at_micros, archived_at_micros) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                                    "layout_root_id, created_at_micros, archived_at_micros, "
+                                    "freezer_model_id) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         bind_entity(statement.get(), entity);
         statement.step_done();
       }
@@ -479,9 +547,10 @@ namespace fmgr::storage {
         Statement statement(handle,
                             "UPDATE freezers SET id = ?, lab_id = ?, name = ?, location = ?, "
                             "model = ?, temp_target_c = ?, layout_root_id = ?, "
-                            "created_at_micros = ?, archived_at_micros = ? WHERE id = ?");
+                            "created_at_micros = ?, archived_at_micros = ?, "
+                            "freezer_model_id = ? WHERE id = ?");
         bind_entity(statement.get(), entity);
-        bind_text(statement.get(), 10, entity.id.to_string());
+        bind_text(statement.get(), 11, entity.id.to_string());
         statement.step_done();
       }
     };
@@ -647,13 +716,17 @@ namespace fmgr::storage {
         bind_text(statement, 8, capacity_hint_dump(entity.capacity_hint));
         bind_int64(statement, 9, entity.created_at.unix_micros());
         bind_optional_timestamp(statement, 10, entity.archived_at);
+        bind_optional_placement(statement, 11, entity.placement);
+        bind_optional_grid(statement, 14, entity.grid);
       }
 
       static void insert_pending(sqlite3* handle, const core::StorageContainer& entity) {
         Statement statement(handle, "INSERT INTO storage_containers "
                                     "(id, lab_id, parent_id, kind, name, label, ordering_index, "
-                                    "capacity_hint_json, created_at_micros, archived_at_micros) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                                    "capacity_hint_json, created_at_micros, archived_at_micros, "
+                                    "placement_level, placement_column, placement_depth, "
+                                    "grid_levels, grid_columns, grid_depths) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         bind_entity(statement.get(), entity);
         statement.step_done();
       }
@@ -663,9 +736,11 @@ namespace fmgr::storage {
                             "UPDATE storage_containers SET id = ?, lab_id = ?, parent_id = ?, "
                             "kind = ?, name = ?, label = ?, ordering_index = ?, "
                             "capacity_hint_json = ?, created_at_micros = ?, "
-                            "archived_at_micros = ? WHERE id = ?");
+                            "archived_at_micros = ?, placement_level = ?, "
+                            "placement_column = ?, placement_depth = ?, grid_levels = ?, "
+                            "grid_columns = ?, grid_depths = ? WHERE id = ?");
         bind_entity(statement.get(), entity);
-        bind_text(statement.get(), 11, entity.id.to_string());
+        bind_text(statement.get(), 17, entity.id.to_string());
         statement.step_done();
       }
     };

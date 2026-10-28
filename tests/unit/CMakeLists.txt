@@ -7,11 +7,13 @@ add_executable(
   core_value_types_test.cpp
   custom_field_tightening_test.cpp
   custom_field_validator_test.cpp
+  freezer_models_test.cpp
   freezer_types_test.cpp
   identity_types_test.cpp
   json_helpers_test.cpp
   item_types_test.cpp
   permission_catalog_test.cpp
+  placement_test.cpp
   role_types_test.cpp
   sample_types_test.cpp
   seed_templates_test.cpp

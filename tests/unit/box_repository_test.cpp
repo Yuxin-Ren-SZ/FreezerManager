@@ -394,6 +394,81 @@ namespace fmgr::storage {
           UniqueViolation);
     }
 
+    TEST_P(BoxRepositoryTest, BoxPlacementRoundTripsAndClears) {
+      const auto [lab_id, box_type_id, sc_id] = seed_lab_with_prereqs(20);
+      auto box = make_box(20, lab_id, box_type_id, sc_id);
+      box.placement = core::Placement{.level = 4, .column = 0, .depth = 3};
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Box>().insert(box, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        const auto found = txn->repo<core::Box>().find_by_id(box.id);
+        ASSERT_TRUE(found.has_value());
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        EXPECT_EQ(found.value(), box);
+        box.placement.reset();
+        txn->repo<core::Box>().update(box, mutation_context());
+        txn->commit();
+      }
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      const auto found = txn->repo<core::Box>().find_by_id(box.id);
+      ASSERT_TRUE(found.has_value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      EXPECT_FALSE(found.value().placement.has_value());
+    }
+
+    TEST_P(BoxRepositoryTest, DuplicateLiveBoxPlacementInOneContainerIsRefused) {
+      const auto [lab_id, box_type_id, sc_id] = seed_lab_with_prereqs(21);
+      auto first = make_box(21, lab_id, box_type_id, sc_id);
+      auto second = make_box(22, lab_id, box_type_id, sc_id);
+      first.placement = core::Placement{.level = 1, .column = 0, .depth = 0};
+      second.placement = first.placement;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Box>().insert(first, mutation_context());
+        txn->commit();
+      }
+      EXPECT_THROW(
+          {
+            auto txn = backend().begin(IsolationLevel::Serializable);
+            txn->repo<core::Box>().insert(second, mutation_context());
+            txn->commit();
+          },
+          UniqueViolation);
+    }
+
+    TEST_P(BoxRepositoryTest, ArchivedBoxPlacementCanBeReused) {
+      const auto [lab_id, box_type_id, sc_id] = seed_lab_with_prereqs(23);
+      auto old_box = make_box(23, lab_id, box_type_id, sc_id);
+      auto new_box = make_box(24, lab_id, box_type_id, sc_id);
+      old_box.placement = core::Placement{.level = 0, .column = 0, .depth = 1};
+      new_box.placement = old_box.placement;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Box>().insert(old_box, mutation_context());
+        txn->commit();
+      }
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Box>().soft_delete(old_box.id, mutation_context());
+        txn->commit();
+      }
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      txn->repo<core::Box>().insert(new_box, mutation_context());
+      EXPECT_NO_THROW(txn->commit());
+    }
+
+    TEST_P(BoxRepositoryTest, NegativeBoxPlacementIsRefused) {
+      const auto [lab_id, box_type_id, sc_id] = seed_lab_with_prereqs(25);
+      auto box = make_box(25, lab_id, box_type_id, sc_id);
+      box.placement = core::Placement{.level = -1, .column = 0, .depth = 0};
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::Box>().insert(box, mutation_context()), ConstraintViolation);
+    }
+
     INSTANTIATE_TEST_SUITE_P(Backends, BoxRepositoryTest,
                              ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
                              [](const ::testing::TestParamInfo<BackendKind>& info) {

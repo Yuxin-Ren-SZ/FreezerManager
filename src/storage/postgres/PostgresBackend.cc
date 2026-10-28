@@ -594,6 +594,44 @@ INSERT INTO role_permissions (role_id, permission_key) VALUES
   ('00000000-0000-0000-0000-000000000001', 'lab.provision')
   ON CONFLICT DO NOTHING;
 )sql"},
+          {.version = 15, .name = "0015_layout_placement", .up_sql = R"sql(
+-- 3D layout (ADR 0003): a freezer names a built-in model (core/freezer_models.h,
+-- '' = none); containers and boxes carry an optional typed placement in their
+-- parent's grid, and containers an optional grid for their children. The new
+-- columns sit on lab-scoped tables whose RLS policies already cover them.
+ALTER TABLE freezers ADD COLUMN IF NOT EXISTS freezer_model_id TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE storage_containers
+  ADD COLUMN IF NOT EXISTS placement_level INTEGER,
+  ADD COLUMN IF NOT EXISTS placement_column INTEGER,
+  ADD COLUMN IF NOT EXISTS placement_depth INTEGER,
+  ADD COLUMN IF NOT EXISTS grid_levels INTEGER,
+  ADD COLUMN IF NOT EXISTS grid_columns INTEGER,
+  ADD COLUMN IF NOT EXISTS grid_depths INTEGER,
+  ADD CONSTRAINT storage_containers_placement_check CHECK (
+    (placement_level IS NULL AND placement_column IS NULL AND placement_depth IS NULL)
+    OR (placement_level >= 0 AND placement_column >= 0 AND placement_depth >= 0)),
+  ADD CONSTRAINT storage_containers_grid_check CHECK (
+    (grid_levels IS NULL AND grid_columns IS NULL AND grid_depths IS NULL)
+    OR (grid_levels BETWEEN 1 AND 64 AND grid_columns BETWEEN 1 AND 64
+        AND grid_depths BETWEEN 1 AND 64));
+
+ALTER TABLE boxes
+  ADD COLUMN IF NOT EXISTS placement_level INTEGER,
+  ADD COLUMN IF NOT EXISTS placement_column INTEGER,
+  ADD COLUMN IF NOT EXISTS placement_depth INTEGER,
+  ADD CONSTRAINT boxes_placement_check CHECK (
+    (placement_level IS NULL AND placement_column IS NULL AND placement_depth IS NULL)
+    OR (placement_level >= 0 AND placement_column >= 0 AND placement_depth >= 0));
+
+-- Two live siblings never share a cell.
+CREATE UNIQUE INDEX IF NOT EXISTS storage_containers_live_placement_unique
+  ON storage_containers(parent_id, placement_level, placement_column, placement_depth)
+  WHERE archived_at_micros IS NULL AND placement_level IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
+  ON boxes(storage_container_id, placement_level, placement_column, placement_depth)
+  WHERE archived_at_micros IS NULL AND placement_level IS NOT NULL;
+)sql"},
       };
     }
 

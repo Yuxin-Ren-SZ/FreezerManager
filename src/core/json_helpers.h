@@ -28,6 +28,18 @@ namespace fmgr::core::json_helpers {
     return json.get<Value>();
   }
 
+  // For keys added after rows were first serialized (e.g. audit snapshots written
+  // before a migration): a missing key reads as an absent value, like null.
+  template <typename Value>
+  [[nodiscard]] inline std::optional<Value> opt_from_json_key(const nlohmann::json& json,
+                                                              const char* key) {
+    const auto found = json.find(key);
+    if (found == json.end()) {
+      return std::nullopt;
+    }
+    return opt_from_json<Value>(*found);
+  }
+
 } // namespace fmgr::core::json_helpers
 
 #endif

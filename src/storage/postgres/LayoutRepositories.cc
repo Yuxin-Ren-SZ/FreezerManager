@@ -22,8 +22,12 @@ namespace fmgr::storage {
   namespace {
 
     using detail::micros_or_null;
+    using detail::pg_append_grid;
+    using detail::pg_append_placement;
     using detail::pg_bind_params;
+    using detail::pg_optional_grid;
     using detail::pg_optional_id;
+    using detail::pg_optional_placement;
     using detail::pg_optional_timestamp;
     using detail::throw_pqxx_error;
     using detail::validate_freezer;
@@ -45,8 +49,9 @@ namespace fmgr::storage {
 
     // ---- Freezer ----
 
-    constexpr const char* freezer_columns = "id, lab_id, name, location, model, temp_target_c, "
-                                            "layout_root_id, created_at_micros, archived_at_micros";
+    constexpr const char* freezer_columns =
+        "id, lab_id, name, location, model, temp_target_c, "
+        "layout_root_id, created_at_micros, archived_at_micros, freezer_model_id";
 
     [[nodiscard]] core::Freezer read_freezer(pqxx::row_ref row) {
       return core::Freezer{
@@ -61,6 +66,7 @@ namespace fmgr::storage {
           .created_at =
               core::Timestamp::from_unix_micros(row.at("created_at_micros").as<std::int64_t>()),
           .archived_at = pg_optional_timestamp(row, "archived_at_micros"),
+          .freezer_model_id = row.at("freezer_model_id").as<std::string>(),
       };
     }
 
@@ -75,6 +81,7 @@ namespace fmgr::storage {
       params.append(entity.layout_root_id.to_string());
       params.append(entity.created_at.unix_micros());
       params.append(micros_or_null(entity.archived_at));
+      params.append(entity.freezer_model_id);
       return params;
     }
 
@@ -126,8 +133,8 @@ namespace fmgr::storage {
         try {
           txn_.work().exec(
               "INSERT INTO freezers (id, lab_id, name, location, model, temp_target_c, "
-              "layout_root_id, created_at_micros, archived_at_micros) "
-              "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+              "layout_root_id, created_at_micros, archived_at_micros, freezer_model_id) "
+              "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
               bind_freezer(entity));
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
@@ -143,7 +150,7 @@ namespace fmgr::storage {
           const auto result = txn_.work().exec(
               "UPDATE freezers SET lab_id = $2, name = $3, location = $4, model = $5, "
               "temp_target_c = $6, layout_root_id = $7, created_at_micros = $8, "
-              "archived_at_micros = $9 WHERE id = $1",
+              "archived_at_micros = $9, freezer_model_id = $10 WHERE id = $1",
               bind_freezer(entity));
           if (result.affected_rows() == 0) {
             throw NotFound("freezer not found");
@@ -173,7 +180,8 @@ namespace fmgr::storage {
 
     constexpr const char* container_columns =
         "id, lab_id, parent_id, kind, name, label, ordering_index, capacity_hint_json, "
-        "created_at_micros, archived_at_micros";
+        "created_at_micros, archived_at_micros, placement_level, placement_column, "
+        "placement_depth, grid_levels, grid_columns, grid_depths";
 
     [[nodiscard]] std::string capacity_hint_dump(const std::optional<core::CapacityHint>& hint) {
       if (!hint.has_value()) {
@@ -202,6 +210,8 @@ namespace fmgr::storage {
           .created_at =
               core::Timestamp::from_unix_micros(row.at("created_at_micros").as<std::int64_t>()),
           .archived_at = pg_optional_timestamp(row, "archived_at_micros"),
+          .placement = pg_optional_placement(row),
+          .grid = pg_optional_grid(row),
       };
     }
 
@@ -219,6 +229,8 @@ namespace fmgr::storage {
       params.append(capacity_hint_dump(entity.capacity_hint));
       params.append(entity.created_at.unix_micros());
       params.append(micros_or_null(entity.archived_at));
+      pg_append_placement(params, entity.placement);
+      pg_append_grid(params, entity.grid);
       return params;
     }
 
@@ -261,8 +273,11 @@ namespace fmgr::storage {
         try {
           txn_.work().exec(
               "INSERT INTO storage_containers (id, lab_id, parent_id, kind, name, label, "
-              "ordering_index, capacity_hint_json, created_at_micros, archived_at_micros) "
-              "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)",
+              "ordering_index, capacity_hint_json, created_at_micros, archived_at_micros, "
+              "placement_level, placement_column, placement_depth, grid_levels, grid_columns, "
+              "grid_depths) "
+              "VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, "
+              "$16)",
               bind_container(entity));
         } catch (const pqxx::sql_error& err) {
           throw_pqxx_error(err);
@@ -299,7 +314,9 @@ namespace fmgr::storage {
           const auto result = txn_.work().exec(
               "UPDATE storage_containers SET lab_id = $2, parent_id = $3, kind = $4, name = $5, "
               "label = $6, ordering_index = $7, capacity_hint_json = $8::jsonb, "
-              "created_at_micros = $9, archived_at_micros = $10 WHERE id = $1",
+              "created_at_micros = $9, archived_at_micros = $10, placement_level = $11, "
+              "placement_column = $12, placement_depth = $13, grid_levels = $14, "
+              "grid_columns = $15, grid_depths = $16 WHERE id = $1",
               bind_container(entity));
           if (result.affected_rows() == 0) {
             throw NotFound("storage container not found");
