@@ -812,17 +812,24 @@ function interior(st, m){
   if (vis([0, -1, 0])) s += shape(quadY(IY1, IX0, IZ0, IX1, IZ1), toneI([0, -1, 0], INOX), .8);
   if (vis([0, 0, 1])) s += shape(quadZ(IZ0, IX0, IY0, IX1, IY1), toneI([0, 0, 1], INOX), .8);
   if (vis([0, 0, -1])) s += shape(quadZ(IZ1, IX0, IY0, IX1, IY1), toneI([0, 0, -1], INOX), .8);
-  const parts = [];
-  for (const c of [1, 2]){ const z = shelfZ(c);
-    parts.push({ box: [[27, IY0 + 1, z - SHT/2], [86, IY1 - 1, z + SHT/2]], svg: box(27, IY0 + 1, z - SHT/2, 86, IY1 - 1, z + SHT/2, INOX, toneI, .8) });
-    for (const [ya, yb] of [[IY0, IY0 + 1], [IY1 - 1, IY1]])
-      parts.push({ box: [[28, ya, z - 2.4], [85, yb, z - SHT/2]], svg: box(28, ya, z - 2.4, 85, yb, z - SHT/2, RACKM, toneI, .6) }); }
+  // Drawn in horizontal layers, bottom to top: compartment 0, shelf 1, compartment 1, shelf 2, compartment 2. The camera
+  // always looks down (pitch >= 6), so a lower layer never covers a higher one. One byDepth over everything is not safe
+  // here: pairs that overlap on every axis (a rail beside an inner door) fall back to centre depth, the comparator stops
+  // being consistent and the sort can put a shelf after the racks standing on it.
   const pr = pulledRack(st);
-  for (let c = 0; c < 3; c++) for (let r = 0; r < 6; r++){
-    const it = rackPiece(st, m, c, r, 0, pr && pr.c === c && pr.r === r ? CX : 1e9); if (it) parts.push(it); }
-  for (let c = 0; c < 3; c++) if (st.inner[c] <= 0) parts.push(innerDoor(st, c));
-  parts.push({ box: [[26.1, 54, 183], [31.5, 56, 185]], svg: rod([26.1, 55, 184], [31, 55, 184], .55, METAL, toneI, .6) });
-  s += byDepth(parts);
+  for (let c = 0; c < 3; c++){
+    if (c > 0){ const z = shelfZ(c); s += box(27, IY0 + 1, z - SHT/2, 86, IY1 - 1, z + SHT/2, INOX, toneI, .8); }
+    const parts = [];
+    for (let r = 0; r < 6; r++){ const it = rackPiece(st, m, c, r, 0, pr && pr.c === c && pr.r === r ? CX : 1e9); if (it) parts.push(it); }
+    if (st.inner[c] <= 0) parts.push(innerDoor(st, c));
+    // the side rails carrying the shelf above this compartment, short of the inner door so they sort apart from it
+    if (c < 2){ const z = shelfZ(c + 1);
+      for (const [ya, yb] of [[IY0, IY0 + 1], [IY1 - 1, IY1]])
+        parts.push({ box: [[28, ya, z - 2.4], [83.5, yb, z - SHT/2]], svg: box(28, ya, z - 2.4, 83.5, yb, z - SHT/2, RACKM, toneI, .6) }); }
+    // temperature probe on the back wall, above the top racks (rack tops are at 188.3)
+    if (c === 2) parts.push({ box: [[26.1, 54, 189.1], [31.5, 56, 190.3]], svg: rod([26.1, 55, 189.7], [31, 55, 189.7], .55, METAL, toneI, .6) });
+    s += byDepth(parts);
+  }
   return clipTo(quadX(CX, IY0, IZ0, IY1, IZ1), s);
 }
 
@@ -1011,8 +1018,8 @@ function mechParts(st, k){
   { const hx = CX - .4, lp = [[hx, 7, 48.5], [hx, 103, 48.5], [hx, 103, 194.5], [hx, 7, 194.5], [hx, 7, 48.5]];
     add(cfTube(lp, '#f07a3a', .35)); }
   // temperature probe (on the back wall) and its wire down to the control box
-  put([[26.1, 54, 183], [31.5, 56, 185]], rod([26.1, 55, 184], [31, 55, 184], .55, METAL, toneI, .6));
-  add(cfTube([[26.1, 55, 184], [12, 55, 184], [12, 55, 44]], '#3a3632', .3));
+  put([[26.1, 54, 189.1], [31.5, 56, 190.3]], rod([26.1, 55, 189.7], [31, 55, 189.7], .55, METAL, toneI, .6));
+  add(cfTube([[26.1, 55, 189.7], [12, 55, 189.7], [12, 55, 44]], '#3a3632', .3));
   // compressor and fan wiring from the control box
   add(cfTube([[14, 48, 33], [26, 48, 33], [26, 30, 33], [26, 30, 18], [29.4, 30, 18]], '#3a3632', .3));
   add(cfTube([[14, 58, 33], [24, 58, 33], [24, 62, 33], [24, 62, 18], [29.4, 62, 18]], '#3a3632', .3));
@@ -1035,7 +1042,7 @@ function mechParts(st, k){
     { at: [19, 96, 28], text: 'CASCADE HEAT EXCHANGER', on: run }, { at: [70, 103.7, 20], text: 'FILTER DRIER', on: run },
     { at: [14, 9, 24], text: 'EXPANSION TANK', on: false }, { at: [9, 64, 40], text: 'CONTROL BOX', on: run },
     { at: [57, IY1 + .5, 132], text: 'EVAPORATOR COIL', on: run }, { at: [40, 106, 180], text: 'VACUUM INSULATION', on: false },
-    { at: [31, 55, 184], text: 'TEMPERATURE PROBE', on: st.temp > -79 }, { at: [CX - .4, 103, 120], text: 'FRAME HEATER', on: st.door > 0 },
+    { at: [31, 55, 189.7], text: 'TEMPERATURE PROBE', on: st.temp > -79 }, { at: [CX - .4, 103, 120], text: 'FRAME HEATER', on: st.door > 0 },
     { at: [50, FD, 172], text: 'ACCESS PORT', on: false } ];
   if (vis(DM.nR) || vis(DM.nF)) items.push({ at: DM(38, 1.6, 151), text: 'CONTROL BOARD', on: st.temp > -70 });
   MECH_LABELS = k > .6 ? xrCallouts(items, [0, FW, 0, FD, 0, FH]) : '';
