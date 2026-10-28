@@ -24,19 +24,13 @@
 }
 
 .figure {
-  /* Shading bands: the base colour, then two steps towards shadow. */
-  --scene-shadow: color-mix(in srgb, var(--fmgr-color-text) 22%, transparent);
+  /* Shading bands: the base colour, then two steps towards shadow. Shadows mix
+     towards black, not the text colour, which is light in the dark theme. */
+  --scene-dim: #000;
+  --scene-shadow: color-mix(in srgb, var(--scene-dim) 22%, transparent);
   --scene-body: var(--fmgr-color-surface-raised);
-  --scene-body-mid: color-mix(
-    in srgb,
-    var(--fmgr-color-surface-raised) 86%,
-    var(--fmgr-color-text)
-  );
-  --scene-body-dark: color-mix(
-    in srgb,
-    var(--fmgr-color-surface-raised) 70%,
-    var(--fmgr-color-text)
-  );
+  --scene-body-mid: color-mix(in srgb, var(--fmgr-color-surface-raised) 86%, var(--scene-dim));
+  --scene-body-dark: color-mix(in srgb, var(--fmgr-color-surface-raised) 72%, var(--scene-dim));
   --scene-steel: var(--fmgr-color-neutral-subtle);
   --scene-inside: var(--fmgr-color-surface);
   --scene-accent: var(--fmgr-color-accent);
@@ -49,6 +43,18 @@
   background: var(--fmgr-color-bg);
   touch-action: none;
   cursor: grab;
+}
+
+/* In the dark theme the raised surface is close to the page background, so the
+   cabinet is lifted towards white to keep its silhouette. */
+@media (prefers-color-scheme: dark) {
+  .figure {
+    --scene-body: color-mix(in srgb, var(--fmgr-color-surface-raised) 72%, #fff);
+    --scene-body-mid: color-mix(in srgb, var(--fmgr-color-surface-raised) 82%, #fff);
+    --scene-body-dark: color-mix(in srgb, var(--fmgr-color-surface-raised) 92%, #fff);
+    --scene-steel: color-mix(in srgb, var(--fmgr-color-neutral-subtle) 70%, #fff);
+    --scene-inside: color-mix(in srgb, var(--fmgr-color-surface) 85%, #fff);
+  }
 }
 
 .figure:focus-visible {
@@ -99,12 +105,12 @@
 }
 
 .face[data-material='plinth'] {
-  fill: color-mix(in srgb, var(--scene-body-dark) 85%, var(--fmgr-color-text));
+  fill: color-mix(in srgb, var(--scene-body-dark) 85%, var(--scene-dim));
 }
 
 .face[data-material='grille'],
 .face[data-material='handle'] {
-  fill: color-mix(in srgb, var(--fmgr-color-text) 60%, var(--scene-body));
+  fill: color-mix(in srgb, var(--scene-dim) 55%, var(--scene-body));
 }
 
 .face[data-material='panel'] {
@@ -112,7 +118,7 @@
 }
 
 .face[data-material='gasket'] {
-  fill: color-mix(in srgb, var(--fmgr-color-text) 45%, var(--scene-body));
+  fill: color-mix(in srgb, var(--scene-dim) 40%, var(--scene-body));
 }
 
 .face[data-material='interior'][data-tone='light'] {
@@ -120,11 +126,11 @@
 }
 
 .face[data-material='interior'][data-tone='mid'] {
-  fill: color-mix(in srgb, var(--scene-inside) 88%, var(--fmgr-color-text));
+  fill: color-mix(in srgb, var(--scene-inside) 88%, var(--scene-dim));
 }
 
 .face[data-material='interior'][data-tone='dark'] {
-  fill: color-mix(in srgb, var(--scene-inside) 78%, var(--fmgr-color-text));
+  fill: color-mix(in srgb, var(--scene-inside) 78%, var(--scene-dim));
 }
 
 .face[data-material='shelf'],
@@ -133,11 +139,11 @@
 }
 
 .face[data-material='rack'][data-tone='mid'] {
-  fill: color-mix(in srgb, var(--scene-steel) 85%, var(--fmgr-color-text));
+  fill: color-mix(in srgb, var(--scene-steel) 85%, var(--scene-dim));
 }
 
 .face[data-material='rack'][data-tone='dark'] {
-  fill: color-mix(in srgb, var(--scene-steel) 70%, var(--fmgr-color-text));
+  fill: color-mix(in srgb, var(--scene-steel) 70%, var(--scene-dim));
 }
 
 .face[data-material='rackActive'] {
@@ -149,11 +155,11 @@
 }
 
 .face[data-material='innerDoor'][data-tone='mid'] {
-  fill: color-mix(in srgb, var(--scene-inside) 80%, var(--fmgr-color-text) 8%);
+  fill: color-mix(in srgb, var(--scene-inside) 80%, var(--scene-dim) 8%);
 }
 
 .face[data-material='innerDoor'][data-tone='dark'] {
-  fill: color-mix(in srgb, var(--scene-inside) 65%, var(--fmgr-color-text) 18%);
+  fill: color-mix(in srgb, var(--scene-inside) 65%, var(--scene-dim) 18%);
 }
 
 .face[data-material='boxEmpty'] {
@@ -161,7 +167,7 @@
 }
 
 .face[data-material='boxPartial'] {
-  fill: var(--scene-accent-subtle);
+  fill: color-mix(in srgb, var(--scene-accent) 35%, var(--fmgr-color-bg));
 }
 
 .face[data-material='boxFull'],
@@ -258,7 +264,7 @@
 }
 
 .swatch[data-fill='partial'] {
-  background: var(--fmgr-color-accent-subtle);
+  background: color-mix(in srgb, var(--fmgr-color-accent) 35%, var(--fmgr-color-bg));
 }
 
 .swatch[data-fill='full'] {

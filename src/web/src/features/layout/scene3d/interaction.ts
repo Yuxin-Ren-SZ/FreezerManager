@@ -54,6 +54,17 @@ export const initialSceneState: SceneState = {
   camera: DEFAULT_CAMERA,
 };
 
+/**
+ * The view a freezer opens with: a little from above, from the side away from
+ * the hinge, so the open door stands beside the opening instead of across it.
+ */
+export function homeCamera(hinge: 'left' | 'right'): Camera {
+  return {
+    ...DEFAULT_CAMERA,
+    yaw: hinge === 'right' ? -Math.abs(DEFAULT_CAMERA.yaw) : Math.abs(DEFAULT_CAMERA.yaw),
+  };
+}
+
 /** The inner door whose range covers `level`, or `null` when none does. */
 export function innerDoorIndexFor(doors: readonly InnerDoorRange[], level: number): number | null {
   const index = doors.findIndex((door) => door.firstLevel <= level && level <= door.lastLevel);
@@ -67,6 +78,7 @@ export function reduceScene(
   doors: readonly InnerDoorRange[],
   state: SceneState,
   action: SceneAction,
+  home: Camera = DEFAULT_CAMERA,
 ): SceneState {
   switch (action.type) {
     case 'openDoor':
@@ -125,6 +137,6 @@ export function reduceScene(
       };
 
     case 'resetView':
-      return { ...state, camera: DEFAULT_CAMERA };
+      return { ...state, camera: home };
   }
 }

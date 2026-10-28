@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { describe, expect, it } from 'vitest';
-import { initialSceneState, innerDoorIndexFor, reduceScene, type SceneState } from './interaction';
+import {
+  homeCamera,
+  initialSceneState,
+  innerDoorIndexFor,
+  reduceScene,
+  type SceneState,
+} from './interaction';
 
 /**
  * What a click on the freezer does (ADR 0003 §5): open the door, open a
@@ -108,6 +114,20 @@ describe('reduceScene', () => {
     expect(turned.camera).toEqual({ yaw: 75, pitch: 5 });
     const reset = reduceScene(F740_DOORS, turned, { type: 'resetView' });
     expect(reset.camera).toEqual(initialSceneState.camera);
+  });
+});
+
+describe('homeCamera', () => {
+  it('looks from the side away from the hinge, so an open door does not hide the inside', () => {
+    expect(homeCamera('right').yaw).toBeLessThan(0);
+    expect(homeCamera('left').yaw).toBeGreaterThan(0);
+  });
+
+  it('is where Front view returns to', () => {
+    const turned = reduceScene([], initialSceneState, { type: 'rotate', dYaw: 40, dPitch: 0 });
+    expect(reduceScene([], turned, { type: 'resetView' }, homeCamera('right')).camera).toEqual(
+      homeCamera('right'),
+    );
   });
 });
 

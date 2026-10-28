@@ -11,6 +11,7 @@ import { cabinetFor, type CabinetSpec } from './cabinet';
 import { FreezerFigure } from './FreezerFigure';
 import type { BlockTarget } from './iso';
 import {
+  homeCamera,
   initialSceneState,
   reduceScene,
   type InnerDoorRange,
@@ -99,9 +100,10 @@ function FreezerScene({ labId, scene }: FreezerSceneProps) {
   const { t } = useTranslation('layout');
   const cabinet = useMemo(() => cabinetFor(scene.model ?? undefined), [scene.model]);
   const doors = cabinet.innerDoors;
+  const home = useMemo(() => homeCamera(cabinet.hinge), [cabinet.hinge]);
   const [state, dispatch] = useReducer(
-    (current: SceneState, action: SceneAction) => reduceScene(doors, current, action),
-    initialSceneState,
+    (current: SceneState, action: SceneAction) => reduceScene(doors, current, action, home),
+    { ...initialSceneState, camera: home },
   );
   const frame = useSceneFrame(state);
 
