@@ -158,6 +158,59 @@ namespace fmgr::rest {
       }
     }
 
+    TEST_F(RestStaticAssetsResolve, RejectsHiddenPathSegmentsIncludingMissingPaths) {
+      std::filesystem::create_directories(root_ / "nested" / ".git");
+      std::filesystem::create_directories(root_ / ".well-known");
+      write(root_ / ".env", "HIDDEN-CANARY");
+      write(root_ / "nested" / ".git" / "config", "HIDDEN-CANARY");
+      write(root_ / ".well-known" / "config", "HIDDEN-CANARY");
+      for (const char* path : {"/.env", "/nested/.git/config", "/.well-known/config",
+                               "/assets/.missing.js", "/nested/.missing/route", "/..."}) {
+        EXPECT_FALSE(StaticAssets::resolve_path(root_, path).has_value()) << path;
+      }
+    }
+
+    TEST_F(RestStaticAssetsResolve, RejectsVisibleSymlinksToHiddenTargetsInsideTheWebRoot) {
+      std::filesystem::create_directories(root_ / ".private");
+      write(root_ / ".env", "HIDDEN-CANARY");
+      write(root_ / ".private" / "config.txt", "HIDDEN-CANARY");
+      std::filesystem::create_symlink(root_ / ".env", root_ / "config.txt");
+      std::filesystem::create_directory_symlink(root_ / ".private", root_ / "public");
+      for (const char* path : {"/config.txt", "/public/config.txt", "/public/missing"}) {
+        EXPECT_FALSE(StaticAssets::resolve_path(root_, path).has_value()) << path;
+      }
+    }
+
+    TEST_F(RestStaticAssetsResolve, RejectsIndexFallbackToAHiddenTargetInsideTheWebRoot) {
+      std::filesystem::create_directories(root_ / ".private");
+      write(root_ / ".private" / "shell.html", "HIDDEN-CANARY");
+      std::filesystem::remove(root_ / "index.html");
+      std::filesystem::create_symlink(root_ / ".private" / "shell.html", root_ / "index.html");
+      for (const char* path : {"/", "/labs/missing", "/assets/missing.js"}) {
+        EXPECT_FALSE(StaticAssets::resolve_path(root_, path).has_value()) << path;
+      }
+    }
+
+    TEST_F(RestStaticAssetsResolve, ServesVisibleNamesWithInteriorDots) {
+      std::filesystem::create_directories(root_ / "release.v1");
+      write(root_ / "release.v1" / "app.min.js", "VISIBLE-CANARY");
+      const auto resolved = StaticAssets::resolve_path(root_, "/release.v1/app.min.js");
+      ASSERT_TRUE(resolved.has_value());
+      EXPECT_EQ(*resolved, canonical(root_ / "release.v1" / "app.min.js"));
+      EXPECT_EQ(StaticAssets::resolve_path(root_, "/labs/release.v1"),
+                canonical(root_ / "index.html"));
+    }
+
+    TEST_F(RestStaticAssetsResolve, AllowsHiddenAncestorsAndTheConfiguredRootItself) {
+      const auto hidden_root = base_ / ".worktrees" / ".web";
+      std::filesystem::create_directories(hidden_root);
+      write(hidden_root / "index.html", "<html>visible shell</html>");
+      EXPECT_EQ(StaticAssets::resolve_path(hidden_root, "/"),
+                canonical(hidden_root / "index.html"));
+      EXPECT_EQ(StaticAssets::resolve_path(hidden_root, "/labs/visible"),
+                canonical(hidden_root / "index.html"));
+    }
+
     TEST_F(RestStaticAssetsResolve, RejectsBackslashSegments) {
       for (const char* path : {"/assets\\..\\secret.txt", "/..\\secret.txt", "/a\\b"}) {
         EXPECT_FALSE(StaticAssets::resolve_path(root_, path).has_value()) << path;
