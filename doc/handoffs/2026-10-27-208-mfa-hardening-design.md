@@ -4,9 +4,10 @@
 - PR: [#212](https://github.com/Yuxin-Ren-SZ/FreezerManager/pull/212), closes only
   [#208](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/208).
 - Source base: `d527c0c312554d5485c020355e6bd5c6891eb9a4`.
-- Deliverable: [proposed ADR0002](../adr/0002-mfa-replay-backoff.md).
-- Status: proposed design; independent adversarial review and lead acceptance
-  remain required. No runtime implementation or deployment approval is claimed.
+- Deliverable: [accepted ADR0002](../adr/0002-mfa-replay-backoff.md).
+- Status: design accepted at `48246ec` by [lead decision](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/208#issuecomment-6458164224)
+  after [independent re-review](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/208#issuecomment-6458154474).
+  No runtime implementation or deployment approval is claimed.
 
 ## Decisions for implementation review
 
@@ -58,7 +59,8 @@ MFA atomicity; this docs slice neither reproduces nor fixes it.
   errors: locked actor credential/permission/proof recheck wins before an
   authorized caller may observe target NOT_FOUND.
 
-The ADR remains Proposed pending re-review. #179 and #211 remain runtime work.
+The ADR was accepted at `48246ec` after [independent re-review](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/208#issuecomment-6458154474)
+and [lead decision](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/208#issuecomment-6458164224). #179 and #211 remain runtime work.
 
 ## Validation and scope limits
 

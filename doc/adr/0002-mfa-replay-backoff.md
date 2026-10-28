@@ -1,6 +1,7 @@
 # ADR 0002: Atomic MFA replay protection, durable backoff and administrative unlock
 
-- Status: Proposed; requires lead acceptance after independent security review.
+- Status: Accepted design at `48246ec` by [lead decision](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/208#issuecomment-6458164224)
+  after [independent re-review](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/208#issuecomment-6458154474); implementation pending.
 - Date: 2026-10-27.
 - Design issue: [#208](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/208).
 - Parent: [#179](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/179), still
