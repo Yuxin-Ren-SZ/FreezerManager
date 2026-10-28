@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 namespace fmgr::storage {
@@ -64,8 +65,7 @@ namespace fmgr::storage {
       }
     }
 
-    [[nodiscard]] core::AuditEvent fixture_event(std::uint64_t low_bits,
-                                                 std::string previous) {
+    [[nodiscard]] core::AuditEvent fixture_event(std::uint64_t low_bits, std::string previous) {
       core::AuditEvent event{
           .id = id_from_low<core::AuditEventId>(low_bits),
           .at = ts(static_cast<std::int64_t>(low_bits)),
@@ -77,8 +77,8 @@ namespace fmgr::storage {
           .request_id = "fixture-request",
           .prev_hash = std::move(previous),
       };
-      event.this_hash = audit::compute_audit_hash(event.prev_hash,
-                                                  audit::audit_event_content_json(event));
+      event.this_hash =
+          audit::compute_audit_hash(event.prev_hash, audit::audit_event_content_json(event));
       return event;
     }
 
@@ -88,8 +88,10 @@ namespace fmgr::storage {
           "(id,at_micros,actor_user_id,actor_session_id,lab_id,action,entity_kind,entity_id,"
           "before_json,after_json,request_id,prev_hash,this_hash) VALUES ('" +
           event.id.to_string() + "'," + std::to_string(event.at.unix_micros()) + ",'" +
-          event.actor_user_id.to_string() + "','fixture-session',NULL,'fixture','lab',NULL,"
-          "'{}','{}','fixture-request','" + event.prev_hash + "','" + event.this_hash + "')";
+          event.actor_user_id.to_string() +
+          "','fixture-session',NULL,'fixture','lab',NULL,"
+          "'{}','{}','fixture-request','" +
+          event.prev_hash + "','" + event.this_hash + "')";
       fixture_sql(txn, sql);
     }
 
@@ -156,6 +158,30 @@ namespace fmgr::storage {
         EXPECT_EQ(backend().current_version(), SchemaVersion{15});
       }
 
+      void install_append_trigger(const std::string& body) {
+        auto txn = backend().begin(IsolationLevel::ReadCommitted);
+        fixture_sql(*txn, "CREATE FUNCTION force_audit_outcome() RETURNS trigger LANGUAGE plpgsql "
+                          "AS $$ BEGIN " +
+                              body +
+                              " RETURN NEW; END; $$; "
+                              "CREATE TRIGGER force_audit_outcome BEFORE INSERT ON audit_events "
+                              "FOR EACH ROW EXECUTE FUNCTION force_audit_outcome()");
+        txn->commit();
+      }
+
+      template <typename Error> void require_failed_append_rolls_back() {
+        const auto before = events();
+        auto txn = backend().begin(IsolationLevel::ReadCommitted);
+        txn->repo<core::Lab>().insert(make_lab(10), mutation_context());
+        txn->note_mutation("force_failure", "test", mutation_context());
+        EXPECT_THROW(txn->commit(), Error);
+        auto read = backend().begin(IsolationLevel::ReadCommitted);
+        EXPECT_FALSE(read->repo<core::Lab>().find_by_id(make_lab(10).id).has_value());
+        read->commit();
+        EXPECT_EQ(events(), before);
+        EXPECT_TRUE(audit::verify_audit_chain(events()).ok);
+      }
+
     private:
       std::unique_ptr<RepoBackendHarness> harness_;
     };
@@ -202,7 +228,7 @@ namespace fmgr::storage {
 
     TEST_P(AuditRepositoryTest, AuditIntegrityMigrationRejectsForkedGenesisAtomically) {
       require_migration_refuses({fixture_event(1, std::string(audit::zero_hash())),
-                                fixture_event(2, std::string(audit::zero_hash()))});
+                                 fixture_event(2, std::string(audit::zero_hash()))});
     }
 
     TEST_P(AuditRepositoryTest, AuditIntegrityMigrationRejectsNonGenesisForkAtomically) {
@@ -213,7 +239,7 @@ namespace fmgr::storage {
 
     TEST_P(AuditRepositoryTest, AuditIntegrityMigrationRejectsOrphanAtomically) {
       require_migration_refuses({fixture_event(1, std::string(audit::zero_hash())),
-                                fixture_event(2, std::string(64, 'f'))});
+                                 fixture_event(2, std::string(64, 'f'))});
     }
 
     TEST_P(AuditRepositoryTest, AuditIntegrityMigrationRejectsHashMismatchAtomically) {
@@ -222,11 +248,49 @@ namespace fmgr::storage {
       require_migration_refuses({tampered});
     }
 
+    TEST_P(AuditRepositoryTest, VerificationRequirementIsBoundToAppliedMigrationChecksum) {
+      std::string connection;
+      {
+        auto txn = backend().begin(IsolationLevel::ReadCommitted);
+        if (GetParam() == BackendKind::Sqlite) {
+          connection = sqlite3_db_filename(dynamic_cast<SqliteTransaction&>(*txn).handle(), "main");
+        } else {
+          connection = dynamic_cast<PostgresTransaction&>(*txn).work().conn().connection_string();
+        }
+        txn->commit();
+      }
+      const auto with_requirement =
+          [&](bool require_verification) -> std::unique_ptr<IStorageBackend> {
+        if (GetParam() == BackendKind::Sqlite) {
+          return std::make_unique<SqliteBackend>(SqliteBackendOptions{
+              .database_path = connection,
+              .migrations = {{.version = 17,
+                              .name = "verified_test",
+                              .up_sql = "SELECT 1;",
+                              .requires_verified_audit_chain = require_verification}},
+          });
+        }
+        return std::make_unique<PostgresBackend>(PostgresBackendOptions{
+            .connection_string = connection,
+            .pool_size = 1,
+            .migrations = {{.version = 17,
+                            .name = "verified_test",
+                            .up_sql = "SELECT 1;",
+                            .requires_verified_audit_chain = require_verification}},
+        });
+      };
+      auto verified = with_requirement(true);
+      ASSERT_NO_THROW(verified->migrate_to_latest());
+      auto removed_requirement = with_requirement(false);
+      EXPECT_THROW(removed_requirement->migrate_to_latest(), MigrationFailure);
+      EXPECT_EQ(removed_requirement->current_version(), SchemaVersion{17});
+    }
+
     TEST_P(AuditRepositoryTest, PredecessorUniquenessIncludesGenesisAndLaterRows) {
       for (const bool genesis : {true, false}) {
         SCOPED_TRACE(genesis);
         const auto first = fixture_event(genesis ? 1 : 3, genesis ? std::string(audit::zero_hash())
-                                                               : events().front().this_hash);
+                                                                  : events().front().this_hash);
         {
           auto txn = backend().begin(IsolationLevel::ReadCommitted);
           insert_fixture_event(*txn, first);
@@ -243,6 +307,67 @@ namespace fmgr::storage {
             std::exception);
         EXPECT_EQ(events(), before);
       }
+    }
+
+    TEST_P(AuditRepositoryTest, NamedPredecessorNoInsertIsSerializationFailureAndRollsBackBatch) {
+      if (GetParam() != BackendKind::Postgres) {
+        GTEST_SKIP() << "PostgreSQL named conflict result-count contract";
+      }
+      install_append_trigger(
+          "IF pg_trigger_depth() = 1 AND NEW.entity_kind = 'force_failure' THEN "
+          "INSERT INTO audit_events "
+          "(id,at_micros,actor_user_id,actor_session_id,lab_id,action,entity_kind,entity_id,"
+          "before_json,after_json,request_id,prev_hash,this_hash) VALUES "
+          "('00000000-0000-0000-0000-000000000042',NEW.at_micros,NEW.actor_user_id,"
+          "NEW.actor_session_id,NEW.lab_id,NEW.action,'fixture',NEW.entity_id,NEW.before_json,"
+          "NEW.after_json,NEW.request_id,NEW.prev_hash,repeat('b',64)); END IF;");
+      require_failed_append_rolls_back<SerializationFailure>();
+    }
+
+    TEST_P(AuditRepositoryTest, PredecessorConstraintFailureRollsBackEarlierDomainWrites) {
+      const auto first = fixture_event(1, std::string(audit::zero_hash()));
+      const auto fork = fixture_event(2, first.prev_hash);
+      EXPECT_THROW(
+          {
+            auto txn = backend().begin(IsolationLevel::ReadCommitted);
+            txn->repo<core::Lab>().insert(make_lab(10), mutation_context());
+            insert_fixture_event(*txn, first);
+            insert_fixture_event(*txn, fork);
+            txn->commit();
+          },
+          std::exception);
+      auto read = backend().begin(IsolationLevel::ReadCommitted);
+      EXPECT_FALSE(read->repo<core::Lab>().find_by_id(make_lab(10).id).has_value());
+      read->commit();
+      EXPECT_TRUE(events().empty());
+    }
+
+    TEST_P(AuditRepositoryTest, NativeSerializationFailureRollsBackEarlierAuditAndDomainRows) {
+      if (GetParam() != BackendKind::Postgres) {
+        GTEST_SKIP() << "PostgreSQL SQLSTATE contract";
+      }
+      install_append_trigger(
+          "IF NEW.entity_kind = 'force_failure' THEN RAISE EXCEPTION "
+          "USING ERRCODE = '40001', MESSAGE = 'injected serialization failure'; END IF;");
+      require_failed_append_rolls_back<SerializationFailure>();
+    }
+
+    TEST_P(AuditRepositoryTest, NativeDeadlockFailureRollsBackEarlierAuditAndDomainRows) {
+      if (GetParam() != BackendKind::Postgres) {
+        GTEST_SKIP() << "PostgreSQL SQLSTATE contract";
+      }
+      install_append_trigger("IF NEW.entity_kind = 'force_failure' THEN RAISE EXCEPTION "
+                             "USING ERRCODE = '40P01', MESSAGE = 'injected deadlock'; END IF;");
+      require_failed_append_rolls_back<SerializationFailure>();
+    }
+
+    TEST_P(AuditRepositoryTest, UnrelatedAuditHashUniquenessRemainsUniqueViolation) {
+      if (GetParam() != BackendKind::Postgres) {
+        GTEST_SKIP() << "PostgreSQL named conflict target excludes this_hash uniqueness";
+      }
+      install_append_trigger("IF NEW.entity_kind = 'force_failure' THEN NEW.this_hash := "
+                             "(SELECT this_hash FROM audit_events LIMIT 1); END IF;");
+      require_failed_append_rolls_back<UniqueViolation>();
     }
 
     // The repository (not the caller) derives before/after audit snapshots from
@@ -350,7 +475,8 @@ namespace fmgr::storage {
           GTEST_SKIP() << "FMGR_TEST_POSTGRES_URL not set; live PostgreSQL test not run";
         }
         harness_ = std::make_unique<RepoBackendHarness>(
-            BackendKind::Postgres, [](SqliteBackend&) {}, [](PostgresBackend& backend) {
+            BackendKind::Postgres, [](SqliteBackend&) {},
+            [](PostgresBackend& backend) {
               register_identity_repositories(backend);
               register_audit_repositories(backend);
             });
@@ -417,21 +543,21 @@ namespace fmgr::storage {
       EXPECT_TRUE(audit::verify_audit_chain(final).ok);
     }
 
-    [[nodiscard]] std::string snapshot_case_name(
-        const ::testing::TestParamInfo<SnapshotCase>& info) {
+    [[nodiscard]] std::string
+    snapshot_case_name(const ::testing::TestParamInfo<SnapshotCase>& info) {
       const auto [isolation, nonempty, batch, reverse] = info.param;
-      return std::string(isolation == IsolationLevel::Serializable ? "Serializable" :
-                                                                     "RepeatableRead") +
+      return std::string(isolation == IsolationLevel::Serializable ? "Serializable"
+                                                                   : "RepeatableRead") +
              (nonempty ? "ExistingChain" : "Genesis") + (batch ? "Batch" : "Single") +
              (reverse ? "OldFirst" : "NewFirst");
     }
 
-    INSTANTIATE_TEST_SUITE_P(
-        PostgreSql, AuditSnapshotTest,
-        ::testing::Combine(::testing::Values(IsolationLevel::Serializable,
-                                             IsolationLevel::RepeatableRead),
-                             ::testing::Bool(), ::testing::Bool(), ::testing::Bool()),
-        snapshot_case_name);
+    INSTANTIATE_TEST_SUITE_P(PostgreSql, AuditSnapshotTest,
+                             ::testing::Combine(::testing::Values(IsolationLevel::Serializable,
+                                                                  IsolationLevel::RepeatableRead),
+                                                ::testing::Bool(), ::testing::Bool(),
+                                                ::testing::Bool()),
+                             snapshot_case_name);
 
   } // namespace
 } // namespace fmgr::storage

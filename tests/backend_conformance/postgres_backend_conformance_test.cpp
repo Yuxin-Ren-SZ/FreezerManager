@@ -500,7 +500,9 @@ namespace fmgr::storage {
       // and the JSONB query DSL (`->>`).
       const auto audit = default_postgres_migrations().front(); // 0001_init = audit_events
       return {
-          {.version = 1, .name = "pg_conformance", .up_sql = audit.up_sql + R"sql(
+          {.version = 1,
+           .name = "pg_conformance",
+           .up_sql = audit.up_sql + default_postgres_migrations().back().up_sql + R"sql(
 CREATE TABLE IF NOT EXISTS fmgr_pg_conformance_sample (
   id                  TEXT   PRIMARY KEY,
   lab_id              TEXT   NOT NULL,

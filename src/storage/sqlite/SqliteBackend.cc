@@ -2,8 +2,10 @@
 
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "audit/AuditChainVerifier.h"
 #include "audit/CanonicalJson.h"
 #include "core/timestamp.h"
+#include "storage/sqlite/AuditRepositories.h"
 
 #include <sodium.h>
 #include <sqlite3.h>
@@ -760,6 +762,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
   WHERE archived_at_micros IS NULL AND placement_level IS NOT NULL;
 )sql",
           },
+          {
+              .version = 16,
+              .name = "0016_audit_predecessor_integrity",
+              .up_sql = R"sql(
+CREATE UNIQUE INDEX audit_events_prev_hash_unique ON audit_events(prev_hash);
+)sql",
+              .requires_verified_audit_chain = true,
+          },
       };
     }
 
@@ -880,8 +890,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
     }
 
     [[nodiscard]] std::string checksum(const SqliteMigration& migration) {
-      return blake2b_hex(std::to_string(migration.version) + ":" + migration.name + ":" +
-                         migration.up_sql);
+      return blake2b_hex(
+          std::to_string(migration.version) + ":" + migration.name + ":" + migration.up_sql +
+          (migration.requires_verified_audit_chain ? ":requires_verified_audit_chain" : ""));
     }
 
     [[nodiscard]] std::int64_t now_unix_seconds() {
@@ -1214,7 +1225,22 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
           continue;
         }
 
-        exec(database, migration.up_sql);
+        if (migration.requires_verified_audit_chain) {
+          try {
+            // BEGIN IMMEDIATE above excludes every database writer throughout
+            // verification, DDL and the migration-version insert.
+            if (!audit::verify_audit_chain(read_sqlite_audit_chain(database)).ok) {
+              throw MigrationFailure("audit chain verification failed before migration");
+            }
+          } catch (const std::exception&) {
+            throw MigrationFailure("audit chain verification failed before migration");
+          }
+        }
+        try {
+          exec(database, migration.up_sql);
+        } catch (const BackendError&) {
+          throw MigrationFailure("sqlite migration could not be applied");
+        }
         PreparedStatement insert_migration(
             database, "INSERT INTO schema_migrations "
                       "(version, name, checksum, applied_at_unix_seconds) VALUES (?, ?, ?, ?)");
