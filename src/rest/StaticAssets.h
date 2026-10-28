@@ -14,9 +14,10 @@
 //   * `/healthz` and `/metrics` keep their own exact handlers.
 //   * Every other GET is a client-side route: serve the file when one exists
 //     under the web root, otherwise `index.html`.
-//   * Traversal is refused before the filesystem is touched (`..`, `.`,
-//     backslashes, NUL bytes) and again by canonical containment, which also
-//     catches a symlink that points outside the root.
+//   * Dot-prefixed path components (including `.well-known`), backslashes and
+//     NUL bytes are refused before the filesystem is touched. Canonical targets
+//     must stay within the root and have no hidden components below it, even
+//     when reached through a visible symlink or the index fallback.
 //
 // Browser security headers are applied by a Drogon post-handling advice, so
 // RestGateway.cc stays unaware of the SPA. The advice is registered only when
@@ -70,9 +71,10 @@ namespace fmgr::rest {
     // Maps one percent-decoded URL path to a file under `web_root`. A path that
     // names a regular file is served as-is; anything else (a client-side route)
     // falls back to `<web_root>/index.html`. std::nullopt means "refuse": a
-    // `..`/`.` segment, a backslash, a NUL byte, or a canonical path that
-    // escapes the root (including through a symlink). Paths are returned
-    // canonical so the caller opens exactly what was checked.
+    // dot-prefixed segment, a backslash, a NUL byte, or a canonical path that
+    // escapes the root or contains a hidden component below it (including
+    // through a symlink). Hidden ancestors of `web_root` are allowed. Paths
+    // are returned canonical so the caller opens exactly what was checked.
     [[nodiscard]] static std::optional<std::filesystem::path>
     resolve_path(const std::filesystem::path& web_root, std::string_view decoded_path);
   };
