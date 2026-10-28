@@ -701,6 +701,9 @@ const BLUE = '#2b3f9c';
 const BOXC = ['#e9c992', '#86b6e8', '#93d3a6', '#f3d36f', '#f1a7b8', '#ece8df'];
 const CELLM = Object.fromEntries(BOXC.map(c => [c, matOf(c)]));
 const SANS = 'font-family="Helvetica Neue,Arial,sans-serif"';
+// clean mode (window.CF_CLEAN, or ?clean=1): only the freezer and its door / inner door / rack buttons. No wobble,
+// see-through, labels, readouts, notices or page controls.
+const CF_CLEAN = window.CF_CLEAN === true || new URLSearchParams(location.search).get('clean') === '1';
 
 /* ---------- helpers ---------- */
 // a box in any local frame: map(a, b, c) -> world point; all six faces, each drawn only when it faces the viewer
@@ -1063,7 +1066,8 @@ function scene(st, m){
   let body = byDepth(items);
   if (k > 0) body = `<g opacity="${f(1 - .78*k)}">${body}</g><g opacity="${f(k)}">${mechParts(st, k)}</g>`;
   s += body;
-  if (k > .6) s += MECH_LABELS;
+  if (CF_CLEAN) {}
+  else if (k > .6) s += MECH_LABELS;
   else {
     const lab = [];
     if (vis(DM.nF)) lab.push({ at: DM(36, -3, 158), text: 'TOUCHSCREEN', on: st.temp > -70 });
@@ -1137,12 +1141,12 @@ function pickRack(st, r){
 function pushBack(st){ if (st.pull <= 0) return ui.flash('No rack is out'); st.pullT = 0; runLoop(); }
 
 ui = mountFigure({
-  fig:'F740', title:'CryoCube F740 ULT freezer', credit: true, turn:'full',
+  fig:'F740', title:'CryoCube F740 ULT freezer', credit: !CF_CLEAN, turn:'full',
   size:[190, FD, FH + 4], center:[52, FD/2], palette:'cobalt',
   // door / inner[c] / pull: 0 = shut, 1 = open (eased when drawn); rk = rack that is (or can be) out, sel = rack wanted
   state:{ door:0, doorT:0, inner:[0, 0, 0], innerT:[0, 0, 0], pull:0, pullT:0, rk:null, sel:null, temp:-80, run:false, fanA:0, flow:0, clock:0 },
   scene,
-  stats: st => { const pr = st.pull > .5 ? st.rk : null;
+  stats: CF_CLEAN ? undefined : st => { const pr = st.pull > .5 ? st.rk : null;
     return [{ label:'Cabinet', value:`${Math.round(st.temp)} °C` }, { label:'Rack out', value: pr ? `${COMP_NAMES[pr.c]} · ${pr.r + 1}` : '—', small:true }]; },
   buttons:[
     { label:'Open door', onClick:(st) => toggleDoor(st) },
@@ -1172,8 +1176,16 @@ ui = mountFigure({
 // the first button names what it will do
 { const b = document.querySelector('.act'), r0 = ui.render;
   ui.render = () => { r0(); if (b) b.textContent = ui.st.doorT >= 1 ? 'Close door' : 'Open door'; }; }
-xrMount(() => ui, () => '');
-{ const xb = document.getElementById('xrb'); if (xb) xb.addEventListener('click', () => runLoop()); }
+if (CF_CLEAN){
+  // wobble 0 (the slider's own setting), and everything but the figure and its action buttons hidden
+  document.getElementById('wob').setAttribute('scale', '0');
+  const css = document.createElement('style');
+  css.textContent = 'html body > header, html body .controls, html body .made-with, html body #readout, html body .toast, html body .zchip, html body .lgd { display: none !important }';
+  document.head.appendChild(css);
+} else {
+  xrMount(() => ui, () => '');
+  const xb = document.getElementById('xrb'); if (xb) xb.addEventListener('click', () => runLoop());
+}
 if (ui.st.door > 0 || ui.st.temp > -80) runLoop();
 </script><style>@media (max-width:560px),(pointer:coarse){#art{filter:none!important}.ctl:has(#wb){display:none!important}}</style><style>@media (max-width:560px){html body .kpad{width:100%;box-sizing:border-box;justify-content:space-between;gap:10px;margin:10px 0 0;padding:0;border:0;background:none;box-shadow:none}
 html body .kpad .dp{display:flex;gap:8px}html body .kpad .hub{display:none}

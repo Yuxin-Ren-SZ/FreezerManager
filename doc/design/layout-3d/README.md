@@ -8,6 +8,10 @@ freezer**. It is the first catalogued model for the 3D Layout page proposed in
 Open `cryocube-f740.html` in a browser. It is one self-contained file with no
 network access.
 
+**`cryocube-f740-clean.html`** is the same freezer with nothing else on the page. It has no wobble, see-through,
+labels, readouts, notices or page controls. Only the three buttons below remain, plus clicking parts and dragging to turn.
+The full page shows the same view with `?clean=1`.
+
 | Door open, middle compartment, rack 4 out | See-through: cascade refrigeration |
 |---|---|
 | ![Open](cryocube-f740-open.png) | ![See-through](cryocube-f740-see-through.png) |
@@ -45,8 +49,10 @@ These match the `FreezerModel` / `CompartmentSpec` seed entry in the ADR.
 ## Files
 
 - `cryocube-f740.html` is the built, self-contained page to open.
-- `cryocube-f740.src.html` is the figure source. It expects the Colorfigures engine `core.js` beside it.
+- `cryocube-f740-clean.html` is the clean build (`window.CF_CLEAN = true` set before the figure script).
+- `cryocube-f740.src.html` is the figure source for both. It expects the Colorfigures engine `core.js` beside it.
   Rebuild with the Colorfigures skill's `scripts/build.py cryocube-f740.src.html cryocube-f740.html`.
+  For the clean file, insert `<script>window.CF_CLEAN = true;</script>` before `<title>` in that output.
 
 The page is drawn with the Colorfigures isometric engine, credited in the page footer.
 The production web view will reimplement the renderer under `src/web/` (slice 3 in the ADR).
