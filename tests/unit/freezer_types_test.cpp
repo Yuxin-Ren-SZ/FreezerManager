@@ -69,6 +69,63 @@ namespace fmgr::core {
       EXPECT_EQ(restored, container);
     }
 
+    TEST(FreezerTypesTest, FreezerJsonRoundTripCarriesTheFreezerModelId) {
+      const Freezer freezer{
+          .id = id_from_low<FreezerId>(30),
+          .lab_id = id_from_low<LabId>(31),
+          .name = "Minus 80 B",
+          .layout_root_id = id_from_low<StorageContainerId>(32),
+          .created_at = Timestamp::from_unix_micros(9),
+          .freezer_model_id = "eppendorf-cryocube-f740hi",
+      };
+      nlohmann::json json = freezer;
+      EXPECT_EQ(json.at("freezer_model_id"), "eppendorf-cryocube-f740hi");
+      EXPECT_EQ(json.get<Freezer>(), freezer);
+    }
+
+    TEST(FreezerTypesTest, StorageContainerJsonRoundTripWithPlacementAndGrid) {
+      const StorageContainer container{
+          .id = id_from_low<StorageContainerId>(40),
+          .lab_id = id_from_low<LabId>(41),
+          .parent_id = id_from_low<StorageContainerId>(42),
+          .kind = ContainerKind::Rack,
+          .name = "Rack 4",
+          .created_at = Timestamp::from_unix_micros(2),
+          .placement = Placement{.level = 1, .column = 3, .depth = 0},
+          .grid = GridSpec{.levels = 8, .columns = 1, .depths = 4},
+      };
+      nlohmann::json json = container;
+      EXPECT_EQ(json.get<StorageContainer>(), container);
+    }
+
+    // Audit snapshots written before migration 15 have no placement, grid or
+    // model keys; reading one back must yield the "unset" values, not throw.
+    TEST(FreezerTypesTest, SnapshotsWithoutTheLayoutKeysReadBackAsUnset) {
+      const Freezer freezer{
+          .id = id_from_low<FreezerId>(50),
+          .lab_id = id_from_low<LabId>(51),
+          .name = "Legacy",
+          .layout_root_id = id_from_low<StorageContainerId>(52),
+          .created_at = Timestamp::from_unix_micros(3),
+      };
+      nlohmann::json freezer_json = freezer;
+      freezer_json.erase("freezer_model_id");
+      EXPECT_EQ(freezer_json.get<Freezer>().freezer_model_id, "");
+
+      const StorageContainer container{
+          .id = id_from_low<StorageContainerId>(53),
+          .lab_id = id_from_low<LabId>(51),
+          .name = "Legacy root",
+          .created_at = Timestamp::from_unix_micros(3),
+      };
+      nlohmann::json container_json = container;
+      container_json.erase("placement");
+      container_json.erase("grid");
+      const auto restored = container_json.get<StorageContainer>();
+      EXPECT_FALSE(restored.placement.has_value());
+      EXPECT_FALSE(restored.grid.has_value());
+    }
+
     TEST(FreezerTypesTest, ContainerKindParsesAllVariants) {
       for (const auto kind : {ContainerKind::Compartment, ContainerKind::Shelf, ContainerKind::Rack,
                               ContainerKind::Drawer, ContainerKind::Custom}) {

@@ -118,6 +118,24 @@ namespace fmgr::core {
       EXPECT_EQ(restored, box);
     }
 
+    TEST(BoxTypesTest, BoxJsonRoundTripWithPlacement) {
+      const Box box{
+          .id = id_from_low<BoxId>(18),
+          .lab_id = id_from_low<LabId>(19),
+          .box_type_id = id_from_low<BoxTypeId>(20),
+          .storage_container_id = id_from_low<StorageContainerId>(21),
+          .label = "Tier 3 front",
+          .created_at = Timestamp::from_unix_micros(600),
+          .placement = Placement{.level = 2, .column = 0, .depth = 0},
+      };
+
+      nlohmann::json json = box;
+      EXPECT_EQ(json.get<Box>(), box);
+
+      json.erase("placement");
+      EXPECT_FALSE(json.get<Box>().placement.has_value());
+    }
+
     TEST(BoxTypesTest, BoxTypeJsonRoundTripWithEmptyPositions) {
       const BoxType box_type{
           .id = id_from_low<BoxTypeId>(7),
