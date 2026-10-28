@@ -135,6 +135,13 @@ namespace fmgr::storage {
       void update(const core::Session& entity, const MutationContext& context) override {
         validate_session(entity);
         const auto before = find_by_id(entity.id);
+        if (!before.has_value()) {
+          throw NotFound("session not found");
+        }
+        require_owner_lock(before->user_id);
+        if (entity.user_id != before->user_id) {
+          throw ConstraintViolation("session ownership cannot change");
+        }
         write_update(entity, context, before);
       }
 
@@ -143,12 +150,19 @@ namespace fmgr::storage {
         if (!entity.has_value()) {
           throw NotFound("session not found");
         }
+        require_owner_lock(entity->user_id);
         const auto before = entity;
         entity->revoked_at = now_timestamp();
         write_update(entity.value(), context, before);
       }
 
     private:
+      void require_owner_lock(const core::UserId& user_id) const {
+        if (txn_.auth_user_lock_status(user_id) != AuthUserLockStatus::Locked) {
+          throw ConstraintViolation("session mutation requires its owning user lock");
+        }
+      }
+
       void write_update(const core::Session& entity, const MutationContext& context,
                         const std::optional<core::Session>& before) {
         try {

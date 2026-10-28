@@ -23,6 +23,7 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "paused_activity_backend.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 #include <sodium.h>
@@ -86,60 +87,6 @@ namespace fmgr::auth {
       return cfg;
     }
 
-    // Pauses only the next write transaction of the wrapped provider. Its
-    // ordinary session/user reads have completed, but the write owns no DB
-    // resources yet, so a second provider can deterministically commit first.
-    class PausedActivityBackend final : public storage::IStorageBackend {
-    public:
-      explicit PausedActivityBackend(storage::IStorageBackend& backend) : backend_(backend) {}
-
-      ~PausedActivityBackend() override {
-        release();
-      }
-
-      void migrate_to_latest() override {
-        backend_.migrate_to_latest();
-      }
-
-      [[nodiscard]] storage::SchemaVersion current_version() const override {
-        return backend_.current_version();
-      }
-
-      [[nodiscard]] std::unique_ptr<storage::ITransaction>
-      begin(storage::IsolationLevel isolation) override {
-        if (isolation == storage::IsolationLevel::Serializable && armed_.exchange(false)) {
-          reached_.set_value();
-          if (resume_future_.wait_for(std::chrono::seconds(10)) != std::future_status::ready) {
-            throw storage::Unavailable("timed out waiting for activity test release");
-          }
-        }
-        return backend_.begin(isolation);
-      }
-
-      [[nodiscard]] storage::Capabilities caps() const override {
-        return backend_.caps();
-      }
-
-      [[nodiscard]] bool wait_until_paused() {
-        return reached_future_.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
-      }
-
-      void release() {
-        if (!released_.exchange(true)) {
-          resume_.set_value();
-        }
-      }
-
-    private:
-      storage::IStorageBackend& backend_;
-      std::atomic<bool> armed_{true};
-      std::atomic<bool> released_{false};
-      std::promise<void> reached_;
-      std::future<void> reached_future_{reached_.get_future()};
-      std::promise<void> resume_;
-      std::future<void> resume_future_{resume_.get_future()};
-    };
-
     // ---- Fixture ----
 
     class LocalAuthProviderTest : public ::testing::Test {
@@ -184,7 +131,11 @@ namespace fmgr::auth {
         const auto now_micros = std::chrono::duration_cast<std::chrono::microseconds>(
                                     std::chrono::system_clock::now().time_since_epoch())
                                     .count();
-        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        const auto candidate = read->repo<core::Session>().find_by_id(sid);
+        read->commit();
+        ASSERT_TRUE(candidate.has_value());
+        auto txn = backend_->begin_auth_transaction({candidate.value().user_id});
         auto maybe_s = txn->repo<core::Session>().find_by_id(sid);
         ASSERT_TRUE(maybe_s.has_value());
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
@@ -269,6 +220,18 @@ namespace fmgr::auth {
     };
 
     // ---- authenticate: password path ----
+
+    TEST(LocalAuthBackend, FailedAuthTransactionConstructionLeavesDatabaseReusable) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      const auto missing = id_from_low<core::UserId>(900);
+      // Users does not exist yet. The early BEGIN must be rolled back when its
+      // locked-user lookup fails, so migration and a fresh auth txn still work.
+      EXPECT_THROW((void)backend.begin_auth_transaction({missing}), storage::BackendError);
+      backend.migrate_to_latest();
+      auto next = backend.begin_auth_transaction({missing});
+      EXPECT_EQ(next->auth_user_lock_status(missing), storage::AuthUserLockStatus::Missing);
+      next->commit();
+    }
 
     TEST_F(LocalAuthProviderTest, HashPasswordRejectsShortPassword) {
       // Default policy floor is 8 characters (security-audit-2026-06-12 #7).
@@ -1107,7 +1070,7 @@ namespace fmgr::auth {
                                                 .count() +
                                             1'000'000);
       if (paused) {
-        auto write = backend_->begin(storage::IsolationLevel::Serializable);
+        auto write = backend_->begin_auth_transaction({token.user_id});
         auto row = write->repo<core::Session>().find_by_id(token.session_id).value();
         row.last_seen_at = newer_activity;
         write->repo<core::Session>().update(row, test_ctx());
@@ -1898,7 +1861,7 @@ namespace fmgr::auth {
           PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       ASSERT_TRUE(provider_->validate_token(token.plaintext_token).mfa_complete);
       {
-        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto txn = backend_->begin_auth_transaction({token.user_id});
         auto session = txn->repo<core::Session>().find_by_id(token.session_id).value();
         session.mfa_complete = false;
         txn->repo<core::Session>().update(session, test_ctx());

@@ -172,7 +172,10 @@ namespace fmgr::auth {
     [[nodiscard]] SessionContext build_api_token_context(const core::ApiToken& token) const;
 
     // Returns true if the user's totp_secret_enc is populated (TOTP enrolled).
-    [[nodiscard]] bool user_has_totp(const core::UserId& uid) const;
+    // A prelookup only discovers which existing user row must be locked. Every
+    // mutation rereads the Session and user after acquiring that lock.
+    [[nodiscard]] std::optional<core::UserId>
+    session_owner_for_mutation(const core::SessionId& session_id) const;
 
     // Token generation and hashing.
     [[nodiscard]] std::string generate_token() const;                   // 64 hex chars

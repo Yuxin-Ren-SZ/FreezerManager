@@ -363,6 +363,14 @@ namespace fmgr::storage {
       }
 
       void update(const core::Session& entity, const MutationContext& context) override {
+        const auto current = find_by_id(entity.id);
+        if (!current.has_value()) {
+          throw NotFound("session not found");
+        }
+        require_owner_lock(current->user_id);
+        if (entity.user_id != current->user_id) {
+          throw ConstraintViolation("session ownership cannot change");
+        }
         stage_update(entity, context);
       }
 
@@ -371,6 +379,7 @@ namespace fmgr::storage {
         if (!entity.has_value()) {
           throw NotFound("session not found");
         }
+        require_owner_lock(entity->user_id);
         entity->revoked_at = now_timestamp();
         auto before = prior_snapshot(entity_id);
         const auto is_insert = pending().contains(entity_id) && pending().at(entity_id).is_insert;
@@ -383,6 +392,12 @@ namespace fmgr::storage {
       }
 
     private:
+      void require_owner_lock(const core::UserId& user_id) {
+        if (transaction().auth_user_lock_status(user_id) != AuthUserLockStatus::Locked) {
+          throw ConstraintViolation("session mutation requires its owning user lock");
+        }
+      }
+
       void flush(sqlite3* handle) override {
         for (const auto& [unused_id, pending_entity] : pending()) {
           (void)unused_id;

@@ -945,7 +945,7 @@ namespace fmgr::rpc {
       const RpcCall call{.bearer_token = member_token_.plaintext_token, .method = ""};
       ASSERT_NO_THROW((void)middleware_->reauthorize(call, core::Permission::SampleRead, kLabA));
       {
-        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto txn = backend_->begin_auth_transaction({member_token_.user_id});
         auto session = txn->repo<core::Session>().find_by_id(member_token_.session_id).value();
         session.mfa_complete = false;
         txn->repo<core::Session>().update(session, test_ctx());

@@ -112,7 +112,11 @@ namespace fmgr::test {
       provider.revoke_session(session.session_id, mutation);
       return;
     }
-    auto txn = backend.begin(storage::IsolationLevel::Serializable);
+    const bool changes_session = change == WatchInvalidation::IdleExpiry ||
+                                 change == WatchInvalidation::AbsoluteExpiry ||
+                                 change == WatchInvalidation::Mfa;
+    auto txn = changes_session ? backend.begin_auth_transaction({session.user_id})
+                               : backend.begin(storage::IsolationLevel::Serializable);
     if (change == WatchInvalidation::Membership) {
       txn->repo<core::LabMembership>().soft_delete(
           core::LabMembershipId{.user_id = session.user_id, .lab_id = lab}, mutation);
