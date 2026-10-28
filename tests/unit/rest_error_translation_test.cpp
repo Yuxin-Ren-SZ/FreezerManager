@@ -174,11 +174,11 @@ namespace fmgr::rest {
       EXPECT_EQ(body.at("code"), "INTERNAL");
     }
 
-    TEST(RestErrorTranslationTest, StatusCodeOutOfEnumRange) {
-      // gRPC defines codes 0–16. Values outside that range are implementation-defined.
-      const auto status = http_status_for(static_cast<grpc::StatusCode>(99));
-      EXPECT_GE(status, 200);
-      EXPECT_LE(status, 599);
+    TEST(RestErrorTranslationTest, DoNotUseSentinelUsesInternalFallback) {
+      // gRPC's defined sentinel is intentionally not a wire status code. It
+      // must still take the same safe fallback as other unhandled statuses.
+      EXPECT_EQ(http_status_for(grpc::StatusCode::DO_NOT_USE), 500);
+      EXPECT_EQ(grpc_code_name(grpc::StatusCode::DO_NOT_USE), "INTERNAL");
     }
 
   } // namespace
