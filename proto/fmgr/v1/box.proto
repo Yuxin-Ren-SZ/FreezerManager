@@ -23,6 +23,10 @@ service BoxService {
   rpc ArchiveStorageContainer(ArchiveStorageContainerRequest)
       returns (ArchiveStorageContainerResponse);
 
+  // ---- 3D layout reads (ADR 0003) ----
+  rpc GetFreezerScene(GetFreezerSceneRequest) returns (GetFreezerSceneResponse);
+  rpc ListFreezerModels(ListFreezerModelsRequest) returns (ListFreezerModelsResponse);
+
   // ---- ContainerType & BoxType ----
   rpc ListContainerTypes(ListContainerTypesRequest) returns (ListContainerTypesResponse);
   rpc CreateContainerType(CreateContainerTypeRequest) returns (CreateContainerTypeResponse);
@@ -368,7 +372,7 @@ message ArchiveBoxRequest {
 }
 message ArchiveBoxResponse {}
 
-// ---- 3D layout reads (ADR 0003 §3). The RPCs are declared with their handlers (#218). ----
+// ---- 3D layout reads (ADR 0003 §3) ----
 
 message GetFreezerSceneRequest {
   string freezer_id = 1;

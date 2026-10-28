@@ -176,6 +176,55 @@ namespace fmgr::core {
     [[nodiscard]] inline bool positive(const Dimensions& dimensions) {
       return dimensions.width_mm > 0 && dimensions.depth_mm > 0 && dimensions.height_mm > 0;
     }
+
+    // Compartments run 0..n-1 bottom -> top, do not overlap, stay inside the
+    // interior, and hold racks that fit them.
+    inline void append_compartment_errors(const FreezerModel& model,
+                                          std::vector<std::string>& errors) {
+      std::int32_t previous_top = 0;
+      for (std::size_t index = 0; index < model.compartments.size(); ++index) {
+        const auto& compartment = model.compartments[index];
+        const auto where = "compartment " + std::to_string(index);
+        if (compartment.level != static_cast<std::int32_t>(index)) {
+          errors.push_back(where + ": levels must run 0..n-1 bottom -> top");
+        }
+        if (compartment.floor_mm < previous_top || compartment.height_mm <= 0) {
+          errors.push_back(where + ": overlaps the compartment below or has no height");
+        }
+        previous_top = compartment.floor_mm + compartment.height_mm;
+        if (previous_top > model.interior_mm.height_mm) {
+          errors.push_back(where + ": rises above the interior");
+        }
+        if (compartment.rack_slots < 1 || compartment.rack_slots > k_max_grid_extent) {
+          errors.push_back(where + ": rack slots must be between 1 and 64");
+        }
+        if (!positive(compartment.rack_slot_mm)) {
+          errors.push_back(where + ": rack slot dimensions must be positive");
+        }
+        const bool too_wide =
+            compartment.rack_slots * compartment.rack_slot_mm.width_mm > model.interior_mm.width_mm;
+        const bool too_deep = compartment.rack_slot_mm.depth_mm > model.interior_mm.depth_mm;
+        const bool too_tall = compartment.rack_slot_mm.height_mm > compartment.height_mm;
+        if (too_wide || too_deep || too_tall) {
+          errors.push_back(where + ": racks do not fit in the compartment");
+        }
+      }
+    }
+
+    // Inner doors cover existing levels, bottom -> top, without overlapping.
+    inline void append_inner_door_errors(const FreezerModel& model,
+                                         std::vector<std::string>& errors) {
+      const auto levels = static_cast<std::int32_t>(model.compartments.size());
+      std::int32_t next_free_level = 0;
+      for (const auto& door : model.inner_doors) {
+        if (door.first_level > door.last_level || door.first_level < next_free_level ||
+            door.last_level >= levels) {
+          errors.emplace_back("inner doors must cover existing levels, bottom -> top, "
+                              "without overlapping");
+        }
+        next_free_level = door.last_level + 1;
+      }
+    }
   } // namespace detail
 
   // Every way `model` is not a drawable, self-consistent cabinet; empty when it is.
@@ -196,44 +245,8 @@ namespace fmgr::core {
         model.compartments.size() > static_cast<std::size_t>(k_max_grid_extent)) {
       errors.emplace_back("a model needs between 1 and 64 compartments");
     }
-
-    std::int32_t previous_top = 0;
-    for (std::size_t index = 0; index < model.compartments.size(); ++index) {
-      const auto& compartment = model.compartments[index];
-      const auto where = "compartment " + std::to_string(index);
-      if (compartment.level != static_cast<std::int32_t>(index)) {
-        errors.push_back(where + ": levels must run 0..n-1 bottom -> top");
-      }
-      if (compartment.floor_mm < previous_top || compartment.height_mm <= 0) {
-        errors.push_back(where + ": overlaps the compartment below or has no height");
-      }
-      previous_top = compartment.floor_mm + compartment.height_mm;
-      if (previous_top > model.interior_mm.height_mm) {
-        errors.push_back(where + ": rises above the interior");
-      }
-      if (compartment.rack_slots < 1 || compartment.rack_slots > k_max_grid_extent) {
-        errors.push_back(where + ": rack slots must be between 1 and 64");
-      }
-      if (!detail::positive(compartment.rack_slot_mm)) {
-        errors.push_back(where + ": rack slot dimensions must be positive");
-      }
-      if (compartment.rack_slots * compartment.rack_slot_mm.width_mm > model.interior_mm.width_mm ||
-          compartment.rack_slot_mm.depth_mm > model.interior_mm.depth_mm ||
-          compartment.rack_slot_mm.height_mm > compartment.height_mm) {
-        errors.push_back(where + ": racks do not fit in the compartment");
-      }
-    }
-
-    const auto levels = static_cast<std::int32_t>(model.compartments.size());
-    std::int32_t next_free_level = 0;
-    for (const auto& door : model.inner_doors) {
-      if (door.first_level > door.last_level || door.first_level < next_free_level ||
-          door.last_level >= levels) {
-        errors.emplace_back("inner doors must cover existing levels, bottom -> top, "
-                            "without overlapping");
-      }
-      next_free_level = door.last_level + 1;
-    }
+    detail::append_compartment_errors(model, errors);
+    detail::append_inner_door_errors(model, errors);
     return errors;
   }
 
