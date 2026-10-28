@@ -147,6 +147,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ REST / JSON gateway — Drogon HTTP front door at `/api/v1/*`; forwards to the gRPC services over the in-process channel (reuses the RBAC gate + audit + transactions, no logic duplicated); JSON↔proto via proto3 JSON mapping. **All 9 services wired** (Auth/Session/Lab/Sample/Box/ItemType/Role/Audit/Share) with positive/negative authz integration tests. ⚙️ SSE streaming: live audit feed
 (`GET /api/v1/audit/watch`, server-streaming `WatchAuditFeed` bridged to
 `text/event-stream`); live sample list + bulk-import progress 🔲
+- ✅ Same-origin SPA hosting — set `FMGR_WEB_ROOT` to the built SPA directory. Dot-prefixed paths (including `.well-known`) and hidden canonical symlink targets return 404; handle any required `.well-known` routes at the reverse proxy.
 - ⚙️ Qt 6 desktop client — ✅ login + session shell, ✅ Lab→Freezer→Container→Box tree, ✅ virtualized sample browser (cursor paging + structured filters), ✅ box drag-and-drop grid (server-validated placement, "size mismatch" toast), ✅ barcode-scanner focus mode (bulk check-in/out), ✅ CSV export from the sample list, ✅ CSV import wizard (file pick → server dry-run report → all-or-nothing commit → list refresh)
 - 🔲 React / TypeScript SPA — feature parity with Qt client; live updates via SSE
 - 🔲 `freezerctl-py` Python client — thin REST wrapper; Jupyter quick-start notebook with example plots
