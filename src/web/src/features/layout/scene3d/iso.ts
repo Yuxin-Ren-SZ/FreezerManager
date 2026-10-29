@@ -15,9 +15,17 @@
  * Everything is drawn as **blocks**: an origin plus three edge vectors (width,
  * depth, height). An axis-aligned box and a door swung about its hinge are the
  * same thing to the engine. Hidden-surface removal is back-face culling plus a
- * painter's sort by block, inside explicit layers; the layers are how a caller
- * says "the cabinet's back wall is always behind what is inside it", which a
- * centroid sort alone gets wrong for long thin parts.
+ * painter's sort by block, inside explicit layers. Within a layer, blocks
+ * whose outlines overlap on screen are ordered by a face plane that separates
+ * them, never by comparing centres: a centre sort paints a rack over the long
+ * shelf above it, or a handle through the door it is mounted on. Layers are
+ * for containment, which no separating plane can express: the outer shell is a
+ * box round everything inside it.
+ *
+ * Every block stands upright, turned about the vertical axis at most, so two
+ * blocks that do not intersect are always separated by a face plane of one of
+ * them. Callers keep parts of one layer from passing through each other; a
+ * pair that does intersect is left in centre order.
  */
 
 export type Vec3 = readonly [number, number, number];
@@ -261,13 +269,125 @@ function blockCentre(block: Block): Vec3 {
   return add(block.origin, scale(add(add(block.u, block.v), block.w), 0.5));
 }
 
+function blockCorners(block: Block): Vec3[] {
+  const { origin: o, u, v, w } = block;
+  const ou = add(o, u);
+  const ov = add(o, v);
+  return [o, ou, ov, add(ou, v), add(o, w), add(ou, w), add(ov, w), add(add(ou, v), w)];
+}
+
+const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const subtract = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+
+/** How far two parts may touch or press into each other and still count as apart, in mm. */
+const CONTACT = 2;
+
 /**
- * Every visible face, in drawing order: layer by layer, and within a layer the
- * farthest block first. A block's faces stay together, so a box never has a
- * neighbour painted between its own sides.
+ * Whether `front` must be painted after `back`, decided by a face plane of one
+ * of them with the other wholly beyond it. The block on the viewer's side of
+ * such a plane can never be hidden by the other. Every block in a scene stands
+ * upright, so for two that do not intersect one of their face planes always
+ * separates them; for two that do, nothing is decided.
+ */
+function paintsOver(front: Block, back: Block, camera: Camera): boolean | null {
+  const frontCorners = blockCorners(front);
+  const backCorners = blockCorners(back);
+  for (const spec of faceSpecs(back)) {
+    const beyond = frontCorners.every(
+      (corner) => dot(subtract(corner, spec.corners[0]), spec.normal) >= -CONTACT,
+    );
+    if (beyond) return faceVisible(spec.normal, camera);
+  }
+  for (const spec of faceSpecs(front)) {
+    const beyond = backCorners.every(
+      (corner) => dot(subtract(corner, spec.corners[0]), spec.normal) >= -CONTACT,
+    );
+    if (beyond) return !faceVisible(spec.normal, camera);
+  }
+  return null;
+}
+
+type Point = readonly [number, number];
+
+/** A block's outline on screen: the convex hull of its corners, and its bounds. */
+interface Placed {
+  readonly block: Block;
+  readonly outline: readonly Point[];
+  readonly minX: number;
+  readonly maxX: number;
+  readonly minY: number;
+  readonly maxY: number;
+}
+
+const cross = (o: Point, a: Point, b: Point) =>
+  (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+
+/** Andrew's monotone chain: the convex hull of `points`, in order. */
+function hull(points: readonly Point[]): Point[] {
+  const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const chain = (input: readonly Point[]) => {
+    const out: Point[] = [];
+    for (const point of input) {
+      while (out.length >= 2 && cross(out[out.length - 2], out[out.length - 1], point) <= 0) {
+        out.pop();
+      }
+      out.push(point);
+    }
+    out.pop();
+    return out;
+  };
+  return [...chain(sorted), ...chain([...sorted].reverse())];
+}
+
+function place(block: Block, camera: Camera): Placed {
+  const corners = blockCorners(block).map((corner) => project(corner, camera));
+  const xs = corners.map((point) => point.x);
+  const ys = corners.map((point) => point.y);
+  return {
+    block,
+    outline: hull(corners.map((point): Point => [point.x, point.y])),
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  };
+}
+
+/** Outlines that only touch, or overlap by less than this, are apart. */
+const TOUCH = 0.5;
+
+/** Whether some edge of `a`'s outline has all of `b` on its outer side. */
+function edgeSeparates(a: readonly Point[], b: readonly Point[]): boolean {
+  return a.some((start, index) => {
+    const end = a[(index + 1) % a.length];
+    const length = Math.hypot(end[0] - start[0], end[1] - start[1]);
+    if (length === 0) return false;
+    return b.every((point) => cross(start, end, point) / length <= TOUCH);
+  });
+}
+
+/**
+ * Whether two outlines really overlap on screen. Two blocks that do not can be
+ * painted in either order, and ordering them anyway can make a cycle with a
+ * third block that overlaps both.
+ */
+function screensOverlap(a: Placed, b: Placed): boolean {
+  if (a.minX >= b.maxX || b.minX >= a.maxX || a.minY >= b.maxY || b.minY >= a.maxY) {
+    return false;
+  }
+  return !edgeSeparates(a.outline, b.outline) && !edgeSeparates(b.outline, a.outline);
+}
+
+/**
+ * Every visible face, in drawing order: layer by layer, and within a layer in
+ * occlusion order. Two blocks whose outlines overlap on screen are ordered by
+ * a plane that separates them (`paintsOver`); the farthest block by centre
+ * goes first wherever that leaves a choice, and breaks the rare cycle. A
+ * block's faces stay together, so a box never has a neighbour painted between
+ * its own sides.
  */
 export function paint(blocks: readonly Block[], camera: Camera): Face[] {
-  return blocks
+  const ranked = blocks
     .map((block, index) => ({ block, index, depth: project(blockCentre(block), camera).depth }))
     .sort(
       (left, right) =>
@@ -275,7 +395,49 @@ export function paint(blocks: readonly Block[], camera: Camera): Face[] {
         right.depth - left.depth ||
         left.index - right.index,
     )
-    .flatMap(({ block }) => blockFaces(block, camera));
+    .map(({ block }) => place(block, camera));
+
+  // after[i]: the blocks that must be painted after block i. Only blocks of
+  // one layer are compared; the layers themselves are painted in order.
+  const count = ranked.length;
+  const after: number[][] = ranked.map(() => []);
+  const waiting = new Array<number>(count).fill(0);
+  for (let i = 0; i < count; i += 1) {
+    for (let j = i + 1; j < count && ranked[j].block.layer === ranked[i].block.layer; j += 1) {
+      if (!screensOverlap(ranked[i], ranked[j])) continue;
+      const jOverI = paintsOver(ranked[j].block, ranked[i].block, camera);
+      if (jOverI === null) continue;
+      const [first, second] = jOverI ? [i, j] : [j, i];
+      after[first].push(second);
+      waiting[second] += 1;
+    }
+  }
+
+  // Kahn's sort, always taking the best-ranked block that is free to go. If
+  // every remaining block waits on another (a cycle), the best-ranked one goes
+  // anyway.
+  const order: number[] = [];
+  const done = new Array<boolean>(count).fill(false);
+  let start = 0;
+  while (order.length < count) {
+    while (done[start]) start += 1;
+    // Only the current layer is searched: a cycle is broken inside its layer,
+    // never by painting a block of the next layer early.
+    const layer = ranked[start].block.layer;
+    let next = start;
+    while (
+      next < count &&
+      ranked[next].block.layer === layer &&
+      (done[next] || waiting[next] > 0)
+    ) {
+      next += 1;
+    }
+    if (next === count || ranked[next].block.layer !== layer) next = start;
+    done[next] = true;
+    order.push(next);
+    for (const later of after[next]) waiting[later] -= 1;
+  }
+  return order.flatMap((index) => blockFaces(ranked[index].block, camera));
 }
 
 /** The 2D box around a set of world points, for the SVG `viewBox`. */
