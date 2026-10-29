@@ -2,8 +2,10 @@
 
 #include "storage/postgres/PostgresBackend.h"
 
+#include "audit/AuditChainVerifier.h"
 #include "audit/CanonicalJson.h"
 #include "core/timestamp.h"
+#include "storage/postgres/AuditRepositories.h"
 
 #include <pqxx/pqxx>
 #include <sodium.h>
@@ -632,6 +634,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
   ON boxes(storage_container_id, placement_level, placement_column, placement_depth)
   WHERE archived_at_micros IS NULL AND placement_level IS NOT NULL;
 )sql"},
+          {.version = 16,
+           .name = "0016_audit_predecessor_integrity",
+           .up_sql = R"sql(
+ALTER TABLE audit_events ADD CONSTRAINT audit_events_prev_hash_unique UNIQUE(prev_hash);
+)sql",
+           .requires_verified_audit_chain = true},
       };
     }
 
@@ -657,8 +665,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
     }
 
     [[nodiscard]] std::string checksum(const PostgresMigration& migration) {
-      return blake2b_hex(std::to_string(migration.version) + ":" + migration.name + ":" +
-                         migration.up_sql);
+      return blake2b_hex(
+          std::to_string(migration.version) + ":" + migration.name + ":" + migration.up_sql +
+          (migration.requires_verified_audit_chain ? ":requires_verified_audit_chain" : ""));
     }
 
   } // namespace
@@ -857,7 +866,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
         // The chain tail is the row whose this_hash no other row links from. Rows
         // in one commit share at_micros and have random ids, so an ORDER BY on
         // those cannot recover the true tail; the link structure can. The
-        // advisory lock above serialises appenders, so exactly one tail exists.
+        // advisory lock above serialises appenders, but an older snapshot may
+        // still see an obsolete tail. Predecessor uniqueness arbitrates those
+        // mixed-isolation writers at INSERT even when the winner is invisible.
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         const auto last = impl_->work->exec(
             "SELECT e.this_hash FROM audit_events e "
@@ -910,12 +921,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
           audit_params.append(prev_hash);
           audit_params.append(this_hash);
           // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-          impl_->work->exec(
+          const auto inserted = impl_->work->exec(
               "INSERT INTO audit_events "
               "(id,at_micros,actor_user_id,actor_session_id,lab_id,action,"
               "entity_kind,entity_id,before_json,after_json,request_id,prev_hash,this_hash) "
-              "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+              "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) "
+              "ON CONFLICT ON CONSTRAINT audit_events_prev_hash_unique DO NOTHING RETURNING id",
               audit_params);
+
+          if (inserted.size() != 1) {
+            throw SerializationFailure("audit predecessor already has a committed successor");
+          }
 
           prev_hash = this_hash;
         }
@@ -993,6 +1009,16 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
           continue;
         }
 
+        if (migration.requires_verified_audit_chain) {
+          try {
+            txn.exec("LOCK TABLE audit_events IN ACCESS EXCLUSIVE MODE");
+            if (!audit::verify_audit_chain(read_postgres_audit_chain(txn)).ok) {
+              throw MigrationFailure("audit chain verification failed before migration");
+            }
+          } catch (const std::exception&) {
+            throw MigrationFailure("audit chain verification failed before migration");
+          }
+        }
         txn.exec(migration.up_sql);
         const auto applied_at =
             static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::seconds>(

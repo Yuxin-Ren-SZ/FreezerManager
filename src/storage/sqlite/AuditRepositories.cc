@@ -239,6 +239,18 @@ namespace fmgr::storage {
 
   } // namespace
 
+  std::vector<core::AuditEvent> read_sqlite_audit_chain(sqlite3* handle) {
+    std::string sql = "SELECT ";
+    sql += k_audit_cols;
+    sql += " FROM audit_events";
+    Statement statement(handle, sql);
+    std::vector<core::AuditEvent> events;
+    while (statement.step_row()) {
+      events.push_back(read_event(statement.get()));
+    }
+    return events;
+  }
+
   void register_audit_repositories(SqliteBackend& backend) {
     backend.register_repository_factory<core::AuditEvent>([](SqliteTransaction& transaction) {
       return std::make_unique<AuditEventRepository>(transaction);

@@ -2,8 +2,10 @@
 
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "audit/AuditChainVerifier.h"
 #include "audit/CanonicalJson.h"
 #include "core/timestamp.h"
+#include "storage/sqlite/AuditRepositories.h"
 
 #include <sodium.h>
 #include <sqlite3.h>
@@ -760,6 +762,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
   WHERE archived_at_micros IS NULL AND placement_level IS NOT NULL;
 )sql",
           },
+          {
+              .version = 16,
+              .name = "0016_audit_predecessor_integrity",
+              .up_sql = R"sql(
+CREATE UNIQUE INDEX audit_events_prev_hash_unique ON audit_events(prev_hash);
+)sql",
+              .requires_verified_audit_chain = true,
+          },
       };
     }
 
@@ -880,12 +890,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS boxes_live_placement_unique
     }
 
     [[nodiscard]] std::string checksum(const SqliteMigration& migration) {
-      return blake2b_hex(std::to_string(migration.version) + ":" + migration.name + ":" +
-                         migration.up_sql);
+      return blake2b_hex(
+          std::to_string(migration.version) + ":" + migration.name + ":" + migration.up_sql +
+          (migration.requires_verified_audit_chain ? ":requires_verified_audit_chain" : ""));
     }
 
     [[nodiscard]] std::int64_t now_unix_seconds() {
       return static_cast<std::int64_t>(std::time(nullptr));
+    }
+
+    void insert_audit_row(PreparedStatement& statement, sqlite3* database) {
+      statement.step_done();
+      if (sqlite3_changes(database) != 1) {
+        // BEGIN IMMEDIATE already excludes a competing writer. Suppressing
+        // this duplicate predecessor would violate the single-chain
+        // invariant; abort the entire domain/audit batch as INTERNAL.
+        throw BackendError(BackendErrorCode::ConstraintViolation,
+                           "audit predecessor invariant failed");
+      }
     }
 
   } // namespace
@@ -1110,7 +1132,8 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
                                      "(id, at_micros, actor_user_id, actor_session_id, lab_id, "
                                      "action, entity_kind, entity_id, before_json, after_json, "
                                      "request_id, prev_hash, this_hash) "
-                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                                     "ON CONFLICT(prev_hash) DO NOTHING");
 
         for (const auto& mutation : impl_->audit_mutations) {
           const auto event_id = generate_random_uuid();
@@ -1159,7 +1182,7 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
           bind_text(audit_stmt.get(), 11, mutation.context.request_id);
           bind_text(audit_stmt.get(), 12, prev_hash);
           bind_text(audit_stmt.get(), 13, this_hash);
-          audit_stmt.step_done();
+          insert_audit_row(audit_stmt, database);
 
           prev_hash = this_hash;
         }
@@ -1214,7 +1237,22 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
           continue;
         }
 
-        exec(database, migration.up_sql);
+        if (migration.requires_verified_audit_chain) {
+          try {
+            // BEGIN IMMEDIATE above excludes every database writer throughout
+            // verification, DDL and the migration-version insert.
+            if (!audit::verify_audit_chain(read_sqlite_audit_chain(database)).ok) {
+              throw MigrationFailure("audit chain verification failed before migration");
+            }
+          } catch (const std::exception&) {
+            throw MigrationFailure("audit chain verification failed before migration");
+          }
+        }
+        try {
+          exec(database, migration.up_sql);
+        } catch (const BackendError&) {
+          throw MigrationFailure("sqlite migration could not be applied");
+        }
         PreparedStatement insert_migration(
             database, "INSERT INTO schema_migrations "
                       "(version, name, checksum, applied_at_unix_seconds) VALUES (?, ?, ?, ?)");

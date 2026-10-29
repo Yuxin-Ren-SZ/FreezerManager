@@ -29,6 +29,7 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -498,9 +499,24 @@ namespace fmgr::storage {
       // downgrade -> re-migrate cycle is clean (no domain RLS policies to
       // re-create). custom_fields_json is JSONB to match the real samples table
       // and the JSONB query DSL (`->>`).
-      const auto audit = default_postgres_migrations().front(); // 0001_init = audit_events
+      const auto migrations = default_postgres_migrations();
+      const auto& audit = migrations.front(); // 0001_init = audit_events
+      const auto integrity =
+          std::ranges::find_if(migrations, [](const PostgresMigration& migration) {
+            return migration.version == 16 && migration.name == "0016_audit_predecessor_integrity";
+          });
+      if (integrity == migrations.end()) {
+        throw std::logic_error("audit predecessor migration fixture is unavailable");
+      }
+      // This test-only schema supports downgrade/reapply without dropping its
+      // tables. Keep the pinned production constraint DDL, guarded here only.
+      std::string integrity_sql = "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE "
+                                  "conname = 'audit_events_prev_hash_unique' AND conrelid = "
+                                  "'audit_events'::regclass) THEN ";
+      integrity_sql += integrity->up_sql;
+      integrity_sql += " END IF; END $$;";
       return {
-          {.version = 1, .name = "pg_conformance", .up_sql = audit.up_sql + R"sql(
+          {.version = 1, .name = "pg_conformance", .up_sql = audit.up_sql + integrity_sql + R"sql(
 CREATE TABLE IF NOT EXISTS fmgr_pg_conformance_sample (
   id                  TEXT   PRIMARY KEY,
   lab_id              TEXT   NOT NULL,

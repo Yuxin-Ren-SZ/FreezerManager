@@ -149,6 +149,16 @@ namespace fmgr::storage {
 
   } // namespace
 
+  std::vector<core::AuditEvent> read_postgres_audit_chain(pqxx::work& txn) {
+    const auto rows = txn.exec(std::string("SELECT ") + audit_columns + " FROM audit_events");
+    std::vector<core::AuditEvent> events;
+    events.reserve(rows.size());
+    for (pqxx::row_ref row : rows) {
+      events.push_back(read_event(row));
+    }
+    return events;
+  }
+
   void register_audit_repositories(PostgresBackend& backend) {
     backend.register_repository_factory<core::AuditEvent>(
         [](PostgresTransaction& txn) { return std::make_unique<AuditEventRepository>(txn); });

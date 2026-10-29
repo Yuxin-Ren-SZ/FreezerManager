@@ -22,6 +22,9 @@ namespace fmgr::storage {
     int version{0};
     std::string name;
     std::string up_sql;
+    // Run the backend-owned full-chain verifier under ACCESS EXCLUSIVE before
+    // applying this migration. Part of its checksum when enabled.
+    bool requires_verified_audit_chain{false};
   };
 
   struct PostgresBackendOptions {

@@ -5,6 +5,10 @@
 
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "core/audit_event.h"
+
+#include <vector>
+
 namespace fmgr::storage {
 
   // Register a read-only AuditEventRepository with the backend.
@@ -13,6 +17,10 @@ namespace fmgr::storage {
   // Audit rows are written automatically by SqliteTransaction::commit() as part
   // of the hash-chain mechanism — callers must not insert them manually.
   void register_audit_repositories(SqliteBackend& backend);
+
+  // Migrator-only read on its already write-locked connection. Reuses exactly
+  // the repository row mapping and never starts a second transaction.
+  [[nodiscard]] std::vector<core::AuditEvent> read_sqlite_audit_chain(sqlite3* handle);
 
 } // namespace fmgr::storage
 
