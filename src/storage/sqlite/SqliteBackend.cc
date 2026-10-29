@@ -1121,7 +1121,8 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
                                      "(id, at_micros, actor_user_id, actor_session_id, lab_id, "
                                      "action, entity_kind, entity_id, before_json, after_json, "
                                      "request_id, prev_hash, this_hash) "
-                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                                     "ON CONFLICT(prev_hash) DO NOTHING");
 
         for (const auto& mutation : impl_->audit_mutations) {
           const auto event_id = generate_random_uuid();
@@ -1171,6 +1172,13 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
           bind_text(audit_stmt.get(), 12, prev_hash);
           bind_text(audit_stmt.get(), 13, this_hash);
           audit_stmt.step_done();
+          if (sqlite3_changes(database) != 1) {
+            // BEGIN IMMEDIATE already excludes a competing writer. Suppressing
+            // this duplicate predecessor would violate the single-chain
+            // invariant; abort the entire domain/audit batch as INTERNAL.
+            throw BackendError(BackendErrorCode::ConstraintViolation,
+                               "audit predecessor invariant failed");
+          }
 
           prev_hash = this_hash;
         }

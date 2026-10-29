@@ -642,6 +642,8 @@ namespace fmgr::storage {
               .version = 1,
               .name = "sqlite_conformance_sample",
               .up_sql = R"sql(
+CREATE UNIQUE INDEX IF NOT EXISTS audit_events_prev_hash_unique ON audit_events(prev_hash);
+
 CREATE TABLE IF NOT EXISTS fmgr_sqlite_conformance_sample (
   id TEXT PRIMARY KEY,
   lab_id TEXT NOT NULL,

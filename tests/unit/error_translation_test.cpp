@@ -251,6 +251,17 @@ namespace fmgr::server {
       }
     }
 
+    TEST(ErrorTranslation, AuditPredecessorInvariantIsInternalRatherThanDuplicateRecord) {
+      try {
+        throw storage::BackendError(storage::BackendErrorCode::ConstraintViolation,
+                                    "audit predecessor invariant failed");
+      } catch (...) {
+        const auto status = current_exception_to_grpc_status();
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::INTERNAL);
+        EXPECT_EQ(status.error_message(), "internal server error");
+      }
+    }
+
     TEST(ErrorTranslation, CurrentExceptionOnUnknownStdExceptionMapsToInternal) {
       try {
         throw std::runtime_error("table=users column=ssn detail=leaked");

@@ -24,6 +24,8 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <type_traits>
+#include <typeinfo>
 #include <utility>
 #include <vector>
 
@@ -174,12 +176,47 @@ namespace fmgr::storage {
         auto txn = backend().begin(IsolationLevel::ReadCommitted);
         txn->repo<core::Lab>().insert(make_lab(10), mutation_context());
         txn->note_mutation("force_failure", "test", mutation_context());
-        EXPECT_THROW(txn->commit(), Error);
+        try {
+          txn->commit();
+          ADD_FAILURE() << "audit append unexpectedly committed";
+        } catch (const Error& error) {
+          if constexpr (std::is_same_v<Error, BackendError>) {
+            // Generic translation recognizes derived refusal classes. A base
+            // BackendError is deliberately the fixed-text INTERNAL invariant
+            // outcome, rather than UniqueViolation/ALREADY_EXISTS.
+            EXPECT_EQ(typeid(error), typeid(BackendError));
+            EXPECT_STREQ(error.what(), "audit predecessor invariant failed");
+            EXPECT_TRUE(error.detail().empty());
+          }
+        }
         auto read = backend().begin(IsolationLevel::ReadCommitted);
         EXPECT_FALSE(read->repo<core::Lab>().find_by_id(make_lab(10).id).has_value());
         read->commit();
         EXPECT_EQ(events(), before);
         EXPECT_TRUE(audit::verify_audit_chain(events()).ok);
+      }
+
+      enum class FixtureConflict : std::uint8_t { Predecessor, ThisHash, Id };
+
+      void install_sqlite_conflict_trigger(FixtureConflict conflict) {
+        std::string sql =
+            "CREATE TRIGGER force_audit_conflict BEFORE INSERT ON audit_events "
+            "WHEN NEW.entity_kind = 'force_failure' BEGIN INSERT INTO audit_events "
+            "(id,at_micros,actor_user_id,actor_session_id,lab_id,action,entity_kind,entity_id,"
+            "before_json,after_json,request_id,prev_hash,this_hash) VALUES (";
+        sql +=
+            conflict == FixtureConflict::Id ? "NEW.id" : "'00000000-0000-0000-0000-000000000042'";
+        sql += ",NEW.at_micros,NEW.actor_user_id,NEW.actor_session_id,NEW.lab_id,NEW.action,"
+               "'fixture',NEW.entity_id,NEW.before_json,NEW.after_json,NEW.request_id,";
+        sql += conflict == FixtureConflict::Predecessor ? "NEW.prev_hash"
+                                                        : "'" + std::string(64, 'f') + "'";
+        sql += ",";
+        sql += conflict == FixtureConflict::ThisHash ? "NEW.this_hash"
+                                                     : "'" + std::string(64, 'b') + "'";
+        sql += "); END";
+        auto txn = backend().begin(IsolationLevel::ReadCommitted);
+        fixture_sql(*txn, sql);
+        txn->commit();
       }
 
     private:
@@ -350,6 +387,30 @@ namespace fmgr::storage {
           "IF NEW.entity_kind = 'force_failure' THEN RAISE EXCEPTION "
           "USING ERRCODE = '40001', MESSAGE = 'injected serialization failure'; END IF;");
       require_failed_append_rolls_back<SerializationFailure>();
+    }
+
+    TEST_P(AuditRepositoryTest, SqlitePredecessorCollisionIsInvariantFailureAndRollsBackBatch) {
+      if (GetParam() != BackendKind::Sqlite) {
+        GTEST_SKIP() << "SQLite single-writer append invariant";
+      }
+      install_sqlite_conflict_trigger(FixtureConflict::Predecessor);
+      require_failed_append_rolls_back<BackendError>();
+    }
+
+    TEST_P(AuditRepositoryTest, SqliteUnrelatedHashUniquenessRemainsUniqueViolation) {
+      if (GetParam() != BackendKind::Sqlite) {
+        GTEST_SKIP() << "SQLite targeted predecessor conflict excludes this_hash";
+      }
+      install_sqlite_conflict_trigger(FixtureConflict::ThisHash);
+      require_failed_append_rolls_back<UniqueViolation>();
+    }
+
+    TEST_P(AuditRepositoryTest, SqliteUnrelatedIdUniquenessRemainsUniqueViolation) {
+      if (GetParam() != BackendKind::Sqlite) {
+        GTEST_SKIP() << "SQLite targeted predecessor conflict excludes id";
+      }
+      install_sqlite_conflict_trigger(FixtureConflict::Id);
+      require_failed_append_rolls_back<UniqueViolation>();
     }
 
     TEST_P(AuditRepositoryTest, NativeDeadlockFailureRollsBackEarlierAuditAndDomainRows) {
