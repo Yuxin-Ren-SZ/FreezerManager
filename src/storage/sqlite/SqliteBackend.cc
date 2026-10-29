@@ -899,6 +899,17 @@ CREATE UNIQUE INDEX audit_events_prev_hash_unique ON audit_events(prev_hash);
       return static_cast<std::int64_t>(std::time(nullptr));
     }
 
+    void insert_audit_row(PreparedStatement& statement, sqlite3* database) {
+      statement.step_done();
+      if (sqlite3_changes(database) != 1) {
+        // BEGIN IMMEDIATE already excludes a competing writer. Suppressing
+        // this duplicate predecessor would violate the single-chain
+        // invariant; abort the entire domain/audit batch as INTERNAL.
+        throw BackendError(BackendErrorCode::ConstraintViolation,
+                           "audit predecessor invariant failed");
+      }
+    }
+
   } // namespace
 
   struct SqliteBackendState {
@@ -1171,14 +1182,7 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
           bind_text(audit_stmt.get(), 11, mutation.context.request_id);
           bind_text(audit_stmt.get(), 12, prev_hash);
           bind_text(audit_stmt.get(), 13, this_hash);
-          audit_stmt.step_done();
-          if (sqlite3_changes(database) != 1) {
-            // BEGIN IMMEDIATE already excludes a competing writer. Suppressing
-            // this duplicate predecessor would violate the single-chain
-            // invariant; abort the entire domain/audit batch as INTERNAL.
-            throw BackendError(BackendErrorCode::ConstraintViolation,
-                               "audit predecessor invariant failed");
-          }
+          insert_audit_row(audit_stmt, database);
 
           prev_hash = this_hash;
         }

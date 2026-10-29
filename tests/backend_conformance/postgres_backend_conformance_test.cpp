@@ -500,7 +500,7 @@ namespace fmgr::storage {
       // re-create). custom_fields_json is JSONB to match the real samples table
       // and the JSONB query DSL (`->>`).
       const auto migrations = default_postgres_migrations();
-      const auto audit = migrations.front(); // 0001_init = audit_events
+      const auto& audit = migrations.front(); // 0001_init = audit_events
       const auto integrity =
           std::ranges::find_if(migrations, [](const PostgresMigration& migration) {
             return migration.version == 16 && migration.name == "0016_audit_predecessor_integrity";
