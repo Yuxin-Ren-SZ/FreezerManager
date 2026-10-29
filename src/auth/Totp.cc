@@ -107,6 +107,7 @@ namespace fmgr::auth {
       return code;
     }
 
+    // NOLINTNEXTLINE(bugprone-easily-swappable-parameters): counts describe distinct encoded parts.
     [[nodiscard]] bool valid_base32_length(std::size_t data_size, std::size_t padding_size) {
       const auto remainder = data_size % 8;
       if (remainder == 1 || remainder == 3 || remainder == 6) {

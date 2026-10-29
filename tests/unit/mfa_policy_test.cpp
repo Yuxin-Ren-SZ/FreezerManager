@@ -35,9 +35,9 @@ namespace fmgr::auth {
 
     TEST(TotpMatchingCountersTest, CollectsEveryCoincidentMatchWithoutStoppingAtTheFirst) {
       // Fixed RFC-secret HOTP collision, independently calculated with HMAC-SHA1.
-      EXPECT_EQ(totp_generate(k_rfc_secret, 910'737 * 30), "911617");
-      EXPECT_EQ(totp_generate(k_rfc_secret, 910'738 * 30), "911617");
-      EXPECT_EQ(totp_matching_counters(k_rfc_secret, "911617", 910'737 * 30),
+      EXPECT_EQ(totp_generate(k_rfc_secret, 910'737LL * 30), "911617");
+      EXPECT_EQ(totp_generate(k_rfc_secret, 910'738LL * 30), "911617");
+      EXPECT_EQ(totp_matching_counters(k_rfc_secret, "911617", 910'737LL * 30),
                 (std::vector<std::int64_t>{910'737, 910'738}));
     }
 
