@@ -7,6 +7,7 @@
 #include "storage/IdentityTraits.h"
 #include "storage/SessionTraits.h"
 #include "storage/postgres/IdentityRepositories.h"
+#include "storage/postgres/PostgresRepoSupport.h"
 #include "storage/postgres/RoleRepositories.h"
 #include "storage/postgres/SessionRepositories.h"
 #include "storage/sqlite/IdentityRepositories.h"
@@ -31,6 +32,11 @@
 namespace fmgr::storage {
   namespace {
     using namespace fmgr::test;
+
+    TEST(SessionAuthErrorMapping, PostgreSqlRepositoryLockTimeoutIsUnavailable) {
+      const pqxx::sql_error error("injected lock timeout", "SELECT 1", "55P03");
+      EXPECT_THROW(detail::throw_pqxx_error(error), Unavailable);
+    }
 
     [[nodiscard]] MutationContext mutation_context() {
       return MutationContext{
@@ -187,7 +193,8 @@ namespace fmgr::storage {
             .count();
       }
 
-      void complete_mfa(auth::LocalAuthProvider& provider, const core::SessionId& session_id) {
+      static void complete_mfa(auth::LocalAuthProvider& provider,
+                               const core::SessionId& session_id) {
         provider.verify_totp(session_id,
                              auth::totp_generate(k_totp_secret, now_micros() / 1'000'000));
       }
@@ -383,31 +390,51 @@ namespace fmgr::storage {
     }
 
     TEST_P(SessionRepositoryTest, AuthTransactionTakesUserLockBeforeItReturns) {
+      const auto audits_before = audit_event_count();
       auto first = backend().begin_auth_transaction({user1_});
       ASSERT_EQ(first->auth_user_lock_status(user1_), AuthUserLockStatus::Locked);
-      const auto audits_before = audit_event_count();
       const auto start = std::chrono::steady_clock::now();
       // There is no sleep or scheduling assumption: first already owns its DB
       // lock when the second, independent transaction attempts the same user.
       EXPECT_THROW((void)backend().begin_auth_transaction({user1_}), Unavailable);
       EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(10));
-      EXPECT_EQ(audit_event_count(), audits_before);
       first->rollback();
+      EXPECT_EQ(audit_event_count(), audits_before);
       auto retry = backend().begin_auth_transaction({user1_});
       EXPECT_EQ(retry->auth_user_lock_status(user1_), AuthUserLockStatus::Locked);
       retry->commit();
     }
 
     TEST_P(SessionRepositoryTest, CommittedAuthTransactionCannotClaimAReleasedUserLock) {
+      const auto session = make_session(900, user1_);
       auto txn = backend().begin_auth_transaction({user1_});
       txn->commit();
       EXPECT_THROW((void)txn->auth_user_lock_status(user1_), ConstraintViolation);
+      EXPECT_THROW((void)txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(900)),
+                   ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::Session>().update(session, mutation_context()),
+                   ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::Session>().soft_delete(session.id, mutation_context()),
+                   ConstraintViolation);
+      if (GetParam() == BackendKind::Postgres) {
+        EXPECT_THROW(txn->set_session_var("finished", "ignored"), ConstraintViolation);
+      }
     }
 
     TEST_P(SessionRepositoryTest, RolledBackAuthTransactionCannotClaimAReleasedUserLock) {
+      const auto session = make_session(900, user1_);
       auto txn = backend().begin_auth_transaction({user1_});
       txn->rollback();
       EXPECT_THROW((void)txn->auth_user_lock_status(user1_), ConstraintViolation);
+      EXPECT_THROW((void)txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(900)),
+                   ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::Session>().update(session, mutation_context()),
+                   ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::Session>().soft_delete(session.id, mutation_context()),
+                   ConstraintViolation);
+      if (GetParam() == BackendKind::Postgres) {
+        EXPECT_THROW(txn->set_session_var("finished", "ignored"), ConstraintViolation);
+      }
     }
 
     TEST_P(SessionRepositoryTest, MissingAuthUserStatusCannotBecomeALockAfterInsert) {
@@ -555,6 +582,14 @@ namespace fmgr::storage {
       fail_next_audit_append();
       EXPECT_THROW(txn->commit(), ConstraintViolation);
       EXPECT_THROW((void)txn->auth_user_lock_status(user1_), ConstraintViolation);
+      EXPECT_THROW((void)txn->repo<core::Session>().find_by_id(session.id), ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::Session>().update(session, mutation_context()),
+                   ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::Session>().soft_delete(session.id, mutation_context()),
+                   ConstraintViolation);
+      if (GetParam() == BackendKind::Postgres) {
+        EXPECT_THROW(txn->set_session_var("finished", "ignored"), ConstraintViolation);
+      }
       // The failed transaction is still alive; failure itself must release locks.
       auto next = backend().begin_auth_transaction({user1_});
       const auto after = next->repo<core::Session>().find_by_id(session.id).value();

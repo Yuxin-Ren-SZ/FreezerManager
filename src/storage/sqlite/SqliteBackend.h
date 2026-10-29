@@ -66,11 +66,14 @@ namespace fmgr::storage {
 
     void commit() override;
     void rollback() override;
+    [[nodiscard]] AuthUserLockStatus
+    auth_user_lock_status(const core::UserId& user_id) const override;
 
   private:
     friend class SqliteBackend;
 
     SqliteTransaction(std::shared_ptr<SqliteBackendState> state, IsolationLevel isolation_level);
+    void lock_auth_users(const std::vector<core::UserId>& user_ids);
 
     class Impl;
     std::unique_ptr<Impl> impl_;
@@ -97,6 +100,8 @@ namespace fmgr::storage {
     void migrate_to_latest() override;
     [[nodiscard]] SchemaVersion current_version() const override;
     [[nodiscard]] std::unique_ptr<ITransaction> begin(IsolationLevel isolation_level) override;
+    [[nodiscard]] std::unique_ptr<ITransaction>
+    begin_auth_transaction(const std::vector<core::UserId>& user_ids) override;
     [[nodiscard]] Capabilities caps() const override;
 
     void fail_next_audit_append_for_tests();

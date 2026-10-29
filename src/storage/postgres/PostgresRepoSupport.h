@@ -70,7 +70,7 @@ namespace fmgr::storage::detail {
     if (state.starts_with("08")) {
       throw Unavailable(engine_text);
     }
-    if (state == "57P01") {
+    if (state == "57P01" || state == "55P03") {
       throw Unavailable(engine_text);
     }
     throw ConstraintViolation(engine_text);

@@ -52,7 +52,7 @@ namespace fmgr::storage {
       if (state.size() >= 2 && state.substr(0, 2) == "08") {
         throw Unavailable(engine_text);
       }
-      if (state == "57P01") {
+      if (state == "57P01" || state == "55P03") {
         throw Unavailable(engine_text);
       }
       // Unrecognised SQLSTATE — fall back to ConstraintViolation (safest for data-layer errors).
@@ -768,6 +768,7 @@ ALTER TABLE audit_events ADD CONSTRAINT audit_events_prev_hash_unique UNIQUE(pre
     std::size_t conn_idx;
     std::optional<pqxx::work> work; // reset explicitly before releasing connection
     std::vector<AuditMutation> audit_mutations;
+    std::map<core::UserId, AuthUserLockStatus> auth_user_locks;
     bool completed{false};
     bool released{false};
   };
@@ -793,6 +794,11 @@ ALTER TABLE audit_events ADD CONSTRAINT audit_events_prev_hash_unique UNIQUE(pre
       } else if (isolation_level == IsolationLevel::RepeatableRead) {
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         impl_->work->exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+      } else {
+        // A deployment may change default_transaction_isolation. Honor the
+        // explicit API contract before any repository or auth-lock reads.
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        impl_->work->exec("SET TRANSACTION ISOLATION LEVEL READ COMMITTED");
       }
     } catch (const pqxx::sql_error& err) {
       throw_pqxx_error(err);
@@ -802,16 +808,39 @@ ALTER TABLE audit_events ADD CONSTRAINT audit_events_prev_hash_unique UNIQUE(pre
   PostgresTransaction::~PostgresTransaction() = default;
 
   pqxx::work& PostgresTransaction::work() {
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-    return *impl_->work;
+    if (impl_->completed || !impl_->work.has_value()) {
+      throw ConstraintViolation("postgres transaction is no longer active");
+    }
+    return impl_->work.value();
+  }
+
+  void PostgresTransaction::lock_auth_users(const std::vector<core::UserId>& user_ids) {
+    try {
+      work().exec("SET LOCAL lock_timeout = '5s'");
+      for (const auto& user_id : user_ids) {
+        const auto rows = work().exec("SELECT id FROM users WHERE id = $1 FOR UPDATE",
+                                      pqxx::params{user_id.to_string()});
+        impl_->auth_user_locks.emplace(user_id, rows.empty() ? AuthUserLockStatus::Missing
+                                                             : AuthUserLockStatus::Locked);
+      }
+    } catch (const pqxx::sql_error& error) {
+      throw_pqxx_error(error);
+    }
+  }
+
+  AuthUserLockStatus PostgresTransaction::auth_user_lock_status(const core::UserId& user_id) const {
+    const auto found = impl_->auth_user_locks.find(user_id);
+    if (impl_->completed || found == impl_->auth_user_locks.end()) {
+      throw ConstraintViolation("user was not locked by this active auth transaction");
+    }
+    return found->second;
   }
 
   void PostgresTransaction::set_session_var(std::string_view key, std::string_view value) {
     try {
       // set_config(name, value, is_local=true) scopes to the current transaction.
-      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-      impl_->work->exec("SELECT set_config($1, $2, true)",
-                        pqxx::params{"app." + std::string(key), std::string(value)});
+      work().exec("SELECT set_config($1, $2, true)",
+                  pqxx::params{"app." + std::string(key), std::string(value)});
     } catch (const pqxx::sql_error& err) {
       throw_pqxx_error(err);
     }
@@ -1073,6 +1102,25 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
       factory(*txn);
     }
     return txn;
+  }
+
+  std::unique_ptr<ITransaction>
+  PostgresBackend::begin_auth_transaction(const std::vector<core::UserId>& user_ids) {
+    if (user_ids.empty()) {
+      throw ConstraintViolation("auth transactions require at least one user");
+    }
+    auto ordered_users = user_ids;
+    std::ranges::sort(ordered_users);
+    const auto duplicate_tail = std::ranges::unique(ordered_users);
+    ordered_users.erase(duplicate_tail.begin(), duplicate_tail.end());
+    auto transaction = std::unique_ptr<PostgresTransaction>(
+        new PostgresTransaction(state_, IsolationLevel::ReadCommitted));
+    transaction->lock_auth_users(ordered_users);
+    for (const auto& [unused_type, factory] : repository_factories_) {
+      (void)unused_type;
+      factory(*transaction);
+    }
+    return transaction;
   }
 
   Capabilities PostgresBackend::caps() const {

@@ -233,6 +233,20 @@ namespace fmgr::auth {
       next->commit();
     }
 
+    TEST(LocalAuthBackend, SharedMemoryAuthWriterContentionIsUnavailableAndLocksRelease) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      backend.migrate_to_latest();
+      const auto missing = id_from_low<core::UserId>(900);
+      auto first = backend.begin_auth_transaction({missing});
+      // Shared-cache memory databases return an extended SQLITE_LOCKED result,
+      // rather than the file-backed SQLITE_BUSY timeout in the common fixture.
+      EXPECT_THROW((void)backend.begin_auth_transaction({missing}), storage::Unavailable);
+      first->rollback();
+      auto next = backend.begin_auth_transaction({missing});
+      EXPECT_EQ(next->auth_user_lock_status(missing), storage::AuthUserLockStatus::Missing);
+      next->commit();
+    }
+
     TEST_F(LocalAuthProviderTest, HashPasswordRejectsShortPassword) {
       // Default policy floor is 8 characters (security-audit-2026-06-12 #7).
       EXPECT_THROW((void)provider_->hash_password("short"), storage::ConstraintViolation);

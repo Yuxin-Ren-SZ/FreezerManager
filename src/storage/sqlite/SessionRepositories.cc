@@ -32,15 +32,16 @@ namespace fmgr::storage {
     [[noreturn]] void throw_sqlite_error(int code, sqlite3* handle, std::string_view action) {
       const auto extended_code = sqlite3_extended_errcode(handle);
       const auto effective_code = extended_code == SQLITE_OK ? code : extended_code;
+      const auto primary_code = effective_code & 0xff;
+      if (primary_code == SQLITE_BUSY || primary_code == SQLITE_LOCKED) {
+        throw Unavailable(sqlite_error(handle, action));
+      }
       switch (effective_code) {
       case SQLITE_CONSTRAINT_UNIQUE:
       case SQLITE_CONSTRAINT_PRIMARYKEY:
         throw UniqueViolation(sqlite_error(handle, action));
       case SQLITE_CONSTRAINT_FOREIGNKEY:
         throw ForeignKeyViolation(sqlite_error(handle, action));
-      case SQLITE_BUSY:
-      case SQLITE_LOCKED:
-        throw Unavailable(sqlite_error(handle, action));
       case SQLITE_CONSTRAINT:
       case SQLITE_CONSTRAINT_CHECK:
       case SQLITE_CONSTRAINT_NOTNULL:
@@ -261,6 +262,9 @@ namespace fmgr::storage {
 
       [[nodiscard]] std::optional<Entity>
       find_staged(const typename EntityTraits<Entity>::Id& entity_id) const {
+        // A failed commit can leave provisional rows in this cache. They are
+        // read-your-writes only while the owning transaction remains active.
+        (void)transaction_.handle();
         const auto iter = pending_.find(entity_id);
         if (iter == pending_.end()) {
           return std::nullopt;
