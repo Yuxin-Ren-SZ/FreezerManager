@@ -119,7 +119,9 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 - ✅ `LocalAuthProvider` — Argon2id (64 MiB / 3 iter / 4 parallelism); BLAKE2b-256 session-token hashing; TOTP (RFC 6238 + RFC 4226 HMAC-SHA1 via OpenSSL EVP_MAC); in-memory account lockout (configurable threshold + duration); API-token validation path
 - ✅ Local password enrolment — `freezerctl user set-password` (reads the password from stdin, never argv) writes the `{provider:local, hash}` binding `authenticate` consumes; a password-only user (no TOTP secret) logs straight in. TOTP enrolment 🔲
 - ✅ TOTP helper (`Totp.h`) — `base32_decode`, `totp_generate`, `totp_verify`; ±1-step window; RFC 6238 known-answer test vectors
-- ✅ `Session.mfa_complete` — false until `verify_totp()` succeeds; propagated through `SessionContext`
+- ✅ `Session.mfa_complete` — pending TOTP sessions become complete after `verify_totp()` succeeds; the live value is propagated through `SessionContext`
+- ✅ [Session writer safety](doc/handoffs/2026-10-29-211-session-writers.md) — owning-user locks and current-state rereads preserve revocation, MFA completion and monotonic activity; background revalidation remains read-only
+- ⚙️ [MFA hardening (#179)](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/179) — pure matching/replay/backoff policy and audit integrity foundations are merged; persisted state/proof, runtime enforcement, recovery and cutover validation remain pending
 - 🔲 `OidcAuthProvider` — OIDC discovery + PKCE; per-lab issuer config
 - 🔲 `LdapAuthProvider` — bind + search; configurable group → role mapping
 - 🔲 `MtlsAuthProvider` — client certs for machine/instrument clients
@@ -132,7 +134,8 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 
 ### Audit
 
-- ✅ Append-only `audit_event` table — `prev_hash` + `this_hash = SHA-256(prev ‖ canonical_row)`; INSERT-only DB trigger; chain tail found by link structure under an advisory lock (fork-safe)
+- ✅ Append-only `audit_event` table — `prev_hash` + `this_hash = SHA-256(prev ‖ canonical_row)`; INSERT-only DB trigger; unique predecessor links include genesis, with atomic rollback of losing mixed-isolation writes
+- ✅ [Audit integrity migration 16](doc/handoffs/2026-10-28-228-audit-predecessor.md) — verifies the complete existing chain before adding predecessor uniqueness; PostgreSQL retains its advisory lock and detects conflicts against the named constraint
 - ✅ Canonical-JSON serializer (RFC 8785 / JCS) — deterministic compact form for reproducible hashes
 - ✅ Repository-derived snapshots — `before_json`/`after_json` are produced from authoritative entity state inside the repository, never supplied by the caller; no forgeable audit channel
 - ✅ Hash-chain verifier — `freezerctl audit verify` walks the chain and reports first divergence
@@ -188,7 +191,7 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **D1–D9 — Domain entities** | Lab / User / Role / Freezer / Box / Sample / ShareRequest / Session entities, SQLite backend, 259 tests | ✅ Complete |
 | **E1/E2 — Auth foundation** | `IAuthProvider` interface; `LocalAuthProvider` (Argon2id + TOTP + lockout); 357 tests total | ✅ Complete |
 | **E3 — RBAC middleware** | `AuthMiddleware` (4-step gate, RLS injection, RPC registry); session expiry + permission cache (D9.3) | ✅ Complete |
-| **C5 — PostgreSQL backend** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0013 + RLS policies + full domain repositories; conformance + repository suites green against live `postgres:16` in CI | ✅ Complete |
+| **C5 — PostgreSQL backend** | `PostgresBackend` + connection pool + Postgres-dialect migrations 0001–0016 + RLS policies + full domain repositories; conformance + repository suites green against live `postgres:16` in CI | ✅ Complete |
 | **M1 — Full domain + CSV + CLI** | PostgreSQL domain repositories ✅, CI Postgres service ✅, sample CSV export ✅, sample CSV import (transactional + dry-run) ✅, `freezerctl` skeleton + `audit verify` ✅, freezer/box/item-type `list` + `inspect` ✅, CLI `create` nouns (6 entities) ✅, non-sample CSV import (item-type/box/custom-field-def/user) ✅ | ✅ Complete |
 | **Security remediation** | Per-lab authz, API-token scope, `authz_version` cache invalidation, cross-lab integrity, fork-safe audit chain, repository-derived audit snapshots | ✅ Complete |
 | **M2 — Auth & Audit** | OIDC/LDAP, audit export, PHI-read audit kind, signed checkpoints | 🔲 Planned |
@@ -197,6 +200,9 @@ Status indicators: ✅ implemented · ⚙️ in progress · 🔲 planned
 | **M5 — PHI + KMS + Backups** | Sample PHI field-level encryption ✅, `IKmsProvider` + `EnvVarKms` + `OsKeyringKms` (keyring) ✅, PHI-read audit kind ✅, key rotation (`freezerctl key rotate`) ✅, separate backup KEK ✅, encrypted SQLite backup/restore + restore-drill verify (`freezerctl backup`) ✅, in-server scheduled backups + GFS retention + weekly restore drill (`BackupScheduler`, `freezerctl backup run | list`) ✅; `VaultKms`, Postgres backup 🔲 | ⚙️ In progress |
 | **M6 — Public API & Sharing** | API tokens, `freezerctl-py`, cross-lab share-request workflow | 🔲 Planned |
 | **M7 — Polish & 1.0** | OIDC + LDAP auth, `.deb` / `.rpm` / Docker packaging, external security review | 🔲 Planned |
+
+Deployment beyond loopback remains gated by [#179](https://github.com/Yuxin-Ren-SZ/FreezerManager/issues/179).
+The [MFA foundation handoff](doc/handoffs/2026-10-29-mfa-foundation.md) records the completed prerequisites and remaining runtime phases.
 
 ---
 
