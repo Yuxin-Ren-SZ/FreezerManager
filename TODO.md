@@ -1291,11 +1291,21 @@ is not a fix.
 MFA design #208 / #212 (`120039e`) is accepted as
 [ADR0002](doc/adr/0002-mfa-replay-backoff.md), after independent review and
 revision of audit-append safety, TOTP proof and state-initialization auditing.
-Its dependent runtime phases remain open under #179, coordinated with the
-stale session-writer source finding #211 (deterministic reproduction pending).
-No runtime MFA protection or deployment gate is marked complete by the ADR.
-Migration 15 remains free on main; the owner's separate 3D integration branch
-uses a provisional version and renumbers at integration if necessary.
+The foundation section is merged: #211 / #229 (`d07dec9`) fixes the reproduced
+stale session-write races with early owning-user locks and live rereads;
+#227 / #235 (`5d4c776`) supplies pure whole-window matching/replay/backoff
+policy; #228 / #234 (`8a45e35`) adds verified audit-predecessor integrity in
+migration 16. Every applicable final-head PR check passed, including live
+PostgreSQL, sanitizers and actual clang-tidy. Exact evidence and limits are in
+the [foundation handoff](doc/handoffs/2026-10-29-mfa-foundation.md).
+
+#179 stays open and gates non-loopback deployment. Dependent #230 (persisted
+state/proof/secret lifecycle), #231 (provider enforcement/observability),
+#232 (authenticated recovery) and #233 (adversarial cutover acceptance) remain
+ready and unassigned. Pure policy and locked writers alone do not complete
+runtime replay protection or durable guessing protection.
+The 3D track #215 / #225 is on main and consumed migration 15; #228 consumed
+16. Version 17 is next unreserved; reserve it only when implementation is assigned.
 
 ---
 
