@@ -247,10 +247,18 @@ namespace fmgr::auth {
 
   void LocalAuthProvider::verify_totp(const core::SessionId& session_id,
                                       std::string_view totp_code) {
-    auto txn = backend_.begin(storage::IsolationLevel::Serializable);
+    const auto owner = session_owner_for_mutation(session_id);
+    if (!owner.has_value()) {
+      throw InvalidCredentials("invalid session for TOTP verification");
+    }
+    auto txn = backend_.begin_auth_transaction({owner.value()});
+    if (txn->auth_user_lock_status(owner.value()) != storage::AuthUserLockStatus::Locked) {
+      throw InvalidCredentials("invalid session for TOTP verification");
+    }
 
     const auto maybe_session = txn->repo<core::Session>().find_by_id(session_id);
-    if (!maybe_session.has_value() || maybe_session->revoked_at.has_value()) {
+    if (!maybe_session.has_value() || maybe_session->user_id != owner.value() ||
+        maybe_session->revoked_at.has_value()) {
       txn->commit();
       throw InvalidCredentials("invalid session for TOTP verification");
     }
@@ -259,21 +267,16 @@ namespace fmgr::auth {
       throw InvalidCredentials("session MFA is already complete");
     }
 
-    // Retrieve the user's TOTP secret.
-    const auto users = txn->repo<core::User>().query(storage::Query<core::User>::where(
-        storage::field<core::User, std::string>(core::User::Field::Id) ==
-        maybe_session->user_id.to_string()));
-    if (users.empty()) {
+    // Retrieve current status/secret only after taking the owning user lock.
+    const auto user = txn->repo<core::User>().find_by_id(owner.value());
+    if (!user.has_value() || user->status != core::UserStatus::Active ||
+        !user->totp_secret_enc.has_value()) {
       txn->commit();
       throw InvalidCredentials("no TOTP secret configured for this user");
     }
-    const auto& user = users.front();
-    if (!user.totp_secret_enc.has_value()) {
-      txn->commit();
-      throw InvalidCredentials("no TOTP secret configured for this user");
-    }
+    check_session_expiry(maybe_session.value(), now_ts());
 
-    const auto& totp_secret = *user.totp_secret_enc;
+    const auto& totp_secret = *user->totp_secret_enc;
     const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
                                  std::chrono::system_clock::now().time_since_epoch())
                                  .count();
@@ -294,14 +297,18 @@ namespace fmgr::auth {
 
   void LocalAuthProvider::revoke_session(const core::SessionId& session_id,
                                          const storage::MutationContext& ctx) {
-    auto txn = backend_.begin(storage::IsolationLevel::Serializable);
-    try {
-      txn->repo<core::Session>().soft_delete(session_id, ctx);
-      // NOLINTNEXTLINE(bugprone-empty-catch)
-    } catch (const storage::NotFound&) {
-      // Already revoked or never existed — idempotent per interface contract.
+    const auto owner = session_owner_for_mutation(session_id);
+    if (owner.has_value()) {
+      auto txn = backend_.begin_auth_transaction({owner.value()});
+      if (txn->auth_user_lock_status(owner.value()) == storage::AuthUserLockStatus::Locked) {
+        const auto session = txn->repo<core::Session>().find_by_id(session_id);
+        if (session.has_value() && session->user_id == owner.value() &&
+            !session->revoked_at.has_value()) {
+          txn->repo<core::Session>().soft_delete(session_id, ctx);
+        }
+      }
+      txn->commit();
     }
-    txn->commit();
     cache_evict(session_id.to_string());
   }
 
@@ -309,7 +316,12 @@ namespace fmgr::auth {
 
   void LocalAuthProvider::revoke_all_sessions(const core::UserId& uid,
                                               const storage::MutationContext& ctx) {
-    auto txn = backend_.begin(storage::IsolationLevel::Serializable);
+    auto txn = backend_.begin_auth_transaction({uid});
+    if (txn->auth_user_lock_status(uid) != storage::AuthUserLockStatus::Locked) {
+      txn->commit();
+      cache_evict_user(uid);
+      return;
+    }
     const auto sessions = txn->repo<core::Session>().query(storage::Query<core::Session>::where(
         storage::field<core::Session, std::string>(core::Session::Field::UserId) ==
         uid.to_string()));
@@ -373,16 +385,23 @@ namespace fmgr::auth {
       throw InvalidCredentials("invalid credentials");
     }
 
-    record_success(lower_email);
-
-    // Determine MFA requirement.
-    const bool mfa_complete = !user_has_totp(user.id);
-
     // Generate session token.
     const auto plaintext_token = generate_token();
     const auto token_prefix = prefix_of(plaintext_token);
     const auto token_hash = hash_token(plaintext_token);
 
+    auto wtxn = backend_.begin_auth_transaction({user.id});
+    if (wtxn->auth_user_lock_status(user.id) != storage::AuthUserLockStatus::Locked) {
+      throw InvalidCredentials("invalid credentials");
+    }
+    const auto current_user = wtxn->repo<core::User>().find_by_id(user.id);
+    if (!current_user.has_value() || current_user->status != core::UserStatus::Active ||
+        current_user->auth_bindings != user.auth_bindings) {
+      throw InvalidCredentials("invalid credentials");
+    }
+    // Enrollment/status/credential changes ordered before this lock win over
+    // the earlier password lookup. No stale User snapshot determines MFA.
+    const bool mfa_complete = !current_user->totp_secret_enc.has_value();
     const auto now = now_ts();
     const core::Session session{
         .id = make_session_id(),
@@ -396,10 +415,10 @@ namespace fmgr::auth {
         .mfa_complete = mfa_complete,
     };
 
-    auto wtxn = backend_.begin(storage::IsolationLevel::Serializable);
     const auto ctx = system_ctx("password_authenticate");
     wtxn->repo<core::Session>().insert(session, ctx);
     wtxn->commit();
+    record_success(lower_email);
 
     return AuthToken{
         .session_id = session.id,
@@ -520,9 +539,26 @@ namespace fmgr::auth {
       return; // within rate-limit window; skip update
     }
     try {
-      auto updated = session;
-      updated.last_seen_at = now;
-      auto wtxn = backend_.begin(storage::IsolationLevel::Serializable);
+      auto wtxn = backend_.begin_auth_transaction({session.user_id});
+      if (wtxn->auth_user_lock_status(session.user_id) != storage::AuthUserLockStatus::Locked) {
+        wtxn->commit();
+        return;
+      }
+      const auto live = wtxn->repo<core::Session>().find_by_id(session.id);
+      if (!live.has_value() || live->user_id != session.user_id || live->revoked_at.has_value()) {
+        wtxn->commit();
+        return;
+      }
+      const auto live_now = now_ts();
+      check_session_expiry(live.value(), live_now);
+      if (live_now <= live->last_seen_at ||
+          live_now.unix_micros() - live->last_seen_at.unix_micros() <
+              config_.last_seen_update_interval_seconds * 1'000'000LL) {
+        wtxn->commit();
+        return;
+      }
+      auto updated = live.value();
+      updated.last_seen_at = live_now;
       wtxn->repo<core::Session>().update(updated, system_ctx("update_last_seen"));
       wtxn->commit();
       // NOLINTNEXTLINE(bugprone-empty-catch)
@@ -662,14 +698,17 @@ namespace fmgr::auth {
     };
   }
 
-  // ---- Private: user_has_totp ----
+  // ---- Private: session_owner_for_mutation ----
 
-  bool LocalAuthProvider::user_has_totp(const core::UserId& uid) const {
+  std::optional<core::UserId>
+  LocalAuthProvider::session_owner_for_mutation(const core::SessionId& session_id) const {
     auto rtxn = backend_.begin(storage::IsolationLevel::ReadCommitted);
-    const auto users = rtxn->repo<core::User>().query(storage::Query<core::User>::where(
-        storage::field<core::User, std::string>(core::User::Field::Id) == uid.to_string()));
+    const auto session = rtxn->repo<core::Session>().find_by_id(session_id);
     rtxn->commit();
-    return !users.empty() && users.front().totp_secret_enc.has_value();
+    if (!session.has_value()) {
+      return std::nullopt;
+    }
+    return session->user_id;
   }
 
   // ---- Private: token helpers ----

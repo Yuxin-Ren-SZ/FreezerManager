@@ -105,6 +105,7 @@ add_executable(
 target_link_libraries(
   freezermanager_storage_repository_tests
   PRIVATE
+    FreezerManager::auth
     FreezerManager::storage_sqlite
     FreezerManager::storage_postgres
     GTest::gtest_main

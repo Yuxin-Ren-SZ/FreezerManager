@@ -151,6 +151,19 @@ namespace fmgr::storage {
       EXPECT_EQ(SchemaVersion{3}, SchemaVersion{3});
     }
 
+    TEST(StorageInterface, UnsupportedAuthTransactionFailsClosedWithoutOrdinaryFallback) {
+      TestBackend backend;
+      const auto user_id = core::UserId::parse("550e8400-e29b-41d4-a716-446655440000");
+      EXPECT_THROW((void)backend.begin_auth_transaction({user_id}), UnsupportedOperation);
+      EXPECT_FALSE(backend.last_isolation_level.has_value());
+    }
+
+    TEST(StorageInterface, UnsupportedAuthUserLockStatusFailsClosed) {
+      TestTransaction transaction;
+      const auto user_id = core::UserId::parse("550e8400-e29b-41d4-a716-446655440000");
+      EXPECT_THROW((void)transaction.auth_user_lock_status(user_id), UnsupportedOperation);
+    }
+
     TEST(StorageInterface, CapabilitiesDefaultToPortableSubset) {
       const Capabilities capabilities;
 

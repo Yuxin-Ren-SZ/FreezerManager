@@ -32,6 +32,8 @@ namespace fmgr::storage {
 
   enum class IsolationLevel : std::uint8_t { ReadCommitted, RepeatableRead, Serializable };
 
+  enum class AuthUserLockStatus : std::uint8_t { Locked, Missing };
+
   struct Capabilities {
     bool row_level_security{false};
     bool json_path_equality{false};
@@ -532,6 +534,14 @@ namespace fmgr::storage {
     virtual void commit() = 0;
     virtual void rollback() = 0;
 
+    // Only begin_auth_transaction supplies these statuses. A Missing row stays
+    // Missing for this operation, even if another transaction inserts it later.
+    // Ordinary transactions and IDs not requested for locking fail closed.
+    [[nodiscard]] virtual AuthUserLockStatus
+    auth_user_lock_status(const core::UserId& /*user_id*/) const {
+      throw UnsupportedOperation("auth user locking is not supported by this transaction");
+    }
+
     // Set a backend-specific session variable. No-op for SQLite; PostgresTransaction
     // overrides this to issue "SET LOCAL app.<key> = '<value>'" for RLS.
     virtual void set_session_var(std::string_view /*key*/, std::string_view /*value*/) {}
@@ -589,6 +599,15 @@ namespace fmgr::storage {
     virtual void migrate_to_latest() = 0;
     [[nodiscard]] virtual SchemaVersion current_version() const = 0;
     [[nodiscard]] virtual std::unique_ptr<ITransaction> begin(IsolationLevel isolation_level) = 0;
+    // Acquire the existing owning user rows in deduplicated UUID order BEFORE
+    // any security/session repository read. An empty list is invalid. Backend
+    // implementations retain their DB locks through domain/audit commit, record
+    // Locked/Missing for every requested ID, and bound lock acquisition. Never
+    // substitute an ordinary transaction for this contract.
+    [[nodiscard]] virtual std::unique_ptr<ITransaction>
+    begin_auth_transaction(const std::vector<core::UserId>& /*user_ids*/) {
+      throw UnsupportedOperation("auth transactions are not supported by this backend");
+    }
     [[nodiscard]] virtual Capabilities caps() const = 0;
   };
 

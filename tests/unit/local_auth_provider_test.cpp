@@ -23,6 +23,7 @@
 #include "storage/sqlite/SessionRepositories.h"
 #include "storage/sqlite/SqliteBackend.h"
 
+#include "paused_activity_backend.h"
 #include "test_helpers.h"
 #include <gtest/gtest.h>
 #include <sodium.h>
@@ -33,6 +34,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <optional>
 #include <set>
@@ -129,7 +131,11 @@ namespace fmgr::auth {
         const auto now_micros = std::chrono::duration_cast<std::chrono::microseconds>(
                                     std::chrono::system_clock::now().time_since_epoch())
                                     .count();
-        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        const auto candidate = read->repo<core::Session>().find_by_id(sid);
+        read->commit();
+        ASSERT_TRUE(candidate.has_value());
+        auto txn = backend_->begin_auth_transaction({candidate.value().user_id});
         auto maybe_s = txn->repo<core::Session>().find_by_id(sid);
         ASSERT_TRUE(maybe_s.has_value());
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access): guarded by ASSERT_TRUE above
@@ -214,6 +220,32 @@ namespace fmgr::auth {
     };
 
     // ---- authenticate: password path ----
+
+    TEST(LocalAuthBackend, FailedAuthTransactionConstructionLeavesDatabaseReusable) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      const auto missing = id_from_low<core::UserId>(900);
+      // Users does not exist yet. The early BEGIN must be rolled back when its
+      // locked-user lookup fails, so migration and a fresh auth txn still work.
+      EXPECT_THROW((void)backend.begin_auth_transaction({missing}), storage::BackendError);
+      backend.migrate_to_latest();
+      auto next = backend.begin_auth_transaction({missing});
+      EXPECT_EQ(next->auth_user_lock_status(missing), storage::AuthUserLockStatus::Missing);
+      next->commit();
+    }
+
+    TEST(LocalAuthBackend, SharedMemoryAuthWriterContentionIsUnavailableAndLocksRelease) {
+      storage::SqliteBackend backend(storage::SqliteBackendOptions{.database_path = ":memory:"});
+      backend.migrate_to_latest();
+      const auto missing = id_from_low<core::UserId>(900);
+      auto first = backend.begin_auth_transaction({missing});
+      // Shared-cache memory databases return an extended SQLITE_LOCKED result,
+      // rather than the file-backed SQLITE_BUSY timeout in the common fixture.
+      EXPECT_THROW((void)backend.begin_auth_transaction({missing}), storage::Unavailable);
+      first->rollback();
+      auto next = backend.begin_auth_transaction({missing});
+      EXPECT_EQ(next->auth_user_lock_status(missing), storage::AuthUserLockStatus::Missing);
+      next->commit();
+    }
 
     TEST_F(LocalAuthProviderTest, HashPasswordRejectsShortPassword) {
       // Default policy floor is 8 characters (security-audit-2026-06-12 #7).
@@ -981,6 +1013,128 @@ namespace fmgr::auth {
       EXPECT_EQ(backend_->audit_event_count_for_tests(), before);
     }
 
+    TEST_F(LocalAuthProviderTest, DelayedActivityRefreshCannotRestoreRevokedSession) {
+      const auto token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+      backdate_session(token.session_id, -180'000'000, -120'000'000);
+      PausedActivityBackend paused_backend(*backend_);
+      LocalAuthProvider delayed_provider(paused_backend, fast_config());
+      auto validation = std::async(std::launch::async, [&] {
+        return delayed_provider.validate_token(token.plaintext_token);
+      });
+      const bool paused = paused_backend.wait_until_paused();
+      if (paused) {
+        EXPECT_NO_THROW(provider_->revoke_session(token.session_id, test_ctx()));
+      }
+      paused_backend.release();
+      EXPECT_NO_THROW((void)validation.get());
+      ASSERT_TRUE(paused) << "validation did not reach the controlled activity-write boundary";
+
+      auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto row = read->repo<core::Session>().find_by_id(token.session_id).value();
+      read->commit();
+      EXPECT_TRUE(row.revoked_at.has_value());
+      EXPECT_THROW(provider_->validate_token(token.plaintext_token), InvalidCredentials);
+      EXPECT_THROW(provider_->revalidate_token(token.plaintext_token), InvalidCredentials);
+    }
+
+    TEST_F(LocalAuthProviderTest, DelayedActivityRefreshCannotUndoCommittedMfaCompletion) {
+      const auto token = provider_->authenticate(
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
+      ASSERT_FALSE(token.mfa_complete);
+      backdate_session(token.session_id, -180'000'000, -120'000'000);
+      PausedActivityBackend paused_backend(*backend_);
+      LocalAuthProvider delayed_provider(paused_backend, fast_config());
+      auto validation = std::async(std::launch::async, [&] {
+        return delayed_provider.validate_token(token.plaintext_token);
+      });
+      const bool paused = paused_backend.wait_until_paused();
+      if (paused) {
+        const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count();
+        EXPECT_NO_THROW(provider_->verify_totp(
+            token.session_id, totp_generate(kTotpSecret, now_seconds, fast_config().totp)));
+      }
+      paused_backend.release();
+      EXPECT_NO_THROW((void)validation.get());
+      ASSERT_TRUE(paused) << "validation did not reach the controlled activity-write boundary";
+
+      auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto row = read->repo<core::Session>().find_by_id(token.session_id).value();
+      read->commit();
+      EXPECT_TRUE(row.mfa_complete);
+      EXPECT_TRUE(provider_->validate_token(token.plaintext_token).mfa_complete);
+      EXPECT_TRUE(provider_->revalidate_token(token.plaintext_token).mfa_complete);
+    }
+
+    TEST_F(LocalAuthProviderTest, DelayedActivityRefreshCannotMoveActivityBackwards) {
+      const auto token = provider_->authenticate(
+          PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
+      backdate_session(token.session_id, -180'000'000, -120'000'000);
+      PausedActivityBackend paused_backend(*backend_);
+      LocalAuthProvider delayed_provider(paused_backend, fast_config());
+      auto validation = std::async(std::launch::async, [&] {
+        return delayed_provider.validate_token(token.plaintext_token);
+      });
+      const bool paused = paused_backend.wait_until_paused();
+      const auto newer_activity =
+          core::Timestamp::from_unix_micros(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                std::chrono::system_clock::now().time_since_epoch())
+                                                .count() +
+                                            1'000'000);
+      if (paused) {
+        auto write = backend_->begin_auth_transaction({token.user_id});
+        auto row = write->repo<core::Session>().find_by_id(token.session_id).value();
+        row.last_seen_at = newer_activity;
+        write->repo<core::Session>().update(row, test_ctx());
+        write->commit();
+      }
+      paused_backend.release();
+      EXPECT_NO_THROW((void)validation.get());
+      ASSERT_TRUE(paused) << "validation did not reach the controlled activity-write boundary";
+
+      auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto row = read->repo<core::Session>().find_by_id(token.session_id).value();
+      read->commit();
+      EXPECT_GE(row.last_seen_at, newer_activity);
+    }
+
+    TEST_F(LocalAuthProviderTest, DelayedActivityAuditFailurePreservesCommittedMfaState) {
+      const auto token = provider_->authenticate(
+          PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
+      backdate_session(token.session_id, -180'000'000, -120'000'000);
+      PausedActivityBackend paused_backend(*backend_);
+      LocalAuthProvider delayed_provider(paused_backend, fast_config());
+      auto validation = std::async(std::launch::async, [&] {
+        return delayed_provider.validate_token(token.plaintext_token);
+      });
+      const bool paused = paused_backend.wait_until_paused();
+      if (paused) {
+        const auto now_seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                                     std::chrono::system_clock::now().time_since_epoch())
+                                     .count();
+        EXPECT_NO_THROW(provider_->verify_totp(
+            token.session_id, totp_generate(kTotpSecret, now_seconds, fast_config().totp)));
+      }
+      auto before_read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto before = before_read->repo<core::Session>().find_by_id(token.session_id).value();
+      before_read->commit();
+      const auto audits_before = backend_->audit_event_count_for_tests();
+      backend_->fail_next_audit_append_for_tests();
+      paused_backend.release();
+      EXPECT_NO_THROW((void)validation.get());
+      ASSERT_TRUE(paused) << "validation did not reach the controlled activity-write boundary";
+
+      auto after_read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto after = after_read->repo<core::Session>().find_by_id(token.session_id).value();
+      after_read->commit();
+      EXPECT_TRUE(after.mfa_complete);
+      EXPECT_EQ(after.last_seen_at, before.last_seen_at);
+      EXPECT_EQ(after.revoked_at, before.revoked_at);
+      EXPECT_EQ(backend_->audit_event_count_for_tests(), audits_before);
+    }
+
     // ---- Permission caching ----
 
     TEST_F(LocalAuthProviderTest, RevokeSessionPreventsFutureValidateTokenDespiteCache) {
@@ -1721,7 +1875,7 @@ namespace fmgr::auth {
           PasswordCredentials{.email = "nototp@example.com", .password = "hunter22"}, ClientInfo{});
       ASSERT_TRUE(provider_->validate_token(token.plaintext_token).mfa_complete);
       {
-        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+        auto txn = backend_->begin_auth_transaction({token.user_id});
         auto session = txn->repo<core::Session>().find_by_id(token.session_id).value();
         session.mfa_complete = false;
         txn->repo<core::Session>().update(session, test_ctx());

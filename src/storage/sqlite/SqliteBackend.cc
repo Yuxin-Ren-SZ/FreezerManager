@@ -42,15 +42,16 @@ namespace fmgr::storage {
       const auto effective_code = extended_code == SQLITE_OK ? code : extended_code;
       // Engine text, never a client message (#123) — see storage::BackendText.
       const BackendText message{std::string(action) + ": " + sqlite_message(handle)};
+      const auto primary_code = effective_code & 0xff;
+      if (primary_code == SQLITE_BUSY || primary_code == SQLITE_LOCKED) {
+        throw Unavailable(message);
+      }
       switch (effective_code) {
       case SQLITE_CONSTRAINT_UNIQUE:
       case SQLITE_CONSTRAINT_PRIMARYKEY:
         throw UniqueViolation(message);
       case SQLITE_CONSTRAINT_FOREIGNKEY:
         throw ForeignKeyViolation(message);
-      case SQLITE_BUSY:
-      case SQLITE_LOCKED:
-        throw Unavailable(message);
       case SQLITE_CONSTRAINT:
       case SQLITE_CONSTRAINT_CHECK:
       case SQLITE_CONSTRAINT_NOTNULL:
@@ -1035,6 +1036,29 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
         : state(std::move(input_state)), isolation_level(input_isolation_level),
           connection(state->open_connection()) {}
 
+    ~Impl() {
+      rollback_database_no_throw();
+    }
+
+    void ensure_database_transaction() {
+      if (!database_transaction_active) {
+        exec(connection->get(), "BEGIN IMMEDIATE");
+        database_transaction_active = true;
+      }
+    }
+
+    void rollback_database_no_throw() noexcept {
+      if (database_transaction_active) {
+        rollback_no_throw(connection->get());
+        // If an I/O/connection failure prevented rollback, closing the private
+        // connection releases its DB resources rather than retaining a writer.
+        if (sqlite3_get_autocommit(connection->get()) == 0) {
+          connection.reset();
+        }
+        database_transaction_active = false;
+      }
+    }
+
     std::shared_ptr<SqliteBackendState> state;
     IsolationLevel isolation_level;
     std::unique_ptr<SqliteConnection> connection;
@@ -1048,6 +1072,8 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
       AuditSnapshot snapshot; // repository-derived before/after state
     };
     std::vector<AuditMutation> audit_mutations;
+    std::map<core::UserId, AuthUserLockStatus> auth_user_locks;
+    bool database_transaction_active{false};
     bool completed{false};
   };
 
@@ -1058,7 +1084,29 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
   SqliteTransaction::~SqliteTransaction() = default;
 
   sqlite3* SqliteTransaction::handle() const {
+    if (impl_->completed || !impl_->connection) {
+      throw ConstraintViolation("sqlite transaction is no longer active");
+    }
     return impl_->connection->get();
+  }
+
+  void SqliteTransaction::lock_auth_users(const std::vector<core::UserId>& user_ids) {
+    impl_->ensure_database_transaction();
+    for (const auto& user_id : user_ids) {
+      PreparedStatement statement(handle(), "SELECT id FROM users WHERE id = ?");
+      bind_text(statement.get(), 1, user_id.to_string());
+      impl_->auth_user_locks.emplace(user_id, statement.step_row() ? AuthUserLockStatus::Locked
+                                                                   : AuthUserLockStatus::Missing);
+    }
+  }
+
+  AuthUserLockStatus SqliteTransaction::auth_user_lock_status(const core::UserId& user_id) const {
+    const auto found = impl_->auth_user_locks.find(user_id);
+    if (impl_->completed || !impl_->database_transaction_active ||
+        found == impl_->auth_user_locks.end()) {
+      throw ConstraintViolation("user was not locked by this active auth transaction");
+    }
+    return found->second;
   }
 
   IsolationLevel SqliteTransaction::isolation_level() const {
@@ -1097,10 +1145,8 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
     }
 
     sqlite3* database = handle();
-    bool began = false;
     try {
-      exec(database, "BEGIN IMMEDIATE");
-      began = true;
+      impl_->ensure_database_transaction();
       for (const auto& hook : impl_->commit_hooks) {
         hook(database);
       }
@@ -1189,17 +1235,17 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
       }
 
       exec(database, "COMMIT");
+      impl_->database_transaction_active = false;
       impl_->completed = true;
     } catch (...) {
-      if (began) {
-        rollback_no_throw(database);
-      }
+      impl_->rollback_database_no_throw();
       impl_->completed = true;
       throw;
     }
   }
 
   void SqliteTransaction::rollback() {
+    impl_->rollback_database_no_throw();
     impl_->completed = true;
   }
 
@@ -1285,6 +1331,27 @@ CREATE TRIGGER IF NOT EXISTS audit_events_no_delete
   std::unique_ptr<ITransaction> SqliteBackend::begin(IsolationLevel isolation_level) {
     auto transaction =
         std::unique_ptr<SqliteTransaction>(new SqliteTransaction(state_, isolation_level));
+    for (const auto& [unused_type, factory] : repository_factories_) {
+      (void)unused_type;
+      factory(*transaction);
+    }
+    return transaction;
+  }
+
+  std::unique_ptr<ITransaction>
+  SqliteBackend::begin_auth_transaction(const std::vector<core::UserId>& user_ids) {
+    if (user_ids.empty()) {
+      throw ConstraintViolation("auth transactions require at least one user");
+    }
+    auto ordered_users = user_ids;
+    std::ranges::sort(ordered_users);
+    const auto duplicate_tail = std::ranges::unique(ordered_users);
+    ordered_users.erase(duplicate_tail.begin(), duplicate_tail.end());
+    auto transaction = std::unique_ptr<SqliteTransaction>(
+        new SqliteTransaction(state_, IsolationLevel::Serializable));
+    transaction->lock_auth_users(ordered_users);
+    // Repository factories may read through this transaction: register only
+    // after the DB write lock and immutable per-user lock statuses exist.
     for (const auto& [unused_type, factory] : repository_factories_) {
       (void)unused_type;
       factory(*transaction);
