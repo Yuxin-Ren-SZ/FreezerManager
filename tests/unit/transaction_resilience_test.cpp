@@ -369,14 +369,16 @@ namespace fmgr::storage {
       auto txn = backend_->begin(IsolationLevel::Serializable);
       txn->repo<core::Lab>().insert(make_lab(1), ctx);
       txn->commit();
-      // Any further mutation on a committed transaction is silently ignored.
-      txn->repo<core::Lab>().insert(make_lab(2), ctx);
+      const auto audits_after_commit = backend_->audit_event_count_for_tests();
+      // A completed transaction rejects further access to its released resources.
+      EXPECT_THROW(txn->repo<core::Lab>().insert(make_lab(2), ctx), ConstraintViolation);
 
       // Lab 2 must NOT exist since the write happened after commit.
       auto read_txn = backend_->begin(IsolationLevel::Serializable);
       EXPECT_FALSE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(2)).has_value());
       // Lab 1 was committed before the rogue write and must still exist.
       EXPECT_TRUE(read_txn->repo<core::Lab>().find_by_id(id_from_low<core::LabId>(1)).has_value());
+      EXPECT_EQ(backend_->audit_event_count_for_tests(), audits_after_commit);
     }
 
     TEST_F(TransactionResilienceTest, WriteContentionWithLongRunningReader) {

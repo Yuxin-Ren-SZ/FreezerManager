@@ -808,10 +808,14 @@ ALTER TABLE audit_events ADD CONSTRAINT audit_events_prev_hash_unique UNIQUE(pre
   PostgresTransaction::~PostgresTransaction() = default;
 
   pqxx::work& PostgresTransaction::work() {
-    if (impl_->completed || !impl_->work.has_value()) {
+    if (impl_->completed) {
       throw ConstraintViolation("postgres transaction is no longer active");
     }
-    return impl_->work.value();
+    auto& active_work = impl_->work;
+    if (!active_work.has_value()) {
+      throw ConstraintViolation("postgres transaction is no longer active");
+    }
+    return active_work.value();
   }
 
   void PostgresTransaction::lock_auth_users(const std::vector<core::UserId>& user_ids) {
