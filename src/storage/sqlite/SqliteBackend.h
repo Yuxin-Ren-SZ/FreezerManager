@@ -64,6 +64,14 @@ namespace fmgr::storage {
       register_repository<Entity>(std::move(repository));
     }
 
+    [[nodiscard]] core::MfaSecurityState
+    initialize_mfa_state(const core::UserId& user_id, const MutationContext& context) override;
+    void replace_totp_secret(const core::UserId& user_id, const std::optional<std::string>& secret,
+                             const MutationContext& context) override;
+    void complete_totp_session(const core::SessionId& session_id, const core::Uuid& generation,
+                               core::Timestamp verified_at,
+                               const MutationContext& context) override;
+
     void commit() override;
     void rollback() override;
     [[nodiscard]] AuthUserLockStatus

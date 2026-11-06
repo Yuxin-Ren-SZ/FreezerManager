@@ -4,6 +4,7 @@
 
 #include "core/session.h"
 #include "storage/SessionTraits.h"
+#include "storage/detail/MfaLifecycle.h"
 #include "storage/detail/QuerySqlBuilder.h"
 #include "storage/detail/SessionColumns.h"
 
@@ -224,10 +225,10 @@ namespace fmgr::storage {
       [[nodiscard]] std::optional<nlohmann::json>
       prior_snapshot(const typename EntityTraits<Entity>::Id& entity_id) const {
         if (const auto staged = find_staged(entity_id); staged.has_value()) {
-          return nlohmann::json(staged.value());
+          return detail::auth_snapshot(staged.value());
         }
         if (const auto loaded = load(entity_id); loaded.has_value()) {
-          return nlohmann::json(loaded.value());
+          return detail::auth_snapshot(loaded.value());
         }
         return std::nullopt;
       }
@@ -242,10 +243,11 @@ namespace fmgr::storage {
         pending_.insert_or_assign(entity_id, PendingEntity{.entity = entity, .is_insert = true});
         transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
                                    entity_id.to_string(), context, "insert",
-                                   AuditSnapshot{.after = nlohmann::json(entity)});
+                                   AuditSnapshot{.after = detail::auth_snapshot(entity)});
       }
 
-      void stage_update(const Entity& entity, const MutationContext& context) {
+      void stage_update(const Entity& entity, const MutationContext& context,
+                        const std::string& action = "update") {
         const auto entity_id = id_of(entity);
         if (!pending_.contains(entity_id) && !load(entity_id).has_value()) {
           throw NotFound(std::string(EntityTraits<Entity>::entity_name()) + " not found");
@@ -257,7 +259,8 @@ namespace fmgr::storage {
                                   PendingEntity{.entity = entity, .is_insert = is_insert});
         transaction_.note_mutation(
             std::string(EntityTraits<Entity>::entity_name()), entity_id.to_string(), context,
-            "update", AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity)});
+            action,
+            AuditSnapshot{.before = std::move(before), .after = detail::auth_snapshot(entity)});
       }
 
       [[nodiscard]] std::optional<Entity>
@@ -289,7 +292,8 @@ namespace fmgr::storage {
 
     constexpr std::string_view k_session_columns =
         "id, user_id, token_hash, token_prefix, "
-        "created_at_micros, last_seen_at_micros, ip, user_agent, revoked_at_micros, mfa_complete";
+        "created_at_micros, last_seen_at_micros, ip, user_agent, revoked_at_micros, mfa_complete, "
+        "totp_verified_generation, totp_verified_at_micros";
 
     [[nodiscard]] core::Session read_session(sqlite3_stmt* statement) {
       return core::Session{
@@ -303,12 +307,18 @@ namespace fmgr::storage {
           .user_agent = column_optional_text(statement, 7),
           .revoked_at = column_optional_timestamp(statement, 8),
           .mfa_complete = sqlite3_column_int(statement, 9) != 0,
+          .totp_verified_generation = [&]() -> std::optional<core::Uuid> {
+            const auto value = column_optional_text(statement, 10);
+            return value ? std::make_optional(core::Uuid::parse(*value)) : std::nullopt;
+          }(),
+          .totp_verified_at = column_optional_timestamp(statement, 11),
       };
     }
 
     // ---- SessionRepository ----
 
-    class SessionRepository final : public SqliteSessionRepoBase<core::Session> {
+    class SessionRepository final : public SqliteSessionRepoBase<core::Session>,
+                                    public detail::TotpSessionWriter {
     public:
       using SqliteSessionRepoBase::SqliteSessionRepoBase;
 
@@ -363,6 +373,9 @@ namespace fmgr::storage {
       }
 
       void insert(const core::Session& entity, const MutationContext& context) override {
+        if (entity.totp_verified_generation || entity.totp_verified_at) {
+          throw ConstraintViolation("generic session insert cannot supply TOTP proof");
+        }
         stage_insert(entity, context);
       }
 
@@ -374,6 +387,10 @@ namespace fmgr::storage {
         require_owner_lock(current->user_id);
         if (entity.user_id != current->user_id) {
           throw ConstraintViolation("session ownership cannot change");
+        }
+        if (entity.totp_verified_generation != current->totp_verified_generation ||
+            entity.totp_verified_at != current->totp_verified_at) {
+          throw ConstraintViolation("generic session update cannot alter TOTP proof");
         }
         stage_update(entity, context);
       }
@@ -389,10 +406,16 @@ namespace fmgr::storage {
         const auto is_insert = pending().contains(entity_id) && pending().at(entity_id).is_insert;
         pending().insert_or_assign(entity_id,
                                    PendingEntity{.entity = entity.value(), .is_insert = is_insert});
-        transaction().note_mutation(
-            std::string(EntityTraits<core::Session>::entity_name()), entity_id.to_string(), context,
-            "soft_delete",
-            AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity.value())});
+        transaction().note_mutation(std::string(EntityTraits<core::Session>::entity_name()),
+                                    entity_id.to_string(), context, "soft_delete",
+                                    AuditSnapshot{.before = std::move(before),
+                                                  .after = detail::auth_snapshot(entity.value())});
+      }
+
+      void write_session(const detail::MfaWriteCapability&, const core::Session& entity,
+                         const MutationContext& context, const std::string& action) override {
+        require_owner_lock(entity.user_id);
+        stage_update(entity, context, action);
       }
 
     private:
@@ -445,14 +468,20 @@ namespace fmgr::storage {
         bind_optional_text(statement, 8, entity.user_agent);
         bind_optional_timestamp(statement, 9, entity.revoked_at);
         bind_int64(statement, 10, entity.mfa_complete ? 1 : 0);
+        bind_optional_text(statement, 11,
+                           entity.totp_verified_generation
+                               ? std::make_optional(entity.totp_verified_generation->to_string())
+                               : std::nullopt);
+        bind_optional_timestamp(statement, 12, entity.totp_verified_at);
       }
 
       static void insert_pending(sqlite3* handle, const core::Session& entity) {
         Statement statement(handle, "INSERT INTO sessions "
                                     "(id, user_id, token_hash, token_prefix, "
                                     "created_at_micros, last_seen_at_micros, "
-                                    "ip, user_agent, revoked_at_micros, mfa_complete) "
-                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                                    "ip, user_agent, revoked_at_micros, mfa_complete, "
+                                    "totp_verified_generation, totp_verified_at_micros) "
+                                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         bind_entity(statement.get(), entity);
         statement.step_done();
       }
@@ -462,11 +491,115 @@ namespace fmgr::storage {
                                     "id = ?, user_id = ?, token_hash = ?, token_prefix = ?, "
                                     "created_at_micros = ?, last_seen_at_micros = ?, "
                                     "ip = ?, user_agent = ?, revoked_at_micros = ?, "
-                                    "mfa_complete = ? WHERE id = ?");
+                                    "mfa_complete = ?, totp_verified_generation = ?, "
+                                    "totp_verified_at_micros = ? WHERE id = ?");
         bind_entity(statement.get(), entity);
-        bind_text(statement.get(), 11, entity.id.to_string());
+        bind_text(statement.get(), 13, entity.id.to_string());
         statement.step_done();
       }
+    };
+
+    // State writes execute immediately inside the already-open auth transaction.
+    // Thus every typed query sees its own writes without a second cache/flush path.
+    class MfaStateRepository final : public IRepository<core::MfaSecurityState>,
+                                     public detail::MfaStateWriter {
+    public:
+      explicit MfaStateRepository(SqliteTransaction& txn) : txn_(txn) {}
+
+      [[nodiscard]] std::optional<core::MfaSecurityState>
+      find_by_id(const core::UserId& user_id) override {
+        const auto rows = query(Query<core::MfaSecurityState>::where(
+            field<core::MfaSecurityState, core::UserId>(core::MfaSecurityState::Field::UserId) ==
+            user_id));
+        return rows.empty() ? std::nullopt : std::make_optional(rows.front());
+      }
+      [[nodiscard]] std::vector<core::MfaSecurityState>
+      query(const Query<core::MfaSecurityState>& spec) override {
+        std::string sql =
+            "SELECT user_id, last_accepted_step, failure_count, next_allowed_at_micros, "
+            "observed_at_micros, totp_generation FROM mfa_security_states";
+        std::vector<nlohmann::json> parameters;
+        detail::SqliteDialect dialect;
+        detail::append_where(sql, parameters, {}, spec.predicates(), detail::mfa_state_column,
+                             dialect);
+        detail::append_order_limit(sql, parameters, spec, detail::mfa_state_column, dialect);
+        Statement statement(txn_.handle(), sql);
+        bind_parameters(statement.get(), parameters);
+        std::vector<core::MfaSecurityState> result;
+        while (statement.step_row()) {
+          auto* row = statement.get();
+          const auto generation = column_optional_text(row, 5);
+          result.push_back(core::MfaSecurityState{
+              .user_id = core::UserId::parse(column_text(row, 0)),
+              .last_accepted_step = sqlite3_column_type(row, 1) == SQLITE_NULL
+                                        ? std::nullopt
+                                        : std::make_optional(sqlite3_column_int64(row, 1)),
+              .failure_count = sqlite3_column_int(row, 2),
+              .next_allowed_at = column_optional_timestamp(row, 3),
+              .observed_at = column_optional_timestamp(row, 4),
+              .totp_generation =
+                  generation ? std::make_optional(core::Uuid::parse(*generation)) : std::nullopt});
+        }
+        return result;
+      }
+      void insert(const core::MfaSecurityState&, const MutationContext&) override {
+        throw ConstraintViolation("MFA state initialization requires its backend lifecycle");
+      }
+      void soft_delete(const core::UserId&, const MutationContext&) override {
+        throw ConstraintViolation("MFA security state cannot be deleted");
+      }
+      void update(const core::MfaSecurityState& state, const MutationContext& ctx) override {
+        detail::require_mfa_owner_lock(txn_, state.user_id);
+        const auto before = find_by_id(state.user_id);
+        if (!before) {
+          throw NotFound("MFA state not found");
+        }
+        detail::validate_mfa_update(*before, state);
+        write(state, ctx, before, "auth.mfa_state_updated");
+      }
+      void write_state(const detail::MfaWriteCapability&, const core::MfaSecurityState& state,
+                       const MutationContext& ctx, bool initialize) override {
+        detail::require_mfa_owner_lock(txn_, state.user_id);
+        detail::validate_mfa_state(state);
+        const auto before = find_by_id(state.user_id);
+        if (initialize == before.has_value()) {
+          throw ConstraintViolation("invalid MFA initialization state");
+        }
+        write(state, ctx, before,
+              initialize ? "auth.mfa_state_initialized" : "auth.mfa_generation_changed");
+      }
+
+    private:
+      void write(const core::MfaSecurityState& state, const MutationContext& ctx,
+                 const std::optional<core::MfaSecurityState>& before, const std::string& action) {
+        Statement statement(txn_.handle(),
+                            before ? "UPDATE mfa_security_states SET last_accepted_step = ?, "
+                                     "failure_count = ?, next_allowed_at_micros = ?, "
+                                     "observed_at_micros = ?, totp_generation = ? WHERE user_id = ?"
+                                   : "INSERT INTO mfa_security_states (last_accepted_step, "
+                                     "failure_count, next_allowed_at_micros, observed_at_micros, "
+                                     "totp_generation, user_id) VALUES (?, ?, ?, ?, ?, ?)");
+        if (state.last_accepted_step) {
+          bind_int64(statement.get(), 1, *state.last_accepted_step);
+        } else {
+          bind_null(statement.get(), 1);
+        }
+        bind_int64(statement.get(), 2, state.failure_count);
+        bind_optional_timestamp(statement.get(), 3, state.next_allowed_at);
+        bind_optional_timestamp(statement.get(), 4, state.observed_at);
+        bind_optional_text(statement.get(), 5,
+                           state.totp_generation
+                               ? std::make_optional(state.totp_generation->to_string())
+                               : std::nullopt);
+        bind_text(statement.get(), 6, state.user_id.to_string());
+        statement.step_done();
+        txn_.note_mutation("mfa_security_state", state.user_id.to_string(), ctx, action,
+                           AuditSnapshot{.before = before
+                                                       ? std::make_optional(nlohmann::json(*before))
+                                                       : std::nullopt,
+                                         .after = nlohmann::json(state)});
+      }
+      SqliteTransaction& txn_;
     };
 
     // ---- ApiToken column mapping ----
@@ -565,10 +698,10 @@ namespace fmgr::storage {
         const auto is_insert = pending().contains(entity_id) && pending().at(entity_id).is_insert;
         pending().insert_or_assign(entity_id,
                                    PendingEntity{.entity = entity.value(), .is_insert = is_insert});
-        transaction().note_mutation(
-            std::string(EntityTraits<core::ApiToken>::entity_name()), entity_id.to_string(),
-            context, "soft_delete",
-            AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity.value())});
+        transaction().note_mutation(std::string(EntityTraits<core::ApiToken>::entity_name()),
+                                    entity_id.to_string(), context, "soft_delete",
+                                    AuditSnapshot{.before = std::move(before),
+                                                  .after = detail::auth_snapshot(entity.value())});
       }
 
     private:
@@ -646,7 +779,27 @@ namespace fmgr::storage {
 
   } // namespace
 
+  core::MfaSecurityState SqliteTransaction::initialize_mfa_state(const core::UserId& user_id,
+                                                                 const MutationContext& ctx) {
+    return detail::initialize_mfa_state(*this, detail::MfaWriteCapability{}, user_id, ctx);
+  }
+  void SqliteTransaction::replace_totp_secret(const core::UserId& user_id,
+                                              const std::optional<std::string>& secret,
+                                              const MutationContext& ctx) {
+    detail::replace_totp_secret(*this, detail::MfaWriteCapability{}, user_id, secret, ctx,
+                                now_timestamp());
+  }
+  void SqliteTransaction::complete_totp_session(const core::SessionId& session_id,
+                                                const core::Uuid& generation,
+                                                core::Timestamp verified_at,
+                                                const MutationContext& ctx) {
+    detail::complete_totp_session(*this, detail::MfaWriteCapability{}, session_id, generation,
+                                  verified_at, ctx);
+  }
+
   void register_session_repositories(SqliteBackend& backend) {
+    backend.register_repository_factory<core::MfaSecurityState>(
+        [](SqliteTransaction& txn) { return std::make_unique<MfaStateRepository>(txn); });
     backend.register_repository_factory<core::Session>([](SqliteTransaction& transaction) {
       return std::make_unique<SessionRepository>(transaction);
     });

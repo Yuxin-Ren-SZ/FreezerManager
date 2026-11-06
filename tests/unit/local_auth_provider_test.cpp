@@ -193,7 +193,6 @@ namespace fmgr::auth {
             .created_at = ts(1'002),
             .auth_bindings =
                 nlohmann::json::array({{{"provider", "local"}, {"hash", pw_with_totp}}}),
-            .totp_secret_enc = std::string(kTotpSecret),
         };
         txn->repo<core::User>().insert(user_with_totp, ctx);
 
@@ -216,6 +215,9 @@ namespace fmgr::auth {
         txn->repo<core::LabMembership>().insert(mem_with_totp, ctx);
 
         txn->commit();
+        auto enroll = backend_->begin_auth_transaction({kUserWithTotpId});
+        enroll->replace_totp_secret(kUserWithTotpId, std::string(kTotpSecret), ctx);
+        enroll->commit();
       }
     };
 
@@ -885,16 +887,10 @@ namespace fmgr::auth {
           PasswordCredentials{.email = "totp@example.com", .password = "s3cret!8"}, ClientInfo{});
       ASSERT_FALSE(token.mfa_complete);
 
-      // Remove the user's TOTP secret (simulating a concurrent admin action).
+      // The guarded removal also revokes this pending session.
       {
-        auto txn = backend_->begin(storage::IsolationLevel::Serializable);
-        auto users = txn->repo<core::User>().query(storage::Query<core::User>::where(
-            storage::field<core::User, std::string>(core::User::Field::Id) ==
-            kUserWithTotpId.to_string()));
-        ASSERT_FALSE(users.empty());
-        auto user = users.front();
-        user.totp_secret_enc = std::nullopt;
-        txn->repo<core::User>().update(user, test_ctx());
+        auto txn = backend_->begin_auth_transaction({kUserWithTotpId});
+        txn->replace_totp_secret(kUserWithTotpId, std::nullopt, test_ctx());
         txn->commit();
       }
 

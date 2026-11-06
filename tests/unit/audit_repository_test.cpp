@@ -137,7 +137,15 @@ namespace fmgr::storage {
                               ? "DROP INDEX IF EXISTS audit_events_prev_hash_unique"
                               : "ALTER TABLE audit_events DROP CONSTRAINT IF EXISTS "
                                 "audit_events_prev_hash_unique");
-        fixture_sql(*txn, "DELETE FROM schema_migrations WHERE version = 16");
+        fixture_sql(*txn, "DROP TABLE mfa_security_states");
+        if (GetParam() == BackendKind::Postgres) {
+          fixture_sql(*txn, "ALTER TABLE sessions DROP CONSTRAINT sessions_totp_proof_pair");
+        }
+        fixture_sql(*txn, "ALTER TABLE sessions DROP COLUMN totp_verified_at_micros");
+        fixture_sql(*txn, "ALTER TABLE sessions DROP COLUMN totp_verified_generation");
+        fixture_sql(*txn, "DELETE FROM role_permissions WHERE permission_key = 'auth.mfa_unlock'");
+        fixture_sql(*txn, "DELETE FROM permissions WHERE key = 'auth.mfa_unlock'");
+        fixture_sql(*txn, "DELETE FROM schema_migrations WHERE version >= 16");
         txn->commit();
         ASSERT_EQ(backend().current_version(), SchemaVersion{15});
       }
@@ -244,7 +252,7 @@ namespace fmgr::storage {
     TEST_P(AuditRepositoryTest, AuditIntegrityMigrationAcceptsEmptyChainWithoutBackfill) {
       emulate_legacy_schema();
       ASSERT_NO_THROW(backend().migrate_to_latest());
-      EXPECT_EQ(backend().current_version(), SchemaVersion{16});
+      EXPECT_EQ(backend().current_version(), SchemaVersion{17});
       EXPECT_TRUE(events().empty());
     }
 
@@ -258,7 +266,7 @@ namespace fmgr::storage {
       txn->commit();
       const auto before = events();
       ASSERT_NO_THROW(backend().migrate_to_latest());
-      EXPECT_EQ(backend().current_version(), SchemaVersion{16});
+      EXPECT_EQ(backend().current_version(), SchemaVersion{17});
       EXPECT_EQ(events(), before);
       EXPECT_TRUE(audit::verify_audit_chain(events()).ok);
     }
@@ -301,7 +309,7 @@ namespace fmgr::storage {
         if (GetParam() == BackendKind::Sqlite) {
           return std::make_unique<SqliteBackend>(SqliteBackendOptions{
               .database_path = connection,
-              .migrations = {{.version = 17,
+              .migrations = {{.version = 18,
                               .name = "verified_test",
                               .up_sql = "SELECT 1;",
                               .requires_verified_audit_chain = require_verification}},
@@ -310,7 +318,7 @@ namespace fmgr::storage {
         return std::make_unique<PostgresBackend>(PostgresBackendOptions{
             .connection_string = connection,
             .pool_size = 1,
-            .migrations = {{.version = 17,
+            .migrations = {{.version = 18,
                             .name = "verified_test",
                             .up_sql = "SELECT 1;",
                             .requires_verified_audit_chain = require_verification}},
@@ -320,7 +328,7 @@ namespace fmgr::storage {
       ASSERT_NO_THROW(verified->migrate_to_latest());
       auto removed_requirement = with_requirement(false);
       EXPECT_THROW(removed_requirement->migrate_to_latest(), MigrationFailure);
-      EXPECT_EQ(removed_requirement->current_version(), SchemaVersion{17});
+      EXPECT_EQ(removed_requirement->current_version(), SchemaVersion{18});
     }
 
     TEST_P(AuditRepositoryTest, PredecessorUniquenessIncludesGenesisAndLaterRows) {

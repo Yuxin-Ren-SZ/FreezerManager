@@ -37,7 +37,15 @@ class DemoSetupTest(unittest.TestCase):
         vite = web / "node_modules/.bin/vite"
         vite.write_text("#!/bin/sh\nexec sleep 30\n")
         vite.chmod(0o755)
-        self.cli.write_text("#!/bin/sh\nexit 0\n")
+        self.cli.write_text(
+            "#!/bin/sh\n"
+            'echo "cli:$*" >> "$DEMO_STUB_EVENTS"\n'
+            'if [ "$1 $2" = "user set-totp" ]; then\n'
+            '  cat > "$DEMO_SECRET_INPUT"\n'
+            '  [ "${DEMO_TOTP_FAIL:-0}" != 1 ]; exit $?\n'
+            'fi\n'
+            "exit 0\n"
+        )
         self.cli.chmod(0o755)
         venv_python = self.root / ".venv/bin/python3"
         venv_python.parent.mkdir(parents=True)
@@ -52,7 +60,6 @@ class DemoSetupTest(unittest.TestCase):
             "    *LEGACY_DEMO_SEED_CHECK*) printf '%s\\n' \"$input\" | "
             + shlex.quote(sys.executable)
             + " - \"$2\"; exit $?;;\n"
-            "    *'UPDATE users SET totp_secret_enc'*) exit 0;;\n"
             "  esac\n"
             "fi\n"
             "case \"${1:-}\" in */seed_demo.py) [ \"${DEMO_SEED_FAIL:-0}\" != 1 ]; exit;; esac\n"
@@ -120,6 +127,7 @@ class DemoSetupTest(unittest.TestCase):
             "FMGR_REST_LISTEN": "127.0.0.1:18113",
             "FMGR_WEB_DEV_PORT": "5213",
             "DEMO_STUB_EVENTS": str(events),
+            "DEMO_SECRET_INPUT": str(self.root / "secret-input"),
             "DEMO_SERVER_PIDFILE": str(self.root / "server.pid"),
             "DEMO_STUB_SEEDED": "1",
             **extra_env,
@@ -253,6 +261,22 @@ class DemoSetupTest(unittest.TestCase):
         self.assertIn("exited before", result.stderr.lower())
         self.assertIn("freezerd-migrate.log", result.stderr)
         self.assertIn("curl", events)
+
+    def test_totp_uses_guarded_cli_stdin_without_secret_output(self):
+        result, events = self.run_demo()
+        self.assertIn("cli:user set-totp", events)
+        secret = (self.root / "secret-input").read_text().strip()
+        self.assertTrue(secret)
+        self.assertNotIn(secret, events)
+        self.assertNotIn(secret, result.stdout)
+        self.assertNotIn(secret, result.stderr)
+        self.assertNotIn("otpauth://", result.stdout)
+
+    def test_failed_totp_provisioning_never_marks_seed_complete(self):
+        result, events = self.run_demo(DEMO_TOTP_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cli:user set-totp", events)
+        self.assertFalse(self.marker.exists())
 
     def test_normal_ready_path_starts_both_owned_services(self):
         result, events = self.run_demo()

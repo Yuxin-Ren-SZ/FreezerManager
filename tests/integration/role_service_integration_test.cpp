@@ -619,15 +619,17 @@ namespace fmgr::test {
     TEST_F(RoleServiceTest, GrantGlobalOnlyPermissionFailsPrecondition) {
       const auto token = login(kAdminEmail, kPassword);
       const auto role_id = create_role(token, kLab1, "Technician");
-      grpc::ClientContext ctx;
-      set_bearer(ctx, token);
-      fmgr::v1::GrantPermissionRequest req;
-      req.set_role_id(role_id);
-      req.set_permission_key("lab.provision");
-      fmgr::v1::GrantPermissionResponse resp;
-      const auto status = role_stub_->GrantPermission(&ctx, req, &resp);
-      EXPECT_FALSE(status.ok());
-      EXPECT_EQ(status.error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+      for (const auto* key : {"lab.provision", "auth.mfa_unlock"}) {
+        grpc::ClientContext ctx;
+        set_bearer(ctx, token);
+        fmgr::v1::GrantPermissionRequest req;
+        req.set_role_id(role_id);
+        req.set_permission_key(key);
+        fmgr::v1::GrantPermissionResponse resp;
+        const auto status = role_stub_->GrantPermission(&ctx, req, &resp);
+        EXPECT_FALSE(status.ok());
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::FAILED_PRECONDITION);
+      }
     }
 
     // F-1 escalation guard: a lab admin may not mint a SystemAdmin-kind custom role.

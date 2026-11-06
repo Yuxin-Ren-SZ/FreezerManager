@@ -34,6 +34,10 @@ namespace fmgr::storage::detail {
       return "revoked_at_micros";
     case core::Session::Field::MfaComplete:
       return "mfa_complete";
+    case core::Session::Field::TotpVerifiedGeneration:
+      return "totp_verified_generation";
+    case core::Session::Field::TotpVerifiedAt:
+      return "totp_verified_at_micros";
     }
     throw ConstraintViolation("unknown session field");
   }
@@ -65,6 +69,10 @@ namespace fmgr::storage::detail {
   }
 
   inline void validate_session(const core::Session& session) {
+    if (session.totp_verified_generation.has_value() != session.totp_verified_at.has_value() ||
+        (session.totp_verified_generation && !session.mfa_complete)) {
+      throw ConstraintViolation("invalid paired TOTP session proof");
+    }
     if (session.token_hash.empty()) {
       throw ConstraintViolation("session token_hash is required");
     }

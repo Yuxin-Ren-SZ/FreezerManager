@@ -430,7 +430,6 @@ namespace fmgr::test {
             .auth_bindings = nlohmann::json::array({
                 nlohmann::json::object({{"provider", "local"}, {"hash", password_hash}}),
             }),
-            .totp_secret_enc = std::string(kTotpSecret),
         };
         const core::Lab lab{
             .id = lab_id,
@@ -482,6 +481,9 @@ namespace fmgr::test {
         };
         txn->repo<core::User>().insert(no_permission_user, ctx);
         txn->commit();
+        auto enroll = backend_->begin_auth_transaction({mfa_user.id});
+        enroll->replace_totp_secret(mfa_user.id, std::string(kTotpSecret), ctx);
+        enroll->commit();
       }
     };
 

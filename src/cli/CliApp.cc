@@ -690,6 +690,11 @@ namespace fmgr::cli {
       CLI::App* cmd{nullptr};
     };
 
+    struct SetTotpArgs : SetPasswordArgs {
+      std::string secret_file;
+      bool remove{false};
+    };
+
     void add_user_set_password(CLI::App* user_root, SetPasswordArgs& args) {
       args.cmd = user_root->add_subcommand(
           "set-password", "Enrol a local password for an existing user (reads it from stdin)");
@@ -706,6 +711,7 @@ namespace fmgr::cli {
       ImportArgs custom_field_def;
       ImportArgs user;
       SetPasswordArgs user_set_password;
+      SetTotpArgs user_set_totp;
     };
 
     void add_import_nouns(CLI::App& app, const NounSubcommands& box,
@@ -722,6 +728,18 @@ namespace fmgr::cli {
       user_root->require_subcommand(1);
       add_import_noun(user_root, "user", nouns.user);
       add_user_set_password(user_root, nouns.user_set_password);
+      auto& totp = nouns.user_set_totp;
+      totp.cmd = user_root->add_subcommand(
+          "set-totp", "Trusted audited TOTP provisioning (secret from stdin or protected file)");
+      totp.cmd->add_option("--sqlite", totp.sqlite, "Path to a SQLite database file");
+      totp.cmd->add_option("--postgres", totp.postgres, "PostgreSQL connection URL");
+      totp.cmd->add_option("--email", totp.email, "Email of the user to provision")->required();
+      totp.cmd->add_option("--actor", totp.actor, "Audit actor UUID (default: target user)");
+      auto* secret_file =
+          totp.cmd->add_option("--secret-file", totp.secret_file,
+                               "Owner-only regular secret file ('-' or absent reads stdin)");
+      totp.cmd->add_flag("--remove", totp.remove, "Remove enrollment and revoke active sessions")
+          ->excludes(secret_file);
     }
 
     // Run one parsed import: open the backend, then stream the file (or stdin on
@@ -1000,6 +1018,16 @@ namespace fmgr::cli {
       }
       if (const auto code = dispatch_import_nouns(import_nouns, out)) {
         return *code;
+      }
+      if (import_nouns.user_set_totp.cmd->parsed()) {
+        const auto& args = import_nouns.user_set_totp;
+        const auto secret =
+            args.remove ? std::nullopt
+                        : std::make_optional(read_totp_secret_input(args.secret_file, std::cin));
+        auto backend = open_backend(backend_options_from(args.sqlite, args.postgres));
+        const auto actor =
+            args.actor.empty() ? std::nullopt : std::make_optional(core::UserId::parse(args.actor));
+        return run_user_set_totp(*backend, args.email, secret, actor, out, err);
       }
       if (import_nouns.user_set_password.cmd->parsed()) {
         const auto& args = import_nouns.user_set_password;

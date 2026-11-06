@@ -237,7 +237,7 @@ if [[ "${1:-}" == "--totp-code" ]]; then
   PY="$(find_seed_python)"
   [[ -n "$PY" && -x "$PY" ]] || PY="$(command -v python3 || true)"
   [[ -n "$PY" && -x "$PY" ]] || fail "no python3 found"
-  "$PY" - "$DEMO_TOTP_SECRET" <<'PYEOF'
+  "$PY" -c '
 import base64
 import hashlib
 import hmac
@@ -245,14 +245,14 @@ import struct
 import sys
 import time
 
-secret = sys.argv[1]
+secret = sys.stdin.readline().rstrip("\n")
 key = base64.b32decode(secret + "=" * ((8 - len(secret) % 8) % 8))
 counter = int(time.time()) // 30
 digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
 offset = digest[-1] & 0x0F
 code = (struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF) % 10**6
 print(f"{code:06d}")
-PYEOF
+' <<< "$DEMO_TOTP_SECRET"
   exit 0
 fi
 
@@ -378,26 +378,14 @@ else
   log "database already seeded; skipping seed (use --reset for a fresh one)"
 fi
 
-# Give the demo admin a fixed TOTP secret so the demo shows the real MFA flow
-# (a user without a secret signs in with the password alone). Run on every
-# start: it is idempotent, and an older demo database may predate the secret.
-"$PY" - "$DB" "$DEMO_TOTP_SECRET" "$DEMO_ADMIN_EMAIL" <<'PYEOF'
-import sqlite3
-import sys
+# Replacing enrollment is deliberately audited on every demo start. Even a
+# same-value replacement rotates its generation and revokes prior admin sessions.
+# The secret travels on stdin, never argv, SQL, log files or startup output.
+log "provisioning demo MFA (revokes prior admin sessions)"
+printf '%s\n' "$DEMO_TOTP_SECRET" | "$FREEZERCTL" user set-totp \
+  --sqlite "$DB" --email "$DEMO_ADMIN_EMAIL"
 
-db_path, secret, email = sys.argv[1], sys.argv[2], sys.argv[3]
-conn = sqlite3.connect(db_path)
-cur = conn.execute(
-    "UPDATE users SET totp_secret_enc = ? WHERE primary_email = ?",
-    (secret, email),
-)
-conn.commit()
-if cur.rowcount != 1:
-    sys.exit(f"expected exactly one {email} row to enable TOTP on, updated {cur.rowcount}")
-print(f"  TOTP enabled for {email} ({cur.rowcount} row)")
-PYEOF
-
-# Mark only after both the seed and the idempotent TOTP update completed. Legacy
+# Mark only after both the seed and guarded TOTP provisioning completed. Legacy
 # markerless databases are marked after validating their fixed seeded identities.
 if [[ "$FRESH" == 1 || "$LEGACY_SEED" == 1 ]]; then
   marker_tmp="$SEED_MARKER.tmp.$$"
@@ -465,8 +453,6 @@ cat <<EOF
    email:    $DEMO_ADMIN_EMAIL
    password: admin
    TOTP:     bash scripts/demo-setup.sh --totp-code
-             (or scan into any authenticator app:
-              otpauth://totp/FreezerManager%20Demo:$DEMO_ADMIN_EMAIL?secret=$DEMO_TOTP_SECRET&issuer=FreezerManager%20Demo&algorithm=SHA1&digits=6&period=30)
 
  Other users (password-only sign-in, all password: admin):
    wang@neuro.local    (Neuro LabAdmin)

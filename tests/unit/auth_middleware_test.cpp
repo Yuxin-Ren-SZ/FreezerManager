@@ -258,8 +258,7 @@ namespace fmgr::rpc {
             ctx);
 
         // Users
-        auto insert_user = [&](core::UserId uid, std::string email, std::string pw_hash,
-                               std::optional<std::string> totp = std::nullopt) {
+        auto insert_user = [&](core::UserId uid, std::string email, std::string pw_hash) {
           txn->repo<core::User>().insert(
               core::User{
                   .id = uid,
@@ -269,12 +268,11 @@ namespace fmgr::rpc {
                   .created_at = ts(2'000),
                   .auth_bindings =
                       nlohmann::json::array({{{"provider", "local"}, {"hash", pw_hash}}}),
-                  .totp_secret_enc = std::move(totp),
               },
               ctx);
         };
         insert_user(kSysAdminId, "sysadmin@example.com", pw_sysadmin);
-        insert_user(kLabAdminId, "labadmin@example.com", pw_lab_admin, std::string(kTotpSecret));
+        insert_user(kLabAdminId, "labadmin@example.com", pw_lab_admin);
         insert_user(kMemberId, "member@example.com", pw_member);
         insert_user(kReadOnlyId, "readonly@example.com", pw_readonly);
         insert_user(kAdminAReadOnlyBId, "admin-a-readonly-b@example.com", pw_admin_a_readonly_b);
@@ -301,6 +299,9 @@ namespace fmgr::rpc {
         insert_mem(kMemberAAdminBId, kLabB, core::RoleKind::LabAdmin);
 
         txn->commit();
+        auto enroll = backend_->begin_auth_transaction({kLabAdminId});
+        enroll->replace_totp_secret(kLabAdminId, std::string(kTotpSecret), ctx);
+        enroll->commit();
       }
     };
 

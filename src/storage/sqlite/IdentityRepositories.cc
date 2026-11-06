@@ -5,6 +5,7 @@
 #include "core/identity.h"
 #include "storage/IdentityTraits.h"
 #include "storage/detail/IdentityColumns.h"
+#include "storage/detail/MfaLifecycle.h"
 #include "storage/detail/QuerySqlBuilder.h"
 #include "storage/sqlite/SqliteAuthzVersion.h"
 
@@ -211,15 +212,19 @@ namespace fmgr::storage {
         return pending_;
       }
 
+      [[nodiscard]] std::map<typename EntityTraits<Entity>::Id, PendingEntity>& pending() {
+        return pending_;
+      }
+
       // Snapshot of the latest persisted/staged state of `entity_id`, or nullopt
       // if it does not exist yet. Used as the audit "before" image on updates.
       [[nodiscard]] std::optional<nlohmann::json>
       prior_snapshot(const typename EntityTraits<Entity>::Id& entity_id) const {
         if (const auto staged = find_staged(entity_id); staged.has_value()) {
-          return nlohmann::json(staged.value());
+          return detail::auth_snapshot(staged.value());
         }
         if (const auto loaded = load(entity_id); loaded.has_value()) {
-          return nlohmann::json(loaded.value());
+          return detail::auth_snapshot(loaded.value());
         }
         return std::nullopt;
       }
@@ -234,7 +239,7 @@ namespace fmgr::storage {
         pending_.insert_or_assign(entity_id, PendingEntity{.entity = entity, .is_insert = true});
         transaction_.note_mutation(std::string(EntityTraits<Entity>::entity_name()),
                                    entity_id.to_string(), context, "insert",
-                                   AuditSnapshot{.after = nlohmann::json(entity)});
+                                   AuditSnapshot{.after = detail::auth_snapshot(entity)});
       }
 
       void stage_update(const Entity& entity, const MutationContext& context) {
@@ -249,11 +254,13 @@ namespace fmgr::storage {
                                   PendingEntity{.entity = entity, .is_insert = is_insert});
         transaction_.note_mutation(
             std::string(EntityTraits<Entity>::entity_name()), entity_id.to_string(), context,
-            "update", AuditSnapshot{.before = std::move(before), .after = nlohmann::json(entity)});
+            "update",
+            AuditSnapshot{.before = std::move(before), .after = detail::auth_snapshot(entity)});
       }
 
       [[nodiscard]] std::optional<Entity>
       find_staged(const typename EntityTraits<Entity>::Id& entity_id) const {
+        (void)transaction_.handle();
         const auto iterator = pending_.find(entity_id);
         if (iterator == pending_.end()) {
           return std::nullopt;
@@ -450,7 +457,8 @@ namespace fmgr::storage {
       }
     };
 
-    class UserRepository final : public SqliteIdentityRepositoryBase<core::User> {
+    class UserRepository final : public SqliteIdentityRepositoryBase<core::User>,
+                                 public detail::TotpSecretWriter {
     public:
       using SqliteIdentityRepositoryBase::SqliteIdentityRepositoryBase;
 
@@ -485,10 +493,20 @@ namespace fmgr::storage {
       }
 
       void insert(const core::User& entity, const MutationContext& context) override {
+        if (entity.totp_secret_enc) {
+          throw ConstraintViolation("generic user insertion cannot enroll TOTP");
+        }
         stage_insert(entity, context);
       }
 
       void update(const core::User& entity, const MutationContext& context) override {
+        const auto current = find_by_id(entity.id);
+        if (!current) {
+          throw NotFound("user not found");
+        }
+        if (current->totp_secret_enc != entity.totp_secret_enc) {
+          throw ConstraintViolation("generic user update cannot change TOTP secret");
+        }
         stage_update(entity, context);
       }
 
@@ -499,6 +517,20 @@ namespace fmgr::storage {
         }
         entity->status = core::UserStatus::Disabled;
         update(entity.value(), context);
+      }
+
+      void write_secret(const detail::MfaWriteCapability&, const core::UserId& user_id,
+                        const std::optional<std::string>& secret) override {
+        detail::require_mfa_owner_lock(transaction(), user_id);
+        Statement statement(transaction().handle(),
+                            "UPDATE users SET totp_secret_enc = ? WHERE id = ?");
+        bind_optional_string(statement.get(), 1, secret);
+        bind_text(statement.get(), 2, user_id.to_string());
+        statement.step_done();
+        auto staged = pending().find(user_id);
+        if (staged != pending().end()) {
+          staged->second.entity.totp_secret_enc = secret;
+        }
       }
 
     private:
@@ -558,10 +590,17 @@ namespace fmgr::storage {
       static void update_pending(sqlite3* handle, const core::User& entity) {
         Statement statement(handle, "UPDATE users SET id = ?, primary_email = ?, "
                                     "display_name = ?, status = ?, created_at_micros = ?, "
-                                    "auth_bindings_json = ?, totp_secret_enc = ?, "
+                                    "auth_bindings_json = ?, "
                                     "default_lab_id = ?, authz_version = ? WHERE id = ?");
-        bind_entity(statement.get(), entity);
-        bind_text(statement.get(), 10, entity.id.to_string());
+        bind_text(statement.get(), 1, entity.id.to_string());
+        bind_text(statement.get(), 2, entity.primary_email);
+        bind_text(statement.get(), 3, entity.display_name);
+        bind_text(statement.get(), 4, std::string(core::to_string(entity.status)));
+        bind_int64(statement.get(), 5, entity.created_at.unix_micros());
+        bind_text(statement.get(), 6, entity.auth_bindings.dump());
+        bind_optional_id(statement.get(), 7, entity.default_lab_id);
+        bind_int64(statement.get(), 8, entity.authz_version);
+        bind_text(statement.get(), 9, entity.id.to_string());
         statement.step_done();
       }
     };

@@ -34,7 +34,8 @@ export type PermissionKey =
   | 'lab.enable_phi'
   | 'key.rotate'
   | 'session.revoke'
-  | 'lab.provision';
+  | 'lab.provision'
+  | 'auth.mfa_unlock';
 
 /** Everything the permission catalog holds, for tests and for `WhoAmI` mapping. */
 export const ALL_PERMISSIONS: readonly PermissionKey[] = [
@@ -60,6 +61,7 @@ export const ALL_PERMISSIONS: readonly PermissionKey[] = [
   'key.rotate',
   'session.revoke',
   'lab.provision',
+  'auth.mfa_unlock',
 ];
 
 const PERMISSION_KEY_SET: ReadonlySet<string> = new Set<string>(ALL_PERMISSIONS);

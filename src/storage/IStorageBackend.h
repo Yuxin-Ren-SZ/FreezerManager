@@ -4,6 +4,7 @@
 #define FMGR_STORAGE_ISTORAGEBACKEND_H
 
 #include "core/ids.h"
+#include "core/mfa_security_state.h"
 
 #include <nlohmann/json.hpp>
 
@@ -540,6 +541,25 @@ namespace fmgr::storage {
     [[nodiscard]] virtual AuthUserLockStatus
     auth_user_lock_status(const core::UserId& /*user_id*/) const {
       throw UnsupportedOperation("auth user locking is not supported by this transaction");
+    }
+
+    // Private security transitions. Unsupported backends fail closed; only a
+    // begin_auth_transaction owning the existing user row can perform them.
+    [[nodiscard]] virtual core::MfaSecurityState initialize_mfa_state(const core::UserId&,
+                                                                      const MutationContext&) {
+      throw UnsupportedOperation("MFA state initialization is not supported");
+    }
+    virtual void replace_totp_secret(const core::UserId&, const std::optional<std::string>&,
+                                     const MutationContext&) {
+      throw UnsupportedOperation("TOTP secret lifecycle is not supported");
+    }
+    // The trusted provider must verify the code/consume its step and recheck its
+    // configured idle/absolute expiry under this lock before invoking completion.
+    // This backend primitive checks current ownership/status/generation/pending
+    // state, and cannot authenticate a network caller by itself.
+    virtual void complete_totp_session(const core::SessionId&, const core::Uuid&, core::Timestamp,
+                                       const MutationContext&) {
+      throw UnsupportedOperation("TOTP session proof is not supported");
     }
 
     // Set a backend-specific session variable. No-op for SQLite; PostgresTransaction
