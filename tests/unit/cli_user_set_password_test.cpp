@@ -12,6 +12,7 @@
 #include "core/timestamp.h"
 #include "core/uuid.h"
 #include "storage/IdentityTraits.h"
+#include "storage/MfaSecurityStateTraits.h"
 #include "storage/sqlite/IdentityRepositories.h"
 #include "storage/sqlite/RoleRepositories.h"
 #include "storage/sqlite/SessionRepositories.h"
@@ -157,6 +158,39 @@ namespace fmgr::cli {
       const int rc =
           run_user_set_password(*backend_, "ghost@lab.test", "hunter22", std::nullopt, out_, err_);
       EXPECT_NE(rc, 0);
+    }
+
+    TEST_F(UserSetPasswordTest, TotpProvisioningUsesGuardedAuditedLifecycleAndNeverPrintsSecret) {
+      const std::string secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+      const auto before = backend_->audit_event_count_for_tests();
+      ASSERT_EQ(run_user_set_totp(*backend_, kEmail, secret, std::nullopt, out_, err_), 0);
+      auto txn = backend_->begin(storage::IsolationLevel::Serializable);
+      const auto users = txn->repo<core::User>().query(storage::Query<core::User>::all());
+      ASSERT_EQ(users.size(), 1U);
+      EXPECT_EQ(users.front().totp_secret_enc, secret);
+      EXPECT_TRUE(txn->repo<core::MfaSecurityState>().find_by_id(users.front().id)->totp_generation);
+      txn->commit();
+      EXPECT_EQ(backend_->audit_event_count_for_tests(), before + 3);
+      EXPECT_EQ(out_.str().find(secret), std::string::npos);
+      EXPECT_EQ(err_.str().find(secret), std::string::npos);
+    }
+
+    TEST_F(UserSetPasswordTest, TotpProvisioningRejectsInvalidSecretWithoutWritingOrLeaking) {
+      const std::string invalid = "PRIVATE-invalid-secret";
+      const auto before = backend_->audit_event_count_for_tests();
+      EXPECT_EQ(run_user_set_totp(*backend_, kEmail, invalid, std::nullopt, out_, err_), 1);
+      EXPECT_EQ(backend_->audit_event_count_for_tests(), before);
+      EXPECT_EQ(err_.str().find(invalid), std::string::npos);
+      EXPECT_EQ(out_.str().find(invalid), std::string::npos);
+    }
+
+    TEST(TotpSecretInput, ReadsOnlyOneBoundedStdinLine) {
+      std::istringstream input("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\n");
+      EXPECT_EQ(read_totp_secret_input("-", input), "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+      std::istringstream extra("private\nsecond-line\n");
+      EXPECT_THROW((void)read_totp_secret_input("-", extra), std::runtime_error);
+      std::istringstream too_long(std::string(513, 'A'));
+      EXPECT_THROW((void)read_totp_secret_input("-", too_long), std::runtime_error);
     }
 
   } // namespace
