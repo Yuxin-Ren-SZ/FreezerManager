@@ -1016,6 +1016,20 @@ namespace fmgr::storage {
       EXPECT_THROW(txn->repo<core::ApiToken>().update(token, mutation_context()), NotFound);
     }
 
+    TEST_P(SessionRepositoryTest, GenericUserInsertRejectsTotpSecret) {
+      auto user = make_user(30, lab1_);
+      user.totp_secret_enc = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->repo<core::User>().insert(user, mutation_context()), ConstraintViolation);
+    }
+
+    TEST_P(SessionRepositoryTest, GenericUserUpdateRejectsTotpSecretChange) {
+      auto txn = backend().begin_auth_transaction({user1_});
+      auto user = txn->repo<core::User>().find_by_id(user1_).value();
+      user.totp_secret_enc = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
+      EXPECT_THROW(txn->repo<core::User>().update(user, mutation_context()), ConstraintViolation);
+    }
+
     INSTANTIATE_TEST_SUITE_P(Backends, SessionRepositoryTest,
                              ::testing::Values(BackendKind::Sqlite, BackendKind::Postgres),
                              [](const ::testing::TestParamInfo<BackendKind>& info) {
