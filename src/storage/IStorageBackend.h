@@ -553,6 +553,10 @@ namespace fmgr::storage {
                                      const MutationContext&) {
       throw UnsupportedOperation("TOTP secret lifecycle is not supported");
     }
+    // The trusted provider must verify the code/consume its step and recheck its
+    // configured idle/absolute expiry under this lock before invoking completion.
+    // This backend primitive checks current ownership/status/generation/pending
+    // state, and cannot authenticate a network caller by itself.
     virtual void complete_totp_session(const core::SessionId&, const core::Uuid&, core::Timestamp,
                                        const MutationContext&) {
       throw UnsupportedOperation("TOTP session proof is not supported");

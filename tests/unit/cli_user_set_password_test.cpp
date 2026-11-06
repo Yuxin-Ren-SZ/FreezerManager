@@ -4,6 +4,7 @@
 // must produce exactly the auth_bindings shape LocalAuthProvider::authenticate
 // consumes, so a fresh authenticate() against the same email+password succeeds.
 
+#include "cli/CliApp.h"
 #include "cli/UserCommands.h"
 
 #include "auth/AuthTypes.h"
@@ -28,6 +29,7 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <vector>
 
 namespace fmgr::cli {
   namespace {
@@ -185,6 +187,58 @@ namespace fmgr::cli {
       EXPECT_EQ(backend_->audit_event_count_for_tests(), before);
       EXPECT_EQ(err_.str().find(invalid), std::string::npos);
       EXPECT_EQ(out_.str().find(invalid), std::string::npos);
+    }
+
+    TEST_F(UserSetPasswordTest, TotpCommandDispatchReadsProtectedFileAndRemovesThroughLifecycle) {
+      const auto secret_file = std::filesystem::path(db_path_.string() + ".secret");
+      {
+        std::ofstream file(secret_file);
+        file << "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\n";
+      }
+      std::filesystem::permissions(secret_file, std::filesystem::perms::owner_read |
+                                                    std::filesystem::perms::owner_write);
+      const auto db = db_path_.string();
+      const auto path = secret_file.string();
+      const std::vector<const char*> args{"freezerctl", "user",          "set-totp",
+                                          "--sqlite",   db.c_str(),      "--email",
+                                          kEmail,       "--secret-file", path.c_str()};
+      const int result = run_cli(static_cast<int>(args.size()), args.data(), out_, err_);
+      std::filesystem::remove(secret_file);
+      ASSERT_EQ(result, 0) << err_.str();
+      core::UserId id;
+      {
+        auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+        const auto user = read->repo<core::User>().query(storage::Query<core::User>::all()).front();
+        id = user.id;
+        EXPECT_TRUE(user.totp_secret_enc);
+        EXPECT_TRUE(read->repo<core::MfaSecurityState>().find_by_id(id)->totp_generation);
+        read->commit();
+      }
+      const std::vector<const char*> remove_args{"freezerctl", "user",    "set-totp", "--sqlite",
+                                                 db.c_str(),   "--email", kEmail,     "--remove"};
+      ASSERT_EQ(run_cli(static_cast<int>(remove_args.size()), remove_args.data(), out_, err_), 0);
+      auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      EXPECT_FALSE(read->repo<core::User>().find_by_id(id)->totp_secret_enc);
+      EXPECT_FALSE(read->repo<core::MfaSecurityState>().find_by_id(id)->totp_generation);
+      read->commit();
+      EXPECT_EQ(out_.str().find("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"), std::string::npos);
+    }
+
+    TEST_F(UserSetPasswordTest, TotpProvisioningMasksAuditFailureAndRollsBackEveryEffect) {
+      const auto count = backend_->audit_event_count_for_tests();
+      backend_->fail_next_audit_append_for_tests();
+      EXPECT_EQ(run_user_set_totp(*backend_, kEmail,
+                                  std::string("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"), std::nullopt,
+                                  out_, err_),
+                1);
+      auto read = backend_->begin(storage::IsolationLevel::ReadCommitted);
+      const auto user = read->repo<core::User>().query(storage::Query<core::User>::all()).front();
+      EXPECT_FALSE(user.totp_secret_enc);
+      EXPECT_FALSE(read->repo<core::MfaSecurityState>().find_by_id(user.id));
+      read->commit();
+      EXPECT_EQ(backend_->audit_event_count_for_tests(), count);
+      EXPECT_TRUE(out_.str().empty());
+      EXPECT_EQ(err_.str(), "error: TOTP provisioning failed\n");
     }
 
     TEST(TotpSecretInput, RequiresRegularOwnerOnlyFileAndRejectsSymlinksAndFifos) {
