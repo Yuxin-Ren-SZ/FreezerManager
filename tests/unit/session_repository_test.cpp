@@ -5,6 +5,7 @@
 #include "core/identity.h"
 #include "core/session.h"
 #include "storage/IdentityTraits.h"
+#include "storage/MfaSecurityStateTraits.h"
 #include "storage/SessionTraits.h"
 #include "storage/postgres/IdentityRepositories.h"
 #include "storage/postgres/PostgresRepoSupport.h"
@@ -1028,6 +1029,163 @@ namespace fmgr::storage {
       auto user = txn->repo<core::User>().find_by_id(user1_).value();
       user.totp_secret_enc = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ";
       EXPECT_THROW(txn->repo<core::User>().update(user, mutation_context()), ConstraintViolation);
+    }
+
+    TEST_P(SessionRepositoryTest, MfaStateInitializationIsLockedAuditedAndReadYourWrites) {
+      const auto count = audit_event_count();
+      auto txn = backend().begin_auth_transaction({user1_});
+      const auto first = txn->initialize_mfa_state(user1_, mutation_context());
+      EXPECT_EQ(first.user_id, user1_);
+      EXPECT_EQ(first.failure_count, 0);
+      EXPECT_FALSE(first.last_accepted_step);
+      EXPECT_FALSE(first.totp_generation);
+      EXPECT_EQ(txn->initialize_mfa_state(user1_, mutation_context()), first);
+      EXPECT_EQ(txn->repo<core::MfaSecurityState>().find_by_id(user1_), first);
+      EXPECT_EQ(txn->repo<core::MfaSecurityState>().query(Query<core::MfaSecurityState>::all()).size(), 1U);
+      txn->commit();
+      EXPECT_EQ(audit_event_count(), count + 1);
+    }
+
+    TEST_P(SessionRepositoryTest, MfaStateInitializationOutsideOwnerLockFailsClosed) {
+      auto txn = backend().begin(IsolationLevel::Serializable);
+      EXPECT_THROW(txn->initialize_mfa_state(user1_, mutation_context()), BackendError);
+      auto missing = backend().begin_auth_transaction({id_from_low<core::UserId>(9999)});
+      EXPECT_THROW(missing->initialize_mfa_state(id_from_low<core::UserId>(9999), mutation_context()), BackendError);
+    }
+
+    TEST_P(SessionRepositoryTest, MfaStateGenericWritesCannotCreateEraseChangeGenerationOrLowerFloor) {
+      auto txn = backend().begin_auth_transaction({user1_});
+      auto state = txn->initialize_mfa_state(user1_, mutation_context());
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().insert(state, mutation_context()), ConstraintViolation);
+      state.last_accepted_step = 10;
+      state.observed_at = ts(100);
+      state.failure_count = 7;
+      state.next_allowed_at = ts(200);
+      txn->repo<core::MfaSecurityState>().update(state, mutation_context());
+      EXPECT_EQ(txn->repo<core::MfaSecurityState>().find_by_id(user1_), state);
+      auto bad = state;
+      bad.last_accepted_step = 9;
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()), ConstraintViolation);
+      bad = state;
+      bad.last_accepted_step.reset();
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()), ConstraintViolation);
+      bad = state;
+      bad.totp_generation = core::Uuid::parse(core::generate_uuid_v4());
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()), ConstraintViolation);
+      bad = state;
+      bad.failure_count = 18;
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()), ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().soft_delete(user1_, mutation_context()), ConstraintViolation);
+      txn->commit();
+    }
+
+    TEST_P(SessionRepositoryTest, TotpLifecycleRotatesSameValueRevokesAndPreservesReplayBudget) {
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Session>().insert(make_session(1, user1_), mutation_context());
+        auto pending = make_session(2, user1_);
+        pending.mfa_complete = false;
+        txn->repo<core::Session>().insert(pending, mutation_context());
+        txn->repo<core::Session>().insert(make_session(3, user2_), mutation_context());
+        txn->commit();
+      }
+      const auto count = audit_event_count();
+      auto txn = backend().begin_auth_transaction({user1_});
+      txn->replace_totp_secret(user1_, std::string(k_totp_secret), mutation_context());
+      auto state = txn->repo<core::MfaSecurityState>().find_by_id(user1_).value();
+      ASSERT_TRUE(state.totp_generation);
+      const auto generation = state.totp_generation;
+      state.last_accepted_step = 42;
+      state.observed_at = ts(100);
+      state.failure_count = 17;
+      state.next_allowed_at = ts(200);
+      txn->repo<core::MfaSecurityState>().update(state, mutation_context());
+      txn->replace_totp_secret(user1_, std::string(k_totp_secret), mutation_context());
+      auto changed = txn->repo<core::MfaSecurityState>().find_by_id(user1_).value();
+      EXPECT_NE(changed.totp_generation, generation);
+      EXPECT_EQ(changed.last_accepted_step, state.last_accepted_step);
+      EXPECT_EQ(changed.failure_count, 17);
+      EXPECT_EQ(changed.next_allowed_at, state.next_allowed_at);
+      EXPECT_TRUE(txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(1))->revoked_at);
+      EXPECT_TRUE(txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(2))->revoked_at);
+      EXPECT_FALSE(txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(3))->revoked_at);
+      txn->commit();
+      // initialization + two secret/generation pairs + two revokes + state update.
+      EXPECT_EQ(audit_event_count(), count + 8);
+    }
+
+    TEST_P(SessionRepositoryTest, TotpLifecycleAuditFailureRollsBackSecretStateAndRevocation) {
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Session>().insert(make_session(1, user1_), mutation_context());
+        txn->commit();
+      }
+      const auto count = audit_event_count();
+      auto txn = backend().begin_auth_transaction({user1_});
+      txn->replace_totp_secret(user1_, std::string(k_totp_secret), mutation_context());
+      fail_next_audit_append();
+      EXPECT_THROW(txn->commit(), BackendError);
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().find_by_id(user1_), BackendError);
+      EXPECT_THROW(txn->repo<core::User>().find_by_id(user1_), BackendError);
+      auto read = backend().begin(IsolationLevel::Serializable);
+      EXPECT_FALSE(read->repo<core::User>().find_by_id(user1_)->totp_secret_enc);
+      EXPECT_FALSE(read->repo<core::MfaSecurityState>().find_by_id(user1_));
+      EXPECT_FALSE(read->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(1))->revoked_at);
+      EXPECT_EQ(audit_event_count(), count);
+    }
+
+    TEST_P(SessionRepositoryTest, TotpLifecycleProfileWritesCannotRestoreAStaleSecret) {
+      auto txn = backend().begin_auth_transaction({user1_});
+      auto stale = txn->repo<core::User>().find_by_id(user1_).value();
+      stale.display_name = "profile before enrollment";
+      txn->repo<core::User>().update(stale, mutation_context());
+      txn->replace_totp_secret(user1_, std::string(k_totp_secret), mutation_context());
+      EXPECT_EQ(txn->repo<core::User>().find_by_id(user1_)->totp_secret_enc, k_totp_secret);
+      EXPECT_THROW(txn->repo<core::User>().update(stale, mutation_context()), ConstraintViolation);
+      txn->commit();
+      auto read = backend().begin(IsolationLevel::Serializable);
+      EXPECT_EQ(read->repo<core::User>().find_by_id(user1_)->totp_secret_enc, k_totp_secret);
+      EXPECT_EQ(read->repo<core::User>().find_by_id(user1_)->display_name, stale.display_name);
+    }
+
+    TEST_P(SessionRepositoryTest, TotpProofRequiresCurrentGenerationAndCannotBeForgedByGenericWrites) {
+      core::Uuid generation;
+      {
+        auto txn = backend().begin_auth_transaction({user1_});
+        txn->replace_totp_secret(user1_, std::string(k_totp_secret), mutation_context());
+        generation = txn->repo<core::MfaSecurityState>().find_by_id(user1_)->totp_generation.value();
+        txn->commit();
+      }
+      auto pending = make_session(1, user1_);
+      pending.mfa_complete = false;
+      {
+        auto txn = backend().begin(IsolationLevel::Serializable);
+        txn->repo<core::Session>().insert(pending, mutation_context());
+        auto forged = make_session(2, user1_);
+        forged.totp_verified_generation = generation;
+        forged.totp_verified_at = ts(5000);
+        EXPECT_THROW(txn->repo<core::Session>().insert(forged, mutation_context()), ConstraintViolation);
+        txn->commit();
+      }
+      auto txn = backend().begin_auth_transaction({user1_});
+      auto forged = pending;
+      forged.mfa_complete = true;
+      forged.totp_verified_generation = generation;
+      forged.totp_verified_at = ts(5000);
+      EXPECT_THROW(txn->repo<core::Session>().update(forged, mutation_context()), ConstraintViolation);
+      EXPECT_THROW(txn->complete_totp_session(pending.id, core::Uuid{}, ts(5000), mutation_context()), ConstraintViolation);
+      txn->complete_totp_session(pending.id, generation, ts(5000), mutation_context());
+      auto complete = txn->repo<core::Session>().find_by_id(pending.id).value();
+      EXPECT_TRUE(complete.mfa_complete);
+      EXPECT_EQ(complete.totp_verified_generation, generation);
+      EXPECT_EQ(complete.totp_verified_at, ts(5000));
+      EXPECT_EQ(complete.last_seen_at, ts(5000));
+      complete.last_seen_at = ts(6000);
+      txn->repo<core::Session>().update(complete, mutation_context());
+      txn->repo<core::Session>().soft_delete(pending.id, mutation_context());
+      EXPECT_EQ(txn->repo<core::Session>().find_by_id(pending.id)->totp_verified_generation, generation);
+      EXPECT_THROW(txn->complete_totp_session(pending.id, generation, ts(7000), mutation_context()), ConstraintViolation);
+      txn->commit();
     }
 
     INSTANTIATE_TEST_SUITE_P(Backends, SessionRepositoryTest,
