@@ -6,6 +6,7 @@
 #include "core/placement.h"
 #include "core/timestamp.h"
 #include "storage/IStorageBackend.h"
+#include "storage/detail/MfaLifecycle.h"
 
 #include <pqxx/pqxx>
 
@@ -24,7 +25,7 @@ namespace fmgr::storage::detail {
 
   // Audit "after" snapshot for an insert/update: the post-write entity state.
   template <typename Entity> [[nodiscard]] AuditSnapshot audit_after(const Entity& entity) {
-    return AuditSnapshot{.after = nlohmann::json(entity)};
+    return AuditSnapshot{.after = auth_snapshot(entity)};
   }
 
   // Audit "before"+"after" snapshot for an update/soft-delete. `before` is the
@@ -34,15 +35,15 @@ namespace fmgr::storage::detail {
                                            const Entity& after) {
     AuditSnapshot snapshot;
     if (before.has_value()) {
-      snapshot.before = nlohmann::json(before.value());
+      snapshot.before = auth_snapshot(before.value());
     }
-    snapshot.after = nlohmann::json(after);
+    snapshot.after = auth_snapshot(after);
     return snapshot;
   }
 
   // Audit "before"-only snapshot for a hard delete (no post-write state).
   template <typename Entity> [[nodiscard]] AuditSnapshot audit_before(const Entity& before) {
-    return AuditSnapshot{.before = nlohmann::json(before)};
+    return AuditSnapshot{.before = auth_snapshot(before)};
   }
 
   // Map a libpqxx SQL error onto the portable BackendError hierarchy. Mirrors the

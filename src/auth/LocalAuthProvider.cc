@@ -416,6 +416,9 @@ namespace fmgr::auth {
     };
 
     const auto ctx = system_ctx("password_authenticate");
+    if (!mfa_complete) {
+      (void)wtxn->initialize_mfa_state(user.id, ctx);
+    }
     wtxn->repo<core::Session>().insert(session, ctx);
     wtxn->commit();
     record_success(lower_email);

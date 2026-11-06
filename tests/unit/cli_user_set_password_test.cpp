@@ -22,10 +22,12 @@
 #include <nlohmann/json.hpp>
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 
 namespace fmgr::cli {
   namespace {
@@ -168,7 +170,8 @@ namespace fmgr::cli {
       const auto users = txn->repo<core::User>().query(storage::Query<core::User>::all());
       ASSERT_EQ(users.size(), 1U);
       EXPECT_EQ(users.front().totp_secret_enc, secret);
-      EXPECT_TRUE(txn->repo<core::MfaSecurityState>().find_by_id(users.front().id)->totp_generation);
+      EXPECT_TRUE(
+          txn->repo<core::MfaSecurityState>().find_by_id(users.front().id)->totp_generation);
       txn->commit();
       EXPECT_EQ(backend_->audit_event_count_for_tests(), before + 3);
       EXPECT_EQ(out_.str().find(secret), std::string::npos);
@@ -182,6 +185,38 @@ namespace fmgr::cli {
       EXPECT_EQ(backend_->audit_event_count_for_tests(), before);
       EXPECT_EQ(err_.str().find(invalid), std::string::npos);
       EXPECT_EQ(out_.str().find(invalid), std::string::npos);
+    }
+
+    TEST(TotpSecretInput, RequiresRegularOwnerOnlyFileAndRejectsSymlinksAndFifos) {
+      const auto path =
+          std::filesystem::temp_directory_path() / ("fmgr-totp-secret-" + core::generate_uuid_v4());
+      const auto link = std::filesystem::path(path.string() + ".link");
+      const auto fifo = std::filesystem::path(path.string() + ".fifo");
+      {
+        std::ofstream file(path);
+        file << "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ\n";
+      }
+      std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                             std::filesystem::perms::owner_write);
+      std::istringstream unused;
+      EXPECT_EQ(read_totp_secret_input(path.string(), unused), "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+      std::filesystem::create_symlink(path, link);
+      EXPECT_THROW((void)read_totp_secret_input(link.string(), unused), std::runtime_error);
+      std::filesystem::permissions(path, std::filesystem::perms::group_read,
+                                   std::filesystem::perm_options::add);
+      EXPECT_THROW((void)read_totp_secret_input(path.string(), unused), std::runtime_error);
+      std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                             std::filesystem::perms::owner_write);
+      {
+        std::ofstream file(path);
+        file << "private\nextra\n";
+      }
+      EXPECT_THROW((void)read_totp_secret_input(path.string(), unused), std::runtime_error);
+      ASSERT_EQ(::mkfifo(fifo.c_str(), 0600), 0);
+      EXPECT_THROW((void)read_totp_secret_input(fifo.string(), unused), std::runtime_error);
+      std::filesystem::remove(link);
+      std::filesystem::remove(fifo);
+      std::filesystem::remove(path);
     }
 
     TEST(TotpSecretInput, ReadsOnlyOneBoundedStdinLine) {

@@ -225,8 +225,7 @@ namespace fmgr::test {
         const core::UserId member_id = core::UserId::parse("10000000-0000-0000-0000-000000000002");
         const core::UserId mfa_id = core::UserId::parse("10000000-0000-0000-0000-000000000003");
 
-        const auto make_user = [&hash](const core::UserId& id, const std::string& email,
-                                       std::optional<std::string> totp = std::nullopt) {
+        const auto make_user = [&hash](const core::UserId& id, const std::string& email) {
           return core::User{
               .id = id,
               .primary_email = email,
@@ -236,7 +235,6 @@ namespace fmgr::test {
               .auth_bindings = nlohmann::json::array({
                   nlohmann::json::object({{"provider", "local"}, {"hash", hash}}),
               }),
-              .totp_secret_enc = std::move(totp),
           };
         };
         const auto make_membership = [&lab_id](const core::UserId& uid, core::RoleKind kind) {
@@ -264,7 +262,7 @@ namespace fmgr::test {
         txn->repo<core::Lab>().insert(lab, ctx);
         txn->repo<core::User>().insert(make_user(admin_id, kAdminEmail), ctx);
         txn->repo<core::User>().insert(make_user(member_id, kMemberEmail), ctx);
-        txn->repo<core::User>().insert(make_user(mfa_id, kMfaEmail, std::string(kTotpSecret)), ctx);
+        txn->repo<core::User>().insert(make_user(mfa_id, kMfaEmail), ctx);
         txn->repo<core::LabMembership>().insert(
             make_membership(admin_id, core::RoleKind::SystemAdmin), ctx);
         txn->repo<core::LabMembership>().insert(make_membership(member_id, core::RoleKind::Member),
@@ -272,6 +270,9 @@ namespace fmgr::test {
         txn->repo<core::LabMembership>().insert(make_membership(mfa_id, core::RoleKind::Member),
                                                 ctx);
         txn->commit();
+        auto enroll = backend_->begin_auth_transaction({mfa_id});
+        enroll->replace_totp_secret(mfa_id, std::string(kTotpSecret), ctx);
+        enroll->commit();
       }
 
       std::filesystem::path db_path_;

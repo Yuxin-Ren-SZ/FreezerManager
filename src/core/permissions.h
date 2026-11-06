@@ -44,6 +44,7 @@ namespace fmgr::core {
     KeyRotate,
     SessionRevoke,
     LabProvision,
+    MfaUnlock,
   };
 
   struct PermissionEntry {
@@ -52,7 +53,7 @@ namespace fmgr::core {
     std::string_view description;
   };
 
-  inline constexpr std::array<PermissionEntry, 22> k_permission_catalog{{
+  inline constexpr std::array<PermissionEntry, 23> k_permission_catalog{{
       {.value = Permission::SampleRead,
        .key = "sample.read",
        .description = "Read sample records."},
@@ -119,6 +120,9 @@ namespace fmgr::core {
       {.value = Permission::LabProvision,
        .key = "lab.provision",
        .description = "Provision (create) new labs (SystemAdmin only)."},
+      {.value = Permission::MfaUnlock,
+       .key = "auth.mfa_unlock",
+       .description = "Unlock durable MFA backoff (SystemAdmin only)."},
   }};
 
   // Guard: catalog must be in enum value order for O(1) value lookups below.
@@ -198,6 +202,7 @@ namespace fmgr::core {
     case Permission::KeyRotate:
     case Permission::SessionRevoke:
     case Permission::LabProvision:
+    case Permission::MfaUnlock:
       return true;
     case Permission::SampleRead:
     case Permission::SampleWrite:
@@ -238,6 +243,7 @@ namespace fmgr::core {
           Permission::AuditExport,      Permission::BackupRun,         Permission::ShareRequest,
           Permission::ShareApprove,     Permission::LabConfigure,      Permission::LabEnablePhi,
           Permission::KeyRotate,        Permission::SessionRevoke,     Permission::LabProvision,
+          Permission::MfaUnlock,
       };
     case RoleKind::LabAdmin:
       return {

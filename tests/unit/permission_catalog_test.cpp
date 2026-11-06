@@ -69,6 +69,16 @@ namespace fmgr::core {
       EXPECT_FALSE(is_global_only_permission(Permission::AuditExport));
     }
 
+    TEST(PermissionCatalog, MfaUnlockIsGlobalOnlyAndGrantedOnlyToSystemAdmin) {
+      EXPECT_EQ(to_key(Permission::MfaUnlock), "auth.mfa_unlock");
+      EXPECT_TRUE(is_global_only_permission(Permission::MfaUnlock));
+      EXPECT_TRUE(builtin_role_permissions(RoleKind::SystemAdmin).contains(Permission::MfaUnlock));
+      for (const auto kind :
+           {RoleKind::LabAdmin, RoleKind::Member, RoleKind::ReadOnly, RoleKind::ApiClient}) {
+        EXPECT_FALSE(builtin_role_permissions(kind).contains(Permission::MfaUnlock));
+      }
+    }
+
     TEST(PermissionCatalog, LabAdminDoesNotGrantDeploymentWideBackupRun) {
       const auto lab_admin = builtin_role_permissions(RoleKind::LabAdmin);
       EXPECT_FALSE(lab_admin.contains(Permission::BackupRun));

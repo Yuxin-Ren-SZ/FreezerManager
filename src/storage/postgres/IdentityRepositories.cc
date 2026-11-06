@@ -191,7 +191,7 @@ namespace fmgr::storage {
         "id, primary_email, display_name, status, created_at_micros, auth_bindings_json, "
         "totp_secret_enc, default_lab_id, authz_version";
 
-    class UserRepository final : public IRepository<core::User> {
+    class UserRepository final : public IRepository<core::User>, public detail::TotpSecretWriter {
     public:
       explicit UserRepository(PostgresTransaction& txn) : txn_(txn) {}
 
@@ -233,6 +233,9 @@ namespace fmgr::storage {
       }
 
       void insert(const core::User& entity, const MutationContext& context) override {
+        if (entity.totp_secret_enc) {
+          throw ConstraintViolation("generic user insertion cannot enroll TOTP");
+        }
         detail::validate_user(entity);
         try {
           pqxx::params params;
@@ -260,6 +263,12 @@ namespace fmgr::storage {
       void update(const core::User& entity, const MutationContext& context) override {
         detail::validate_user(entity);
         const auto before = find_by_id(entity.id);
+        if (!before) {
+          throw NotFound("user not found");
+        }
+        if (before->totp_secret_enc != entity.totp_secret_enc) {
+          throw ConstraintViolation("generic user update cannot change TOTP secret");
+        }
         try {
           pqxx::params params;
           params.append(entity.id.to_string());
@@ -268,15 +277,14 @@ namespace fmgr::storage {
           params.append(std::string(core::to_string(entity.status)));
           params.append(entity.created_at.unix_micros());
           params.append(entity.auth_bindings.dump());
-          params.append(entity.totp_secret_enc);
           params.append(id_or_null(entity.default_lab_id));
           // Never let a stale in-memory snapshot lower the epoch below what an
           // authz mutation already committed; GREATEST keeps it monotonic.
           params.append(entity.authz_version);
           const auto result = txn_.work().exec(
               "UPDATE users SET primary_email = $2, display_name = $3, status = $4, "
-              "created_at_micros = $5, auth_bindings_json = $6::jsonb, totp_secret_enc = $7, "
-              "default_lab_id = $8, authz_version = GREATEST(authz_version, $9) WHERE id = $1",
+              "created_at_micros = $5, auth_bindings_json = $6::jsonb, "
+              "default_lab_id = $7, authz_version = GREATEST(authz_version, $8) WHERE id = $1",
               params);
           if (result.affected_rows() == 0) {
             throw NotFound("user not found");
@@ -296,6 +304,17 @@ namespace fmgr::storage {
         }
         entity->status = core::UserStatus::Disabled;
         update(entity.value(), context);
+      }
+
+      void write_secret(const detail::MfaWriteCapability&, const core::UserId& user_id,
+                        const std::optional<std::string>& secret) override {
+        detail::require_mfa_owner_lock(txn_, user_id);
+        try {
+          txn_.work().exec("UPDATE users SET totp_secret_enc = $2 WHERE id = $1",
+                           pqxx::params{user_id.to_string(), secret});
+        } catch (const pqxx::sql_error& error) {
+          detail::throw_pqxx_error(error);
+        }
       }
 
     private:

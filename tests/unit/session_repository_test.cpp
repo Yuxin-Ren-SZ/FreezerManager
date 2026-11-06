@@ -171,10 +171,13 @@ namespace fmgr::storage {
         auto user = write->repo<core::User>().find_by_id(user1_).value();
         user.auth_bindings = nlohmann::json::array(
             {{{"provider", "local"}, {"hash", provider.hash_password("fixture-password")}}});
-        user.totp_secret_enc =
-            needs_totp ? std::optional(std::string(k_totp_secret)) : std::nullopt;
         write->repo<core::User>().update(user, mutation_context());
         write->commit();
+        if (needs_totp) {
+          auto enroll = backend().begin_auth_transaction({user1_});
+          enroll->replace_totp_secret(user1_, std::string(k_totp_secret), mutation_context());
+          enroll->commit();
+        }
         const auto token = provider.authenticate(
             auth::PasswordCredentials{.email = user.primary_email, .password = "fixture-password"},
             auth::ClientInfo{});
@@ -735,10 +738,8 @@ namespace fmgr::storage {
       });
       const bool reached = paused.wait_until_paused();
       if (reached) {
-        auto write = backend().begin(IsolationLevel::Serializable);
-        auto user = write->repo<core::User>().find_by_id(user1_).value();
-        user.totp_secret_enc = std::string(k_totp_secret);
-        write->repo<core::User>().update(user, mutation_context());
+        auto write = backend().begin_auth_transaction({user1_});
+        write->replace_totp_secret(user1_, std::string(k_totp_secret), mutation_context());
         write->commit();
       }
       paused.release();
@@ -1041,7 +1042,9 @@ namespace fmgr::storage {
       EXPECT_FALSE(first.totp_generation);
       EXPECT_EQ(txn->initialize_mfa_state(user1_, mutation_context()), first);
       EXPECT_EQ(txn->repo<core::MfaSecurityState>().find_by_id(user1_), first);
-      EXPECT_EQ(txn->repo<core::MfaSecurityState>().query(Query<core::MfaSecurityState>::all()).size(), 1U);
+      EXPECT_EQ(
+          txn->repo<core::MfaSecurityState>().query(Query<core::MfaSecurityState>::all()).size(),
+          1U);
       txn->commit();
       EXPECT_EQ(audit_event_count(), count + 1);
     }
@@ -1050,13 +1053,17 @@ namespace fmgr::storage {
       auto txn = backend().begin(IsolationLevel::Serializable);
       EXPECT_THROW(txn->initialize_mfa_state(user1_, mutation_context()), BackendError);
       auto missing = backend().begin_auth_transaction({id_from_low<core::UserId>(9999)});
-      EXPECT_THROW(missing->initialize_mfa_state(id_from_low<core::UserId>(9999), mutation_context()), BackendError);
+      EXPECT_THROW(
+          missing->initialize_mfa_state(id_from_low<core::UserId>(9999), mutation_context()),
+          BackendError);
     }
 
-    TEST_P(SessionRepositoryTest, MfaStateGenericWritesCannotCreateEraseChangeGenerationOrLowerFloor) {
+    TEST_P(SessionRepositoryTest,
+           MfaStateGenericWritesCannotCreateEraseChangeGenerationOrLowerFloor) {
       auto txn = backend().begin_auth_transaction({user1_});
       auto state = txn->initialize_mfa_state(user1_, mutation_context());
-      EXPECT_THROW(txn->repo<core::MfaSecurityState>().insert(state, mutation_context()), ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().insert(state, mutation_context()),
+                   ConstraintViolation);
       state.last_accepted_step = 10;
       state.observed_at = ts(100);
       state.failure_count = 7;
@@ -1065,17 +1072,22 @@ namespace fmgr::storage {
       EXPECT_EQ(txn->repo<core::MfaSecurityState>().find_by_id(user1_), state);
       auto bad = state;
       bad.last_accepted_step = 9;
-      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()), ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()),
+                   ConstraintViolation);
       bad = state;
       bad.last_accepted_step.reset();
-      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()), ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()),
+                   ConstraintViolation);
       bad = state;
       bad.totp_generation = core::Uuid::parse(core::generate_uuid_v4());
-      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()), ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()),
+                   ConstraintViolation);
       bad = state;
       bad.failure_count = 18;
-      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()), ConstraintViolation);
-      EXPECT_THROW(txn->repo<core::MfaSecurityState>().soft_delete(user1_, mutation_context()), ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().update(bad, mutation_context()),
+                   ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::MfaSecurityState>().soft_delete(user1_, mutation_context()),
+                   ConstraintViolation);
       txn->commit();
     }
 
@@ -1106,9 +1118,12 @@ namespace fmgr::storage {
       EXPECT_EQ(changed.last_accepted_step, state.last_accepted_step);
       EXPECT_EQ(changed.failure_count, 17);
       EXPECT_EQ(changed.next_allowed_at, state.next_allowed_at);
-      EXPECT_TRUE(txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(1))->revoked_at);
-      EXPECT_TRUE(txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(2))->revoked_at);
-      EXPECT_FALSE(txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(3))->revoked_at);
+      EXPECT_TRUE(
+          txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(1))->revoked_at);
+      EXPECT_TRUE(
+          txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(2))->revoked_at);
+      EXPECT_FALSE(
+          txn->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(3))->revoked_at);
       txn->commit();
       // initialization + two secret/generation pairs + two revokes + state update.
       EXPECT_EQ(audit_event_count(), count + 8);
@@ -1130,7 +1145,8 @@ namespace fmgr::storage {
       auto read = backend().begin(IsolationLevel::Serializable);
       EXPECT_FALSE(read->repo<core::User>().find_by_id(user1_)->totp_secret_enc);
       EXPECT_FALSE(read->repo<core::MfaSecurityState>().find_by_id(user1_));
-      EXPECT_FALSE(read->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(1))->revoked_at);
+      EXPECT_FALSE(
+          read->repo<core::Session>().find_by_id(id_from_low<core::SessionId>(1))->revoked_at);
       EXPECT_EQ(audit_event_count(), count);
     }
 
@@ -1148,12 +1164,14 @@ namespace fmgr::storage {
       EXPECT_EQ(read->repo<core::User>().find_by_id(user1_)->display_name, stale.display_name);
     }
 
-    TEST_P(SessionRepositoryTest, TotpProofRequiresCurrentGenerationAndCannotBeForgedByGenericWrites) {
+    TEST_P(SessionRepositoryTest,
+           TotpProofRequiresCurrentGenerationAndCannotBeForgedByGenericWrites) {
       core::Uuid generation;
       {
         auto txn = backend().begin_auth_transaction({user1_});
         txn->replace_totp_secret(user1_, std::string(k_totp_secret), mutation_context());
-        generation = txn->repo<core::MfaSecurityState>().find_by_id(user1_)->totp_generation.value();
+        generation =
+            txn->repo<core::MfaSecurityState>().find_by_id(user1_)->totp_generation.value();
         txn->commit();
       }
       auto pending = make_session(1, user1_);
@@ -1164,7 +1182,8 @@ namespace fmgr::storage {
         auto forged = make_session(2, user1_);
         forged.totp_verified_generation = generation;
         forged.totp_verified_at = ts(5000);
-        EXPECT_THROW(txn->repo<core::Session>().insert(forged, mutation_context()), ConstraintViolation);
+        EXPECT_THROW(txn->repo<core::Session>().insert(forged, mutation_context()),
+                     ConstraintViolation);
         txn->commit();
       }
       auto txn = backend().begin_auth_transaction({user1_});
@@ -1172,8 +1191,11 @@ namespace fmgr::storage {
       forged.mfa_complete = true;
       forged.totp_verified_generation = generation;
       forged.totp_verified_at = ts(5000);
-      EXPECT_THROW(txn->repo<core::Session>().update(forged, mutation_context()), ConstraintViolation);
-      EXPECT_THROW(txn->complete_totp_session(pending.id, core::Uuid{}, ts(5000), mutation_context()), ConstraintViolation);
+      EXPECT_THROW(txn->repo<core::Session>().update(forged, mutation_context()),
+                   ConstraintViolation);
+      EXPECT_THROW(
+          txn->complete_totp_session(pending.id, core::Uuid{}, ts(5000), mutation_context()),
+          ConstraintViolation);
       txn->complete_totp_session(pending.id, generation, ts(5000), mutation_context());
       auto complete = txn->repo<core::Session>().find_by_id(pending.id).value();
       EXPECT_TRUE(complete.mfa_complete);
@@ -1183,8 +1205,10 @@ namespace fmgr::storage {
       complete.last_seen_at = ts(6000);
       txn->repo<core::Session>().update(complete, mutation_context());
       txn->repo<core::Session>().soft_delete(pending.id, mutation_context());
-      EXPECT_EQ(txn->repo<core::Session>().find_by_id(pending.id)->totp_verified_generation, generation);
-      EXPECT_THROW(txn->complete_totp_session(pending.id, generation, ts(7000), mutation_context()), ConstraintViolation);
+      EXPECT_EQ(txn->repo<core::Session>().find_by_id(pending.id)->totp_verified_generation,
+                generation);
+      EXPECT_THROW(txn->complete_totp_session(pending.id, generation, ts(7000), mutation_context()),
+                   ConstraintViolation);
       txn->commit();
     }
 

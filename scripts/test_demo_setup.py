@@ -60,7 +60,6 @@ class DemoSetupTest(unittest.TestCase):
             "    *LEGACY_DEMO_SEED_CHECK*) printf '%s\\n' \"$input\" | "
             + shlex.quote(sys.executable)
             + " - \"$2\"; exit $?;;\n"
-            "    *'UPDATE users SET totp_secret_enc'*) exit 0;;\n"
             "  esac\n"
             "fi\n"
             "case \"${1:-}\" in */seed_demo.py) [ \"${DEMO_SEED_FAIL:-0}\" != 1 ]; exit;; esac\n"

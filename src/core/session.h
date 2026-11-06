@@ -50,6 +50,8 @@ namespace fmgr::core {
       UserAgent,
       RevokedAt,
       MfaComplete,
+      TotpVerifiedGeneration,
+      TotpVerifiedAt,
     };
 
     SessionId id;
@@ -65,6 +67,9 @@ namespace fmgr::core {
     // false until verify_totp() succeeds for sessions that require MFA.
     // Middleware must reject sensitive RPCs when this flag is false.
     bool mfa_complete{true};
+    // Genuine proof is set only by backend-owned completion, never from a generic MFA flag.
+    std::optional<Uuid> totp_verified_generation;
+    std::optional<Timestamp> totp_verified_at;
 
     friend bool operator==(const Session&, const Session&) = default;
   };
@@ -116,6 +121,8 @@ namespace fmgr::core {
         {"user_agent", json_helpers::opt_to_json(session.user_agent)},
         {"revoked_at", json_helpers::opt_to_json(session.revoked_at)},
         {"mfa_complete", session.mfa_complete},
+        {"totp_verified_generation", json_helpers::opt_to_json(session.totp_verified_generation)},
+        {"totp_verified_at", json_helpers::opt_to_json(session.totp_verified_at)},
     };
   }
 
@@ -131,6 +138,10 @@ namespace fmgr::core {
         .user_agent = json_helpers::opt_from_json<std::string>(json.at("user_agent")),
         .revoked_at = json_helpers::opt_from_json<Timestamp>(json.at("revoked_at")),
         .mfa_complete = json.at("mfa_complete").get<bool>(),
+        .totp_verified_generation = json_helpers::opt_from_json<Uuid>(
+            json.value("totp_verified_generation", nlohmann::json{})),
+        .totp_verified_at = json_helpers::opt_from_json<Timestamp>(
+            json.value("totp_verified_at", nlohmann::json{})),
     };
   }
 

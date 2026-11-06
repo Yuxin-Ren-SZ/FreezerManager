@@ -3,6 +3,7 @@
 #ifndef FMGR_CLI_USERCOMMANDS_H
 #define FMGR_CLI_USERCOMMANDS_H
 
+#include <istream>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -29,6 +30,15 @@ namespace fmgr::cli {
   int run_user_set_password(storage::IStorageBackend& backend, const std::string& email,
                             const std::string& password, const std::optional<core::UserId>& actor,
                             std::ostream& out, std::ostream& err);
+
+  // Trusted local provisioning only. Secret input is bounded stdin or a regular
+  // owner-only file, never an argv value. NULL removes enrollment through the
+  // same audited lifecycle; every explicit replacement revokes active sessions.
+  [[nodiscard]] std::string read_totp_secret_input(const std::string& path, std::istream& input);
+  int run_user_set_totp(storage::IStorageBackend& backend, const std::string& email,
+                        const std::optional<std::string>& secret,
+                        const std::optional<core::UserId>& actor, std::ostream& out,
+                        std::ostream& err);
 
 } // namespace fmgr::cli
 

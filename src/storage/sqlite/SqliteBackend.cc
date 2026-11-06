@@ -771,6 +771,32 @@ CREATE UNIQUE INDEX audit_events_prev_hash_unique ON audit_events(prev_hash);
 )sql",
               .requires_verified_audit_chain = true,
           },
+          {.version = 17,
+           .name = "0017_mfa_state_proof_lifecycle",
+           .up_sql = R"sql(
+CREATE TABLE mfa_security_states (
+  user_id TEXT NOT NULL PRIMARY KEY REFERENCES users(id),
+  last_accepted_step BIGINT CHECK (last_accepted_step >= 0),
+  failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count BETWEEN 0 AND 17),
+  next_allowed_at_micros BIGINT CHECK (next_allowed_at_micros >= 0),
+  observed_at_micros BIGINT CHECK (observed_at_micros >= 0),
+  totp_generation TEXT CHECK (totp_generation IS NULL OR (length(totp_generation) = 36 AND length(replace(totp_generation, '-', '')) = 32 AND substr(totp_generation,9,1) = '-' AND substr(totp_generation,14,1) = '-' AND substr(totp_generation,19,1) = '-' AND substr(totp_generation,24,1) = '-' AND totp_generation NOT GLOB '*[^0-9a-f-]*')),
+  CHECK ((last_accepted_step IS NULL AND failure_count = 0 AND next_allowed_at_micros IS NULL) OR observed_at_micros IS NOT NULL)
+);
+ALTER TABLE sessions ADD COLUMN totp_verified_generation TEXT
+  CHECK (totp_verified_generation IS NULL OR
+    (length(totp_verified_generation) = 36 AND length(replace(totp_verified_generation, '-', '')) = 32 AND
+     substr(totp_verified_generation,9,1) = '-' AND substr(totp_verified_generation,14,1) = '-' AND
+     substr(totp_verified_generation,19,1) = '-' AND substr(totp_verified_generation,24,1) = '-' AND
+     totp_verified_generation NOT GLOB '*[^0-9a-f-]*'));
+ALTER TABLE sessions ADD COLUMN totp_verified_at_micros BIGINT
+  CHECK ((totp_verified_generation IS NULL AND totp_verified_at_micros IS NULL) OR
+         (totp_verified_generation IS NOT NULL AND totp_verified_at_micros IS NOT NULL AND
+          totp_verified_at_micros >= 0 AND mfa_complete = 1));
+INSERT INTO permissions (key, description) VALUES ('auth.mfa_unlock', 'Unlock durable MFA backoff (SystemAdmin only).');
+INSERT INTO role_permissions (role_id, permission_key) VALUES ('00000000-0000-0000-0000-000000000001', 'auth.mfa_unlock');
+)sql",
+           .requires_verified_audit_chain = true},
       };
     }
 
